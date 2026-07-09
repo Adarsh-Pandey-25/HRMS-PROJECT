@@ -15,13 +15,20 @@ api.interceptors.request.use((config) => {
     config.headers = config.headers ?? {}
     config.headers.Authorization = `Bearer ${token}`
   }
+  // Let Axios set multipart boundary automatically for file uploads
+  if (config.data instanceof FormData) {
+    config.headers = config.headers ?? {}
+    delete config.headers['Content-Type']
+  }
   return config
 })
 
 api.interceptors.response.use(
   (response) => {
-    // Convert backend snake_case -> camelCase for frontend
-    response.data = camelize(response.data)
+    // Do not transform binary payloads (PDF downloads)
+    if (response.config.responseType !== 'blob' && response.data && typeof response.data === 'object' && !(response.data instanceof Blob)) {
+      response.data = camelize(response.data)
+    }
     return response
   },
   async (error: AxiosError<any>) => {

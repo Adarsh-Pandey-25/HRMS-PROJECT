@@ -40,6 +40,13 @@ const getSetting = async (key, defaultValue = null) => {
 
 const getBoolean = async (key, defaultValue = false) => {
   const v = await getSetting(key, defaultValue);
+  if (typeof v === 'boolean') return v;
+  if (typeof v === 'number') return v !== 0;
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase();
+    if (['true', '1', 'yes', 'y', 'on'].includes(s)) return true;
+    if (['false', '0', 'no', 'n', 'off', ''].includes(s)) return false;
+  }
   return Boolean(v);
 };
 

@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
-import { Menu, X } from 'lucide-react'
+import { Bell, Menu, X } from 'lucide-react'
 import { authStore } from '../../store/auth'
 import { getNavForRole } from '../../lib/permissions'
 import api from '../../lib/api'
+import { listNotifications, markAllRead, markNotificationRead, unreadCount } from '../../lib/notifications.api'
 
 export default function AppLayout() {
   const navigate = useNavigate()
@@ -11,12 +12,58 @@ export default function AppLayout() {
   const setMe = authStore((s) => s.setMe)
   const logout = authStore((s) => s.logout)
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [notifOpen, setNotifOpen] = useState(false)
+  const [unread, setUnread] = useState(0)
+  const [items, setItems] = useState<any[]>([])
 
   useEffect(() => {
     api.get('/auth/me').then((res) => {
       if (res.data?.data) setMe(res.data.data)
     }).catch(() => {})
   }, [setMe])
+
+  useEffect(() => {
+    let t: any
+    const load = async () => {
+      try {
+        const c = await unreadCount()
+        setUnread(Number(c || 0))
+      } catch {}
+    }
+    load()
+    t = setInterval(load, 20000)
+    return () => clearInterval(t)
+  }, [])
+
+  const openNotifications = async () => {
+    setNotifOpen((v) => !v)
+    try {
+      const res = await listNotifications(false)
+      setItems(res?.data || [])
+      const c = await unreadCount()
+      setUnread(Number(c || 0))
+    } catch {}
+  }
+
+  const onClickNotif = async (n: any) => {
+    try {
+      if (!n?.isRead && n?.id) await markNotificationRead(n.id)
+      const c = await unreadCount()
+      setUnread(Number(c || 0))
+    } catch {}
+    setNotifOpen(false)
+    const link = n?.link
+    if (link) navigate(link)
+  }
+
+  const onReadAll = async () => {
+    try {
+      await markAllRead()
+      setUnread(0)
+      const res = await listNotifications(false)
+      setItems(res?.data || [])
+    } catch {}
+  }
 
   const navItems = getNavForRole(me?.role)
 
@@ -93,6 +140,48 @@ export default function AppLayout() {
             </button>
             <div className="text-sm text-slate-500">
               Welcome back, <span className="font-medium text-slate-800">{me?.firstName || 'User'}</span>
+            </div>
+            <div className="ml-auto relative">
+              <button
+                className="relative rounded-lg border p-2 hover:bg-slate-50"
+                onClick={openNotifications}
+                aria-label="Notifications"
+              >
+                <Bell className="size-5 text-slate-700" />
+                {unread > 0 ? (
+                  <span className="absolute -right-1 -top-1 inline-flex min-w-5 items-center justify-center rounded-full bg-red-600 px-1.5 text-[10px] font-semibold text-white">
+                    {unread > 99 ? '99+' : unread}
+                  </span>
+                ) : null}
+              </button>
+
+              {notifOpen ? (
+                <div className="absolute right-0 mt-2 w-[360px] rounded-xl border bg-white shadow-xl overflow-hidden z-50">
+                  <div className="flex items-center justify-between px-4 py-3 border-b">
+                    <div className="text-sm font-semibold text-slate-900">Notifications</div>
+                    <button onClick={onReadAll} className="text-xs font-medium text-primary hover:underline">
+                      Mark all read
+                    </button>
+                  </div>
+                  <div className="max-h-[420px] overflow-y-auto">
+                    {items?.length ? items.map((n) => (
+                      <button
+                        key={n.id}
+                        onClick={() => onClickNotif(n)}
+                        className={`w-full text-left px-4 py-3 border-b hover:bg-slate-50 ${n.isRead ? '' : 'bg-blue-50/40'}`}
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="text-sm font-semibold text-slate-900">{n.title}</div>
+                          <div className="text-[10px] uppercase text-slate-500">{n.type}</div>
+                        </div>
+                        <div className="mt-1 text-xs text-slate-600 line-clamp-2">{n.message}</div>
+                      </button>
+                    )) : (
+                      <div className="px-4 py-8 text-sm text-slate-500 text-center">No notifications</div>
+                    )}
+                  </div>
+                </div>
+              ) : null}
             </div>
           </header>
           <main className="flex-1 p-4 md:p-6">

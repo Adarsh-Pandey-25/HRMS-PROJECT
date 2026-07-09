@@ -21,6 +21,7 @@ const documentRoutes = require('./routes/document.routes');
 const employeeRoutes = require('./routes/employee.routes');
 const settingsRoutes = require('./routes/settings.routes');
 const reportsRoutes = require('./routes/reports.routes');
+const notificationRoutes = require('./routes/notification.routes');
 
 const app = express();
 
@@ -80,6 +81,7 @@ app.use('/api/documents', documentRoutes);
 app.use('/api/employees', employeeRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/reports', reportsRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 app.use(notFoundHandler);
 app.use(handleMulterError);

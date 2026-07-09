@@ -111,6 +111,9 @@ export default function AttendanceDashboard() {
 
   const todayRecord = useMemo(() => {
     const list: AttendanceRecord[] = my.data?.data || []
+    // If there's any open session, it is the source of truth (backend blocks check-in until checkout).
+    const open = list.find((r) => r && r.checkInTime && !r.checkOutTime)
+    if (open) return open
     const today = new Date()
     return (
       list.find((r) => {
@@ -170,7 +173,7 @@ export default function AttendanceDashboard() {
 
   return (
     <div className="p-6 space-y-6">
-      <PageHeader title="Attendance" description="Shift: 09:00 AM – 06:00 PM (9 hours)" />
+      <PageHeader title="Attendance" description="Daily goal: 9 hours" />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card className="overflow-hidden hover:shadow-md transition-shadow">

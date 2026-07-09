@@ -153,17 +153,31 @@ export function LoadingState({ label = 'Loading…' }: { label?: string }) {
   )
 }
 
-export function Modal({ open, title, onClose, children }: { open: boolean; title: string; onClose: () => void; children: ReactNode }) {
+export function Modal({
+  open,
+  title,
+  onClose,
+  children,
+  wide = false,
+}: {
+  open: boolean
+  title: string
+  onClose: () => void
+  children: ReactNode
+  wide?: boolean
+}) {
   if (!open) return null
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-slate-900/50" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-lg rounded-xl border bg-white shadow-xl">
+      <div
+        className={`relative z-10 flex w-full flex-col ${wide ? 'max-w-5xl' : 'max-w-lg'} max-h-[85vh] rounded-xl border bg-white shadow-xl`}
+      >
         <div className="flex items-center justify-between border-b px-5 py-4">
           <h2 className="text-lg font-semibold">{title}</h2>
           <button onClick={onClose} className="rounded-md px-2 py-1 text-slate-500 hover:bg-slate-100">✕</button>
         </div>
-        <div className="p-5">{children}</div>
+        <div className="flex-1 overflow-y-auto p-5">{children}</div>
       </div>
     </div>
   )

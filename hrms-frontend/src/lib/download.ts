@@ -39,3 +39,21 @@ export async function downloadPayslip(id: string) {
 export async function downloadDocument(id: string, name?: string) {
   await downloadAuthenticatedFile(`/documents/${id}/download`, name || `document-${id}`)
 }
+
+export async function getDocumentPreviewUrl(id: string) {
+  const token = authStore.getState().accessToken
+  const res = await fetch(`${apiBase}/documents/${id}/download`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    credentials: 'include',
+  })
+
+  if (!res.ok) {
+    const json = await res.json().catch(() => null)
+    throw new Error(json?.error?.message || 'Failed to load document')
+  }
+
+  const json = await res.json()
+  const url = json?.data?.url
+  if (!url) throw new Error('Preview URL not available')
+  return url as string
+}

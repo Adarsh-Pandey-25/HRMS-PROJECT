@@ -7,6 +7,7 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "seed:demo": "node scripts/seed-demo-data.js",
+    "seed:payroll-components": "node scripts/seed-payroll-components.js",
     "test": "jest --runInBand --forceExit"
   },
   "keywords": ["hrms", "express", "supabase"],

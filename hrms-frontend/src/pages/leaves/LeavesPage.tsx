@@ -9,17 +9,6 @@ import { getErrorMessage } from '../../lib/errors'
 import { Badge, Button, Card, CardBody, DataTable, Field, Input, LoadingState, PageHeader, Select, Tabs } from '../../components/ui'
 import type { LeaveRecord } from '../../types'
 
-const LEAVE_TYPE_LABEL: Record<string, string> = {
-  CL: 'Casual Leave',
-  SL: 'Sick Leave',
-  EL: 'Earned Leave',
-  WFH: 'Work From Home',
-  COMP_OFF: 'Comp Off',
-  MATERNITY: 'Maternity Leave',
-  PATERNITY: 'Paternity Leave',
-  UNPAID: 'Unpaid Leave',
-}
-
 export default function LeavesPage() {
   const qc = useQueryClient()
   const me = authStore((s) => s.me)
@@ -57,8 +46,34 @@ export default function LeavesPage() {
     enabled: Boolean(me?.id),
   })
 
+  const leaveTypes = useQuery({
+    queryKey: ['leaves', 'types'],
+    queryFn: async () => (await api.get('/leaves/types')).data,
+  })
+
+  const leaveTypeLabel: Record<string, string> = (leaveTypes.data?.data || []).reduce((acc: any, t: any) => {
+    acc[t.code] = t.name
+    return acc
+  }, {})
+
   const rows: LeaveRecord[] = tab === 'mine' ? mine.data?.data || [] : tab === 'team' ? team.data?.data || [] : all.data?.data || []
   const loading = tab === 'mine' ? mine.isLoading : tab === 'team' ? team.isLoading : all.isLoading
+
+  const patchLeaveInCache = (updated: LeaveRecord) => {
+    const keys = [
+      ['leaves', 'mine'],
+      ['leaves', 'team'],
+      ['leaves', 'all'],
+    ] as const
+    for (const key of keys) {
+      qc.setQueryData(key, (prev: any) => {
+        const list: LeaveRecord[] = prev?.data
+        if (!Array.isArray(list)) return prev
+        const next = list.map((l) => (l.id === updated.id ? { ...l, ...updated } : l))
+        return { ...prev, data: next }
+      })
+    }
+  }
 
   const apply = useMutation({
     mutationFn: async () =>
@@ -79,8 +94,9 @@ export default function LeavesPage() {
 
   const approve = useMutation({
     mutationFn: async (id: string) => (await api.put(`/leaves/${id}/approve`)).data,
-    onSuccess: () => {
+    onSuccess: (res) => {
       toast.success('Leave approved')
+      if (res?.data) patchLeaveInCache(res.data as LeaveRecord)
       qc.invalidateQueries({ queryKey: ['leaves'] })
     },
     onError: (e) => toast.error(getErrorMessage(e)),
@@ -88,8 +104,9 @@ export default function LeavesPage() {
 
   const reject = useMutation({
     mutationFn: async (id: string) => (await api.put(`/leaves/${id}/reject`, { rejection_reason: 'Rejected from dashboard' })).data,
-    onSuccess: () => {
+    onSuccess: (res) => {
       toast.success('Leave rejected')
+      if (res?.data) patchLeaveInCache(res.data as LeaveRecord)
       qc.invalidateQueries({ queryKey: ['leaves'] })
     },
     onError: (e) => toast.error(getErrorMessage(e)),
@@ -130,9 +147,9 @@ export default function LeavesPage() {
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field label="Leave Type">
                   <Select value={form.leaveType} onChange={(e) => setForm((p) => ({ ...p, leaveType: e.target.value }))}>
-                    {['CL', 'SL', 'EL', 'WFH', 'COMP_OFF', 'MATERNITY', 'PATERNITY', 'UNPAID'].map((t) => (
-                      <option key={t} value={t}>{LEAVE_TYPE_LABEL[t] || t}</option>
-                    ))}
+                    {(leaveTypes.data?.data || []).map((t: any) => (
+                      <option key={t.code} value={t.code}>{t.name || t.code}</option>
+                    ))} 
                   </Select>
                 </Field>
                 <Field label="Half Day">
@@ -166,7 +183,7 @@ export default function LeavesPage() {
                     return (
                       <div key={type} className="rounded-lg bg-slate-50 px-3 py-2">
                         <div className="flex items-center justify-between">
-                          <span className="text-slate-700 font-medium">{LEAVE_TYPE_LABEL[type] || type}</span>
+                          <span className="text-slate-700 font-medium">{leaveTypeLabel[type] || type}</span>
                           <span className="text-slate-900 font-semibold">{available}</span>
                         </div>
                         <div className="mt-1 flex items-center justify-between text-xs text-slate-500">
@@ -194,7 +211,7 @@ export default function LeavesPage() {
               emptyTitle="No leave records found"
               columns={[
                 ...(tab !== 'mine' ? [{ key: 'employee', header: 'Employee', render: (r: LeaveRecord) => r.employee ? `${r.employee.firstName} ${r.employee.lastName}` : '—' }] : []),
-                { key: 'type', header: 'Type', render: (r) => LEAVE_TYPE_LABEL[r.leaveType] || r.leaveType },
+                { key: 'type', header: 'Type', render: (r) => leaveTypeLabel[r.leaveType] || r.leaveType },
                 { key: 'from', header: 'From', render: (r) => formatDate(r.fromDate) },
                 { key: 'to', header: 'To', render: (r) => formatDate(r.toDate) },
                 { key: 'days', header: 'Days', render: (r) => r.totalDays ?? '—' },

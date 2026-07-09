@@ -63,7 +63,8 @@ const checkInRules = [
 ];
 
 const leaveApplyRules = [
-  body('leave_type').isIn(LEAVE_TYPES),
+  // Leave types are now admin-configurable; validate existence in service layer
+  body('leave_type').isString().trim().notEmpty(),
   body('from_date').isISO8601(),
   body('to_date').isISO8601(),
   body('is_half_day').optional().isBoolean(),
@@ -110,10 +111,25 @@ const documentUploadRules = [
   body('expires_at').optional().isISO8601(),
 ];
 
-const payrollGenerateRules = [
+const payrollMonthRules = [
   body('month').isInt({ min: 1, max: 12 }),
   body('year').isInt({ min: 2020 }),
-  body('employee_ids').optional().isArray(),
+];
+
+const payrollMonthQueryRules = [
+  query('month').isInt({ min: 1, max: 12 }),
+  query('year').isInt({ min: 2020 }),
+];
+
+const payrollGeneratePayslipRules = [
+  body('payroll_month_id').isUUID(),
+  body('user_id').optional().isUUID(),
+];
+
+const payrollListQueryRules = [
+  query('month').isInt({ min: 1, max: 12 }),
+  query('year').isInt({ min: 2020 }),
+  // Contract: no scope param (keep endpoint strict to month/year only)
 ];
 
 const uuidParam = (name = 'id') => [param(name).isUUID()];
@@ -137,7 +153,10 @@ module.exports = {
   announcementRules,
   holidayRules,
   documentUploadRules,
-  payrollGenerateRules,
+  payrollMonthRules,
+  payrollMonthQueryRules,
+  payrollGeneratePayslipRules,
+  payrollListQueryRules,
   uuidParam,
   paginationQuery,
 };

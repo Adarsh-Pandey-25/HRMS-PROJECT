@@ -4,6 +4,7 @@ const attendanceService = require('../services/attendance.service');
 const settingsService = require('../services/settings.service');
 const { successResponse, paginate, buildMeta } = require('../utils/helpers');
 const { BadRequestError, NotFoundError, ForbiddenError } = require('../utils/errors');
+const notificationService = require('../services/notification.service');
 
 const submit = async (req, res, next) => {
   try {
@@ -38,6 +39,41 @@ const submit = async (req, res, next) => {
       .single();
 
     if (error) throw new BadRequestError(error.message);
+
+    // Notify manager (if any) else HR/Admin
+    const { data: employee } = await supabaseAdmin
+      .from('employees')
+      .select('id, first_name, last_name, manager_id')
+      .eq('id', req.user.id)
+      .single();
+
+    if (employee?.manager_id) {
+      await notificationService.createNotification({
+        user_id: employee.manager_id,
+        type: 'REIMBURSEMENT',
+        title: 'Reimbursement pending approval',
+        message: `${employee.first_name} ${employee.last_name} submitted a reimbursement claim (₹${req.body.amount}).`,
+        link: '/reimbursements?tab=team',
+        meta: { reimbursement_id: data.id },
+      });
+    } else {
+      const { data: hrs } = await supabaseAdmin
+        .from('employees')
+        .select('id')
+        .in('role', ['hr', 'admin'])
+        .eq('is_active', true);
+      for (const u of hrs || []) {
+        await notificationService.createNotification({
+          user_id: u.id,
+          type: 'REIMBURSEMENT',
+          title: 'Reimbursement submitted',
+          message: `A reimbursement claim was submitted and needs review.`,
+          link: '/reimbursements?tab=all',
+          meta: { reimbursement_id: data.id },
+        });
+      }
+    }
+
     successResponse(res, 'Reimbursement submitted', data, null, 201);
   } catch (err) { next(err); }
 };
@@ -128,6 +164,36 @@ const approve = async (req, res, next) => {
       .single();
 
     if (error) throw new BadRequestError(error.message);
+
+    if (req.user.role === 'manager') {
+      // Notify HR/Admin for final approval
+      const { data: hrs } = await supabaseAdmin
+        .from('employees')
+        .select('id')
+        .in('role', ['hr', 'admin'])
+        .eq('is_active', true);
+      for (const u of hrs || []) {
+        await notificationService.createNotification({
+          user_id: u.id,
+          type: 'REIMBURSEMENT',
+          title: 'Reimbursement needs HR approval',
+          message: `Manager approved a reimbursement claim. Please review and approve/reject.`,
+          link: '/reimbursements?tab=all',
+          meta: { reimbursement_id: reimbursement.id, employee_id: reimbursement.employee_id },
+        });
+      }
+    } else {
+      // Final approval by HR/Admin -> notify employee
+      await notificationService.createNotification({
+        user_id: reimbursement.employee_id,
+        type: 'REIMBURSEMENT',
+        title: 'Reimbursement approved',
+        message: `Your reimbursement claim was approved.`,
+        link: '/reimbursements?tab=mine',
+        meta: { reimbursement_id: reimbursement.id },
+      });
+    }
+
     successResponse(res, 'Reimbursement approved', data);
   } catch (err) { next(err); }
 };
@@ -161,6 +227,16 @@ const reject = async (req, res, next) => {
       .single();
 
     if (error) throw new BadRequestError(error.message);
+
+    await notificationService.createNotification({
+      user_id: reimbursement.employee_id,
+      type: 'REIMBURSEMENT',
+      title: 'Reimbursement rejected',
+      message: `Your reimbursement claim was rejected.${req.body.rejection_reason ? ` Reason: ${req.body.rejection_reason}` : ''}`,
+      link: '/reimbursements?tab=mine',
+      meta: { reimbursement_id: reimbursement.id },
+    });
+
     successResponse(res, 'Reimbursement rejected', data);
   } catch (err) { next(err); }
 };
@@ -182,6 +258,33 @@ const remove = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+const receipt = async (req, res, next) => {
+  try {
+    const { data: reimbursement } = await supabaseAdmin
+      .from('reimbursements')
+      .select('*')
+      .eq('id', req.params.id)
+      .single();
+
+    if (!reimbursement) throw new NotFoundError('Reimbursement not found');
+    if (!reimbursement.receipt_url) throw new NotFoundError('Receipt not uploaded');
+
+    // Access rules:
+    // - Employee: can view own receipt
+    // - Manager: can view team receipts
+    // - HR/Admin: can view all receipts
+    if (req.user.role === 'employee') {
+      if (reimbursement.employee_id !== req.user.id) throw new ForbiddenError('Not authorized');
+    } else if (req.user.role === 'manager') {
+      const teamIds = await attendanceService.getTeamEmployeeIds(req.user.id);
+      if (!teamIds.includes(reimbursement.employee_id)) throw new ForbiddenError('Not authorized');
+    }
+
+    const signedUrl = await getSignedUrl(STORAGE_BUCKETS.receipts, reimbursement.receipt_url, 3600);
+    successResponse(res, 'Receipt URL generated', { url: signedUrl });
+  } catch (err) { next(err); }
+};
+
 module.exports = {
-  submit, myReimbursements, teamReimbursements, allReimbursements, approve, reject, remove,
+  submit, myReimbursements, teamReimbursements, allReimbursements, approve, reject, remove, receipt,
 };

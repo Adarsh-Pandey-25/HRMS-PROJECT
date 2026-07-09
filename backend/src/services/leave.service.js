@@ -8,6 +8,34 @@ const { calculateLeaveDays, paginate, buildMeta } = require('../utils/helpers');
 const { leaveStatusEmail } = require('./email.service');
 const { getTeamEmployeeIds } = require('./attendance.service');
 const logger = require('../utils/logger');
+const settingsService = require('./settings.service');
+const config = require('../config/database');
+const { LEAVE_TYPES } = require('../utils/constants');
+const notificationService = require('./notification.service');
+
+const defaultPolicy = (year) => ([
+  { code: 'CL', name: 'Casual Leave', allocation: config.leaveBalances?.CL ?? 12, active: true },
+  { code: 'SL', name: 'Sick Leave', allocation: config.leaveBalances?.SL ?? 12, active: true },
+  { code: 'EL', name: 'Earned Leave', allocation: config.leaveBalances?.EL ?? 15, active: true },
+  { code: 'WFH', name: 'Work From Home', allocation: 0, active: true },
+  { code: 'COMP_OFF', name: 'Comp Off', allocation: 0, active: true },
+  { code: 'MATERNITY', name: 'Maternity Leave', allocation: 0, active: true },
+  { code: 'PATERNITY', name: 'Paternity Leave', allocation: 0, active: true },
+  { code: 'UNPAID', name: 'Unpaid Leave', allocation: 0, active: true },
+]);
+
+const getEffectiveLeavePolicy = async (year) => {
+  const policy = await settingsService.getSetting('leave_policy', null);
+  if (Array.isArray(policy) && policy.length) return policy;
+
+  // Backward-compat: if only allocations exist
+  const alloc = await settingsService.getSetting('leave_allocations', null);
+  if (alloc && typeof alloc === 'object') {
+    return defaultPolicy(year).map((p) => ({ ...p, allocation: Number(alloc[p.code] ?? p.allocation) }));
+  }
+
+  return defaultPolicy(year);
+};
 
 const applyLeave = async (employeeId, data) => {
   const { leave_type, from_date, to_date, is_half_day, reason } = data;
@@ -18,8 +46,15 @@ const applyLeave = async (employeeId, data) => {
 
   const totalDays = calculateLeaveDays(from_date, to_date, is_half_day);
 
+  // Block applying for disabled leave types
+  const year = moment(from_date).year();
+  const policy = await getEffectiveLeavePolicy(year);
+  const found = (policy || []).find((p) => p.code === leave_type);
+  if (found && found.active === false) {
+    throw new BadRequestError(`${leave_type} is disabled by Admin`);
+  }
+
   if (['CL', 'SL', 'EL'].includes(leave_type)) {
-    const year = moment(from_date).year();
     const { data: balance } = await supabaseAdmin
       .from('leave_balances')
       .select('*')
@@ -49,6 +84,41 @@ const applyLeave = async (employeeId, data) => {
     .single();
 
   if (error) throw new BadRequestError(error.message);
+
+  // Notify manager (if any) else HR/Admin
+  const { data: employee } = await supabaseAdmin
+    .from('employees')
+    .select('id, first_name, last_name, manager_id')
+    .eq('id', employeeId)
+    .single();
+
+  if (employee?.manager_id) {
+    await notificationService.createNotification({
+      user_id: employee.manager_id,
+      type: 'LEAVE',
+      title: 'Leave request pending approval',
+      message: `${employee.first_name} ${employee.last_name} applied for leave (${leave_type}) from ${from_date} to ${to_date}.`,
+      link: '/leaves?tab=team',
+      meta: { leave_id: leave.id },
+    });
+  } else {
+    const { data: hrs } = await supabaseAdmin
+      .from('employees')
+      .select('id')
+      .in('role', ['hr', 'admin'])
+      .eq('is_active', true);
+    for (const u of hrs || []) {
+      await notificationService.createNotification({
+        user_id: u.id,
+        type: 'LEAVE',
+        title: 'Leave request submitted',
+        message: `A leave request (${leave_type}) was submitted and needs review.`,
+        link: '/leaves?tab=all',
+        meta: { leave_id: leave.id },
+      });
+    }
+  }
+
   return leave;
 };
 
@@ -92,6 +162,23 @@ const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
       .select()
       .single();
 
+    // Notify HR/Admin for final approval
+    const { data: hrs } = await supabaseAdmin
+      .from('employees')
+      .select('id')
+      .in('role', ['hr', 'admin'])
+      .eq('is_active', true);
+    for (const u of hrs || []) {
+      await notificationService.createNotification({
+        user_id: u.id,
+        type: 'LEAVE',
+        title: 'Leave needs HR approval',
+        message: `Manager approved a leave request (${leave.leave_type}). Please review and approve/reject.`,
+        link: '/leaves?tab=all',
+        meta: { leave_id: leaveId, employee_id: leave.employee_id },
+      });
+    }
+
     return updated;
   }
 
@@ -116,6 +203,17 @@ const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
   if (leave.employee) {
     leaveStatusEmail(leave.employee, leave, 'approved').catch(() => {});
   }
+
+  // Notify employee
+  await notificationService.createNotification({
+    user_id: leave.employee_id,
+    type: 'LEAVE',
+    title: 'Leave approved',
+    message: `Your leave request (${leave.leave_type}) has been approved.`,
+    link: '/leaves?tab=mine',
+    meta: { leave_id: leaveId },
+  });
+
   return updated;
 };
 
@@ -142,6 +240,16 @@ const rejectLeave = async (approver, leaveId, rejection_reason) => {
   if (leave.employee) {
     leaveStatusEmail(leave.employee, leave, 'rejected', rejection_reason).catch(() => {});
   }
+
+  await notificationService.createNotification({
+    user_id: leave.employee_id,
+    type: 'LEAVE',
+    title: 'Leave rejected',
+    message: `Your leave request (${leave.leave_type}) was rejected.${rejection_reason ? ` Reason: ${rejection_reason}` : ''}`,
+    link: '/leaves?tab=mine',
+    meta: { leave_id: leaveId },
+  });
+
   return updated;
 };
 
@@ -166,6 +274,37 @@ const cancelLeave = async (employeeId, leaveId) => {
 
 const getLeaveBalance = async (employeeId, year) => {
   const targetYear = year || moment().year();
+
+  // Ensure employee has leave balances rows (and allocations are dynamic from Settings)
+  const policy = await getEffectiveLeavePolicy(targetYear);
+  const activePolicy = (policy || []).filter((p) => p && p.code && p.active !== false);
+  const allocations = {};
+  activePolicy.forEach((p) => { allocations[p.code] = Number(p.allocation || 0); });
+
+  // Create missing rows so UI always reflects latest allocations for new employees/year
+  const { data: existingRows } = await supabaseAdmin
+    .from('leave_balances')
+    .select('leave_type')
+    .eq('employee_id', employeeId)
+    .eq('year', targetYear);
+
+  const existingTypes = new Set((existingRows || []).map((r) => r.leave_type));
+  const inserts = [];
+  for (const t of activePolicy.map((p) => p.code)) {
+    if (existingTypes.has(t)) continue;
+    inserts.push({
+      employee_id: employeeId,
+      year: targetYear,
+      leave_type: t,
+      total_allocated: Number(allocations?.[t] ?? 0),
+      used: 0,
+      encashed: 0,
+    });
+  }
+  if (inserts.length) {
+    await supabaseAdmin.from('leave_balances').insert(inserts);
+  }
+
   const { data, error } = await supabaseAdmin
     .from('leave_balances')
     .select('*')
@@ -174,7 +313,9 @@ const getLeaveBalance = async (employeeId, year) => {
 
   if (error) throw new BadRequestError(error.message);
 
-  return (data || []).map((b) => ({
+  const activeCodes = new Set(activePolicy.map((p) => p.code));
+  const filtered = (data || []).filter((b) => activeCodes.has(b.leave_type));
+  return filtered.map((b) => ({
     ...b,
     available: b.total_allocated - b.used - b.encashed,
   }));
@@ -216,4 +357,5 @@ module.exports = {
   getLeaveBalance,
   getLeaveCalendar,
   calculateEncashment,
+  getEffectiveLeavePolicy,
 };

@@ -74,6 +74,15 @@ const calendar = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+const types = async (req, res, next) => {
+  try {
+    const year = parseInt(req.query.year, 10) || moment().tz(TIMEZONE).year();
+    const policy = await leaveService.getEffectiveLeavePolicy(year);
+    const active = (policy || []).filter((p) => p.active !== false);
+    successResponse(res, 'Leave types fetched', active);
+  } catch (err) { next(err); }
+};
+
 module.exports = {
-  apply, myLeaves, teamLeaves, allLeaves, approve, reject, cancel, balance, calendar,
+  apply, myLeaves, teamLeaves, allLeaves, approve, reject, cancel, balance, calendar, types,
 };

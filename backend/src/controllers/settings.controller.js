@@ -50,5 +50,214 @@ const updateKey = async (req, res, next) => {
   }
 };
 
-module.exports = { getAll, getByKey, updateKey };
+// Payroll Components (Dynamic Salary Structure)
+const getPayrollComponents = async (req, res, next) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('payroll_components')
+      .select('*')
+      .order('display_order', { ascending: true });
+    if (error) throw new BadRequestError(error.message);
+    successResponse(res, 'Payroll components fetched', data);
+  } catch (err) { next(err); }
+};
+
+const createPayrollComponent = async (req, res, next) => {
+  try {
+    const payload = req.body || {};
+    const { data, error } = await supabaseAdmin
+      .from('payroll_components')
+      .insert({
+        type: payload.type,
+        name: payload.name,
+        is_fixed: Boolean(payload.is_fixed),
+        fixed_amount: payload.fixed_amount ?? null,
+        target_field: payload.target_field ?? null,
+        operator: payload.operator ?? null,
+        operand_field: payload.operand_field ?? null,
+        operand_value: payload.operand_value ?? null,
+        output_field: payload.output_field ?? null,
+        display_order: payload.display_order ?? 0,
+        is_active: payload.is_active !== false,
+      })
+      .select()
+      .single();
+    if (error) throw new BadRequestError(error.message);
+    successResponse(res, 'Payroll component created', data, null, 201);
+  } catch (err) { next(err); }
+};
+
+const updatePayrollComponent = async (req, res, next) => {
+  try {
+    const payload = req.body || {};
+    const { data, error } = await supabaseAdmin
+      .from('payroll_components')
+      .update({
+        type: payload.type,
+        name: payload.name,
+        is_fixed: Boolean(payload.is_fixed),
+        fixed_amount: payload.fixed_amount ?? null,
+        target_field: payload.target_field ?? null,
+        operator: payload.operator ?? null,
+        operand_field: payload.operand_field ?? null,
+        operand_value: payload.operand_value ?? null,
+        output_field: payload.output_field ?? null,
+        display_order: payload.display_order ?? 0,
+        is_active: payload.is_active !== false,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', req.params.id)
+      .select()
+      .single();
+    if (error) throw new BadRequestError(error.message);
+    successResponse(res, 'Payroll component updated', data);
+  } catch (err) { next(err); }
+};
+
+const deletePayrollComponent = async (req, res, next) => {
+  try {
+    const { error } = await supabaseAdmin
+      .from('payroll_components')
+      .delete()
+      .eq('id', req.params.id);
+    if (error) throw new BadRequestError(error.message);
+    successResponse(res, 'Payroll component deleted');
+  } catch (err) { next(err); }
+};
+
+// Leave Policy (Editable leave allocations)
+const getLeaveAllocations = async (req, res, next) => {
+  try {
+    await settingsService.ensureCache(false);
+    const value = await settingsService.getSetting('leave_allocations', null);
+    successResponse(res, 'Leave allocations fetched', value);
+  } catch (err) { next(err); }
+};
+
+const updateLeaveAllocations = async (req, res, next) => {
+  try {
+    const allocations = req.body?.allocations;
+    if (!allocations || typeof allocations !== 'object') {
+      throw new BadRequestError('allocations object is required');
+    }
+    const { data, error } = await settingsService.setSetting('leave_allocations', allocations, req.user.id);
+    if (error) throw new BadRequestError(error.message);
+    successResponse(res, 'Leave allocations updated', data);
+  } catch (err) { next(err); }
+};
+
+// Leave Policy v2 (supports enable/disable + custom display name per type)
+const getLeavePolicy = async (req, res, next) => {
+  try {
+    await settingsService.ensureCache(false);
+    const value = await settingsService.getSetting('leave_policy', null);
+    successResponse(res, 'Leave policy fetched', value);
+  } catch (err) { next(err); }
+};
+
+const updateLeavePolicy = async (req, res, next) => {
+  try {
+    const policy = req.body?.policy;
+    if (!Array.isArray(policy)) throw new BadRequestError('policy array is required');
+
+    const { data, error } = await settingsService.setSetting('leave_policy', policy, req.user.id);
+    if (error) throw new BadRequestError(error.message);
+    successResponse(res, 'Leave policy updated', data);
+  } catch (err) { next(err); }
+};
+
+const applyLeavePolicyToAll = async (req, res, next) => {
+  try {
+    const year = parseInt(req.query.year, 10);
+    if (!year) throw new BadRequestError('year query param is required');
+
+    const policy = await settingsService.getSetting('leave_policy', null);
+    if (!Array.isArray(policy) || !policy.length) throw new BadRequestError('Leave policy is not configured yet');
+
+    // Create missing leave_balances rows for ALL employees for new/custom leave codes
+    const { data: employees, error: empErr } = await supabaseAdmin
+      .from('employees')
+      .select('id')
+      .eq('is_active', true);
+    if (empErr) throw new BadRequestError(empErr.message);
+    const employeeIds = (employees || []).map((e) => e.id);
+
+    for (const item of policy) {
+      const code = item.code;
+      const allocation = Number(item.allocation || 0);
+      const active = item.active !== false;
+
+      // Insert missing rows for this leave type/year without resetting used/encashed
+      const { data: existing, error: exErr } = await supabaseAdmin
+        .from('leave_balances')
+        .select('employee_id')
+        .eq('year', year)
+        .eq('leave_type', code);
+      if (exErr) throw new BadRequestError(exErr.message);
+      const existingSet = new Set((existing || []).map((r) => r.employee_id));
+      const missing = employeeIds.filter((id) => !existingSet.has(id));
+      if (missing.length) {
+        const rows = missing.map((id) => ({
+          employee_id: id,
+          year,
+          leave_type: code,
+          total_allocated: active ? allocation : 0,
+          used: 0,
+          encashed: 0,
+        }));
+        const { error: insErr } = await supabaseAdmin.from('leave_balances').insert(rows);
+        if (insErr) throw new BadRequestError(insErr.message);
+      }
+
+      await supabaseAdmin
+        .from('leave_balances')
+        .update({ total_allocated: active ? allocation : 0 })
+        .eq('year', year)
+        .eq('leave_type', code);
+    }
+
+    successResponse(res, 'Leave policy applied to all employees', { year });
+  } catch (err) { next(err); }
+};
+
+// Apply leave allocations to ALL employees (bulk update leave_balances for a year)
+const applyLeaveAllocationsToAll = async (req, res, next) => {
+  try {
+    const year = parseInt(req.query.year, 10);
+    if (!year) throw new BadRequestError('year query param is required');
+
+    const allocations = await settingsService.getSetting('leave_allocations', null);
+    if (!allocations || typeof allocations !== 'object') {
+      throw new BadRequestError('Leave allocations are not configured yet');
+    }
+
+    // Update existing balances
+    const types = Object.keys(allocations);
+    for (const t of types) {
+      await supabaseAdmin
+        .from('leave_balances')
+        .update({ total_allocated: Number(allocations[t] || 0) })
+        .eq('year', year)
+        .eq('leave_type', t);
+    }
+
+    successResponse(res, 'Leave allocations applied to all employees', { year, types });
+  } catch (err) { next(err); }
+};
+
+module.exports = {
+  getAll,
+  getByKey,
+  updateKey,
+  getPayrollComponents,
+  createPayrollComponent,
+  updatePayrollComponent,
+  deletePayrollComponent,
+  getLeaveAllocations,
+  updateLeaveAllocations,
+  applyLeaveAllocationsToAll,
+  getLeavePolicy,
+  updateLeavePolicy,
+  applyLeavePolicyToAll,
+};
 

@@ -18,6 +18,8 @@ export default function EmployeesPage() {
     department: '',
     designation: '',
     managerId: '',
+    basic: '',
+    hra: '',
   })
 
   const employees = useQuery({
@@ -33,7 +35,7 @@ export default function EmployeesPage() {
 
   const create = useMutation({
     mutationFn: async () => {
-      const payload: Record<string, string> = {
+      const payload: any = {
         email: form.email,
         first_name: form.firstName,
         last_name: form.lastName,
@@ -44,6 +46,11 @@ export default function EmployeesPage() {
       if (form.role === 'employee' && form.managerId) {
         payload.manager_id = form.managerId
       }
+      const basic = Number(form.basic || 0)
+      const hra = Number(form.hra || 0)
+      if (basic || hra) {
+        payload.salary_details = { basic, hra }
+      }
       return (await api.post('/employees/create', payload)).data
     },
     onSuccess: (res) => {
@@ -51,7 +58,7 @@ export default function EmployeesPage() {
       toast.success(tempPassword ? `Employee created. Password: ${tempPassword}` : 'Employee created')
       qc.invalidateQueries({ queryKey: ['employees'] })
       setOpen(false)
-      setForm({ email: '', firstName: '', lastName: '', role: 'employee', department: '', designation: '', managerId: '' })
+      setForm({ email: '', firstName: '', lastName: '', role: 'employee', department: '', designation: '', managerId: '', basic: '', hra: '' })
     },
     onError: (e) => toast.error(getErrorMessage(e)),
   })
@@ -109,7 +116,7 @@ export default function EmployeesPage() {
         </CardBody>
       </Card>
 
-      <Modal open={open} title="Add Employee" onClose={() => setOpen(false)}>
+      <Modal open={open} title="Add Employee" onClose={() => setOpen(false)} wide>
         <div className="space-y-4">
           <Field label="Email"><Input value={form.email} onChange={(e) => setForm((p) => ({ ...p, email: e.target.value }))} /></Field>
           <div className="grid gap-4 sm:grid-cols-2">
@@ -150,6 +157,22 @@ export default function EmployeesPage() {
 
           <Field label="Department"><Input value={form.department} onChange={(e) => setForm((p) => ({ ...p, department: e.target.value }))} /></Field>
           <Field label="Designation"><Input value={form.designation} onChange={(e) => setForm((p) => ({ ...p, designation: e.target.value }))} /></Field>
+
+          <div className="rounded-lg border bg-slate-50 p-4">
+            <div className="text-sm font-semibold text-slate-900">Salary Details</div>
+            <div className="mt-3 grid gap-4 sm:grid-cols-2">
+              <Field label="Basic Salary (₹)">
+                <Input type="number" value={form.basic} onChange={(e) => setForm((p) => ({ ...p, basic: e.target.value }))} />
+              </Field>
+              <Field label="HRA (₹)">
+                <Input type="number" value={form.hra} onChange={(e) => setForm((p) => ({ ...p, hra: e.target.value }))} />
+              </Field>
+            </div>
+            <div className="mt-2 text-xs text-slate-600">
+              These values are used for payroll calculation (Gross = Basic + HRA).
+            </div>
+          </div>
+
           <Button className="w-full" onClick={() => create.mutate()} disabled={create.isPending}>
             {create.isPending ? 'Creating…' : 'Create Employee'}
           </Button>

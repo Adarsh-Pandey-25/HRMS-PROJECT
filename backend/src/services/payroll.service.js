@@ -1,203 +1,242 @@
 const PDFDocument = require('pdfkit');
+const moment = require('moment-timezone');
 const { supabaseAdmin } = require('../config/supabase');
 const {
-  BadRequestError, NotFoundError, ConflictError,
+  BadRequestError, NotFoundError, ForbiddenError, ConflictError,
 } = require('../utils/errors');
-const { paginate, buildMeta } = require('../utils/helpers');
 const { uploadPayslip, getSignedUrl, STORAGE_BUCKETS } = require('./storage.service');
-const { payslipEmail } = require('./email.service');
+const attendanceService = require('./attendance.service');
 const logger = require('../utils/logger');
+const { TIMEZONE } = require('../utils/constants');
+const settingsService = require('./settings.service');
+const notificationService = require('./notification.service');
 
-const calculatePayroll = (employee, attendanceSummary, overrides = {}) => {
+const WORKING_DAYS_PER_MONTH = 23;
+const MONTH_STATUS = { PENDING: 'PENDING', COMPLETED: 'COMPLETED' };
+const PAYSLIP_STATUS = { DRAFT: 'DRAFT', PUBLISHED: 'PUBLISHED' };
+const COMPANY_NAME = process.env.COMPANY_NAME || 'HRMS Company Pvt Ltd';
+
+// Contract v1 math engine (fixed rules)
+const calculateContractPayslip = async (employee, attendanceSummary) => {
+  const workingDays = Math.max(1, await settingsService.getNumber('payroll_working_days', WORKING_DAYS_PER_MONTH));
+  const pfRate = Math.max(0, await settingsService.getNumber('payroll_pf_rate', 0.12));
+  const ptAmount = Math.max(0, await settingsService.getNumber('payroll_professional_tax', 200));
+
   const salary = employee.salary_details || {};
-  const basic = parseFloat(overrides.basic_salary ?? salary.basic ?? 0);
-  const hra = parseFloat(overrides.hra ?? salary.hra ?? basic * 0.4);
-  const specialAllowance = parseFloat(overrides.special_allowance ?? salary.special_allowance ?? 0);
-  const transportAllowance = parseFloat(overrides.transport_allowance ?? salary.transport_allowance ?? 0);
-  const medicalAllowance = parseFloat(overrides.medical_allowance ?? salary.medical_allowance ?? 0);
-  const bonus = parseFloat(overrides.bonus ?? 0);
+  const basic = round2(Number(salary.basic || 0));
+  const hra = round2(Number(salary.hra || 0));
+  const gross = round2(basic + hra);
 
-  const overtimeRate = (basic / 30 / 9) * 1.5;
-  const overtimePay = parseFloat(overrides.overtime_pay ?? (attendanceSummary?.overtimeHours || 0) * overtimeRate);
+  const presentDays = (attendanceSummary?.present || 0) + (attendanceSummary?.halfDay || 0) * 0.5;
+  const unpaid_leave_days = round2(Math.max(0, workingDays - presentDays));
 
-  const grossSalary = basic + hra + specialAllowance + transportAllowance + medicalAllowance + bonus + overtimePay;
+  const lop_deduction = round2((gross / workingDays) * unpaid_leave_days);
+  const pf_deduction = round2(basic * pfRate);
+  const professional_tax = round2(ptAmount);
 
-  const pfDeduction = Math.min(basic * 0.12, 1800);
-  const esiDeduction = grossSalary <= 21000 ? grossSalary * 0.0075 : 0;
-  const professionalTax = grossSalary > 15000 ? 200 : 0;
-  const tds = parseFloat(overrides.tds ?? (grossSalary > 50000 ? grossSalary * 0.1 : 0));
+  // Optional: Admin-configurable extra payroll components (earnings/deductions)
+  // This lets Admin add new %/fixed items without backend changes.
+  const vars = {
+    basic_salary: basic,
+    hra,
+    gross_salary: gross,
+    unpaid_leave_days,
+    working_days: workingDays,
+    lop_deduction,
+    pf_deduction,
+    professional_tax,
+  };
 
-  const absentDays = Math.max(0, 22 - (attendanceSummary?.present || 0) - (attendanceSummary?.halfDay || 0) * 0.5);
-  const leaveDeduction = parseFloat(overrides.leave_deduction ?? (basic / 30) * absentDays);
+  const earnings = [
+    { name: 'Basic', amount: basic },
+    { name: 'HRA', amount: hra },
+  ];
+  const deductions = [
+    { name: 'LOP', amount: lop_deduction },
+    { name: 'PF', amount: pf_deduction },
+    { name: 'Professional Tax', amount: professional_tax },
+  ];
 
-  const otherDeductions = parseFloat(overrides.other_deductions ?? 0);
-  const totalDeductions = pfDeduction + esiDeduction + tds + professionalTax + leaveDeduction + otherDeductions;
-  const netSalary = Math.max(0, grossSalary - totalDeductions);
+  const { data: components, error: compErr } = await supabaseAdmin
+    .from('payroll_components')
+    .select('*')
+    .eq('is_active', true)
+    .order('display_order', { ascending: true });
+  if (compErr) throw new BadRequestError(compErr.message);
+
+  for (const c of components || []) {
+    // Avoid duplicating the base items if Admin creates them by mistake.
+    const name = String(c.name || '').trim().toLowerCase();
+    if (['basic', 'hra', 'lop', 'pf', 'professional tax', 'pt'].includes(name)) continue;
+
+    const amount = computeRule(vars, c);
+    if (c.type === 'EARNING') {
+      earnings.push({ name: c.name, amount });
+      vars.gross_salary = round2(Number(vars.gross_salary || 0) + amount);
+    } else {
+      deductions.push({ name: c.name, amount });
+    }
+    if (c.output_field) vars[String(c.output_field)] = amount;
+  }
+
+  const gross_final = round2(Number(vars.gross_salary || 0));
+  const total_deductions = round2(deductions.reduce((s, d) => s + Number(d.amount || 0), 0));
+  const net_pay = round2(Math.max(0, gross_final - total_deductions));
+
+  const breakdown_json = {
+    earnings,
+    deductions,
+    totals: { gross_salary: gross_final, total_deductions, net_pay },
+    config: { working_days: workingDays, pf_rate: pfRate, professional_tax: ptAmount },
+  };
 
   return {
-    basic_salary: Math.round(basic * 100) / 100,
-    hra: Math.round(hra * 100) / 100,
-    special_allowance: Math.round(specialAllowance * 100) / 100,
-    transport_allowance: Math.round(transportAllowance * 100) / 100,
-    medical_allowance: Math.round(medicalAllowance * 100) / 100,
-    bonus: Math.round(bonus * 100) / 100,
-    overtime_pay: Math.round(overtimePay * 100) / 100,
-    gross_salary: Math.round(grossSalary * 100) / 100,
-    pf_deduction: Math.round(pfDeduction * 100) / 100,
-    esi_deduction: Math.round(esiDeduction * 100) / 100,
-    tds: Math.round(tds * 100) / 100,
-    professional_tax: Math.round(professionalTax * 100) / 100,
-    leave_deduction: Math.round(leaveDeduction * 100) / 100,
-    other_deductions: Math.round(otherDeductions * 100) / 100,
-    total_deductions: Math.round(totalDeductions * 100) / 100,
-    net_salary: Math.round(netSalary * 100) / 100,
+    basic_salary: basic,
+    hra,
+    gross_salary: gross_final,
+    unpaid_leave_days,
+    lop_deduction,
+    pf_deduction,
+    professional_tax,
+    net_salary: net_pay,
+    breakdown_json,
   };
 };
 
-const generatePayslipPdf = (employee, payroll) => new Promise((resolve, reject) => {
-  const doc = new PDFDocument({ margin: 50 });
-  const chunks = [];
-  doc.on('data', (chunk) => chunks.push(chunk));
-  doc.on('end', () => resolve(Buffer.concat(chunks)));
-  doc.on('error', reject);
+const computeRule = (vars, component) => {
+  if (component.is_fixed) return round2(component.fixed_amount || 0);
 
-  doc.fontSize(18).text('PAYSLIP', { align: 'center' });
-  doc.moveDown();
-  doc.fontSize(12);
-  doc.text(`Employee: ${employee.first_name} ${employee.last_name}`);
-  doc.text(`Code: ${employee.employee_code}`);
-  doc.text(`Period: ${payroll.month}/${payroll.year}`);
-  doc.moveDown();
-  doc.text('Earnings:');
-  doc.text(`  Basic Salary: ₹${payroll.basic_salary}`);
-  doc.text(`  HRA: ₹${payroll.hra}`);
-  doc.text(`  Special Allowance: ₹${payroll.special_allowance}`);
-  doc.text(`  Transport: ₹${payroll.transport_allowance}`);
-  doc.text(`  Medical: ₹${payroll.medical_allowance}`);
-  doc.text(`  Bonus: ₹${payroll.bonus}`);
-  doc.text(`  Overtime: ₹${payroll.overtime_pay}`);
-  doc.text(`  Gross: ₹${payroll.gross_salary}`);
-  doc.moveDown();
-  doc.text('Deductions:');
-  doc.text(`  PF: ₹${payroll.pf_deduction}`);
-  doc.text(`  ESI: ₹${payroll.esi_deduction}`);
-  doc.text(`  TDS: ₹${payroll.tds}`);
-  doc.text(`  Professional Tax: ₹${payroll.professional_tax}`);
-  doc.text(`  Leave Deduction: ₹${payroll.leave_deduction}`);
-  doc.text(`  Other: ₹${payroll.other_deductions}`);
-  doc.text(`  Total Deductions: ₹${payroll.total_deductions}`);
-  doc.moveDown();
-  doc.fontSize(14).text(`Net Salary: ₹${payroll.net_salary}`, { underline: true });
-  doc.end();
+  const target = String(component.target_field || '');
+  const op = String(component.operator || '');
+  const operand = component.operand_field ? Number(vars[String(component.operand_field)] || 0) : Number(component.operand_value || 0);
+  const base = Number(vars[target] || 0);
+
+  if (op === '%') return round2(base * (operand / 100));
+  if (op === '*') return round2(base * operand);
+  if (op === '+') return round2(base + operand);
+  if (op === '-') return round2(base - operand);
+  if (op === '/') return operand === 0 ? 0 : round2(base / operand);
+
+  return round2(base);
+};
+
+/**
+ * Dynamic payroll engine
+ * - Rules are managed by Admin in Settings → Salary Structure (payroll_components table)
+ * - Generated breakdown is persisted in payroll.breakdown_json for frontend + PDF rendering
+ */
+const calculateDynamicPayslip = async (employee, attendanceSummary) => {
+  const salary = employee.salary_details || {};
+
+  const presentDays = (attendanceSummary?.present || 0) + (attendanceSummary?.halfDay || 0) * 0.5;
+  const unpaid_leave_days = Math.max(0, WORKING_DAYS_PER_MONTH - presentDays);
+
+  const vars = {
+    // base variables from employee profile
+    employee_basic: Number(salary.basic || 0),
+    employee_hra: Number(salary.hra || 0),
+    unpaid_leave_days,
+    working_days: WORKING_DAYS_PER_MONTH,
+  };
+
+  const { data: components, error } = await supabaseAdmin
+    .from('payroll_components')
+    .select('*')
+    .eq('is_active', true)
+    .order('display_order', { ascending: true });
+  if (error) throw new BadRequestError(error.message);
+
+  if (!components || !components.length) {
+    throw new BadRequestError('No payroll components configured. Please add salary structure in Settings.');
+  }
+
+  const earnings = [];
+  const deductions = [];
+
+  // Admin defines everything. We compute in display_order sequence and allow chaining via output_field.
+  for (const c of components || []) {
+    const amount = computeRule(vars, c);
+    const row = { name: c.name, amount, display_order: c.display_order, output_field: c.output_field || null };
+
+    if (c.type === 'EARNING') earnings.push(row);
+    else deductions.push(row);
+
+    // Allow explicit chaining: store output in vars for downstream rules
+    if (c.output_field) {
+      vars[String(c.output_field)] = amount;
+    }
+
+    // Also maintain gross salary automatically from earnings
+    if (c.type === 'EARNING') {
+      vars.gross_salary = Number(vars.gross_salary || 0) + amount;
+    }
+  }
+
+  vars.gross_salary = Number(vars.gross_salary || 0);
+
+  const gross_salary = round2(vars.gross_salary);
+  const total_deductions = round2(deductions.reduce((s, d) => s + Number(d.amount || 0), 0));
+  const net_pay = round2(Math.max(0, gross_salary - total_deductions));
+
+  const breakdown_json = {
+    earnings: earnings.map((e) => ({ name: e.name, amount: e.amount })),
+    deductions: deductions.map((d) => ({ name: d.name, amount: d.amount })),
+    totals: { gross_salary, total_deductions, net_pay },
+  };
+
+  return {
+    basic_salary: round2(vars.basic_salary ?? vars.employee_basic ?? 0),
+    hra: round2(vars.hra ?? vars.employee_hra ?? 0),
+    gross_salary,
+    unpaid_leave_days: round2(unpaid_leave_days),
+    total_deductions,
+    net_salary: net_pay,
+    breakdown_json,
+  };
+};
+
+const round2 = (n) => Math.round(Number(n) * 100) / 100;
+
+const mapPayslipRow = (row) => ({
+  id: row.id,
+  payroll_month_id: row.payroll_month_id,
+  user_id: row.employee_id,
+  employee_id: row.employee_id,
+  month: row.month,
+  year: row.year,
+  basic_salary: row.basic_salary,
+  hra: row.hra,
+  gross_salary: row.gross_salary,
+  unpaid_leave_days: row.unpaid_leave_days,
+  lop_deduction: row.lop_deduction,
+  pf_deduction: row.pf_deduction,
+  pt_deduction: row.professional_tax ?? row.pt_deduction,
+  net_pay: row.net_salary,
+  net_salary: row.net_salary,
+  status: row.payslip_status || PAYSLIP_STATUS.DRAFT,
+  payslip_url: row.payslip_url,
+  breakdown_json: row.breakdown_json,
+  payment_status: row.payment_status,
+  employee: row.employee,
+  first_name: row.employee?.first_name,
+  last_name: row.employee?.last_name,
+  employee_code: row.employee?.employee_code,
 });
 
-const generatePayroll = async (month, year, employeeIds = null) => {
-  let employeeQuery = supabaseAdmin.from('employees').select('*').eq('is_active', true);
-  if (employeeIds?.length) employeeQuery = employeeQuery.in('id', employeeIds);
+const initializeMonth = async (month, year, createdBy) => {
+  const { data: existing } = await supabaseAdmin
+    .from('payroll_months')
+    .select('*')
+    .eq('month', month)
+    .eq('year', year)
+    .maybeSingle();
 
-  const { data: employees, error } = await employeeQuery;
-  if (error) throw new BadRequestError(error.message);
-
-  const results = [];
-  for (const employee of employees) {
-    const { data: existing } = await supabaseAdmin
-      .from('payroll')
-      .select('id')
-      .eq('employee_id', employee.id)
-      .eq('month', month)
-      .eq('year', year)
-      .single();
-
-    if (existing) {
-      results.push({ employee_id: employee.id, status: 'skipped', reason: 'already exists' });
-      continue;
-    }
-
-    const attendanceService = require('./attendance.service');
-    const { summary } = await attendanceService.getMonthlySummary(employee.id, month, year);
-    const payrollData = calculatePayroll(employee, summary);
-
-    const { data: payroll, error: insertError } = await supabaseAdmin
-      .from('payroll')
-      .insert({
-        employee_id: employee.id,
-        month,
-        year,
-        ...payrollData,
-        payment_status: 'pending',
-      })
-      .select()
-      .single();
-
-    if (insertError) {
-      results.push({ employee_id: employee.id, status: 'failed', reason: insertError.message });
-      continue;
-    }
-
-    try {
-      const pdfBuffer = await generatePayslipPdf(employee, payroll);
-      const { path } = await uploadPayslip(pdfBuffer, employee.id, month, year);
-      await supabaseAdmin.from('payroll').update({ payslip_url: path }).eq('id', payroll.id);
-      payslipEmail(employee, payroll).catch(() => {});
-    } catch (pdfErr) {
-      logger.warn('Payslip PDF generation failed', { employeeId: employee.id, error: pdfErr.message });
-    }
-
-    results.push({ employee_id: employee.id, status: 'generated', payroll_id: payroll.id });
-  }
-
-  return results;
-};
-
-const getPayslips = async (filters, query) => {
-  const { page, limit, offset } = paginate(query);
-  let dbQuery = supabaseAdmin
-    .from('payroll')
-    .select('*, employee:employee_id(id, first_name, last_name, employee_code)', { count: 'exact' })
-    .order('year', { ascending: false })
-    .order('month', { ascending: false })
-    .range(offset, offset + limit - 1);
-
-  if (filters.employee_id) dbQuery = dbQuery.eq('employee_id', filters.employee_id);
-  if (filters.month) dbQuery = dbQuery.eq('month', filters.month);
-  if (filters.year) dbQuery = dbQuery.eq('year', filters.year);
-
-  const { data, error, count } = await dbQuery;
-  if (error) throw new BadRequestError(error.message);
-  return { data, meta: buildMeta(page, limit, count) };
-};
-
-const getPayslipDownload = async (payslipId, employeeId = null) => {
-  let query = supabaseAdmin.from('payroll').select('*, employee:employee_id(*)').eq('id', payslipId);
-  if (employeeId) query = query.eq('employee_id', employeeId);
-
-  const { data: payroll } = await query.single();
-  if (!payroll) throw new NotFoundError('Payslip not found');
-
-  if (payroll.payslip_url) {
-    const url = await getSignedUrl(STORAGE_BUCKETS.payslips, payroll.payslip_url);
-    return { url, payroll };
-  }
-
-  const pdfBuffer = await generatePayslipPdf(payroll.employee, payroll);
-  return { buffer: pdfBuffer, payroll, contentType: 'application/pdf' };
-};
-
-const updatePayroll = async (payrollId, updates) => {
-  const { data: existing } = await supabaseAdmin.from('payroll').select('*').eq('id', payrollId).single();
-  if (!existing) throw new NotFoundError('Payroll record not found');
-
-  const merged = { ...existing, ...updates };
-  const recalculated = calculatePayroll(
-    { salary_details: {} },
-    {},
-    merged
-  );
+  // Contract: treat initialize as idempotent
+  if (existing) return existing;
 
   const { data, error } = await supabaseAdmin
-    .from('payroll')
-    .update(recalculated)
-    .eq('id', payrollId)
+    .from('payroll_months')
+    .insert({ month, year, status: MONTH_STATUS.PENDING, created_by: createdBy })
     .select()
     .single();
 
@@ -205,36 +244,286 @@ const updatePayroll = async (payrollId, updates) => {
   return data;
 };
 
-const getMonthlyReport = async (month, year) => {
+const getMonthStatus = async (month, year) => {
   const { data, error } = await supabaseAdmin
-    .from('payroll')
-    .select('*, employee:employee_id(first_name, last_name, employee_code, department)')
+    .from('payroll_months')
+    .select('*')
     .eq('month', month)
-    .eq('year', year);
+    .eq('year', year)
+    .maybeSingle();
+
+  if (error) throw new BadRequestError(error.message);
+  return data || null;
+};
+
+const generateDraftPayslip = async (payrollMonthId, userId) => {
+  const { data: payrollMonth } = await supabaseAdmin
+    .from('payroll_months')
+    .select('*')
+    .eq('id', payrollMonthId)
+    .single();
+
+  if (!payrollMonth) throw new NotFoundError('Payroll month not found');
+  if (payrollMonth.status === MONTH_STATUS.COMPLETED) {
+    throw new BadRequestError('Payroll month is already closed');
+  }
+
+  const { data: employee } = await supabaseAdmin
+    .from('employees')
+    .select('*')
+    .eq('id', userId)
+    .eq('is_active', true)
+    .single();
+
+  if (!employee) throw new NotFoundError('Employee not found');
+
+  const { data: existing } = await supabaseAdmin
+    .from('payroll')
+    .select('id, payslip_status')
+    .eq('employee_id', userId)
+    .eq('month', payrollMonth.month)
+    .eq('year', payrollMonth.year)
+    .maybeSingle();
+
+  // If a draft already exists, recalculate and update it (so changes in Settings/components apply).
+  if (existing?.id) {
+    const existingStatus = String(existing.payslip_status || '').toUpperCase();
+    if (existingStatus === PAYSLIP_STATUS.PUBLISHED) {
+      throw new ConflictError('Payslip already published for this employee and month');
+    }
+
+    const { summary } = await attendanceService.getMonthlySummary(userId, payrollMonth.month, payrollMonth.year);
+    const calc = await calculateContractPayslip(employee, summary);
+
+    const { data: updated, error: updErr } = await supabaseAdmin
+      .from('payroll')
+      .update({
+        ...calc,
+        payslip_status: PAYSLIP_STATUS.DRAFT,
+        payment_status: 'pending',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', existing.id)
+      .select('*, employee:employee_id(id, first_name, last_name, employee_code, email)')
+      .single();
+    if (updErr) throw new BadRequestError(updErr.message);
+    return mapPayslipRow(updated);
+  }
+
+  const { summary } = await attendanceService.getMonthlySummary(userId, payrollMonth.month, payrollMonth.year);
+  const calc = await calculateContractPayslip(employee, summary);
+
+  const { data: payslip, error } = await supabaseAdmin
+    .from('payroll')
+    .insert({
+      employee_id: userId,
+      payroll_month_id: payrollMonthId,
+      month: payrollMonth.month,
+      year: payrollMonth.year,
+      ...calc,
+      payslip_status: PAYSLIP_STATUS.DRAFT,
+      payment_status: 'pending',
+    })
+    .select('*, employee:employee_id(id, first_name, last_name, employee_code, email)')
+    .single();
+
+  if (error) throw new BadRequestError(error.message);
+  return mapPayslipRow(payslip);
+};
+
+const generateAllDraftPayslips = async (payrollMonthId) => {
+  const { data: employees, error } = await supabaseAdmin
+    .from('employees')
+    .select('id')
+    .eq('is_active', true);
 
   if (error) throw new BadRequestError(error.message);
 
-  const report = {
-    totalEmployees: data.length,
-    totalGross: data.reduce((s, p) => s + parseFloat(p.gross_salary), 0),
-    totalDeductions: data.reduce((s, p) => s + parseFloat(p.total_deductions), 0),
-    totalNet: data.reduce((s, p) => s + parseFloat(p.net_salary), 0),
-    byStatus: {
-      pending: data.filter((p) => p.payment_status === 'pending').length,
-      processed: data.filter((p) => p.payment_status === 'processed').length,
-      paid: data.filter((p) => p.payment_status === 'paid').length,
-    },
-    records: data,
-  };
+  const results = [];
+  for (const emp of employees || []) {
+    try {
+      const payslip = await generateDraftPayslip(payrollMonthId, emp.id);
+      results.push({ user_id: emp.id, status: 'generated', payslip });
+    } catch (err) {
+      results.push({ user_id: emp.id, status: 'skipped', reason: err.message });
+    }
+  }
+  return results;
+};
 
-  return report;
+const generatePayslipPdf = (employee, payslip, payrollMonth) => new Promise((resolve, reject) => {
+  const doc = new PDFDocument({ margin: 50 });
+  const chunks = [];
+  doc.on('data', (chunk) => chunks.push(chunk));
+  doc.on('end', () => resolve(Buffer.concat(chunks)));
+  doc.on('error', reject);
+
+  const fmt = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  doc.fontSize(18).text(COMPANY_NAME, { align: 'center' });
+  doc.fontSize(14).text('PAYSLIP', { align: 'center' });
+  doc.moveDown();
+  doc.fontSize(12);
+  doc.text(`Employee: ${employee.first_name} ${employee.last_name}`);
+  doc.text(`Employee Code: ${employee.employee_code || '—'}`);
+  doc.text(`Period: ${moment.tz({ year: payrollMonth.year, month: payrollMonth.month - 1 }, TIMEZONE).format('MMMM YYYY')}`);
+  doc.moveDown();
+  const breakdown = payslip.breakdown_json || {};
+  const earnings = breakdown.earnings || [];
+  const deductions = breakdown.deductions || [];
+  const totals = breakdown.totals || {};
+
+  doc.text('Earnings', { underline: true });
+  for (const e of earnings) {
+    doc.text(`  ${e.name}: ${fmt(e.amount)}`);
+  }
+  doc.text(`  Gross Pay: ${fmt(totals.gross_salary ?? payslip.gross_salary)}`);
+  doc.moveDown();
+  doc.text('Deductions', { underline: true });
+  for (const d of deductions) {
+    doc.text(`  ${d.name}: ${fmt(d.amount)}`);
+  }
+  doc.text(`  Total Deductions: ${fmt(totals.total_deductions ?? payslip.total_deductions)}`);
+  doc.moveDown();
+  doc.fontSize(14).text(`Net Pay: ${fmt(totals.net_pay ?? payslip.net_salary)}`, { underline: true });
+  doc.end();
+});
+
+const maybeCloseMonth = async (payrollMonthId) => {
+  const { data: payrollMonth } = await supabaseAdmin
+    .from('payroll_months')
+    .select('*')
+    .eq('id', payrollMonthId)
+    .single();
+
+  if (!payrollMonth) return;
+
+  const { count: employeeCount } = await supabaseAdmin
+    .from('employees')
+    .select('id', { count: 'exact', head: true })
+    .eq('is_active', true);
+
+  const { count: publishedCount } = await supabaseAdmin
+    .from('payroll')
+    .select('id', { count: 'exact', head: true })
+    .eq('payroll_month_id', payrollMonthId)
+    .eq('payslip_status', PAYSLIP_STATUS.PUBLISHED);
+
+  if (employeeCount && publishedCount >= employeeCount) {
+    await supabaseAdmin
+      .from('payroll_months')
+      .update({ status: MONTH_STATUS.COMPLETED })
+      .eq('id', payrollMonthId);
+  }
+};
+
+const publishPayslip = async (payslipId, publisherId) => {
+  const { data: payslip } = await supabaseAdmin
+    .from('payroll')
+    .select('*, employee:employee_id(*)')
+    .eq('id', payslipId)
+    .single();
+
+  if (!payslip) throw new NotFoundError('Payslip not found');
+  if (payslip.payslip_status === PAYSLIP_STATUS.PUBLISHED) {
+    throw new BadRequestError('Payslip is already published');
+  }
+
+  const { data: payrollMonth } = await supabaseAdmin
+    .from('payroll_months')
+    .select('*')
+    .eq('id', payslip.payroll_month_id)
+    .single();
+
+  if (!payrollMonth) throw new BadRequestError('Linked payroll month not found');
+
+  const pdfBuffer = await generatePayslipPdf(payslip.employee, payslip, payrollMonth);
+  const { path } = await uploadPayslip(pdfBuffer, payslip.employee_id, payslip.month, payslip.year);
+  const signedUrl = await getSignedUrl(STORAGE_BUCKETS.payslips, path, 60 * 60 * 24 * 365);
+
+  const { data: updated, error } = await supabaseAdmin
+    .from('payroll')
+    .update({
+      payslip_status: PAYSLIP_STATUS.PUBLISHED,
+      payslip_url: signedUrl,
+      payment_status: 'processed',
+    })
+    .eq('id', payslipId)
+    .select('*, employee:employee_id(id, first_name, last_name, employee_code)')
+    .single();
+
+  if (error) throw new BadRequestError(error.message);
+
+  await maybeCloseMonth(payslip.payroll_month_id);
+  logger.info('Payslip published', { payslipId, publisherId });
+
+  // Notify employee
+  await notificationService.createNotification({
+    user_id: payslip.employee_id,
+    type: 'PAYROLL',
+    title: 'Payslip published',
+    message: `Your payslip for ${moment.tz({ year: payslip.year, month: payslip.month - 1 }, TIMEZONE).format('MMMM YYYY')} is now available.`,
+    link: '/payroll',
+    meta: { payslip_id: payslipId, month: payslip.month, year: payslip.year },
+  });
+
+  return {
+    id: updated.id,
+    status: PAYSLIP_STATUS.PUBLISHED,
+    payslip_url: updated.payslip_url,
+    ...mapPayslipRow(updated),
+  };
+};
+
+const listPayslips = async ({ month, year, user, role }) => {
+  let query = supabaseAdmin
+    .from('payroll')
+    .select('*, employee:employee_id(id, first_name, last_name, employee_code, email)')
+    .eq('month', month)
+    .eq('year', year)
+    .order('created_at', { ascending: false });
+
+  if (role === 'employee') {
+    query = query.eq('employee_id', user.id).eq('payslip_status', PAYSLIP_STATUS.PUBLISHED);
+  }
+
+  const { data, error } = await query;
+  if (error) throw new BadRequestError(error.message);
+  return (data || []).map(mapPayslipRow);
+};
+
+const downloadPayslip = async (payslipId, user) => {
+  const { data: payslip } = await supabaseAdmin
+    .from('payroll')
+    .select('*, employee:employee_id(id, first_name, last_name)')
+    .eq('id', payslipId)
+    .single();
+
+  if (!payslip) throw new NotFoundError('Payslip not found');
+
+  const isOwn = payslip.employee_id === user.id;
+  const isHrAdmin = ['hr', 'admin'].includes(user.role);
+  if (!isOwn && !isHrAdmin) throw new ForbiddenError('Not authorized');
+
+  // Contract: draft download forbidden for everyone
+  if (payslip.payslip_status === PAYSLIP_STATUS.DRAFT) {
+    throw new ForbiddenError('Payslip is not published yet');
+  }
+
+  if (!payslip.payslip_url) throw new NotFoundError('Payslip PDF not available');
+
+  return { redirectUrl: payslip.payslip_url, payslip: mapPayslipRow(payslip) };
 };
 
 module.exports = {
-  generatePayroll,
-  getPayslips,
-  getPayslipDownload,
-  updatePayroll,
-  getMonthlyReport,
-  calculatePayroll,
+  calculateDynamicPayslip,
+  calculateContractPayslip,
+  initializeMonth,
+  getMonthStatus,
+  generateDraftPayslip,
+  generateAllDraftPayslips,
+  publishPayslip,
+  listPayslips,
+  downloadPayslip,
+  mapPayslipRow,
 };

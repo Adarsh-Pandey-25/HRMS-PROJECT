@@ -10,6 +10,7 @@ const {
 } = require('../utils/helpers');
 const { autoCheckoutEmail } = require('./email.service');
 const logger = require('../utils/logger');
+const settingsService = require('./settings.service');
 
 const getActiveCheckIn = async (employeeId) => {
   const { data } = await supabaseAdmin
@@ -85,7 +86,13 @@ const checkOut = async (employeeId, { method, clientIp, break_minutes = 0 }) => 
   const checkOutTime = nowIST().toISOString();
   const totalHours = calculateWorkingHours(active.check_in_time, checkOutTime) - (break_minutes / 60);
   const overtimeHours = Math.max(0, totalHours - WORK_HOURS);
-  const status = determineAttendanceStatus(active.check_in_time, totalHours);
+  let status = determineAttendanceStatus(active.check_in_time, totalHours);
+
+  // Payroll rule (admin toggle): if checkout before goal hours, treat as half-day (not early_departure)
+  const halfDayBeforeGoal = await settingsService.getBoolean('payroll_halfday_before_goal_enabled', false);
+  if (halfDayBeforeGoal && totalHours < WORK_HOURS && totalHours > 0) {
+    status = 'half_day';
+  }
 
   const { data, error } = await supabaseAdmin
     .from('attendance')

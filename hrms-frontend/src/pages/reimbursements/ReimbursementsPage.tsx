@@ -6,6 +6,7 @@ import { authStore } from '../../store/auth'
 import { isHROrAdmin, isManagerOrAbove } from '../../lib/permissions'
 import { formatCurrency, formatDate, formatStatus } from '../../lib/format'
 import { getErrorMessage } from '../../lib/errors'
+import { downloadAuthenticatedFile } from '../../lib/download'
 import { Badge, Button, Card, CardBody, DataTable, Field, Input, LoadingState, PageHeader, Select, Tabs, Textarea } from '../../components/ui'
 import type { Reimbursement } from '../../types'
 
@@ -50,7 +51,7 @@ export default function ReimbursementsPage() {
       fd.append('description', form.description)
       fd.append('expense_date', form.expenseDate)
       if (form.receipt) fd.append('receipt', form.receipt)
-      return (await api.post('/reimbursements/submit', fd, { headers: { 'Content-Type': 'multipart/form-data' } })).data
+      return (await api.post('/reimbursements/submit', fd)).data
     },
     onSuccess: () => {
       toast.success('Reimbursement submitted')
@@ -121,6 +122,22 @@ export default function ReimbursementsPage() {
                 { key: 'amount', header: 'Amount', render: (r) => formatCurrency(r.amount) },
                 { key: 'date', header: 'Date', render: (r) => formatDate(r.expenseDate) },
                 { key: 'status', header: 'Status', render: (r) => <Badge status={r.status}>{formatStatus(r.status)}</Badge> },
+                {
+                  key: 'receipt',
+                  header: 'Receipt',
+                  render: (r) =>
+                    r.receiptUrl ? (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => downloadAuthenticatedFile(`/reimbursements/${r.id}/receipt`, `receipt-${r.id}`)}
+                      >
+                        View
+                      </Button>
+                    ) : (
+                      '—'
+                    ),
+                },
                 {
                   key: 'actions',
                   header: 'Actions',

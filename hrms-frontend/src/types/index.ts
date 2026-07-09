@@ -56,12 +56,53 @@ export type Reimbursement = {
 
 export type Payslip = {
   id: string
+  payrollMonthId?: string
+  userId?: string
+  employeeId?: string
   month: number
   year: number
-  grossSalary: number
-  netSalary: number
-  status: string
-  generatedAt?: string
+  basicSalary?: number
+  hra?: number
+  grossSalary?: number
+  unpaidLeaveDays?: number
+  lopDeduction?: number
+  pfDeduction?: number
+  ptDeduction?: number
+  netPay?: number
+  netSalary?: number
+  status?: string
+  payslipUrl?: string
+  breakdownJson?: {
+    earnings?: Array<{ name: string; amount: number }>
+    deductions?: Array<{ name: string; amount: number }>
+    totals?: { grossSalary?: number; totalDeductions?: number; netPay?: number }
+  }
+  employee?: { id?: string; firstName?: string; lastName?: string; employeeCode?: string }
+  firstName?: string
+  lastName?: string
+  employeeCode?: string
+}
+
+export type PayrollComponent = {
+  id: string
+  type: 'EARNING' | 'DEDUCTION'
+  name: string
+  isFixed: boolean
+  fixedAmount?: number | null
+  targetField?: string | null
+  operator?: string | null
+  operandField?: string | null
+  operandValue?: number | null
+  outputField?: string | null
+  displayOrder: number
+  isActive: boolean
+}
+
+export type PayrollMonth = {
+  id: string
+  month: number
+  year: number
+  status: 'PENDING' | 'COMPLETED'
 }
 
 export type Holiday = {
@@ -109,6 +150,10 @@ export type Document = {
   documentName: string
   uploadedAt?: string
   expiresAt?: string
+  isVerified?: boolean
+  verifiedAt?: string
+  employee?: { id?: string; firstName?: string; lastName?: string; employeeCode?: string; email?: string }
+  verifier?: { id?: string; firstName?: string; lastName?: string }
 }
 
 export type Setting = {
