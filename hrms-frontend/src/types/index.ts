@@ -144,6 +144,57 @@ export type EmployeeTraining = {
   training?: Training
 }
 
+export type Lesson = {
+  id: string
+  title: string
+  chapterId?: string
+  order: number
+  type: 'VIDEO_UPLOAD' | 'EXTERNAL_LINK'
+  videoUrl?: string
+  externalLink?: string
+  videoDuration?: number
+}
+
+export type CourseChapter = {
+  id: string
+  title: string
+  order: number
+  courseId?: string
+  lessons?: Lesson[]
+}
+
+export type LessonProgress = {
+  id: string
+  lessonId: string
+  enrollmentId?: string
+  watchedSeconds: number
+  isCompleted: boolean
+}
+
+export type CourseEnrollment = {
+  id: string
+  status: string
+  enrolledAt?: string
+  completedAt?: string
+  progressPercent?: number
+  lessonProgress?: LessonProgress[]
+}
+
+export type Course = {
+  id: string
+  title: string
+  description?: string
+  thumbnailUrl?: string
+  thumbnailKey?: string
+  targetDepartments: string[]
+  isActive?: boolean
+  chapters?: CourseChapter[]
+  enrollment?: CourseEnrollment | null
+  totalLessons?: number
+  progressPercent?: number
+  createdAt?: string
+}
+
 export type Document = {
   id: string
   documentType: string

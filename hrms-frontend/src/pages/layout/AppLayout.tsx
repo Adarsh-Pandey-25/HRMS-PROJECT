@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { Bell, Menu, X } from 'lucide-react'
 import { authStore } from '../../store/auth'
 import { getNavForRole } from '../../lib/permissions'
 import api from '../../lib/api'
 import { listNotifications, markAllRead, markNotificationRead, unreadCount } from '../../lib/notifications.api'
+import { PageLoadingSkeleton } from '../../components/ui'
 
 export default function AppLayout() {
   const navigate = useNavigate()
@@ -185,7 +186,9 @@ export default function AppLayout() {
             </div>
           </header>
           <main className="flex-1 p-4 md:p-6">
-            <Outlet />
+            <Suspense fallback={<PageLoadingSkeleton />}>
+              <Outlet />
+            </Suspense>
           </main>
         </div>
       </div>

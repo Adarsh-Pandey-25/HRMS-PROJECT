@@ -132,6 +132,28 @@ const payrollListQueryRules = [
   // Contract: no scope param (keep endpoint strict to month/year only)
 ];
 
+const courseCreateRules = [
+  body('title').trim().notEmpty(),
+  body('description').optional().trim(),
+];
+
+const courseChapterRules = [
+  body('title').trim().notEmpty(),
+  body('order').isInt({ min: 1 }),
+];
+
+const courseLessonRules = [
+  body('title').trim().notEmpty(),
+  body('order').isInt({ min: 1 }),
+  body('type').isIn(['VIDEO_UPLOAD', 'EXTERNAL_LINK']),
+  body('externalLink').optional().trim(),
+  body('videoDuration').optional().isFloat({ min: 1 }),
+];
+
+const lessonProgressRules = [
+  body('watchedSeconds').isFloat({ min: 0 }),
+];
+
 const uuidParam = (name = 'id') => [param(name).isUUID()];
 
 const paginationQuery = [
@@ -150,6 +172,10 @@ module.exports = {
   leaveApplyRules,
   reimbursementRules,
   trainingCreateRules,
+  courseCreateRules,
+  courseChapterRules,
+  courseLessonRules,
+  lessonProgressRules,
   announcementRules,
   holidayRules,
   documentUploadRules,

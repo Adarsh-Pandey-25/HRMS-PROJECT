@@ -23,7 +23,16 @@ const uploadFile = async (bucket, file, folder = '') => {
   return { path: data.path, bucket };
 };
 
+const signedUrlCache = new Map();
+
 const getSignedUrl = async (bucket, path, expiresIn = 3600) => {
+  const key = `${bucket}:${path}`;
+  const cached = signedUrlCache.get(key);
+  const now = Date.now();
+  if (cached && cached.expiresAt > now + 60_000) {
+    return cached.url;
+  }
+
   const { data, error } = await supabaseAdmin.storage
     .from(bucket)
     .createSignedUrl(path, expiresIn);
@@ -31,6 +40,11 @@ const getSignedUrl = async (bucket, path, expiresIn = 3600) => {
   if (error) {
     throw new BadRequestError(`Failed to generate signed URL: ${error.message}`);
   }
+
+  signedUrlCache.set(key, {
+    url: data.signedUrl,
+    expiresAt: now + expiresIn * 1000,
+  });
 
   return data.signedUrl;
 };
@@ -50,6 +64,12 @@ const uploadReceipt = (file, employeeId) =>
 
 const uploadTrainingMaterial = (file) =>
   uploadFile(STORAGE_BUCKETS.trainingMaterials, file);
+
+const uploadCourseThumbnail = (file) =>
+  uploadFile(STORAGE_BUCKETS.trainingMaterials, file, 'courses/thumbnails');
+
+const uploadCourseVideo = (file, courseId) =>
+  uploadFile(STORAGE_BUCKETS.trainingMaterials, file, `courses/${courseId}/videos`);
 
 const uploadProfilePicture = (file, employeeId) =>
   uploadFile(STORAGE_BUCKETS.profilePictures, file, employeeId);
@@ -72,6 +92,8 @@ module.exports = {
   uploadDocument,
   uploadReceipt,
   uploadTrainingMaterial,
+  uploadCourseThumbnail,
+  uploadCourseVideo,
   uploadProfilePicture,
   uploadPayslip,
   STORAGE_BUCKETS,

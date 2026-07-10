@@ -225,8 +225,18 @@ const getMonthlySummary = async (employeeId, month, year) => {
   return { records: data, summary };
 };
 
+/** Next 4:00 AM IST boundary after check-in (daily auto-checkout cutoff). */
+const getAutoCheckoutDeadline = (checkInTime) => {
+  const checkIn = moment(checkInTime).tz(TIMEZONE);
+  let deadline = checkIn.clone().startOf('day').hour(4).minute(0).second(0).millisecond(0);
+  if (!checkIn.isBefore(deadline)) {
+    deadline.add(1, 'day');
+  }
+  return deadline;
+};
+
 const processAutoCheckout = async () => {
-  const checkoutTime = nowIST().hour(4).minute(0).second(0);
+  const now = nowIST();
 
   const { data: activeRecords, error } = await supabaseAdmin
     .from('attendance')
@@ -238,21 +248,33 @@ const processAutoCheckout = async () => {
     return { processed: 0 };
   }
 
+  const halfDayBeforeGoal = await settingsService.getBoolean('payroll_halfday_before_goal_enabled', false);
+
   let processed = 0;
   for (const record of activeRecords || []) {
-    const totalHours = calculateWorkingHours(record.check_in_time, checkoutTime.toISOString());
-    const status = determineAttendanceStatus(record.check_in_time, totalHours);
+    const deadline = getAutoCheckoutDeadline(record.check_in_time);
+    // Only checkout once the 4:00 AM cutoff for this session has passed
+    if (now.isBefore(deadline)) continue;
+
+    const checkoutIso = deadline.toISOString();
+    const totalHours = calculateWorkingHours(record.check_in_time, checkoutIso);
+    let status = determineAttendanceStatus(record.check_in_time, totalHours);
+
+    if (halfDayBeforeGoal && totalHours < WORK_HOURS && totalHours > 0) {
+      status = 'half_day';
+    }
 
     await supabaseAdmin
       .from('attendance')
       .update({
-        check_out_time: checkoutTime.toISOString(),
+        check_out_time: checkoutIso,
         check_out_method: record.check_in_method,
         total_hours: Math.round(totalHours * 100) / 100,
         overtime_hours: Math.max(0, Math.round((totalHours - WORK_HOURS) * 100) / 100),
         status,
         is_auto_checkout: true,
         remarks: 'auto_checkout',
+        updated_at: new Date().toISOString(),
       })
       .eq('id', record.id);
 
