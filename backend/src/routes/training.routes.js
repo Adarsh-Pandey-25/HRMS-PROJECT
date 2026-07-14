@@ -20,15 +20,28 @@ const router = express.Router();
 
 router.use(authenticate);
 
-// Course platform — register static paths before /:id legacy routes
+// ----- LMS (flat course → lessons) -----
 router.get('/departments', isManagerOrAbove, courseController.listDepartments);
 router.get('/progress-report', isManagerOrAbove, courseController.trainingProgressReport);
+
+router.get('/catalog', isEmployee, courseController.listCatalog);
+router.get('/enrollments', isHROrAdmin, courseController.listEnrollments);
+router.post('/enrollments', isHROrAdmin, courseController.createEnrollments);
 
 router.post('/courses', isManagerOrAbove, uploadThumbnail.single('thumbnail'), courseCreateRules, validate, courseController.createCourse);
 router.get('/courses/manage', isManagerOrAbove, courseController.listManageCourses);
 router.get('/courses/manage/:id', isManagerOrAbove, uuidParam(), validate, courseController.getManageCourse);
 router.put('/courses/:id', isManagerOrAbove, uuidParam(), uploadThumbnail.single('thumbnail'), validate, courseController.updateCourse);
 router.delete('/courses/:id', isManagerOrAbove, uuidParam(), validate, courseController.deleteCourse);
+router.post(
+  '/courses/:id/lessons',
+  isManagerOrAbove,
+  uuidParam(),
+  uploadVideo.single('video'),
+  courseLessonRules,
+  validate,
+  courseController.addLessonToCourse,
+);
 router.post('/courses/:id/chapters', isManagerOrAbove, uuidParam(), courseChapterRules, validate, courseController.addChapter);
 router.post('/courses/:id/enroll', isEmployee, uuidParam(), validate, courseController.enrollCourse);
 router.get('/courses', isEmployee, courseController.listEmployeeCourses);
@@ -37,7 +50,7 @@ router.post('/chapters/:id/lessons', isManagerOrAbove, uuidParam('id'), uploadVi
 router.post('/lessons/:id/progress', isEmployee, uuidParam(), lessonProgressRules, validate, courseController.updateProgress);
 router.get('/lessons/:id/video-url', isEmployee, uuidParam(), validate, courseController.getLessonVideoUrl);
 
-// Legacy training endpoints
+// ----- Legacy training endpoints -----
 router.post('/create', isHROrAdmin, upload.single('materials'), trainingCreateRules, validate, trainingController.create);
 router.get('/all-trainings', paginationQuery, validate, trainingController.allTrainings);
 router.get('/my-trainings', isEmployee, trainingController.myTrainings);

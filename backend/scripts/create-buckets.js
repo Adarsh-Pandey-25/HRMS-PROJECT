@@ -6,6 +6,7 @@ const BUCKET_LIMITS = {
   documents: 10 * MB,
   receipts: 10 * MB,
   'training-materials': 50 * MB, // Supabase Free max; set TRAINING_VIDEO_MAX_MB + upgrade Pro for larger
+  'course-videos': 50 * MB,
   'profile-pictures': 5 * MB,
   payslips: 10 * MB,
 };

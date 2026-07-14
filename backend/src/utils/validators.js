@@ -144,14 +144,25 @@ const courseChapterRules = [
 
 const courseLessonRules = [
   body('title').trim().notEmpty(),
-  body('order').isInt({ min: 1 }),
+  body('order').optional().isInt({ min: 1 }),
+  body('lesson_order').optional().isInt({ min: 1 }),
   body('type').isIn(['VIDEO_UPLOAD', 'EXTERNAL_LINK']),
   body('externalLink').optional().trim(),
-  body('videoDuration').optional().isFloat({ min: 1 }),
+  body('external_link').optional().trim(),
+  body('videoDuration').optional().isFloat({ min: 0.1 }),
+  body('video_duration').optional().isFloat({ min: 0.1 }),
 ];
 
 const lessonProgressRules = [
-  body('watchedSeconds').isFloat({ min: 0 }),
+  body('watchedSeconds').optional({ nullable: true }).isFloat({ min: 0 }),
+  body('watched_seconds').optional({ nullable: true }).isFloat({ min: 0 }),
+  body().custom((_, { req }) => {
+    const v = req.body?.watchedSeconds ?? req.body?.watched_seconds;
+    if (v === undefined || v === null || v === '') {
+      throw new Error('watchedSeconds is required');
+    }
+    return true;
+  }),
 ];
 
 const uuidParam = (name = 'id') => [param(name).isUUID()];

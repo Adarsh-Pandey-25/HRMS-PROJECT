@@ -50,6 +50,7 @@ const STORAGE_BUCKETS = {
   documents: 'documents',
   receipts: 'receipts',
   trainingMaterials: 'training-materials',
+  courseVideos: 'course-videos',
   profilePictures: 'profile-pictures',
   payslips: 'payslips',
 };

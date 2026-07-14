@@ -180,22 +180,43 @@ const manualEntry = async (hrUserId, data) => {
   return record;
 };
 
+/** Date-only strings become full IST day bounds so same-day filters work. */
+const toRangeStart = (value) => {
+  if (!value) return null;
+  if (String(value).includes('T')) return moment(value).toISOString();
+  return moment.tz(value, TIMEZONE).startOf('day').toISOString();
+};
+
+const toRangeEnd = (value) => {
+  if (!value) return null;
+  if (String(value).includes('T')) return moment(value).toISOString();
+  return moment.tz(value, TIMEZONE).endOf('day').toISOString();
+};
+
 const getAttendance = async (filters, query) => {
   const { page, limit, offset } = paginate(query);
+
+  if (Array.isArray(filters.employee_ids) && filters.employee_ids.length === 0) {
+    return { data: [], meta: buildMeta(page, limit, 0) };
+  }
+
   let dbQuery = supabaseAdmin
     .from('attendance')
-    .select('*, employee:employee_id(id, first_name, last_name, employee_code, department)', { count: 'exact' })
+    .select('*, employee:employee_id(id, first_name, last_name, employee_code, department, designation)', { count: 'exact' })
     .order('check_in_time', { ascending: false })
     .range(offset, offset + limit - 1);
 
   if (filters.employee_id) dbQuery = dbQuery.eq('employee_id', filters.employee_id);
   if (filters.employee_ids) dbQuery = dbQuery.in('employee_id', filters.employee_ids);
-  if (filters.from) dbQuery = dbQuery.gte('check_in_time', filters.from);
-  if (filters.to) dbQuery = dbQuery.lte('check_in_time', filters.to);
+
+  const fromIso = toRangeStart(filters.from);
+  const toIso = toRangeEnd(filters.to);
+  if (fromIso) dbQuery = dbQuery.gte('check_in_time', fromIso);
+  if (toIso) dbQuery = dbQuery.lte('check_in_time', toIso);
 
   const { data, error, count } = await dbQuery;
   if (error) throw new BadRequestError(error.message);
-  return { data, meta: buildMeta(page, limit, count) };
+  return { data: data || [], meta: buildMeta(page, limit, count) };
 };
 
 const getMonthlySummary = async (employeeId, month, year) => {
@@ -211,18 +232,57 @@ const getMonthlySummary = async (employeeId, month, year) => {
 
   if (error) throw new BadRequestError(error.message);
 
+  const rows = data || [];
+  // Present = days the employee showed up (on-time, late, or left early). Late stays a separate KPI.
+  const present = rows.filter((a) =>
+    ['present', 'late', 'early_departure'].includes(a.status) || !a.check_out_time
+  ).length;
+  const late = rows.filter((a) => a.status === 'late').length;
+  const halfDay = rows.filter((a) => a.status === 'half_day').length;
+  const earlyDeparture = rows.filter((a) => a.status === 'early_departure').length;
+  const incomplete = rows.filter((a) => !a.check_out_time).length;
+  const totalHours = rows.reduce((sum, a) => sum + (parseFloat(a.total_hours) || 0), 0);
+  const overtimeHours = rows.reduce((sum, a) => sum + (parseFloat(a.overtime_hours) || 0), 0);
+  const daysWithHours = rows.filter((a) => parseFloat(a.total_hours) > 0).length;
+
+  // Working weekdays in month without an attendance record ≈ absent
+  let workingDays = 0;
+  const cursor = start.clone();
+  while (cursor.isSameOrBefore(end, 'day')) {
+    const dow = cursor.day();
+    if (dow !== 0 && dow !== 6) workingDays += 1;
+    cursor.add(1, 'day');
+  }
+  const attendedDays = new Set(
+    rows.map((a) => moment(a.check_in_time).tz(TIMEZONE).format('YYYY-MM-DD'))
+  );
+  const today = nowIST();
+  const cutoff = today.isBefore(end) ? today.clone().startOf('day') : end.clone();
+  let absent = 0;
+  const absCursor = start.clone();
+  while (absCursor.isSameOrBefore(cutoff, 'day')) {
+    const dow = absCursor.day();
+    const key = absCursor.format('YYYY-MM-DD');
+    if (dow !== 0 && dow !== 6 && !attendedDays.has(key)) absent += 1;
+    absCursor.add(1, 'day');
+  }
+
   const summary = {
-    totalDays: data.length,
-    present: data.filter((a) => a.status === 'present').length,
-    late: data.filter((a) => a.status === 'late').length,
-    halfDay: data.filter((a) => a.status === 'half_day').length,
-    earlyDeparture: data.filter((a) => a.status === 'early_departure').length,
-    totalHours: data.reduce((sum, a) => sum + (parseFloat(a.total_hours) || 0), 0),
-    overtimeHours: data.reduce((sum, a) => sum + (parseFloat(a.overtime_hours) || 0), 0),
-    incomplete: data.filter((a) => !a.check_out_time).length,
+    totalDays: rows.length,
+    workingDays,
+    present,
+    wfh: rows.filter((a) => a.status === 'wfh').length,
+    late,
+    halfDay,
+    earlyDeparture,
+    absent,
+    totalHours: Math.round(totalHours * 100) / 100,
+    overtimeHours: Math.round(overtimeHours * 100) / 100,
+    avgHours: daysWithHours ? Math.round((totalHours / daysWithHours) * 10) / 10 : 0,
+    incomplete,
   };
 
-  return { records: data, summary };
+  return { records: rows, summary };
 };
 
 /** Next 4:00 AM IST boundary after check-in (daily auto-checkout cutoff). */

@@ -1,19 +1,34 @@
+/**
+ * LMS course service — flat Course → course_lessons (no Prisma).
+ * Uses supabaseAdmin + course_lessons / course_progress / course_enrollments.
+ */
 const { supabaseAdmin } = require('../config/supabase');
-const { uploadCourseVideo, uploadCourseThumbnail, getSignedUrl } = require('./storage.service');
-const { STORAGE_BUCKETS } = require('../utils/constants');
+const {
+  uploadCourseVideo,
+  uploadCourseThumbnail,
+  getSignedUrl,
+  resolveCourseVideoBucket,
+  STORAGE_BUCKETS,
+} = require('./storage.service');
 const { BadRequestError, NotFoundError, ForbiddenError } = require('../utils/errors');
 const logger = require('../utils/logger');
 
 const COMPLETION_GRACE_SECONDS = 5;
-const PROGRESS_JUMP_TOLERANCE = 12;
 
 const normalizeDept = (dept) => (dept || '').trim().toLowerCase();
 
 const departmentMatches = (employeeDept, targetDepartments = []) => {
+  const targets = targetDepartments || [];
+  if (!targets.length || targets.some((d) => normalizeDept(d) === 'all')) return true;
   const emp = normalizeDept(employeeDept);
   if (!emp) return false;
-  return targetDepartments.some((d) => normalizeDept(d) === emp);
+  return targets.some((d) => normalizeDept(d) === emp);
 };
+
+const enrollmentUserFilter = (employeeId) => (
+  // Dual-column: prefer matching either user_id or employee_id
+  `user_id.eq.${employeeId},employee_id.eq.${employeeId}`
+);
 
 const listDepartments = async () => {
   const { data, error } = await supabaseAdmin
@@ -39,42 +54,63 @@ const attachSignedUrls = async (course) => {
   if (course.thumbnail_key) {
     result.thumbnail_url = await getSignedUrl(STORAGE_BUCKETS.trainingMaterials, course.thumbnail_key, 7200);
   }
+  result.status = course.status || (course.is_active === false ? 'ARCHIVED' : 'ACTIVE');
   return result;
 };
 
-const attachLessonVideoUrls = async (lessons) => Promise.all(
-  (lessons || []).map(async (lesson) => {
-    if (lesson.type === 'VIDEO_UPLOAD' && lesson.video_key) {
-      return {
-        ...lesson,
-        video_url: await getSignedUrl(STORAGE_BUCKETS.trainingMaterials, lesson.video_key, 7200),
-      };
-    }
-    return lesson;
-  }),
-);
-
-const getCourseStructure = async (courseId, { withVideoUrls = false } = {}) => {
-  const { data: chapters, error: chErr } = await supabaseAdmin
-    .from('course_chapters')
-    .select('*, lessons(*)')
-    .eq('course_id', courseId)
-    .order('order', { ascending: true });
-
-  if (chErr) throw new BadRequestError(chErr.message);
-
-  const sorted = (chapters || []).map((ch) => ({
-    ...ch,
-    lessons: (ch.lessons || []).sort((a, b) => a.order - b.order),
-  }));
-
-  if (withVideoUrls) {
-    for (const ch of sorted) {
-      ch.lessons = await attachLessonVideoUrls(ch.lessons);
-    }
+const resolveLessonPlaybackUrl = async (lesson) => {
+  if (lesson.type === 'EXTERNAL_LINK') {
+    return { ...lesson, playback_url: lesson.external_link || null };
   }
+  const key = lesson.video_key || lesson.video_url;
+  if (!key) return { ...lesson, playback_url: null };
+  // Absolute URL already stored
+  if (/^https?:\/\//i.test(key)) {
+    return { ...lesson, video_url: key, playback_url: key };
+  }
+  const bucket = resolveCourseVideoBucket(key);
+  const signed = await getSignedUrl(bucket, key, 7200);
+  return { ...lesson, video_url: signed, playback_url: signed };
+};
 
-  return sorted;
+const listLessonsForCourse = async (courseId, { withUrls = false } = {}) => {
+  const { data, error } = await supabaseAdmin
+    .from('course_lessons')
+    .select('*')
+    .eq('course_id', courseId)
+    .order('lesson_order', { ascending: true });
+
+  if (error) throw new BadRequestError(error.message);
+  const lessons = data || [];
+  if (!withUrls) return lessons;
+  return Promise.all(lessons.map(resolveLessonPlaybackUrl));
+};
+
+const getLessonCountsByCourse = async () => {
+  const { data, error } = await supabaseAdmin
+    .from('course_lessons')
+    .select('id, course_id');
+
+  if (error) throw new BadRequestError(error.message);
+  const counts = {};
+  for (const row of data || []) {
+    counts[row.course_id] = (counts[row.course_id] || 0) + 1;
+  }
+  return counts;
+};
+
+const progressStatsForEnrollment = async (enrollmentId, courseId) => {
+  const [{ data: lessons }, { data: progress }] = await Promise.all([
+    supabaseAdmin.from('course_lessons').select('id').eq('course_id', courseId),
+    supabaseAdmin
+      .from('course_progress')
+      .select('lesson_id, is_completed')
+      .eq('enrollment_id', enrollmentId),
+  ]);
+
+  const totalLessons = (lessons || []).length;
+  const completedLessons = (progress || []).filter((p) => p.is_completed).length;
+  return { total_lessons: totalLessons, completed_lessons: completedLessons, totalLessons, completedLessons };
 };
 
 const createCourse = async (payload, userId, thumbnailFile) => {
@@ -84,14 +120,18 @@ const createCourse = async (payload, userId, thumbnailFile) => {
     thumbnailKey = path;
   }
 
+  const status = String(payload.status || 'ACTIVE').toUpperCase() === 'ARCHIVED' ? 'ARCHIVED' : 'ACTIVE';
+
   const { data, error } = await supabaseAdmin
     .from('courses')
     .insert({
       title: payload.title,
-      description: payload.description || null,
-      target_departments: payload.targetDepartments || [],
+      description: payload.description || '',
+      target_departments: payload.targetDepartments || payload.target_departments || [],
       thumbnail_key: thumbnailKey,
       created_by: userId,
+      status,
+      is_active: status === 'ACTIVE',
     })
     .select()
     .single();
@@ -104,8 +144,19 @@ const updateCourse = async (courseId, payload, thumbnailFile) => {
   const updates = {};
   if (payload.title !== undefined) updates.title = payload.title;
   if (payload.description !== undefined) updates.description = payload.description;
-  if (payload.targetDepartments !== undefined) updates.target_departments = payload.targetDepartments;
-  if (payload.isActive !== undefined) updates.is_active = payload.isActive;
+  if (payload.targetDepartments !== undefined || payload.target_departments !== undefined) {
+    updates.target_departments = payload.targetDepartments || payload.target_departments;
+  }
+  if (payload.status !== undefined) {
+    const status = String(payload.status).toUpperCase() === 'ARCHIVED' ? 'ARCHIVED' : 'ACTIVE';
+    updates.status = status;
+    updates.is_active = status === 'ACTIVE';
+  }
+  if (payload.isActive !== undefined || payload.is_active !== undefined) {
+    const active = payload.isActive !== undefined ? payload.isActive : payload.is_active;
+    updates.is_active = Boolean(active);
+    updates.status = active ? 'ACTIVE' : 'ARCHIVED';
+  }
 
   if (thumbnailFile) {
     const { path } = await uploadCourseThumbnail(thumbnailFile);
@@ -132,94 +183,131 @@ const listManageCourses = async () => {
 
   if (error) throw new BadRequestError(error.message);
 
-  return Promise.all((data || []).map(attachSignedUrls));
+  const lessonCounts = await getLessonCountsByCourse();
+  return Promise.all((data || []).map(async (course) => {
+    const withThumb = await attachSignedUrls(course);
+    return {
+      ...withThumb,
+      lesson_count: lessonCounts[course.id] || 0,
+      totalLessons: lessonCounts[course.id] || 0,
+    };
+  }));
 };
 
-const listEmployeeCourses = async (employee) => {
-  const dept = employee.department;
-  if (!dept) return [];
-
+const listCatalog = async (employee) => {
   const [{ data: courses, error }, { data: enrollments }, lessonCounts] = await Promise.all([
     supabaseAdmin
       .from('courses')
-      .select('id, title, description, thumbnail_key, target_departments, is_active, created_at')
-      .eq('is_active', true)
+      .select('id, title, description, thumbnail_key, target_departments, status, is_active, created_at')
       .order('created_at', { ascending: false }),
     supabaseAdmin
       .from('course_enrollments')
-      .select('id, course_id, status, enrolled_at, completed_at, lesson_progress(lesson_id, is_completed)')
-      .eq('employee_id', employee.id),
+      .select('id, course_id, status, enrolled_at, completed_at, user_id, employee_id, course_progress(lesson_id, is_completed, watched_seconds)')
+      .or(enrollmentUserFilter(employee.id)),
     getLessonCountsByCourse(),
   ]);
 
   if (error) throw new BadRequestError(error.message);
 
-  const matched = (courses || []).filter((c) => departmentMatches(dept, c.target_departments));
   const enrollmentMap = new Map((enrollments || []).map((e) => [e.course_id, e]));
+  const matched = (courses || []).filter((c) => {
+    const active = c.status === 'ACTIVE' || c.is_active !== false;
+    if (!active) return false;
+    if (enrollmentMap.has(c.id)) return true;
+    return departmentMatches(employee.department, c.target_departments);
+  });
 
   return Promise.all(matched.map(async (course) => {
     const withThumb = await attachSignedUrls(course);
     const enrollment = enrollmentMap.get(course.id);
     const totalLessons = lessonCounts[course.id] || 0;
-    const completedLessons = (enrollment?.lesson_progress || []).filter((p) => p.is_completed).length;
+    const completedLessons = (enrollment?.course_progress || []).filter((p) => p.is_completed).length;
     const progressPercent = totalLessons ? Math.round((completedLessons / totalLessons) * 100) : 0;
 
     return {
       ...withThumb,
-      enrollment: enrollment ? {
-        id: enrollment.id,
-        status: enrollment.status,
-        enrolledAt: enrollment.enrolled_at,
-        completedAt: enrollment.completed_at,
-        progressPercent,
-      } : null,
+      enrollment: enrollment
+        ? {
+          id: enrollment.id,
+          status: enrollment.status,
+          enrolledAt: enrollment.enrolled_at,
+          completedAt: enrollment.completed_at,
+          progressPercent,
+          completed_lessons: completedLessons,
+          total_lessons: totalLessons,
+        }
+        : null,
+      completed_lessons: completedLessons,
+      total_lessons: totalLessons,
       totalLessons,
       progressPercent,
     };
   }));
 };
 
+/** Alias used by existing controller */
+const listEmployeeCourses = listCatalog;
+
 const getCourseForEmployee = async (courseId, employee) => {
   const { data: course, error } = await supabaseAdmin
     .from('courses')
     .select('*')
     .eq('id', courseId)
-    .eq('is_active', true)
     .single();
 
   if (error || !course) throw new NotFoundError('Course not found');
+  const active = course.status === 'ACTIVE' || course.is_active !== false;
+  if (!active) throw new NotFoundError('Course not found');
 
-  if (!departmentMatches(employee.department, course.target_departments)) {
+  const { data: enrollment } = await supabaseAdmin
+    .from('course_enrollments')
+    .select('*, course_progress(*)')
+    .eq('course_id', courseId)
+    .or(enrollmentUserFilter(employee.id))
+    .maybeSingle();
+
+  if (!enrollment && !departmentMatches(employee.department, course.target_departments)) {
     throw new ForbiddenError('This course is not available for your department');
   }
 
   const withThumb = await attachSignedUrls(course);
-  const chapters = await getCourseStructure(courseId, { withVideoUrls: false });
+  const lessons = await listLessonsForCourse(courseId, { withUrls: true });
+  const progressMap = new Map((enrollment?.course_progress || []).map((p) => [p.lesson_id, p]));
+  const lessonsWithProgress = lessons.map((l, idx) => {
+    const prog = progressMap.get(l.id);
+    const priorDone = idx === 0 || lessons.slice(0, idx).every((prev) => progressMap.get(prev.id)?.is_completed);
+    return {
+      ...l,
+      progress: prog || null,
+      is_completed: Boolean(prog?.is_completed),
+      locked: !priorDone && !prog?.is_completed,
+    };
+  });
 
-  let { data: enrollment } = await supabaseAdmin
-    .from('course_enrollments')
-    .select('*, lesson_progress(*)')
-    .eq('course_id', courseId)
-    .eq('employee_id', employee.id)
-    .maybeSingle();
-
-  const totalLessons = chapters.reduce((sum, ch) => sum + ch.lessons.length, 0);
-  const completedLessons = (enrollment?.lesson_progress || []).filter((p) => p.is_completed).length;
-  const progressPercent = totalLessons ? Math.round((completedLessons / totalLessons) * 100) : 0;
+  const totalLessons = lessons.length;
+  const completedLessons = (enrollment?.course_progress || []).filter((p) => p.is_completed).length;
 
   return {
     ...withThumb,
-    chapters,
-    enrollment: enrollment ? {
-      id: enrollment.id,
-      status: enrollment.status,
-      enrolledAt: enrollment.enrolled_at,
-      completedAt: enrollment.completed_at,
-      progressPercent,
-      lessonProgress: enrollment.lesson_progress || [],
-    } : null,
+    lessons: lessonsWithProgress,
+    // Compat: wrap in a single chapter for any UI that still expects chapters
+    chapters: [{ id: 'default', title: 'Lessons', order: 1, lessons: lessonsWithProgress }],
+    enrollment: enrollment
+      ? {
+        id: enrollment.id,
+        status: enrollment.status,
+        enrolledAt: enrollment.enrolled_at,
+        completedAt: enrollment.completed_at,
+        progressPercent: totalLessons ? Math.round((completedLessons / totalLessons) * 100) : 0,
+        lessonProgress: enrollment.course_progress || [],
+        completed_lessons: completedLessons,
+        total_lessons: totalLessons,
+      }
+      : null,
     totalLessons,
-    progressPercent,
+    completed_lessons: completedLessons,
+    total_lessons: totalLessons,
+    progressPercent: totalLessons ? Math.round((completedLessons / totalLessons) * 100) : 0,
   };
 };
 
@@ -233,153 +321,235 @@ const getManageCourse = async (courseId) => {
   if (error || !course) throw new NotFoundError('Course not found');
 
   const withThumb = await attachSignedUrls(course);
-  const chapters = await getCourseStructure(courseId, { withVideoUrls: false });
-  return { ...withThumb, chapters };
+  const lessons = await listLessonsForCourse(courseId, { withUrls: true });
+  return {
+    ...withThumb,
+    lessons,
+    chapters: [{ id: 'default', title: 'Lessons', order: 1, lessons }],
+  };
 };
 
-const addChapter = async (courseId, { title, order }) => {
-  const { data, error } = await supabaseAdmin
-    .from('course_chapters')
-    .insert({ course_id: courseId, title, order })
-    .select()
+const addLessonToCourse = async (courseId, payload, videoFile) => {
+  const { data: course, error: cErr } = await supabaseAdmin
+    .from('courses')
+    .select('id')
+    .eq('id', courseId)
     .single();
-
-  if (error) throw new BadRequestError(error.message);
-  return { ...data, lessons: [] };
-};
-
-const addLesson = async (chapterId, payload, videoFile) => {
-  const { data: chapter, error: chErr } = await supabaseAdmin
-    .from('course_chapters')
-    .select('id, course_id')
-    .eq('id', chapterId)
-    .single();
-
-  if (chErr || !chapter) throw new NotFoundError('Chapter not found');
+  if (cErr || !course) throw new NotFoundError('Course not found');
 
   const type = payload.type;
   if (!['VIDEO_UPLOAD', 'EXTERNAL_LINK'].includes(type)) {
     throw new BadRequestError('Invalid lesson type');
   }
 
-  let videoKey = null;
-  if (type === 'VIDEO_UPLOAD') {
-    if (!videoFile) throw new BadRequestError('Video file is required for VIDEO_UPLOAD');
-    if (!payload.videoDuration || payload.videoDuration <= 0) {
-      throw new BadRequestError('videoDuration is required for uploaded videos');
-    }
-    const { path } = await uploadCourseVideo(videoFile, chapter.course_id);
-    videoKey = path;
-  } else if (!payload.externalLink) {
-    throw new BadRequestError('externalLink is required for EXTERNAL_LINK');
+  let order = payload.order != null ? parseInt(payload.order, 10) : null;
+  if (!order || Number.isNaN(order)) {
+    const { count } = await supabaseAdmin
+      .from('course_lessons')
+      .select('id', { count: 'exact', head: true })
+      .eq('course_id', courseId);
+    order = (count || 0) + 1;
   }
 
-  const duration = payload.videoDuration ? parseFloat(payload.videoDuration) : null;
-  if (type === 'EXTERNAL_LINK' && (!duration || duration <= 0)) {
-    throw new BadRequestError('videoDuration is required for external links (estimated watch time)');
+  let videoKey = null;
+  let videoUrl = null;
+  let duration = payload.videoDuration != null ? parseFloat(payload.videoDuration) : null;
+
+  if (type === 'VIDEO_UPLOAD') {
+    if (!videoFile) throw new BadRequestError('Video file is required for VIDEO_UPLOAD');
+    if (!duration || duration <= 0) {
+      throw new BadRequestError('videoDuration is required for uploaded videos');
+    }
+    const uploaded = await uploadCourseVideo(videoFile, courseId);
+    videoKey = uploaded.path;
+    // Store path; signed URL generated on read. Also try public URL for schema video_url.
+    const { data: pub } = supabaseAdmin.storage.from(STORAGE_BUCKETS.courseVideos).getPublicUrl(videoKey);
+    videoUrl = pub?.publicUrl || videoKey;
+  } else {
+    const link = payload.externalLink || payload.external_link;
+    if (!link) throw new BadRequestError('externalLink is required for EXTERNAL_LINK');
   }
 
   const { data, error } = await supabaseAdmin
-    .from('lessons')
+    .from('course_lessons')
     .insert({
-      chapter_id: chapterId,
+      course_id: courseId,
       title: payload.title,
-      order: payload.order,
+      lesson_order: order,
       type,
       video_key: videoKey,
-      external_link: type === 'EXTERNAL_LINK' ? payload.externalLink : null,
+      video_url: videoUrl,
+      external_link: type === 'EXTERNAL_LINK' ? (payload.externalLink || payload.external_link) : null,
       video_duration: duration,
     })
     .select()
     .single();
 
   if (error) throw new BadRequestError(error.message);
+  return resolveLessonPlaybackUrl(data);
+};
 
-  const [withUrl] = await attachLessonVideoUrls([data]);
-  return withUrl;
+/** Legacy: chapter-based add — create/find a dummy chapter is no longer used; prefer addLessonToCourse */
+const addChapter = async (courseId, { title, order }) => ({
+  id: 'default',
+  course_id: courseId,
+  title: title || 'Lessons',
+  order: order || 1,
+  lessons: [],
+});
+
+const addLesson = async (chapterId, payload, videoFile) => {
+  // If chapterId is actually a course id (new API), or look up chapter→course
+  const { data: asCourse } = await supabaseAdmin
+    .from('courses')
+    .select('id')
+    .eq('id', chapterId)
+    .maybeSingle();
+
+  if (asCourse) return addLessonToCourse(chapterId, payload, videoFile);
+
+  const { data: chapter } = await supabaseAdmin
+    .from('course_chapters')
+    .select('id, course_id')
+    .eq('id', chapterId)
+    .maybeSingle();
+
+  if (chapter?.course_id) {
+    return addLessonToCourse(chapter.course_id, { ...payload, order: payload.order }, videoFile);
+  }
+
+  throw new NotFoundError('Course not found');
 };
 
 const enrollCourse = async (courseId, employee) => {
   const { data: course } = await supabaseAdmin
     .from('courses')
-    .select('id, target_departments, is_active')
+    .select('id, target_departments, status, is_active')
     .eq('id', courseId)
     .single();
 
-  if (!course || !course.is_active) throw new NotFoundError('Course not found');
+  if (!course) throw new NotFoundError('Course not found');
+  const active = course.status === 'ACTIVE' || course.is_active !== false;
+  if (!active) throw new NotFoundError('Course not found');
   if (!departmentMatches(employee.department, course.target_departments)) {
     throw new ForbiddenError('This course is not available for your department');
   }
 
+  // Try find existing first (supports dual columns)
+  const { data: existing } = await supabaseAdmin
+    .from('course_enrollments')
+    .select('*')
+    .eq('course_id', courseId)
+    .or(enrollmentUserFilter(employee.id))
+    .maybeSingle();
+
+  if (existing) return existing;
+
   const { data, error } = await supabaseAdmin
     .from('course_enrollments')
-    .upsert({
+    .insert({
       course_id: courseId,
+      user_id: employee.id,
       employee_id: employee.id,
       status: 'IN_PROGRESS',
-    }, { onConflict: 'employee_id,course_id' })
+    })
     .select()
     .single();
 
-  if (error) throw new BadRequestError(error.message);
+  if (error) {
+    // Race / unique conflict
+    const { data: again } = await supabaseAdmin
+      .from('course_enrollments')
+      .select('*')
+      .eq('course_id', courseId)
+      .or(enrollmentUserFilter(employee.id))
+      .maybeSingle();
+    if (again) return again;
+    throw new BadRequestError(error.message);
+  }
   return data;
 };
 
-const getAllLessonIdsInOrder = async (courseId) => {
-  const { data: chapters, error } = await supabaseAdmin
-    .from('course_chapters')
-    .select('order, lessons(id, order)')
-    .eq('course_id', courseId)
-    .order('order', { ascending: true });
+const createEnrollmentsBulk = async ({ courseId, employeeIds }) => {
+  if (!courseId) throw new BadRequestError('courseId is required');
+  const ids = Array.isArray(employeeIds) ? employeeIds.filter(Boolean) : [];
+  if (!ids.length) throw new BadRequestError('employeeIds is required');
+
+  const { data: course } = await supabaseAdmin.from('courses').select('id').eq('id', courseId).single();
+  if (!course) throw new NotFoundError('Course not found');
+
+  const results = [];
+  for (const empId of ids) {
+    const { data: existing } = await supabaseAdmin
+      .from('course_enrollments')
+      .select('*')
+      .eq('course_id', courseId)
+      .or(enrollmentUserFilter(empId))
+      .maybeSingle();
+
+    if (existing) {
+      results.push(existing);
+      continue;
+    }
+    const { data, error } = await supabaseAdmin
+      .from('course_enrollments')
+      .insert({
+        course_id: courseId,
+        user_id: empId,
+        employee_id: empId,
+        status: 'IN_PROGRESS',
+      })
+      .select()
+      .single();
+    if (error) throw new BadRequestError(error.message);
+    results.push(data);
+  }
+  return results;
+};
+
+const listEnrollments = async () => {
+  const { data, error } = await supabaseAdmin
+    .from('course_enrollments')
+    .select(`
+      id, status, enrolled_at, completed_at, course_id, user_id, employee_id,
+      course:course_id(id, title),
+      employee:employee_id(id, first_name, last_name, department, email),
+      user:user_id(id, first_name, last_name, department, email),
+      course_progress(lesson_id, is_completed)
+    `)
+    .order('enrolled_at', { ascending: false });
 
   if (error) throw new BadRequestError(error.message);
 
-  return (chapters || [])
-    .sort((a, b) => a.order - b.order)
-    .flatMap((ch) => (ch.lessons || []).sort((a, b) => a.order - b.order).map((l) => l.id));
-};
+  const lessonCounts = await getLessonCountsByCourse();
 
-const getLessonVideoUrl = async (lessonId, employee) => {
-  const { data: lesson, error: lessonErr } = await supabaseAdmin
-    .from('lessons')
-    .select('id, type, video_key, chapter:chapter_id(course_id)')
-    .eq('id', lessonId)
-    .single();
-
-  if (lessonErr || !lesson) throw new NotFoundError('Lesson not found');
-
-  const { data: course } = await supabaseAdmin
-    .from('courses')
-    .select('target_departments, is_active')
-    .eq('id', lesson.chapter.course_id)
-    .single();
-
-  if (!course?.is_active) throw new NotFoundError('Course not found');
-  if (!departmentMatches(employee.department, course.target_departments)) {
-    throw new ForbiddenError('This lesson is not available for your department');
-  }
-  if (lesson.type !== 'VIDEO_UPLOAD' || !lesson.video_key) {
-    throw new BadRequestError('This lesson has no uploaded video');
-  }
-
-  return {
-    videoUrl: await getSignedUrl(STORAGE_BUCKETS.trainingMaterials, lesson.video_key, 7200),
-  };
+  return (data || []).map((row) => {
+    const emp = row.employee || row.user || {};
+    const totalLessons = lessonCounts[row.course_id] || 0;
+    const completedLessons = (row.course_progress || []).filter((p) => p.is_completed).length;
+    const progressPercent = totalLessons ? Math.round((completedLessons / totalLessons) * 100) : 0;
+    return {
+      id: row.id,
+      status: row.status,
+      enrolled_at: row.enrolled_at,
+      completed_at: row.completed_at,
+      course_id: row.course_id,
+      course_title: row.course?.title,
+      user_id: row.user_id || row.employee_id,
+      employee_id: row.employee_id || row.user_id,
+      employee_name: [emp.first_name, emp.last_name].filter(Boolean).join(' ').trim() || 'Employee',
+      department: emp.department,
+      completed_lessons: completedLessons,
+      total_lessons: totalLessons,
+      progress_percent: progressPercent,
+    };
+  });
 };
 
 const checkCourseCompletion = async (enrollmentId, courseId) => {
-  const lessonIds = await getAllLessonIdsInOrder(courseId);
-  if (!lessonIds.length) return;
-
-  const { data: progress } = await supabaseAdmin
-    .from('lesson_progress')
-    .select('lesson_id, is_completed')
-    .eq('enrollment_id', enrollmentId);
-
-  const completedSet = new Set((progress || []).filter((p) => p.is_completed).map((p) => p.lesson_id));
-  const allDone = lessonIds.every((id) => completedSet.has(id));
-
-  if (allDone) {
+  const stats = await progressStatsForEnrollment(enrollmentId, courseId);
+  if (!stats.total_lessons) return;
+  if (stats.completed_lessons >= stats.total_lessons) {
     await supabaseAdmin
       .from('course_enrollments')
       .update({ status: 'COMPLETED', completed_at: new Date().toISOString() })
@@ -389,56 +559,80 @@ const checkCourseCompletion = async (enrollmentId, courseId) => {
 
 const updateLessonProgress = async (lessonId, employee, watchedSecondsInput) => {
   const { data: lesson, error: lessonErr } = await supabaseAdmin
-    .from('lessons')
-    .select('*, chapter:chapter_id(course_id)')
+    .from('course_lessons')
+    .select('*')
     .eq('id', lessonId)
     .single();
 
   if (lessonErr || !lesson) throw new NotFoundError('Lesson not found');
 
-  const courseId = lesson.chapter.course_id;
-  const duration = lesson.video_duration;
-  if (!duration || duration <= 0) throw new BadRequestError('Lesson duration not configured');
-
+  const courseId = lesson.course_id;
   let enrollment = await enrollCourse(courseId, employee);
 
+  // EXTERNAL_LINK: cannot track watch time — mark complete immediately
+  if (lesson.type === 'EXTERNAL_LINK') {
+    const { data: progress, error: progErr } = await supabaseAdmin
+      .from('course_progress')
+      .upsert({
+        enrollment_id: enrollment.id,
+        lesson_id: lessonId,
+        watched_seconds: Number(lesson.video_duration || 0),
+        is_completed: true,
+      }, { onConflict: 'enrollment_id,lesson_id' })
+      .select()
+      .single();
+
+    if (progErr) throw new BadRequestError(progErr.message);
+    await checkCourseCompletion(enrollment.id, courseId);
+    const { data: updatedEnrollment } = await supabaseAdmin
+      .from('course_enrollments')
+      .select('status, completed_at')
+      .eq('id', enrollment.id)
+      .single();
+
+    return {
+      lessonId,
+      enrollmentId: enrollment.id,
+      watchedSeconds: progress.watched_seconds,
+      isCompleted: true,
+      courseId,
+      enrollmentStatus: updatedEnrollment?.status || enrollment.status,
+      completedAt: updatedEnrollment?.completed_at || null,
+    };
+  }
+
+  const duration = Number(lesson.video_duration || 0);
+  if (!duration || duration <= 0) throw new BadRequestError('Lesson duration not configured');
+
   const { data: existing } = await supabaseAdmin
-    .from('lesson_progress')
+    .from('course_progress')
     .select('*')
     .eq('enrollment_id', enrollment.id)
     .eq('lesson_id', lessonId)
     .maybeSingle();
 
-  const prior = existing?.watched_seconds || 0;
-  let incoming = Math.min(parseFloat(watchedSecondsInput) || 0, duration);
-
-  if (incoming > duration) {
-    throw new BadRequestError('watchedSeconds exceeds video duration');
-  }
-
-  if (incoming > prior + PROGRESS_JUMP_TOLERANCE) {
-    throw new BadRequestError('Progress cannot skip ahead');
-  }
-
+  const prior = Number(existing?.watched_seconds || 0);
+  // Cap at duration (prevent hacking / seeking past end)
+  let incoming = Math.min(Math.max(0, parseFloat(watchedSecondsInput) || 0), duration);
+  // Monotonic: never decrease stored progress
   incoming = Math.max(prior, incoming);
+
   const isCompleted = incoming >= (duration - COMPLETION_GRACE_SECONDS);
 
-  const progressPayload = {
-    enrollment_id: enrollment.id,
-    lesson_id: lessonId,
-    watched_seconds: Math.round(incoming * 100) / 100,
-    is_completed: isCompleted,
-  };
-
   const { data: progress, error: progErr } = await supabaseAdmin
-    .from('lesson_progress')
-    .upsert(progressPayload, { onConflict: 'enrollment_id,lesson_id' })
+    .from('course_progress')
+    .upsert({
+      enrollment_id: enrollment.id,
+      lesson_id: lessonId,
+      watched_seconds: Math.round(incoming * 100) / 100,
+      is_completed: isCompleted || Boolean(existing?.is_completed),
+    }, { onConflict: 'enrollment_id,lesson_id' })
     .select()
     .single();
 
   if (progErr) throw new BadRequestError(progErr.message);
 
-  if (isCompleted) {
+  if (progress.is_completed) {
     await checkCourseCompletion(enrollment.id, courseId);
     const { data: updatedEnrollment } = await supabaseAdmin
       .from('course_enrollments')
@@ -460,45 +654,71 @@ const updateLessonProgress = async (lessonId, employee, watchedSecondsInput) => 
 };
 
 const deleteCourse = async (courseId) => {
-  const { error } = await supabaseAdmin.from('courses').delete().eq('id', courseId);
+  const { error } = await supabaseAdmin
+    .from('courses')
+    .update({ status: 'ARCHIVED', is_active: false })
+    .eq('id', courseId);
   if (error) throw new BadRequestError(error.message);
 };
 
-const getLessonCountsByCourse = async () => {
-  const { data: chapters, error } = await supabaseAdmin
-    .from('course_chapters')
-    .select('course_id, lessons(id)');
+const getLessonVideoUrl = async (lessonId, employee) => {
+  const { data: lesson, error: lessonErr } = await supabaseAdmin
+    .from('course_lessons')
+    .select('*')
+    .eq('id', lessonId)
+    .single();
 
-  if (error) throw new BadRequestError(error.message);
+  if (lessonErr || !lesson) throw new NotFoundError('Lesson not found');
 
-  const counts = {};
-  for (const ch of chapters || []) {
-    counts[ch.course_id] = (counts[ch.course_id] || 0) + (ch.lessons?.length || 0);
+  const { data: course } = await supabaseAdmin
+    .from('courses')
+    .select('target_departments, status, is_active')
+    .eq('id', lesson.course_id)
+    .single();
+
+  if (!course || (course.status === 'ARCHIVED' && course.is_active === false)) {
+    throw new NotFoundError('Course not found');
   }
-  return counts;
+  if (!departmentMatches(employee.department, course.target_departments)) {
+    const { data: enr } = await supabaseAdmin
+      .from('course_enrollments')
+      .select('id')
+      .eq('course_id', lesson.course_id)
+      .or(enrollmentUserFilter(employee.id))
+      .maybeSingle();
+    if (!enr) throw new ForbiddenError('This lesson is not available for your department');
+  }
+
+  if (lesson.type === 'EXTERNAL_LINK') {
+    return { videoUrl: lesson.external_link };
+  }
+
+  const resolved = await resolveLessonPlaybackUrl(lesson);
+  if (!resolved.playback_url) throw new BadRequestError('This lesson has no uploaded video');
+  return { videoUrl: resolved.playback_url };
 };
 
 const listTrainingProgressReport = async () => {
   const [{ data: courses, error: cErr }, { data: employees, error: eErr }, { data: enrollments, error: enErr }] = await Promise.all([
-    supabaseAdmin.from('courses').select('id, title, target_departments').eq('is_active', true),
+    supabaseAdmin.from('courses').select('id, title, target_departments, status, is_active'),
     supabaseAdmin
       .from('employees')
-      .select('id, first_name, last_name, email, department, employee_code, role')
+      .select('id, first_name, last_name, email, department, employee_code, role, date_of_joining')
       .eq('is_active', true)
-      .eq('role', 'employee')
       .order('first_name'),
     supabaseAdmin
       .from('course_enrollments')
-      .select('id, employee_id, course_id, status, enrolled_at, completed_at, lesson_progress(lesson_id, is_completed)'),
+      .select('id, employee_id, user_id, course_id, status, enrolled_at, completed_at, course_progress(lesson_id, is_completed)'),
   ]);
 
   if (cErr) throw new BadRequestError(cErr.message);
   if (eErr) throw new BadRequestError(eErr.message);
   if (enErr) throw new BadRequestError(enErr.message);
 
+  const activeCourses = (courses || []).filter((c) => c.status === 'ACTIVE' || c.is_active !== false);
   const lessonCounts = await getLessonCountsByCourse();
   const enrollmentMap = new Map(
-    (enrollments || []).map((e) => [`${e.employee_id}:${e.course_id}`, e]),
+    (enrollments || []).map((e) => [`${e.employee_id || e.user_id}:${e.course_id}`, e]),
   );
 
   const rows = [];
@@ -507,11 +727,11 @@ const listTrainingProgressReport = async () => {
   let totalInProgress = 0;
 
   for (const emp of employees || []) {
-    const eligible = (courses || []).filter((c) => departmentMatches(emp.department, c.target_departments));
+    const eligible = activeCourses.filter((c) => departmentMatches(emp.department, c.target_departments));
     const courseItems = eligible.map((course) => {
       const enrollment = enrollmentMap.get(`${emp.id}:${course.id}`);
       const totalLessons = lessonCounts[course.id] || 0;
-      const completedLessons = (enrollment?.lesson_progress || []).filter((p) => p.is_completed).length;
+      const completedLessons = (enrollment?.course_progress || []).filter((p) => p.is_completed).length;
       const progressPercent = totalLessons ? Math.round((completedLessons / totalLessons) * 100) : 0;
       const status = enrollment?.status === 'COMPLETED'
         ? 'COMPLETED'
@@ -530,6 +750,8 @@ const listTrainingProgressReport = async () => {
         progressPercent,
         totalLessons,
         completedLessons,
+        completed_lessons: completedLessons,
+        total_lessons: totalLessons,
         enrolledAt: enrollment?.enrolled_at || null,
         completedAt: enrollment?.completed_at || null,
       };
@@ -542,6 +764,7 @@ const listTrainingProgressReport = async () => {
       email: emp.email,
       department: emp.department,
       employeeCode: emp.employee_code,
+      dateOfJoining: emp.date_of_joining,
       assignedCount: courseItems.length,
       completedCount: courseItems.filter((c) => c.status === 'COMPLETED').length,
       courses: courseItems,
@@ -551,7 +774,7 @@ const listTrainingProgressReport = async () => {
   return {
     summary: {
       employeeCount: rows.length,
-      courseCount: (courses || []).length,
+      courseCount: activeCourses.length,
       totalAssignments: totalAssigned,
       completedAssignments: totalCompleted,
       inProgressAssignments: totalInProgress,
@@ -567,11 +790,15 @@ module.exports = {
   updateCourse,
   listManageCourses,
   listEmployeeCourses,
+  listCatalog,
   getCourseForEmployee,
   getManageCourse,
   addChapter,
   addLesson,
+  addLessonToCourse,
   enrollCourse,
+  createEnrollmentsBulk,
+  listEnrollments,
   updateLessonProgress,
   deleteCourse,
   listTrainingProgressReport,

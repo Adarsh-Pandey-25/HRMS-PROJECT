@@ -80,6 +80,7 @@ app.use('/api/leaves', leaveRoutes);
 app.use('/api/payroll', payrollRoutes);
 app.use('/api/reimbursements', reimbursementRoutes);
 app.use('/api/training', trainingRoutes);
+app.use('/api/trainings', trainingRoutes);
 app.use('/api/announcements', announcementRoutes);
 app.use('/api/holidays', holidayRoutes);
 app.use('/api/documents', documentRoutes);

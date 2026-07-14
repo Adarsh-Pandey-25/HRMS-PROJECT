@@ -313,12 +313,43 @@ const getLeaveBalance = async (employeeId, year) => {
 
   if (error) throw new BadRequestError(error.message);
 
+  const nameByCode = Object.fromEntries(
+    activePolicy.map((p) => [p.code, p.name || p.code])
+  );
   const activeCodes = new Set(activePolicy.map((p) => p.code));
   const filtered = (data || []).filter((b) => activeCodes.has(b.leave_type));
-  return filtered.map((b) => ({
-    ...b,
-    available: b.total_allocated - b.used - b.encashed,
-  }));
+
+  // Prefer policy order so My Leave matches Settings → Leave Policy
+  const byType = Object.fromEntries((filtered || []).map((b) => [b.leave_type, b]));
+
+  // Keep totals in sync with latest policy on read (used/encashed preserved)
+  for (const p of activePolicy) {
+    const b = byType[p.code];
+    const alloc = Number(p.allocation || 0);
+    if (b && Number(b.total_allocated) !== alloc) {
+      await supabaseAdmin
+        .from('leave_balances')
+        .update({ total_allocated: alloc })
+        .eq('employee_id', employeeId)
+        .eq('year', targetYear)
+        .eq('leave_type', p.code);
+      b.total_allocated = alloc;
+    }
+  }
+
+  return activePolicy.map((p) => {
+    const b = byType[p.code] || {
+      leave_type: p.code,
+      total_allocated: Number(p.allocation || 0),
+      used: 0,
+      encashed: 0,
+    };
+    return {
+      ...b,
+      name: nameByCode[p.code] || p.code,
+      available: Number(b.total_allocated || 0) - Number(b.used || 0) - Number(b.encashed || 0),
+    };
+  });
 };
 
 const getLeaveCalendar = async (month, year) => {

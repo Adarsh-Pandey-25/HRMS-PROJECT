@@ -39,11 +39,13 @@ const listPayslips = async (req, res, next) => {
   try {
     const month = parseInt(req.query.month, 10);
     const year = parseInt(req.query.year, 10);
+    const mine = String(req.query.mine || '').toLowerCase() === 'true' || req.query.mine === '1';
     const data = await payrollService.listPayslips({
       month,
       year,
       user: req.user,
       role: req.user.role,
+      mine,
     });
     successResponse(res, 'Payslips fetched', data);
   } catch (err) { next(err); }
@@ -56,6 +58,16 @@ const downloadPayslip = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+const recalculateFromSettings = async (req, res, next) => {
+  try {
+    const month = req.body?.month != null ? parseInt(req.body.month, 10) : undefined;
+    const year = req.body?.year != null ? parseInt(req.body.year, 10) : undefined;
+    const employeeId = req.body?.employee_id || req.body?.employeeId || undefined;
+    const data = await payrollService.recalculatePayslipsFromSettings({ month, year, employeeId });
+    successResponse(res, 'Payslips recalculated from settings', data);
+  } catch (err) { next(err); }
+};
+
 module.exports = {
   initializeMonth,
   getMonthStatus,
@@ -63,4 +75,5 @@ module.exports = {
   publishPayslip,
   listPayslips,
   downloadPayslip,
+  recalculateFromSettings,
 };

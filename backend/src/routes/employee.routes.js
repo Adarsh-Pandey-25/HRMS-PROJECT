@@ -1,7 +1,7 @@
 const express = require('express');
 const employeeController = require('../controllers/employee.controller');
 const { authenticate } = require('../middleware/auth.middleware');
-const { isHROrAdmin, isAdmin, isManagerOrAbove } = require('../middleware/role.middleware');
+const { isHROrAdmin, isManagerOrAbove } = require('../middleware/role.middleware');
 const { validate } = require('../middleware/validation.middleware');
 const { employeeCreateRules, uuidParam, paginationQuery } = require('../utils/validators');
 
@@ -14,7 +14,7 @@ router.get('/all', isHROrAdmin, paginationQuery, validate, employeeController.ge
 router.get('/team/:managerId', isManagerOrAbove, uuidParam('managerId'), validate, employeeController.getTeam);
 router.get('/:id', uuidParam(), validate, employeeController.getById);
 router.put('/:id/update', uuidParam(), validate, employeeController.update);
-router.delete('/:id', isAdmin, uuidParam(), validate, employeeController.remove);
+router.delete('/:id', isHROrAdmin, uuidParam(), validate, employeeController.remove);
 router.put('/:id/deactivate', isHROrAdmin, uuidParam(), validate, employeeController.deactivate);
 
 module.exports = router;

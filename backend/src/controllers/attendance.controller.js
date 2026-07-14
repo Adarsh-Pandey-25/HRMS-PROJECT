@@ -45,8 +45,14 @@ const myAttendance = async (req, res, next) => {
 
 const teamAttendance = async (req, res, next) => {
   try {
-    const teamIds = await attendanceService.getTeamEmployeeIds(req.user.id);
-    const filters = { employee_ids: teamIds };
+    const filters = {};
+    // Admin/HR see company-wide attendance; managers see direct reports only
+    if (['admin', 'hr'].includes(req.user.role)) {
+      if (req.query.employee_id) filters.employee_id = req.query.employee_id;
+    } else {
+      const teamIds = await attendanceService.getTeamEmployeeIds(req.user.id);
+      filters.employee_ids = teamIds;
+    }
     if (req.query.from) filters.from = req.query.from;
     if (req.query.to) filters.to = req.query.to;
     const result = await attendanceService.getAttendance(filters, req.query);

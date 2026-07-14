@@ -12,7 +12,7 @@ const createCourse = async (req, res, next) => {
   try {
     const targetDepartments = typeof req.body.targetDepartments === 'string'
       ? JSON.parse(req.body.targetDepartments)
-      : req.body.targetDepartments;
+      : (req.body.targetDepartments || req.body.target_departments);
 
     const data = await courseService.createCourse(
       { ...req.body, targetDepartments },
@@ -25,10 +25,9 @@ const createCourse = async (req, res, next) => {
 
 const updateCourse = async (req, res, next) => {
   try {
-    const targetDepartments = req.body.targetDepartments
-      ? (typeof req.body.targetDepartments === 'string'
-        ? JSON.parse(req.body.targetDepartments)
-        : req.body.targetDepartments)
+    const rawTargets = req.body.targetDepartments || req.body.target_departments;
+    const targetDepartments = rawTargets
+      ? (typeof rawTargets === 'string' ? JSON.parse(rawTargets) : rawTargets)
       : undefined;
 
     const data = await courseService.updateCourse(
@@ -49,10 +48,12 @@ const listManageCourses = async (req, res, next) => {
 
 const listEmployeeCourses = async (req, res, next) => {
   try {
-    const data = await courseService.listEmployeeCourses(req.user);
+    const data = await courseService.listCatalog(req.user);
     successResponse(res, 'Courses fetched', data);
   } catch (err) { next(err); }
 };
+
+const listCatalog = listEmployeeCourses;
 
 const getCourse = async (req, res, next) => {
   try {
@@ -75,9 +76,25 @@ const addChapter = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+const addLessonToCourse = async (req, res, next) => {
+  try {
+    const data = await courseService.addLessonToCourse(req.params.id, {
+      ...req.body,
+      order: req.body.order || req.body.lesson_order || req.body.lessonOrder,
+      externalLink: req.body.externalLink || req.body.external_link,
+      videoDuration: req.body.videoDuration || req.body.video_duration,
+    }, req.file);
+    successResponse(res, 'Lesson added', data, null, 201);
+  } catch (err) { next(err); }
+};
+
 const addLesson = async (req, res, next) => {
   try {
-    const data = await courseService.addLesson(req.params.id, req.body, req.file);
+    const data = await courseService.addLesson(req.params.id, {
+      ...req.body,
+      externalLink: req.body.externalLink || req.body.external_link,
+      videoDuration: req.body.videoDuration || req.body.video_duration,
+    }, req.file);
     successResponse(res, 'Lesson added', data, null, 201);
   } catch (err) { next(err); }
 };
@@ -89,12 +106,29 @@ const enrollCourse = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+const createEnrollments = async (req, res, next) => {
+  try {
+    const courseId = req.body.course_id || req.body.courseId;
+    const employeeIds = req.body.employee_ids || req.body.employeeIds || req.body.user_ids || [];
+    const data = await courseService.createEnrollmentsBulk({ courseId, employeeIds });
+    successResponse(res, 'Enrollments created', data, null, 201);
+  } catch (err) { next(err); }
+};
+
+const listEnrollments = async (req, res, next) => {
+  try {
+    const data = await courseService.listEnrollments();
+    successResponse(res, 'Enrollments fetched', data);
+  } catch (err) { next(err); }
+};
+
 const updateProgress = async (req, res, next) => {
   try {
+    const watched = req.body.watchedSeconds ?? req.body.watched_seconds;
     const data = await courseService.updateLessonProgress(
       req.params.id,
       req.user,
-      req.body.watchedSeconds,
+      watched,
     );
     successResponse(res, 'Progress updated', data);
   } catch (err) { next(err); }
@@ -103,7 +137,7 @@ const updateProgress = async (req, res, next) => {
 const deleteCourse = async (req, res, next) => {
   try {
     await courseService.deleteCourse(req.params.id);
-    successResponse(res, 'Course deleted');
+    successResponse(res, 'Course archived');
   } catch (err) { next(err); }
 };
 
@@ -127,11 +161,15 @@ module.exports = {
   updateCourse,
   listManageCourses,
   listEmployeeCourses,
+  listCatalog,
   getCourse,
   getManageCourse,
   addChapter,
   addLesson,
+  addLessonToCourse,
   enrollCourse,
+  createEnrollments,
+  listEnrollments,
   updateProgress,
   deleteCourse,
   trainingProgressReport,

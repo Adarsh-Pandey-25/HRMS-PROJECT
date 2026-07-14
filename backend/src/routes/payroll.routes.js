@@ -18,6 +18,7 @@ router.use(authenticate);
 router.post('/months', isHROrAdmin, payrollMonthRules, validate, payrollController.initializeMonth);
 router.get('/months', isEmployee, payrollMonthQueryRules, validate, payrollController.getMonthStatus);
 router.post('/payslips/generate', isHROrAdmin, payrollGeneratePayslipRules, validate, payrollController.generatePayslip);
+router.post('/payslips/recalculate-from-settings', isHROrAdmin, payrollController.recalculateFromSettings);
 router.put('/payslips/:id/publish', isHROrAdmin, uuidParam(), validate, payrollController.publishPayslip);
 router.get('/payslips', isEmployee, payrollListQueryRules, validate, payrollController.listPayslips);
 router.get('/payslips/:id/download', uuidParam(), validate, payrollController.downloadPayslip);

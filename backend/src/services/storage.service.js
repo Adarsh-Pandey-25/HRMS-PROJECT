@@ -69,7 +69,16 @@ const uploadCourseThumbnail = (file) =>
   uploadFile(STORAGE_BUCKETS.trainingMaterials, file, 'courses/thumbnails');
 
 const uploadCourseVideo = (file, courseId) =>
-  uploadFile(STORAGE_BUCKETS.trainingMaterials, file, `courses/${courseId}/videos`);
+  uploadFile(STORAGE_BUCKETS.courseVideos, file, `courses/${courseId}/videos`);
+
+/** Prefer course-videos bucket; fall back to training-materials for older uploads. */
+const resolveCourseVideoBucket = (pathOrKey) => {
+  if (!pathOrKey) return STORAGE_BUCKETS.courseVideos;
+  if (String(pathOrKey).startsWith('courses/') && !String(pathOrKey).includes('thumbnails')) {
+    return STORAGE_BUCKETS.courseVideos;
+  }
+  return STORAGE_BUCKETS.trainingMaterials;
+};
 
 const uploadProfilePicture = (file, employeeId) =>
   uploadFile(STORAGE_BUCKETS.profilePictures, file, employeeId);
@@ -96,5 +105,6 @@ module.exports = {
   uploadCourseVideo,
   uploadProfilePicture,
   uploadPayslip,
+  resolveCourseVideoBucket,
   STORAGE_BUCKETS,
 };
