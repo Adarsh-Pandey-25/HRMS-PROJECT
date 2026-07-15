@@ -444,16 +444,31 @@ const getNewHiresTrendPercent = (employees) => {
 };
 
 const getPendingLeaveList = async (limit = 5) => {
-  const { data, error } = await supabaseAdmin
+  const settingsService = require('./settings.service');
+  const meta = await settingsService.getSetting('leave_policy_meta', null);
+  const level = String(meta?.approval_level || meta?.approvalLevel || 'single').toLowerCase();
+  const twoLevel = level === 'two-level' || level === 'two_level' || level === 'two';
+
+  let query = supabaseAdmin
     .from('leaves')
-    .select('id, leave_type, from_date, total_days, employee:employee_id(id, first_name, last_name)')
+    .select('id, leave_type, from_date, total_days, manager_approved_by, employee:employee_id(id, first_name, last_name, manager_id)')
     .eq('status', 'pending')
     .order('created_at', { ascending: false })
-    .limit(limit);
+    .limit(Math.max(limit * 3, 20));
 
+  const { data, error } = await query;
   if (error) throw new BadRequestError(error.message);
 
-  return (data || []).map((row) => {
+  const rows = (data || []).filter((row) => {
+    if (!twoLevel) {
+      // Single-level: HR dashboard only shows leaves for staff with no manager
+      return !row.employee?.manager_id;
+    }
+    // Two-level: ready for HR = manager already approved OR no manager
+    return Boolean(row.manager_approved_by) || !row.employee?.manager_id;
+  }).slice(0, limit);
+
+  return rows.map((row) => {
     const emp = row.employee || {};
     return {
       id: row.id,
@@ -465,6 +480,7 @@ const getPendingLeaveList = async (limit = 5) => {
       totalDays: Number(row.total_days || 0),
       fromDate: moment(row.from_date).format('DD MMM'),
       status: 'Pending',
+      managerApproved: Boolean(row.manager_approved_by),
     };
   });
 };
@@ -963,16 +979,19 @@ const getOnLeaveTodayForTeam = async (employeeIds) => {
 const getPendingLeaveListForTeam = async (teamIds, limit = 5) => {
   if (!teamIds.length) return { count: 0, items: [] };
 
+  // Manager queue: pending leaves not yet manager-approved
   const [{ count }, { data, error }] = await Promise.all([
     supabaseAdmin
       .from('leaves')
       .select('id', { count: 'exact', head: true })
       .eq('status', 'pending')
+      .is('manager_approved_by', null)
       .in('employee_id', teamIds),
     supabaseAdmin
       .from('leaves')
       .select('id, leave_type, from_date, total_days, employee:employee_id(id, first_name, last_name)')
       .eq('status', 'pending')
+      .is('manager_approved_by', null)
       .in('employee_id', teamIds)
       .order('created_at', { ascending: false })
       .limit(limit),

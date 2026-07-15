@@ -15,10 +15,31 @@ const cycles = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+const createCycle = async (req, res, next) => {
+  try {
+    const data = await performanceService.createCycle(req.body);
+    successResponse(res, 'Review cycle created', data, null, 201);
+  } catch (err) { next(err); }
+};
+
 const teamReviews = async (req, res, next) => {
   try {
     const data = await performanceService.teamReviewsForManager(req.user.id);
     successResponse(res, 'Team reviews fetched', data);
+  } catch (err) { next(err); }
+};
+
+const openTeamReviews = async (req, res, next) => {
+  try {
+    const data = await performanceService.openTeamReviews(req.user.id, req.body.cycle_id || req.body.cycleId);
+    successResponse(res, 'Team reviews opened', data);
+  } catch (err) { next(err); }
+};
+
+const updateReview = async (req, res, next) => {
+  try {
+    const data = await performanceService.updateReview(req.params.id, req.user.id, req.body);
+    successResponse(res, 'Review updated', data);
   } catch (err) { next(err); }
 };
 
@@ -31,10 +52,12 @@ const createGoal = async (req, res, next) => {
 
 const updateGoal = async (req, res, next) => {
   try {
-    const data = await performanceService.updateGoal(req.params.id, req.body);
-    if (!data) return res.status(404).json({ success: false, error: { message: 'Goal not found' } });
+    const isPrivileged = ['hr', 'admin'].includes(req.user.role);
+    const data = await performanceService.updateGoal(req.params.id, req.user.id, req.body, isPrivileged);
     successResponse(res, 'Goal updated', data);
   } catch (err) { next(err); }
 };
 
-module.exports = { myGoals, cycles, teamReviews, createGoal, updateGoal };
+module.exports = {
+  myGoals, cycles, createCycle, teamReviews, openTeamReviews, updateReview, createGoal, updateGoal,
+};

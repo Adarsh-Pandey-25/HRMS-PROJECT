@@ -12,13 +12,25 @@ const create = async (req, res, next) => {
       attachmentUrl = path;
     }
 
+    let isActive = true;
+    if (req.body.is_active === false || req.body.is_active === 'false') isActive = false;
+    else if (req.body.is_active === true || req.body.is_active === 'true') isActive = true;
+
+    const payload = {
+      title: String(req.body.title || '').trim(),
+      content: String(req.body.content || '').trim(),
+      priority: req.body.priority || 'medium',
+      target_audience: req.body.target_audience || 'all',
+      department: req.body.department || null,
+      expires_at: req.body.expires_at || null,
+      is_active: isActive,
+      attachment_url: attachmentUrl,
+      published_by: req.user.id,
+    };
+
     const { data, error } = await supabaseAdmin
       .from('announcements')
-      .insert({
-        ...req.body,
-        attachment_url: attachmentUrl,
-        published_by: req.user.id,
-      })
+      .insert(payload)
       .select()
       .single();
 

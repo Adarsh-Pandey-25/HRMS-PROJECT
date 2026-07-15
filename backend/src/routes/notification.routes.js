@@ -12,8 +12,8 @@ router.use(isEmployee);
 
 router.get('/', paginationQuery, validate, notificationController.myNotifications);
 router.get('/unread-count', notificationController.unreadCount);
-router.put('/:id/read', uuidParam(), validate, notificationController.markAsRead);
 router.put('/read-all', notificationController.markAllAsRead);
+router.put('/:id/read', uuidParam(), validate, notificationController.markAsRead);
 
 module.exports = router;
 

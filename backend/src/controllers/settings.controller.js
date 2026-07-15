@@ -2,6 +2,41 @@ const settingsService = require('../services/settings.service');
 const { supabaseAdmin } = require('../config/supabase');
 const { successResponse } = require('../utils/helpers');
 const { BadRequestError, NotFoundError } = require('../utils/errors');
+const { LEAVE_TYPES } = require('../utils/constants');
+
+const normalizeLeavePolicy = (policy) => {
+  if (!Array.isArray(policy)) throw new BadRequestError('policy array is required');
+  if (!policy.length) throw new BadRequestError('policy must include at least one leave type');
+
+  const seen = new Set();
+  return policy.map((item, idx) => {
+    const code = String(item?.code || '').trim().toUpperCase();
+    if (!code) throw new BadRequestError(`policy[${idx}].code is required`);
+    if (!LEAVE_TYPES.includes(code)) {
+      throw new BadRequestError(
+        `Invalid leave code "${code}". Allowed: ${LEAVE_TYPES.join(', ')}`
+      );
+    }
+    if (seen.has(code)) throw new BadRequestError(`Duplicate leave code "${code}"`);
+    seen.add(code);
+    return {
+      ...item,
+      code,
+      name: item.name || code,
+      allocation: Math.max(0, Number(item.allocation || 0)),
+      active: item.active !== false,
+    };
+  });
+};
+
+const getRolePermissions = async (req, res, next) => {
+  try {
+    const value = await settingsService.getSetting('role_permissions', null);
+    successResponse(res, 'Role permissions fetched', { key: 'role_permissions', value });
+  } catch (err) {
+    next(err);
+  }
+};
 
 const getAll = async (req, res, next) => {
   try {
@@ -90,37 +125,41 @@ const createPayrollComponent = async (req, res, next) => {
 const updatePayrollComponent = async (req, res, next) => {
   try {
     const payload = req.body || {};
+    const patch = { updated_at: new Date().toISOString() };
+    if (payload.type !== undefined) patch.type = payload.type;
+    if (payload.name !== undefined) patch.name = payload.name;
+    if (payload.is_fixed !== undefined) patch.is_fixed = Boolean(payload.is_fixed);
+    if (payload.fixed_amount !== undefined) patch.fixed_amount = payload.fixed_amount;
+    if (payload.target_field !== undefined) patch.target_field = payload.target_field;
+    if (payload.operator !== undefined) patch.operator = payload.operator;
+    if (payload.operand_field !== undefined) patch.operand_field = payload.operand_field;
+    if (payload.operand_value !== undefined) patch.operand_value = payload.operand_value;
+    if (payload.output_field !== undefined) patch.output_field = payload.output_field;
+    if (payload.display_order !== undefined) patch.display_order = payload.display_order;
+    if (payload.is_active !== undefined) patch.is_active = payload.is_active !== false;
+
     const { data, error } = await supabaseAdmin
       .from('payroll_components')
-      .update({
-        type: payload.type,
-        name: payload.name,
-        is_fixed: Boolean(payload.is_fixed),
-        fixed_amount: payload.fixed_amount ?? null,
-        target_field: payload.target_field ?? null,
-        operator: payload.operator ?? null,
-        operand_field: payload.operand_field ?? null,
-        operand_value: payload.operand_value ?? null,
-        output_field: payload.output_field ?? null,
-        display_order: payload.display_order ?? 0,
-        is_active: payload.is_active !== false,
-        updated_at: new Date().toISOString(),
-      })
+      .update(patch)
       .eq('id', req.params.id)
       .select()
-      .single();
+      .maybeSingle();
     if (error) throw new BadRequestError(error.message);
+    if (!data) throw new NotFoundError('Payroll component not found');
     successResponse(res, 'Payroll component updated', data);
   } catch (err) { next(err); }
 };
 
 const deletePayrollComponent = async (req, res, next) => {
   try {
-    const { error } = await supabaseAdmin
+    const { data, error } = await supabaseAdmin
       .from('payroll_components')
       .delete()
-      .eq('id', req.params.id);
+      .eq('id', req.params.id)
+      .select('id')
+      .maybeSingle();
     if (error) throw new BadRequestError(error.message);
+    if (!data) throw new NotFoundError('Payroll component not found');
     successResponse(res, 'Payroll component deleted');
   } catch (err) { next(err); }
 };
@@ -157,8 +196,7 @@ const getLeavePolicy = async (req, res, next) => {
 
 const updateLeavePolicy = async (req, res, next) => {
   try {
-    const policy = req.body?.policy;
-    if (!Array.isArray(policy)) throw new BadRequestError('policy array is required');
+    const policy = normalizeLeavePolicy(req.body?.policy);
 
     const { data, error } = await settingsService.setSetting('leave_policy', policy, req.user.id);
     if (error) throw new BadRequestError(error.message);
@@ -171,10 +209,9 @@ const applyLeavePolicyToAll = async (req, res, next) => {
     const year = parseInt(req.query.year, 10);
     if (!year) throw new BadRequestError('year query param is required');
 
-    const policy = await settingsService.getSetting('leave_policy', null);
-    if (!Array.isArray(policy) || !policy.length) throw new BadRequestError('Leave policy is not configured yet');
+    const rawPolicy = await settingsService.getSetting('leave_policy', null);
+    const policy = normalizeLeavePolicy(rawPolicy);
 
-    // Create missing leave_balances rows for ALL employees for new/custom leave codes
     const { data: employees, error: empErr } = await supabaseAdmin
       .from('employees')
       .select('id')
@@ -187,7 +224,6 @@ const applyLeavePolicyToAll = async (req, res, next) => {
       const allocation = Number(item.allocation || 0);
       const active = item.active !== false;
 
-      // Insert missing rows for this leave type/year without resetting used/encashed
       const { data: existing, error: exErr } = await supabaseAdmin
         .from('leave_balances')
         .select('employee_id')
@@ -209,11 +245,12 @@ const applyLeavePolicyToAll = async (req, res, next) => {
         if (insErr) throw new BadRequestError(insErr.message);
       }
 
-      await supabaseAdmin
+      const { error: updErr } = await supabaseAdmin
         .from('leave_balances')
         .update({ total_allocated: active ? allocation : 0 })
         .eq('year', year)
         .eq('leave_type', code);
+      if (updErr) throw new BadRequestError(updErr.message);
     }
 
     successResponse(res, 'Leave policy applied to all employees', { year });
@@ -249,6 +286,7 @@ module.exports = {
   getAll,
   getByKey,
   updateKey,
+  getRolePermissions,
   getPayrollComponents,
   createPayrollComponent,
   updatePayrollComponent,

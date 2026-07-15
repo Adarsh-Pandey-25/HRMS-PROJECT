@@ -54,16 +54,20 @@ const applyLeave = async (employeeId, data) => {
     throw new BadRequestError(`${leave_type} is disabled by Admin`);
   }
 
-  if (['CL', 'SL', 'EL'].includes(leave_type)) {
+  // Enforce balance for any leave type that has a yearly allocation
+  const allocated = Number(found?.allocation ?? 0);
+  if (allocated > 0 || ['CL', 'SL', 'EL'].includes(leave_type)) {
     const { data: balance } = await supabaseAdmin
       .from('leave_balances')
       .select('*')
       .eq('employee_id', employeeId)
       .eq('year', year)
       .eq('leave_type', leave_type)
-      .single();
+      .maybeSingle();
 
-    if (balance && (balance.total_allocated - balance.used) < totalDays) {
+    const totalAllocated = Number(balance?.total_allocated ?? allocated);
+    const used = Number(balance?.used ?? 0);
+    if ((totalAllocated - used) < totalDays) {
       throw new BadRequestError(`Insufficient ${leave_type} balance`);
     }
   }
@@ -98,7 +102,7 @@ const applyLeave = async (employeeId, data) => {
       type: 'LEAVE',
       title: 'Leave request pending approval',
       message: `${employee.first_name} ${employee.last_name} applied for leave (${leave_type}) from ${from_date} to ${to_date}.`,
-      link: '/leaves?tab=team',
+      link: '/leave/team',
       meta: { leave_id: leave.id },
     });
   } else {
@@ -113,7 +117,7 @@ const applyLeave = async (employeeId, data) => {
         type: 'LEAVE',
         title: 'Leave request submitted',
         message: `A leave request (${leave_type}) was submitted and needs review.`,
-        link: '/leaves?tab=all',
+        link: '/leave/approvals',
         meta: { leave_id: leave.id },
       });
     }
@@ -126,7 +130,7 @@ const getLeaves = async (filters, query) => {
   const { page, limit, offset } = paginate(query);
   let dbQuery = supabaseAdmin
     .from('leaves')
-    .select('*, employee:employee_id(id, first_name, last_name, employee_code, department)', { count: 'exact' })
+    .select('*, employee:employee_id(id, first_name, last_name, employee_code, department, manager_id)', { count: 'exact' })
     .order('created_at', { ascending: false })
     .range(offset, offset + limit - 1);
 
@@ -139,6 +143,40 @@ const getLeaves = async (filters, query) => {
   return { data, meta: buildMeta(page, limit, count) };
 };
 
+const notifyLeaveApproved = async (leave) => {
+  if (leave.employee) {
+    leaveStatusEmail(leave.employee, leave, 'approved').catch(() => {});
+  }
+  await notificationService.createNotification({
+    user_id: leave.employee_id,
+    type: 'LEAVE',
+    title: 'Leave approved',
+    message: `Your leave request (${leave.leave_type}) has been approved.`,
+    link: '/leave/me',
+    meta: { leave_id: leave.id },
+  });
+
+  // Clear any leftover "needs HR approval" alerts for this leave (e.g. after switching to single-level)
+  try {
+    await supabaseAdmin
+      .from('notifications')
+      .update({ is_read: true })
+      .eq('type', 'LEAVE')
+      .ilike('title', '%HR approval%')
+      .contains('meta', { leave_id: leave.id });
+  } catch {
+    /* non-fatal */
+  }
+};
+
+/** Reads Settings → Leave Policy → Approval Flow (leave_policy_meta). */
+const getLeaveApprovalLevel = async () => {
+  const meta = await settingsService.getSetting('leave_policy_meta', null);
+  if (!meta || typeof meta !== 'object') return 'single';
+  const level = String(meta.approval_level || meta.approvalLevel || 'single').toLowerCase();
+  return level === 'two-level' || level === 'two_level' || level === 'two' ? 'two-level' : 'single';
+};
+
 const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
   const { data: leave } = await supabaseAdmin.from('leaves').select('*, employee:employee_id(*)').eq('id', leaveId).single();
   if (!leave) throw new NotFoundError('Leave not found');
@@ -146,12 +184,35 @@ const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
     throw new BadRequestError('Leave cannot be approved in current status');
   }
 
+  const approvalLevel = await getLeaveApprovalLevel();
+  const singleLevel = approvalLevel === 'single';
+
   if (isManagerApproval && approver.role === 'manager') {
     const teamIds = await getTeamEmployeeIds(approver.id);
     if (!teamIds.includes(leave.employee_id)) {
       throw new ForbiddenError('Not authorized to approve this leave');
     }
 
+    // Single-level: manager approval is final
+    if (singleLevel) {
+      const { data: updated, error } = await supabaseAdmin
+        .from('leaves')
+        .update({
+          status: 'approved',
+          manager_approved_by: approver.id,
+          manager_approved_at: new Date().toISOString(),
+          approved_by: approver.id,
+          approved_at: new Date().toISOString(),
+        })
+        .eq('id', leaveId)
+        .select()
+        .single();
+      if (error) throw new BadRequestError(error.message);
+      await notifyLeaveApproved({ ...leave, id: leaveId });
+      return updated;
+    }
+
+    // Two-level: record manager approval, then HR finalizes
     const { data: updated } = await supabaseAdmin
       .from('leaves')
       .update({
@@ -162,7 +223,6 @@ const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
       .select()
       .single();
 
-    // Notify HR/Admin for final approval
     const { data: hrs } = await supabaseAdmin
       .from('employees')
       .select('id')
@@ -174,7 +234,7 @@ const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
         type: 'LEAVE',
         title: 'Leave needs HR approval',
         message: `Manager approved a leave request (${leave.leave_type}). Please review and approve/reject.`,
-        link: '/leaves?tab=all',
+        link: '/leave/approvals',
         meta: { leave_id: leaveId, employee_id: leave.employee_id },
       });
     }
@@ -182,8 +242,9 @@ const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
     return updated;
   }
 
-  // HR/Admin final approval (Manager → HR workflow)
-  if (leave.employee?.manager_id && !leave.manager_approved_by) {
+  // HR/Admin final approval
+  // Two-level only: require manager step first when employee has a manager
+  if (!singleLevel && leave.employee?.manager_id && !leave.manager_approved_by) {
     throw new BadRequestError('Manager approval required before HR approval');
   }
 
@@ -200,19 +261,7 @@ const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
 
   if (error) throw new BadRequestError(error.message);
 
-  if (leave.employee) {
-    leaveStatusEmail(leave.employee, leave, 'approved').catch(() => {});
-  }
-
-  // Notify employee
-  await notificationService.createNotification({
-    user_id: leave.employee_id,
-    type: 'LEAVE',
-    title: 'Leave approved',
-    message: `Your leave request (${leave.leave_type}) has been approved.`,
-    link: '/leaves?tab=mine',
-    meta: { leave_id: leaveId },
-  });
+  await notifyLeaveApproved({ ...leave, id: leaveId });
 
   return updated;
 };
@@ -246,7 +295,7 @@ const rejectLeave = async (approver, leaveId, rejection_reason) => {
     type: 'LEAVE',
     title: 'Leave rejected',
     message: `Your leave request (${leave.leave_type}) was rejected.${rejection_reason ? ` Reason: ${rejection_reason}` : ''}`,
-    link: '/leaves?tab=mine',
+    link: '/leave/me',
     meta: { leave_id: leaveId },
   });
 

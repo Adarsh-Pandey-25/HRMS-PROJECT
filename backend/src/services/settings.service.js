@@ -84,10 +84,11 @@ const setSetting = async (key, value, updatedBy = null) => {
 };
 
 const getEffectiveOfficeConfig = async () => {
-  // Env overrides DB (useful for local dev).
-  const allowRemoteLogin = config.allowRemoteLogin || (await getBoolean('allow_remote_login', false));
-  const officeCidr = await getString('office_cidr', config.officeCidr);
-  const officeIp = await getString('office_ip', config.officeIp);
+  // DB settings win for office network (Attendance Settings → IP whitelist).
+  // ENV is fallback only — so Admin can restrict office check-in without editing .env.
+  const allowRemoteLogin = await getBoolean('allow_remote_login', config.allowRemoteLogin);
+  const officeCidr = (await getString('office_cidr', '')) || config.officeCidr;
+  const officeIp = (await getString('office_ip', '')) || config.officeIp;
 
   return { allowRemoteLogin, officeCidr, officeIp };
 };

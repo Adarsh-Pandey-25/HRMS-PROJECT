@@ -26,7 +26,7 @@ const loginRules = [
 
 const changePasswordRules = [
   body('currentPassword').notEmpty(),
-  body('newPassword').isLength({ min: 8 }),
+  body('newPassword').isLength({ min: 1 }).withMessage('Password is required'),
 ];
 
 const forgotPasswordRules = [body('email').isEmail().normalizeEmail()];
@@ -37,7 +37,7 @@ const forgotPasswordRules = [body('email').isEmail().normalizeEmail()];
 const resetPasswordRules = [
   body('email').isEmail().normalizeEmail(),
   body('otp').isLength({ min: 4, max: 10 }).withMessage('OTP is required'),
-  body('newPassword').isLength({ min: 8 }),
+  body('newPassword').isLength({ min: 1 }).withMessage('Password is required'),
 ];
 
 const employeeCreateRules = [
@@ -60,6 +60,7 @@ const checkInRules = [
   body('method').isIn(CHECK_IN_METHODS),
   body('device_id').optional().trim(),
   body('location').optional().isObject(),
+  body('is_wfh').optional().isBoolean(),
 ];
 
 const leaveApplyRules = [
@@ -76,6 +77,7 @@ const reimbursementRules = [
   body('amount').isFloat({ min: 0.01 }),
   body('description').trim().notEmpty(),
   body('expense_date').isISO8601(),
+  body('category_name').optional().trim(),
 ];
 
 const trainingCreateRules = [
@@ -90,11 +92,24 @@ const trainingCreateRules = [
 ];
 
 const announcementRules = [
-  body('title').trim().notEmpty(),
-  body('content').trim().notEmpty(),
-  body('priority').isIn(ANNOUNCEMENT_PRIORITY),
-  body('target_audience').isIn(ANNOUNCEMENT_AUDIENCE),
-  body('expires_at').optional().isISO8601(),
+  body('title').trim().notEmpty().withMessage('Title is required'),
+  body('content').custom((v) => {
+    const text = String(v || '').replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim();
+    if (!text) throw new Error('Body is required');
+    return true;
+  }),
+  body('priority')
+    .customSanitizer((v) => {
+      const aliases = { normal: 'medium', important: 'high' };
+      return aliases[v] || v || 'medium';
+    })
+    .isIn(ANNOUNCEMENT_PRIORITY),
+  body('target_audience')
+    .customSanitizer((v, { req }) => v || req.body.audience || 'all')
+    .isIn(ANNOUNCEMENT_AUDIENCE),
+  body('is_active').optional(),
+  body('expires_at').optional({ values: 'falsy' }).isISO8601(),
+  body('department').optional().trim(),
 ];
 
 const holidayRules = [

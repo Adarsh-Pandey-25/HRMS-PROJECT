@@ -3,14 +3,38 @@ const { supabaseAdmin } = require('../config/supabase');
 const config = require('../config/database');
 const { TIMEZONE, WORK_HOURS } = require('../utils/constants');
 const {
-  BadRequestError, NotFoundError, ConflictError,
+  BadRequestError, NotFoundError, ConflictError, ForbiddenError,
 } = require('../utils/errors');
 const {
-  calculateWorkingHours, determineAttendanceStatus, nowIST, paginate, buildMeta,
+  calculateWorkingHours, determineAttendanceStatus, nowIST, paginate, buildMeta, ipInCidr,
 } = require('../utils/helpers');
 const { autoCheckoutEmail } = require('./email.service');
 const logger = require('../utils/logger');
 const settingsService = require('./settings.service');
+
+/** office = office IP required; wfh = any network */
+const resolveAttendanceMode = (employee) => {
+  const addr = (employee?.address && typeof employee.address === 'object') ? employee.address : {};
+  const raw = String(
+    employee?.attendance_mode
+    || addr.attendance_mode
+    || addr.attendanceMode
+    || 'office'
+  ).toLowerCase();
+  return (raw === 'wfh' || raw === 'remote' || raw === 'work_from_home') ? 'wfh' : 'office';
+};
+
+const assertOfficeIpAllowed = async (clientIp) => {
+  const { officeCidr, officeIp } = await settingsService.getEffectiveOfficeConfig();
+  // Prefer DB whitelist; fall back to seeded office IP
+  const cidr = String(officeCidr || officeIp || '').trim();
+  if (!cidr) return;
+  if (!ipInCidr(clientIp, cidr)) {
+    throw new ForbiddenError(
+      `Check-in allowed only from office network (${cidr}). Your IP: ${clientIp || 'unknown'}`
+    );
+  }
+};
 
 const getActiveCheckIn = async (employeeId) => {
   const { data } = await supabaseAdmin
@@ -42,7 +66,36 @@ const getTodayAttendance = async (employeeId) => {
   return data;
 };
 
-const checkIn = async (employeeId, { method, device_id, location, clientIp }) => {
+const isWfhLocation = (location) => {
+  const loc = (location && typeof location === 'object') ? location : {};
+  return Boolean(loc.is_wfh || loc.wfh);
+};
+
+const checkIn = async (employeeId, { method, device_id, location, clientIp, is_wfh }) => {
+  const { data: emp, error: empErr } = await supabaseAdmin
+    .from('employees')
+    .select('id, address')
+    .eq('id', employeeId)
+    .single();
+  if (empErr) throw new BadRequestError(empErr.message);
+
+  const attendanceMode = resolveAttendanceMode(emp || {});
+  const wfhRequestService = require('./wfhRequest.service');
+  const approvedDailyWfh = await wfhRequestService.isApprovedForDate(employeeId);
+  // Daily WFH only counts when Manager/HR approved — permanent WFH mode always allowed
+  const wantsWfh = attendanceMode === 'wfh' || (Boolean(is_wfh) && approvedDailyWfh);
+
+  if (Boolean(is_wfh) && attendanceMode === 'office' && !approvedDailyWfh) {
+    throw new ForbiddenError(
+      'WFH for today needs Manager/HR approval first. Request it from My Attendance.'
+    );
+  }
+
+  // Office IP required only for office-mode employees who are NOT on approved WFH today
+  if (attendanceMode === 'office' && !wantsWfh) {
+    await assertOfficeIpAllowed(clientIp);
+  }
+
   const todayRecord = await getTodayAttendance(employeeId);
   if (todayRecord) {
     throw new ConflictError(
@@ -55,23 +108,40 @@ const checkIn = async (employeeId, { method, device_id, location, clientIp }) =>
   const active = await getActiveCheckIn(employeeId);
   if (active) throw new ConflictError('Already checked in. Please check out first.');
 
-  const { data, error } = await supabaseAdmin
+  const baseLocation = (location && typeof location === 'object') ? location : {};
+  const savedLocation = wantsWfh
+    ? { ...baseLocation, is_wfh: true }
+    : baseLocation;
+
+  // Prefer native 'wfh' status when the DB enum supports it; fall back to present + location flag
+  let insertPayload = {
+    employee_id: employeeId,
+    check_in_time: nowIST().toISOString(),
+    check_in_method: method,
+    check_in_ip: clientIp,
+    device_id,
+    location: Object.keys(savedLocation).length ? savedLocation : null,
+    status: wantsWfh ? 'wfh' : 'present',
+  };
+
+  let { data, error } = await supabaseAdmin
     .from('attendance')
-    .insert({
-      employee_id: employeeId,
-      check_in_time: nowIST().toISOString(),
-      check_in_method: method,
-      check_in_ip: clientIp,
-      device_id,
-      location,
-      status: 'present',
-    })
+    .insert(insertPayload)
     .select()
     .single();
 
+  if (error && wantsWfh && /invalid input value for enum attendance_status/i.test(error.message || '')) {
+    insertPayload = { ...insertPayload, status: 'present' };
+    ({ data, error } = await supabaseAdmin
+      .from('attendance')
+      .insert(insertPayload)
+      .select()
+      .single());
+  }
+
   if (error) throw new BadRequestError(error.message);
-  logger.info('Check-in recorded', { employeeId, method });
-  return data;
+  logger.info('Check-in recorded', { employeeId, method, attendanceMode, wantsWfh, clientIp });
+  return { ...data, attendance_mode: attendanceMode, is_wfh: wantsWfh };
 };
 
 const checkOut = async (employeeId, { method, clientIp, break_minutes = 0 }) => {
@@ -86,13 +156,16 @@ const checkOut = async (employeeId, { method, clientIp, break_minutes = 0 }) => 
   const checkOutTime = nowIST().toISOString();
   const totalHours = calculateWorkingHours(active.check_in_time, checkOutTime) - (break_minutes / 60);
   const overtimeHours = Math.max(0, totalHours - WORK_HOURS);
+  const wasWfh = active.status === 'wfh' || isWfhLocation(active.location);
   let status = determineAttendanceStatus(active.check_in_time, totalHours);
 
   // Payroll rule (admin toggle): if checkout before goal hours, treat as half-day (not early_departure)
   const halfDayBeforeGoal = await settingsService.getBoolean('payroll_halfday_before_goal_enabled', false);
-  if (halfDayBeforeGoal && totalHours < WORK_HOURS && totalHours > 0) {
+  if (!wasWfh && halfDayBeforeGoal && totalHours < WORK_HOURS && totalHours > 0) {
     status = 'half_day';
   }
+  // Preserve native wfh enum when the check-in used it
+  if (active.status === 'wfh') status = 'wfh';
 
   const { data, error } = await supabaseAdmin
     .from('attendance')
@@ -194,7 +267,9 @@ const toRangeEnd = (value) => {
 };
 
 const getAttendance = async (filters, query) => {
-  const { page, limit, offset } = paginate(query);
+  const page = Math.max(1, parseInt(query.page, 10) || 1);
+  const limit = Math.min(500, Math.max(1, parseInt(query.limit, 10) || 100));
+  const offset = (page - 1) * limit;
 
   if (Array.isArray(filters.employee_ids) && filters.employee_ids.length === 0) {
     return { data: [], meta: buildMeta(page, limit, 0) };
@@ -202,7 +277,7 @@ const getAttendance = async (filters, query) => {
 
   let dbQuery = supabaseAdmin
     .from('attendance')
-    .select('*, employee:employee_id(id, first_name, last_name, employee_code, department, designation)', { count: 'exact' })
+    .select('*, employee:employee_id(id, first_name, last_name, employee_code, department, designation, attendance_mode)', { count: 'exact' })
     .order('check_in_time', { ascending: false })
     .range(offset, offset + limit - 1);
 
@@ -233,11 +308,12 @@ const getMonthlySummary = async (employeeId, month, year) => {
   if (error) throw new BadRequestError(error.message);
 
   const rows = data || [];
-  // Present = days the employee showed up (on-time, late, or left early). Late stays a separate KPI.
+  const rowIsWfh = (a) => a.status === 'wfh' || isWfhLocation(a.location);
+  // Present = office days showed up (on-time, late, or left early). WFH counted separately.
   const present = rows.filter((a) =>
-    ['present', 'late', 'early_departure'].includes(a.status) || !a.check_out_time
+    !rowIsWfh(a) && (['present', 'late', 'early_departure'].includes(a.status) || !a.check_out_time)
   ).length;
-  const late = rows.filter((a) => a.status === 'late').length;
+  const late = rows.filter((a) => a.status === 'late' && !rowIsWfh(a)).length;
   const halfDay = rows.filter((a) => a.status === 'half_day').length;
   const earlyDeparture = rows.filter((a) => a.status === 'early_departure').length;
   const incomplete = rows.filter((a) => !a.check_out_time).length;
@@ -271,7 +347,7 @@ const getMonthlySummary = async (employeeId, month, year) => {
     totalDays: rows.length,
     workingDays,
     present,
-    wfh: rows.filter((a) => a.status === 'wfh').length,
+    wfh: rows.filter((a) => rowIsWfh(a)).length,
     late,
     halfDay,
     earlyDeparture,

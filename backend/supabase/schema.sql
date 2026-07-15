@@ -10,7 +10,7 @@ CREATE TYPE user_role AS ENUM ('hr', 'admin', 'manager', 'employee');
 CREATE TYPE gender_type AS ENUM ('male', 'female', 'other');
 CREATE TYPE employment_type AS ENUM ('full_time', 'part_time', 'contract', 'intern');
 CREATE TYPE check_in_method AS ENUM ('office_ip', 'web', 'mobile', 'biometric');
-CREATE TYPE attendance_status AS ENUM ('present', 'absent', 'half_day', 'late', 'early_departure');
+CREATE TYPE attendance_status AS ENUM ('present', 'absent', 'half_day', 'late', 'early_departure', 'wfh');
 CREATE TYPE leave_type AS ENUM ('CL', 'SL', 'EL', 'WFH', 'COMP_OFF', 'MATERNITY', 'PATERNITY', 'UNPAID');
 CREATE TYPE leave_status AS ENUM ('pending', 'approved', 'rejected', 'cancelled');
 CREATE TYPE payment_status AS ENUM ('pending', 'processed', 'paid');

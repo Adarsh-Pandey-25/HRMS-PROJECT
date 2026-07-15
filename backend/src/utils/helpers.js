@@ -35,15 +35,30 @@ const normalizeIp = (ip) => {
 };
 
 const ipInCidr = (ip, cidr) => {
+  if (!cidr) return false;
   const normalizedIp = normalizeIp(ip);
-  if (!cidr.includes('/')) {
-    return normalizedIp === cidr;
-  }
-  const [range, bits] = cidr.split('/');
-  const mask = ~(2 ** (32 - parseInt(bits, 10)) - 1);
+  // Support comma/semicolon-separated whitelist from Settings → Attendance
+  const ranges = String(cidr)
+    .split(/[,;]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!ranges.length) return false;
+
   const ipToNum = (addr) =>
     addr.split('.').reduce((acc, octet) => (acc << 8) + parseInt(octet, 10), 0) >>> 0;
-  return (ipToNum(normalizedIp) & mask) === (ipToNum(range) & mask);
+
+  return ranges.some((entry) => {
+    if (!entry.includes('/')) {
+      return normalizedIp === normalizeIp(entry);
+    }
+    const [range, bits] = entry.split('/');
+    const mask = ~(2 ** (32 - parseInt(bits, 10)) - 1);
+    try {
+      return (ipToNum(normalizedIp) & mask) === (ipToNum(range) & mask);
+    } catch {
+      return false;
+    }
+  });
 };
 
 const nowIST = () => moment().tz(TIMEZONE);

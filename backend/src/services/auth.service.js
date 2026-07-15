@@ -8,12 +8,30 @@ const {
 } = require('../utils/errors');
 const { omitSensitive, generateEmployeeCode, generateDefaultPassword } = require('../utils/helpers');
 const { welcomeEmail, passwordResetEmail } = require('./email.service');
+const settingsService = require('./settings.service');
 const logger = require('../utils/logger');
 
 const SALT_ROUNDS = 10;
 
 const hashPassword = (password) => bcrypt.hash(password, SALT_ROUNDS);
 const comparePassword = (password, hash) => bcrypt.compare(password, hash);
+
+const assertPasswordPolicy = async (password) => {
+  const cfg = await settingsService.getSetting('security_config', null);
+  const minLength = Number(cfg?.passwordMinLength ?? cfg?.password_min_length ?? 8);
+  const requireSpecial = cfg?.passwordRequireSpecialChar ?? cfg?.password_require_special_char ?? true;
+  const requireNumber = cfg?.passwordRequireNumber ?? cfg?.password_require_number ?? true;
+
+  if (!password || password.length < Math.max(1, minLength)) {
+    throw new BadRequestError(`Password must be at least ${minLength} characters`);
+  }
+  if (requireSpecial && !/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(password)) {
+    throw new BadRequestError('Password must include a special character');
+  }
+  if (requireNumber && !/\d/.test(password)) {
+    throw new BadRequestError('Password must include a number');
+  }
+};
 
 const generateTokens = (employee) => {
   const payload = { id: employee.id, email: employee.email, role: employee.role };
@@ -158,6 +176,8 @@ const changePassword = async (employeeId, currentPassword, newPassword) => {
   const valid = await comparePassword(currentPassword, employee.password_hash);
   if (!valid) throw new UnauthorizedError('Current password is incorrect');
 
+  await assertPasswordPolicy(newPassword);
+
   const passwordHash = await hashPassword(newPassword);
   await supabaseAdmin
     .from('employees')
@@ -217,6 +237,8 @@ const resetPassword = async (email, otp, newPassword) => {
     .single();
 
   if (!resetRecord) throw new BadRequestError('Invalid or expired OTP');
+
+  await assertPasswordPolicy(newPassword);
 
   const passwordHash = await hashPassword(newPassword);
   await supabaseAdmin

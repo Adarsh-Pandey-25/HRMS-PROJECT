@@ -10,11 +10,30 @@ const listJobs = async (query = {}) => {
 };
 
 const createJob = async (body) => {
-  const { data, error } = await supabaseAdmin
-    .from('job_openings')
-    .insert({ status: 'open', openings: body.openings || 1, ...body })
-    .select()
-    .single();
+  const statusRaw = String(body.status || 'open').toLowerCase();
+  const status = ['active', 'open'].includes(statusRaw) ? 'open'
+    : ['closed', 'inactive', 'filled'].includes(statusRaw) ? 'closed'
+    : 'open';
+
+  const payload = {
+    title: String(body.title || '').trim(),
+    department: body.department || null,
+    location: body.location || null,
+    employment_type: body.employment_type || body.employmentType || 'full_time',
+    status,
+    openings: Number(body.openings) > 0 ? Number(body.openings) : 1,
+  };
+
+  if (!payload.title) throw new BadRequestError('Job title is required');
+
+  // Prefer storing description when the column exists (migration add_job_description.sql)
+  const withDesc = { ...payload, description: body.description || null };
+  let { data, error } = await supabaseAdmin.from('job_openings').insert(withDesc).select().single();
+
+  if (error && /description/i.test(error.message || '')) {
+    ({ data, error } = await supabaseAdmin.from('job_openings').insert(payload).select().single());
+  }
+
   if (error) throw new BadRequestError(error.message);
   return data;
 };

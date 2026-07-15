@@ -31,10 +31,15 @@ const attachClientIp = (req, res, next) => {
 };
 
 const validateOfficeIpOptional = (req, res, next) => {
-  const clientIp = getClientIp(req);
-  req.clientIp = clientIp;
-  req.isOfficeIp = ipInCidr(clientIp, config.officeCidr);
-  next();
+  Promise.resolve()
+    .then(async () => {
+      const clientIp = getClientIp(req);
+      req.clientIp = clientIp;
+      const { officeCidr } = await settingsService.getEffectiveOfficeConfig();
+      req.isOfficeIp = ipInCidr(clientIp, officeCidr || config.officeCidr);
+    })
+    .then(() => next())
+    .catch((err) => next(err));
 };
 
 const requireOfficeIpForMethod = (methodsRequiringOffice = ['office_ip']) => (req, res, next) => {

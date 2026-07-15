@@ -21,7 +21,9 @@ const myLeaves = async (req, res, next) => {
 const teamLeaves = async (req, res, next) => {
   try {
     const teamIds = await attendanceService.getTeamEmployeeIds(req.user.id);
-    const result = await leaveService.getLeaves({ employee_ids: teamIds }, req.query);
+    const filters = { employee_ids: teamIds };
+    if (req.query.status) filters.status = req.query.status;
+    const result = await leaveService.getLeaves(filters, req.query);
     successResponse(res, 'Team leaves fetched', result.data, result.meta);
   } catch (err) { next(err); }
 };

@@ -8,29 +8,35 @@ const notificationService = require('../services/notification.service');
 
 const submit = async (req, res, next) => {
   try {
+    const amount = Number(req.body.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new BadRequestError('Enter a valid amount');
+    }
+
+    const cfg = await settingsService.getSetting('expense_config', null);
+    const requireReceiptAbove = Number(
+      (cfg && typeof cfg === 'object'
+        ? (cfg.requireReceiptAbove ?? cfg.require_receipt_above)
+        : null) ?? 500,
+    );
+    if (Number.isFinite(requireReceiptAbove) && amount > requireReceiptAbove && !req.file) {
+      throw new BadRequestError(
+        `Receipt required for claims above ₹${requireReceiptAbove.toLocaleString('en-IN')}`,
+      );
+    }
+
     let receiptUrl = null;
     if (req.file) {
       const { path } = await uploadReceipt(req.file, req.user.id);
       receiptUrl = path;
     }
 
-    const startOfMonth = new Date(req.body.expense_date);
-    startOfMonth.setDate(1);
-    const { data: monthlyTotal } = await supabaseAdmin
-      .from('reimbursements')
-      .select('amount')
-      .eq('employee_id', req.user.id)
-      .gte('expense_date', startOfMonth.toISOString().split('T')[0])
-      .neq('status', 'rejected');
-
-    // Monthly reimbursement limit removed (no cap).
-
     const { data, error } = await supabaseAdmin
       .from('reimbursements')
       .insert({
         employee_id: req.user.id,
         reimbursement_type: req.body.reimbursement_type,
-        amount: req.body.amount,
+        amount,
         description: req.body.description,
         expense_date: req.body.expense_date,
         receipt_url: receiptUrl,
@@ -53,7 +59,7 @@ const submit = async (req, res, next) => {
         type: 'REIMBURSEMENT',
         title: 'Reimbursement pending approval',
         message: `${employee.first_name} ${employee.last_name} submitted a reimbursement claim (₹${req.body.amount}).`,
-        link: '/reimbursements?tab=team',
+        link: '/expenses/approvals',
         meta: { reimbursement_id: data.id },
       });
     } else {
@@ -68,7 +74,7 @@ const submit = async (req, res, next) => {
           type: 'REIMBURSEMENT',
           title: 'Reimbursement submitted',
           message: `A reimbursement claim was submitted and needs review.`,
-          link: '/reimbursements?tab=all',
+          link: '/expenses/all',
           meta: { reimbursement_id: data.id },
         });
       }
@@ -178,7 +184,7 @@ const approve = async (req, res, next) => {
           type: 'REIMBURSEMENT',
           title: 'Reimbursement needs HR approval',
           message: `Manager approved a reimbursement claim. Please review and approve/reject.`,
-          link: '/reimbursements?tab=all',
+          link: '/expenses/all',
           meta: { reimbursement_id: reimbursement.id, employee_id: reimbursement.employee_id },
         });
       }
@@ -189,7 +195,7 @@ const approve = async (req, res, next) => {
         type: 'REIMBURSEMENT',
         title: 'Reimbursement approved',
         message: `Your reimbursement claim was approved.`,
-        link: '/reimbursements?tab=mine',
+        link: '/expenses/me',
         meta: { reimbursement_id: reimbursement.id },
       });
     }
@@ -233,7 +239,7 @@ const reject = async (req, res, next) => {
       type: 'REIMBURSEMENT',
       title: 'Reimbursement rejected',
       message: `Your reimbursement claim was rejected.${req.body.rejection_reason ? ` Reason: ${req.body.rejection_reason}` : ''}`,
-      link: '/reimbursements?tab=mine',
+      link: '/expenses/me',
       meta: { reimbursement_id: reimbursement.id },
     });
 

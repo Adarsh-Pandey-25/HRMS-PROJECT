@@ -642,7 +642,7 @@ const publishPayslip = async (payslipId, publisherId) => {
     type: 'PAYROLL',
     title: 'Payslip published',
     message: `Your payslip for ${moment.tz({ year: payslip.year, month: payslip.month - 1 }, TIMEZONE).format('MMMM YYYY')} is now available.`,
-    link: '/payroll',
+    link: '/payroll/me',
     meta: { payslip_id: payslipId, month: payslip.month, year: payslip.year },
   });
 

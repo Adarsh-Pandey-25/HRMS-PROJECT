@@ -9,6 +9,11 @@ const upload = async (req, res, next) => {
     if (!req.file) throw new BadRequestError('File is required');
 
     const employeeId = req.body.employee_id || req.user.id;
+    const isHrAdmin = ['hr', 'admin'].includes(req.user.role);
+    if (employeeId !== req.user.id && !isHrAdmin) {
+      throw new ForbiddenError('Not authorized to upload for another employee');
+    }
+
     const { path } = await uploadDocument(req.file, employeeId);
 
     const { data, error } = await supabaseAdmin
@@ -39,7 +44,7 @@ const upload = async (req, res, next) => {
         type: 'DOCUMENT',
         title: 'Document pending verification',
         message: `A document (${req.body.document_type}) was uploaded and needs verification.`,
-        link: '/documents',
+        link: `/employees/${data.employee_id}?tab=documents`,
         meta: { document_id: data.id, employee_id: data.employee_id },
       });
     }
@@ -83,10 +88,17 @@ const allDocuments = async (req, res, next) => {
 
 const employeeDocuments = async (req, res, next) => {
   try {
+    const targetId = req.params.employeeId;
+    const isOwner = targetId === req.user.id;
+    const isHrAdmin = ['hr', 'admin'].includes(req.user.role);
+    if (!isOwner && !isHrAdmin) {
+      throw new ForbiddenError('Not authorized to view these documents');
+    }
+
     const { data, error } = await supabaseAdmin
       .from('documents')
       .select('*')
-      .eq('employee_id', req.params.employeeId)
+      .eq('employee_id', targetId)
       .order('uploaded_at', { ascending: false });
 
     if (error) throw new BadRequestError(error.message);
@@ -127,7 +139,11 @@ const download = async (req, res, next) => {
     }
 
     const url = await getSignedUrl(STORAGE_BUCKETS.documents, doc.document_url);
-    successResponse(res, 'Download URL generated', { url, document: doc });
+    // Default: redirect to signed file (works with cookie auth / window.open)
+    if (req.query.format === 'json') {
+      return successResponse(res, 'Download URL generated', { url, document: doc });
+    }
+    return res.redirect(302, url);
   } catch (err) { next(err); }
 };
 
@@ -161,7 +177,7 @@ const verify = async (req, res, next) => {
       type: 'DOCUMENT',
       title: 'Document verified',
       message: `Your document "${doc.document_name || doc.document_type}" has been verified.`,
-      link: '/documents',
+      link: `/employees/${doc.employee_id}?tab=documents`,
       meta: { document_id: doc.id },
     });
 

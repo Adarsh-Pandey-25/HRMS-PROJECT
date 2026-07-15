@@ -1,5 +1,6 @@
 const attendanceService = require('../services/attendance.service');
 const settingsService = require('../services/settings.service');
+const { supabaseAdmin } = require('../config/supabase');
 const config = require('../config/database');
 const { successResponse, getClientIp, ipInCidr } = require('../utils/helpers');
 const moment = require('moment-timezone');
@@ -100,16 +101,72 @@ const monthlySummary = async (req, res, next) => {
 const checkContext = async (req, res, next) => {
   try {
     const clientIp = getClientIp(req);
-    const { allowRemoteLogin, officeCidr, officeIp } = await settingsService.getEffectiveOfficeConfig();
-    const cidr = officeCidr || config.officeCidr;
-    const isOfficeIp = ipInCidr(clientIp, cidr);
+    const { officeCidr, officeIp } = await settingsService.getEffectiveOfficeConfig();
+    const cidr = String(officeCidr || officeIp || config.officeCidr || '').trim();
+    const isOfficeIp = cidr ? ipInCidr(clientIp, cidr) : true;
+
+    const { data: emp } = await supabaseAdmin
+      .from('employees')
+      .select('id, address')
+      .eq('id', req.user.id)
+      .single();
+
+    const addr = (emp?.address && typeof emp.address === 'object') ? emp.address : {};
+    const raw = String(addr.attendance_mode || addr.attendanceMode || 'office').toLowerCase();
+    const attendanceMode = (raw === 'wfh' || raw === 'remote') ? 'wfh' : 'office';
+    const officeIpRequired = attendanceMode === 'office';
+    const canCheckInFromThisIp = !officeIpRequired || isOfficeIp;
+
+    const wfhRequestService = require('../services/wfhRequest.service');
+    const todayDate = wfhRequestService.todayIST();
+    const wfhReq = await wfhRequestService.getRequestForDate(req.user.id, todayDate);
+    const dailyWfhStatus = wfhReq?.status || null;
+    const dailyWfhApproved = attendanceMode === 'wfh' || dailyWfhStatus === 'approved';
+
+    // Source of truth for My Attendance clock UI (avoid relying only on month list)
+    const todayRow = await attendanceService.getTodayAttendance(req.user.id);
+    const activeOpen = todayRow?.check_out_time
+      ? null
+      : (todayRow || await attendanceService.getActiveCheckIn(req.user.id));
+    const session = todayRow || activeOpen;
 
     successResponse(res, 'Check-in context fetched', {
       clientIp,
-      officeIp,
+      officeIp: officeIp || cidr,
       officeCidr: cidr,
-      officeIpRequired: !allowRemoteLogin,
-      canCheckInFromThisIp: allowRemoteLogin || isOfficeIp,
+      attendanceMode,
+      officeIpRequired,
+      canCheckInFromThisIp,
+      canEnableDailyWfh: attendanceMode === 'office',
+      dailyWfhStatus,
+      dailyWfhApproved,
+      dailyWfhRequestId: wfhReq?.id || null,
+      canCheckInAsWfh: dailyWfhApproved,
+      hint: attendanceMode === 'wfh'
+        ? 'WFH employee — check-in allowed from any network'
+        : dailyWfhStatus === 'approved'
+          ? 'WFH approved for today — office IP not required'
+          : dailyWfhStatus === 'pending'
+            ? 'WFH request pending Manager/HR approval'
+            : `Office IP required unless Manager/HR approve WFH for today (${cidr || 'whitelist'})`,
+      today: session
+        ? {
+            id: session.id,
+            employee_id: session.employee_id,
+            check_in_time: session.check_in_time,
+            check_out_time: session.check_out_time,
+            check_in_ip: session.check_in_ip,
+            check_out_ip: session.check_out_ip,
+            total_hours: session.total_hours,
+            overtime_hours: session.overtime_hours,
+            status: session.status,
+            location: session.location,
+            is_auto_checkout: session.is_auto_checkout,
+            checked_in: Boolean(session.check_in_time),
+            checked_out: Boolean(session.check_out_time),
+            is_open: Boolean(session.check_in_time && !session.check_out_time),
+          }
+        : null,
     });
   } catch (err) { next(err); }
 };
