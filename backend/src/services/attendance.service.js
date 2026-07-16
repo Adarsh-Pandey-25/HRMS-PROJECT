@@ -74,25 +74,26 @@ const isWfhLocation = (location) => {
 const checkIn = async (employeeId, { method, device_id, location, clientIp, is_wfh }) => {
   const { data: emp, error: empErr } = await supabaseAdmin
     .from('employees')
-    .select('id, address')
+    .select('id, address, role')
     .eq('id', employeeId)
     .single();
   if (empErr) throw new BadRequestError(empErr.message);
 
   const attendanceMode = resolveAttendanceMode(emp || {});
+  const isPrivilegedRole = ['admin', 'hr'].includes(emp?.role);
   const wfhRequestService = require('./wfhRequest.service');
   const approvedDailyWfh = await wfhRequestService.isApprovedForDate(employeeId);
   // Daily WFH only counts when Manager/HR approved — permanent WFH mode always allowed
   const wantsWfh = attendanceMode === 'wfh' || (Boolean(is_wfh) && approvedDailyWfh);
 
-  if (Boolean(is_wfh) && attendanceMode === 'office' && !approvedDailyWfh) {
+  if (Boolean(is_wfh) && attendanceMode === 'office' && !approvedDailyWfh && !isPrivilegedRole) {
     throw new ForbiddenError(
       'WFH for today needs Manager/HR approval first. Request it from My Attendance.'
     );
   }
 
-  // Office IP required only for office-mode employees who are NOT on approved WFH today
-  if (attendanceMode === 'office' && !wantsWfh) {
+  // Office IP required only for office-mode employees who are NOT on approved WFH today (HR/Admin exempt)
+  if (attendanceMode === 'office' && !wantsWfh && !isPrivilegedRole) {
     await assertOfficeIpAllowed(clientIp);
   }
 
