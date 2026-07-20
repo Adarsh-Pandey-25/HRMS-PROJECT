@@ -47,9 +47,19 @@ const myAttendance = async (req, res, next) => {
 const teamAttendance = async (req, res, next) => {
   try {
     const filters = {};
+    const companyId = req.user.company_id;
+    const tenantService = require('../services/tenant.service');
+    const companyEmployeeIds = await tenantService.getCompanyEmployeeIds(companyId);
     // Admin/HR see company-wide attendance; managers see direct reports only
     if (['admin', 'hr'].includes(req.user.role)) {
-      if (req.query.employee_id) filters.employee_id = req.query.employee_id;
+      if (req.query.employee_id) {
+        if (!companyEmployeeIds.includes(req.query.employee_id)) {
+          throw new (require('../utils/errors').NotFoundError)('Employee not found');
+        }
+        filters.employee_id = req.query.employee_id;
+      } else {
+        filters.employee_ids = companyEmployeeIds;
+      }
     } else {
       const teamIds = await attendanceService.getTeamEmployeeIds(req.user.id);
       filters.employee_ids = teamIds;
@@ -63,7 +73,10 @@ const teamAttendance = async (req, res, next) => {
 
 const allAttendance = async (req, res, next) => {
   try {
-    const filters = {};
+    const tenantService = require('../services/tenant.service');
+    const filters = {
+      employee_ids: await tenantService.getCompanyEmployeeIds(req.user.company_id),
+    };
     if (req.query.employee_id) filters.employee_id = req.query.employee_id;
     if (req.query.from) filters.from = req.query.from;
     if (req.query.to) filters.to = req.query.to;
@@ -74,9 +87,24 @@ const allAttendance = async (req, res, next) => {
 
 const employeeReport = async (req, res, next) => {
   try {
+    const employeeId = req.params.employeeId;
+    const companyIds = await require('../services/tenant.service')
+      .getCompanyEmployeeIds(req.user.company_id);
+    if (!companyIds.includes(employeeId)) {
+      throw new (require('../utils/errors').NotFoundError)('Employee not found');
+    }
+    if (req.user.role === 'employee' && employeeId !== req.user.id) {
+      throw new (require('../utils/errors').ForbiddenError)('Not authorized to view this report');
+    }
+    if (req.user.role === 'manager') {
+      const teamIds = await attendanceService.getTeamEmployeeIds(req.user.id);
+      if (employeeId !== req.user.id && !teamIds.includes(employeeId)) {
+        throw new (require('../utils/errors').ForbiddenError)('Not authorized to view this report');
+      }
+    }
     const month = parseInt(req.query.month, 10) || moment().tz(TIMEZONE).month() + 1;
     const year = parseInt(req.query.year, 10) || moment().tz(TIMEZONE).year();
-    const result = await attendanceService.getMonthlySummary(req.params.employeeId, month, year);
+    const result = await attendanceService.getMonthlySummary(employeeId, month, year);
     successResponse(res, 'Attendance report fetched', result);
   } catch (err) { next(err); }
 };
@@ -91,6 +119,22 @@ const manualEntry = async (req, res, next) => {
 const monthlySummary = async (req, res, next) => {
   try {
     const employeeId = req.query.employee_id || req.user.id;
+    if (employeeId !== req.user.id) {
+      const companyIds = await require('../services/tenant.service')
+        .getCompanyEmployeeIds(req.user.company_id);
+      if (!companyIds.includes(employeeId)) {
+        throw new (require('../utils/errors').NotFoundError)('Employee not found');
+      }
+      if (req.user.role === 'employee') {
+        throw new (require('../utils/errors').ForbiddenError)('Not authorized');
+      }
+      if (req.user.role === 'manager') {
+        const teamIds = await attendanceService.getTeamEmployeeIds(req.user.id);
+        if (!teamIds.includes(employeeId)) {
+          throw new (require('../utils/errors').ForbiddenError)('Not authorized');
+        }
+      }
+    }
     const month = parseInt(req.query.month, 10) || moment().tz(TIMEZONE).month() + 1;
     const year = parseInt(req.query.year, 10) || moment().tz(TIMEZONE).year();
     const result = await attendanceService.getMonthlySummary(employeeId, month, year);
@@ -101,7 +145,7 @@ const monthlySummary = async (req, res, next) => {
 const checkContext = async (req, res, next) => {
   try {
     const clientIp = getClientIp(req);
-    const { officeCidr, officeIp } = await settingsService.getEffectiveOfficeConfig();
+    const { officeCidr, officeIp } = await settingsService.getEffectiveOfficeConfig(req.user.company_id);
     const cidr = String(officeCidr || officeIp || config.officeCidr || '').trim();
     const isOfficeIp = cidr ? ipInCidr(clientIp, cidr) : true;
 

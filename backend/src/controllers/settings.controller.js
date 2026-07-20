@@ -31,7 +31,8 @@ const normalizeLeavePolicy = (policy) => {
 
 const getRolePermissions = async (req, res, next) => {
   try {
-    const value = await settingsService.getSetting('role_permissions', null);
+    const companyId = req.user?.company_id || null;
+    const value = await settingsService.getSetting('role_permissions', null, companyId);
     successResponse(res, 'Role permissions fetched', { key: 'role_permissions', value });
   } catch (err) {
     next(err);
@@ -40,12 +41,8 @@ const getRolePermissions = async (req, res, next) => {
 
 const getAll = async (req, res, next) => {
   try {
-    await settingsService.ensureCache(true);
-    const { data, error } = await supabaseAdmin
-      .from('system_settings')
-      .select('key,value,updated_at,updated_by')
-      .order('key', { ascending: true });
-
+    const companyId = req.user.company_id;
+    const { data, error } = await settingsService.listSettingsForCompany(companyId);
     if (error) throw new BadRequestError(error.message);
     successResponse(res, 'System settings fetched', data);
   } catch (err) {
@@ -56,14 +53,10 @@ const getAll = async (req, res, next) => {
 const getByKey = async (req, res, next) => {
   try {
     const key = req.params.key;
-    const { data, error } = await supabaseAdmin
-      .from('system_settings')
-      .select('key,value,updated_at,updated_by')
-      .eq('key', key)
-      .single();
-
-    if (error || !data) throw new NotFoundError('Setting not found');
-    successResponse(res, 'Setting fetched', data);
+    const companyId = req.user.company_id;
+    const value = await settingsService.getSetting(key, null, companyId);
+    if (value === null || typeof value === 'undefined') throw new NotFoundError('Setting not found');
+    successResponse(res, 'Setting fetched', { key, value });
   } catch (err) {
     next(err);
   }
@@ -76,10 +69,15 @@ const updateKey = async (req, res, next) => {
       throw new BadRequestError('value is required');
     }
 
-    const { data, error } = await settingsService.setSetting(key, req.body.value, req.user.id);
+    const { data, error } = await settingsService.setSetting(
+      key,
+      req.body.value,
+      req.user.id,
+      req.user.company_id
+    );
     if (error) throw new BadRequestError(error.message);
 
-    successResponse(res, 'Setting updated', data);
+    successResponse(res, 'Setting updated', data ? { ...data, key } : { key, value: req.body.value });
   } catch (err) {
     next(err);
   }
@@ -167,8 +165,7 @@ const deletePayrollComponent = async (req, res, next) => {
 // Leave Policy (Editable leave allocations)
 const getLeaveAllocations = async (req, res, next) => {
   try {
-    await settingsService.ensureCache(false);
-    const value = await settingsService.getSetting('leave_allocations', null);
+    const value = await settingsService.getSetting('leave_allocations', null, req.user.company_id);
     successResponse(res, 'Leave allocations fetched', value);
   } catch (err) { next(err); }
 };
@@ -179,7 +176,9 @@ const updateLeaveAllocations = async (req, res, next) => {
     if (!allocations || typeof allocations !== 'object') {
       throw new BadRequestError('allocations object is required');
     }
-    const { data, error } = await settingsService.setSetting('leave_allocations', allocations, req.user.id);
+    const { data, error } = await settingsService.setSetting(
+      'leave_allocations', allocations, req.user.id, req.user.company_id
+    );
     if (error) throw new BadRequestError(error.message);
     successResponse(res, 'Leave allocations updated', data);
   } catch (err) { next(err); }
@@ -188,8 +187,7 @@ const updateLeaveAllocations = async (req, res, next) => {
 // Leave Policy v2 (supports enable/disable + custom display name per type)
 const getLeavePolicy = async (req, res, next) => {
   try {
-    await settingsService.ensureCache(false);
-    const value = await settingsService.getSetting('leave_policy', null);
+    const value = await settingsService.getSetting('leave_policy', null, req.user.company_id);
     successResponse(res, 'Leave policy fetched', value);
   } catch (err) { next(err); }
 };
@@ -198,7 +196,9 @@ const updateLeavePolicy = async (req, res, next) => {
   try {
     const policy = normalizeLeavePolicy(req.body?.policy);
 
-    const { data, error } = await settingsService.setSetting('leave_policy', policy, req.user.id);
+    const { data, error } = await settingsService.setSetting(
+      'leave_policy', policy, req.user.id, req.user.company_id
+    );
     if (error) throw new BadRequestError(error.message);
     successResponse(res, 'Leave policy updated', data);
   } catch (err) { next(err); }
@@ -209,15 +209,11 @@ const applyLeavePolicyToAll = async (req, res, next) => {
     const year = parseInt(req.query.year, 10);
     if (!year) throw new BadRequestError('year query param is required');
 
-    const rawPolicy = await settingsService.getSetting('leave_policy', null);
+    const rawPolicy = await settingsService.getSetting('leave_policy', null, req.user.company_id);
     const policy = normalizeLeavePolicy(rawPolicy);
 
-    const { data: employees, error: empErr } = await supabaseAdmin
-      .from('employees')
-      .select('id')
-      .eq('is_active', true);
-    if (empErr) throw new BadRequestError(empErr.message);
-    const employeeIds = (employees || []).map((e) => e.id);
+    const tenantService = require('../services/tenant.service');
+    const employeeIds = await tenantService.getCompanyEmployeeIds(req.user.company_id);
 
     for (const item of policy) {
       const code = item.code;
@@ -228,7 +224,8 @@ const applyLeavePolicyToAll = async (req, res, next) => {
         .from('leave_balances')
         .select('employee_id')
         .eq('year', year)
-        .eq('leave_type', code);
+        .eq('leave_type', code)
+        .in('employee_id', employeeIds.length ? employeeIds : ['00000000-0000-0000-0000-000000000000']);
       if (exErr) throw new BadRequestError(exErr.message);
       const existingSet = new Set((existing || []).map((r) => r.employee_id));
       const missing = employeeIds.filter((id) => !existingSet.has(id));
@@ -245,12 +242,15 @@ const applyLeavePolicyToAll = async (req, res, next) => {
         if (insErr) throw new BadRequestError(insErr.message);
       }
 
-      const { error: updErr } = await supabaseAdmin
-        .from('leave_balances')
-        .update({ total_allocated: active ? allocation : 0 })
-        .eq('year', year)
-        .eq('leave_type', code);
-      if (updErr) throw new BadRequestError(updErr.message);
+      if (employeeIds.length) {
+        const { error: updErr } = await supabaseAdmin
+          .from('leave_balances')
+          .update({ total_allocated: active ? allocation : 0 })
+          .eq('year', year)
+          .eq('leave_type', code)
+          .in('employee_id', employeeIds);
+        if (updErr) throw new BadRequestError(updErr.message);
+      }
     }
 
     successResponse(res, 'Leave policy applied to all employees', { year });
@@ -263,19 +263,25 @@ const applyLeaveAllocationsToAll = async (req, res, next) => {
     const year = parseInt(req.query.year, 10);
     if (!year) throw new BadRequestError('year query param is required');
 
-    const allocations = await settingsService.getSetting('leave_allocations', null);
+    const allocations = await settingsService.getSetting('leave_allocations', null, req.user.company_id);
     if (!allocations || typeof allocations !== 'object') {
       throw new BadRequestError('Leave allocations are not configured yet');
     }
 
-    // Update existing balances
+    const tenantService = require('../services/tenant.service');
+    const employeeIds = await tenantService.getCompanyEmployeeIds(req.user.company_id);
+    if (!employeeIds.length) {
+      return successResponse(res, 'Leave allocations applied to all employees', { year, types: [], updated: 0 });
+    }
+
     const types = Object.keys(allocations);
     for (const t of types) {
       await supabaseAdmin
         .from('leave_balances')
         .update({ total_allocated: Number(allocations[t] || 0) })
         .eq('year', year)
-        .eq('leave_type', t);
+        .eq('leave_type', t)
+        .in('employee_id', employeeIds);
     }
 
     successResponse(res, 'Leave allocations applied to all employees', { year, types });

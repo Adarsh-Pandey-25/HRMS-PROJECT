@@ -1,9 +1,16 @@
 const helpdeskService = require('../services/helpdesk.service');
 const { successResponse } = require('../utils/helpers');
 
+const companyIds = async (req) => {
+  const tenantService = require('../services/tenant.service');
+  const { getCompanyId } = require('../utils/tenant');
+  return tenantService.getCompanyEmployeeIds(req.user.company_id || getCompanyId(req.user));
+};
+
 const tickets = async (req, res, next) => {
   try {
-    const data = await helpdeskService.listTickets(req.query);
+    const ids = await companyIds(req);
+    const data = await helpdeskService.listTickets(req.query, ids);
     successResponse(res, 'Tickets fetched', data);
   } catch (err) { next(err); }
 };
@@ -24,7 +31,8 @@ const create = async (req, res, next) => {
 
 const updateStatus = async (req, res, next) => {
   try {
-    const data = await helpdeskService.updateTicketStatus(req.params.id, req.body.status);
+    const ids = await companyIds(req);
+    const data = await helpdeskService.updateTicketStatus(req.params.id, req.body.status, ids);
     if (!data) return res.status(404).json({ success: false, error: { message: 'Ticket not found' } });
     successResponse(res, 'Ticket updated', data);
   } catch (err) { next(err); }
@@ -32,11 +40,12 @@ const updateStatus = async (req, res, next) => {
 
 const comment = async (req, res, next) => {
   try {
+    const ids = await companyIds(req);
     const data = await helpdeskService.addComment(req.params.id, {
       by: req.user.id,
       text: req.body.text,
       at: new Date().toISOString(),
-    });
+    }, ids);
     if (!data) return res.status(404).json({ success: false, error: { message: 'Ticket not found' } });
     successResponse(res, 'Comment added', data);
   } catch (err) { next(err); }

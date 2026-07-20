@@ -116,10 +116,18 @@ const generateEmployeeCode = () => {
   return `${prefix}${num}`;
 };
 
-/** Default login password: "{FirstName}{LastName}@123" (no space) */
-const generateDefaultPassword = (firstName, lastName) => {
-  const fullName = `${firstName || ''}${lastName || ''}`.trim();
-  return `${fullName}@123`;
+/** Default login password: {FirstName}{LastName}@123 (each name part title-cased, no spaces). */
+const generateDefaultPassword = (firstName = '', lastName = '') => {
+  const titleCaseParts = (str) => {
+    if (!str) return '';
+    return String(str)
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+      .join('');
+  };
+  return `${titleCaseParts(firstName)}${titleCaseParts(lastName)}@123`;
 };
 
 module.exports = {

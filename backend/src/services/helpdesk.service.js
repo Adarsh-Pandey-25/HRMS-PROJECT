@@ -1,13 +1,18 @@
 const { supabaseAdmin } = require('../config/supabase');
 const { BadRequestError, NotFoundError } = require('../utils/errors');
 
-const listTickets = async (query = {}) => {
+const emptyId = '00000000-0000-0000-0000-000000000000';
+
+const listTickets = async (query = {}, companyEmployeeIds = null) => {
   let db = supabaseAdmin
     .from('helpdesk_tickets')
     .select('*, comments:helpdesk_ticket_comments(*)')
     .order('created_at', { ascending: false });
   if (query.raised_by) db = db.eq('raised_by', query.raised_by);
   if (query.status) db = db.eq('status', query.status);
+  if (companyEmployeeIds && !query.raised_by) {
+    db = db.in('raised_by', companyEmployeeIds.length ? companyEmployeeIds : [emptyId]);
+  }
   const { data, error } = await db;
   if (error) throw new BadRequestError(error.message);
   return (data || []).map((t) => ({
@@ -39,7 +44,17 @@ const createTicket = async (employeeId, body) => {
   return { ...data, comments: [] };
 };
 
-const updateTicketStatus = async (id, status) => {
+const updateTicketStatus = async (id, status, companyEmployeeIds = null) => {
+  if (companyEmployeeIds) {
+    const { data: existing } = await supabaseAdmin
+      .from('helpdesk_tickets')
+      .select('raised_by')
+      .eq('id', id)
+      .maybeSingle();
+    if (!existing || !companyEmployeeIds.includes(existing.raised_by)) {
+      throw new NotFoundError('Ticket not found');
+    }
+  }
   const patch = { status };
   if (['resolved', 'closed'].includes(status)) patch.resolved_at = new Date().toISOString();
   const { data, error } = await supabaseAdmin.from('helpdesk_tickets').update(patch).eq('id', id).select().single();
@@ -48,15 +63,25 @@ const updateTicketStatus = async (id, status) => {
   return data;
 };
 
-const addComment = async (id, comment) => {
+const addComment = async (id, comment, companyEmployeeIds = null) => {
+  if (companyEmployeeIds) {
+    const { data: existing } = await supabaseAdmin
+      .from('helpdesk_tickets')
+      .select('raised_by')
+      .eq('id', id)
+      .maybeSingle();
+    if (!existing || !companyEmployeeIds.includes(existing.raised_by)) {
+      throw new NotFoundError('Ticket not found');
+    }
+  }
   const { error: cErr } = await supabaseAdmin.from('helpdesk_ticket_comments').insert({
     ticket_id: id,
     author_id: comment.by,
     text: comment.text,
   });
   if (cErr) throw new BadRequestError(cErr.message);
-  const tickets = await listTickets({});
-  return tickets.find((t) => t.id === id) || null;
+  const all = await listTickets({}, companyEmployeeIds);
+  return all.find((t) => t.id === id) || null;
 };
 
 const listKbCategories = async () => {

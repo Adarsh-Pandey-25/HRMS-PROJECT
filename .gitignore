@@ -1,0 +1,16 @@
+# Secrets
+**/.env
+!**/.env.example
+
+# Dependencies and generated output
+**/node_modules/
+**/dist/
+**/coverage/
+**/logs/
+**/uploads/
+**/supabase/.temp/
+backend/proj.json
+
+# OS/editor files
+.DS_Store
+Thumbs.db

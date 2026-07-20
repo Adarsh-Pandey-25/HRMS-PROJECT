@@ -3,10 +3,10 @@ const authController = require('../controllers/auth.controller');
 const { authenticate } = require('../middleware/auth.middleware');
 const { isHROrAdmin } = require('../middleware/role.middleware');
 const { validate } = require('../middleware/validation.middleware');
-const { authLimiter } = require('../middleware/rateLimiter.middleware');
+const { authLimiter, bootstrapLimiter } = require('../middleware/rateLimiter.middleware');
 const {
   registerRules, loginRules, changePasswordRules,
-  forgotPasswordRules, resetPasswordRules,
+  forgotPasswordRules, resetPasswordRules, bootstrapRules,
 } = require('../utils/validators');
 
 const router = express.Router();
@@ -14,6 +14,13 @@ const router = express.Router();
 router.post('/register', authenticate, isHROrAdmin, registerRules, validate, authController.register);
 // Login is allowed from any IP — office IP is enforced only on attendance check-in
 router.post('/login', authLimiter, loginRules, validate, authController.login);
+router.post(
+  '/bootstrap-admin',
+  bootstrapLimiter,
+  bootstrapRules,
+  validate,
+  authController.bootstrapAdmin
+);
 router.post('/logout', authenticate, authController.logout);
 router.post('/refresh-token', authLimiter, authController.refreshToken);
 router.get('/me', authenticate, authController.getMe);

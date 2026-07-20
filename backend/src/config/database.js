@@ -1,7 +1,13 @@
 require('dotenv').config();
 
+const corsOrigins = (process.env.CORS_ORIGINS || process.env.FRONTEND_URL || 'http://localhost:5173')
+  .split(',')
+  .map((origin) => origin.trim().replace(/\/$/, ''))
+  .filter(Boolean);
+
 module.exports = {
   env: process.env.NODE_ENV || 'development',
+  host: process.env.HOST || '127.0.0.1',
   port: parseInt(process.env.PORT, 10) || 5000,
   timezone: process.env.TZ || 'Asia/Kolkata',
   workHours: parseFloat(process.env.WORK_HOURS) || 9,
@@ -16,10 +22,16 @@ module.exports = {
     refreshExpire: process.env.JWT_REFRESH_EXPIRE || '7d',
   },
   cors: {
-    origin: [
-      process.env.FRONTEND_URL || 'http://localhost:3000',
-      'http://localhost:3000',
-    ],
+    origin(origin, callback) {
+      // Requests without Origin are server-to-server tools such as curl/Postman.
+      if (!origin || corsOrigins.includes(origin.replace(/\/$/, ''))) {
+        return callback(null, true);
+      }
+      const error = new Error('Origin not allowed by CORS');
+      error.statusCode = 403;
+      error.code = 'CORS_FORBIDDEN';
+      return callback(error);
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
     allowedHeaders: ['Content-Type', 'Authorization'],
@@ -33,8 +45,10 @@ module.exports = {
   rateLimit: {
     windowMs: (parseInt(process.env.RATE_LIMIT_WINDOW, 10) || 1) * 60 * 1000,
     max: parseInt(process.env.RATE_LIMIT_MAX, 10) || 100,
-    authMax: parseInt(process.env.AUTH_RATE_LIMIT_MAX, 10) || 100,
+    authMax: parseInt(process.env.AUTH_RATE_LIMIT_MAX, 10) || 10,
+    bootstrapMax: parseInt(process.env.BOOTSTRAP_RATE_LIMIT_MAX, 10) || 5,
   },
+  cookieSecure: process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production',
   leaveBalances: {
     CL: 12,
     SL: 12,

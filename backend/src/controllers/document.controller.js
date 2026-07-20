@@ -4,6 +4,20 @@ const { successResponse, paginate, buildMeta } = require('../utils/helpers');
 const { BadRequestError, NotFoundError, ForbiddenError } = require('../utils/errors');
 const notificationService = require('../services/notification.service');
 
+const companyEmployeeIds = (req) =>
+  require('../services/tenant.service').getCompanyEmployeeIds(req.user.company_id);
+
+const requireCompanyDocument = async (req) => {
+  const { data } = await supabaseAdmin
+    .from('documents')
+    .select('*')
+    .eq('id', req.params.id)
+    .maybeSingle();
+  const ids = await companyEmployeeIds(req);
+  if (!data || !ids.includes(data.employee_id)) throw new NotFoundError('Document not found');
+  return data;
+};
+
 const upload = async (req, res, next) => {
   try {
     if (!req.file) throw new BadRequestError('File is required');
@@ -12,6 +26,9 @@ const upload = async (req, res, next) => {
     const isHrAdmin = ['hr', 'admin'].includes(req.user.role);
     if (employeeId !== req.user.id && !isHrAdmin) {
       throw new ForbiddenError('Not authorized to upload for another employee');
+    }
+    if (!(await companyEmployeeIds(req)).includes(employeeId)) {
+      throw new NotFoundError('Employee not found');
     }
 
     const { path } = await uploadDocument(req.file, employeeId);
@@ -35,10 +52,11 @@ const upload = async (req, res, next) => {
     // Notify HR/Admin pending verification
     const { data: hrs } = await supabaseAdmin
       .from('employees')
-      .select('id')
+      .select('id, address')
       .in('role', ['hr', 'admin'])
       .eq('is_active', true);
-    for (const u of hrs || []) {
+    const ids = await companyEmployeeIds(req);
+    for (const u of (hrs || []).filter((row) => ids.includes(row.id))) {
       await notificationService.createNotification({
         user_id: u.id,
         type: 'DOCUMENT',
@@ -73,16 +91,23 @@ const allDocuments = async (req, res, next) => {
     const { page, limit, offset } = paginate(req.query);
     let query = supabaseAdmin
       .from('documents')
-      .select('*, employee:employee_id(id, first_name, last_name, employee_code, email), verifier:verified_by(id, first_name, last_name)', { count: 'exact' })
+      .select('*, employee:employee_id(id, first_name, last_name, employee_code, email)')
       .order('uploaded_at', { ascending: false })
-      .range(offset, offset + limit - 1);
+      .limit(5000);
 
     if (req.query.status === 'pending') query = query.eq('is_verified', false);
     if (req.query.status === 'verified') query = query.eq('is_verified', true);
 
-    const { data, error, count } = await query;
+    const { data, error } = await query;
     if (error) throw new BadRequestError(error.message);
-    successResponse(res, 'All documents fetched', data, buildMeta(page, limit, count));
+    const ids = await companyEmployeeIds(req);
+    const scoped = (data || []).filter((doc) => ids.includes(doc.employee_id));
+    successResponse(
+      res,
+      'All documents fetched',
+      scoped.slice(offset, offset + limit),
+      buildMeta(page, limit, scoped.length)
+    );
   } catch (err) { next(err); }
 };
 
@@ -93,6 +118,9 @@ const employeeDocuments = async (req, res, next) => {
     const isHrAdmin = ['hr', 'admin'].includes(req.user.role);
     if (!isOwner && !isHrAdmin) {
       throw new ForbiddenError('Not authorized to view these documents');
+    }
+    if (!(await companyEmployeeIds(req)).includes(targetId)) {
+      throw new NotFoundError('Employee not found');
     }
 
     const { data, error } = await supabaseAdmin
@@ -108,13 +136,7 @@ const employeeDocuments = async (req, res, next) => {
 
 const remove = async (req, res, next) => {
   try {
-    const { data: doc } = await supabaseAdmin
-      .from('documents')
-      .select('*')
-      .eq('id', req.params.id)
-      .single();
-
-    if (!doc) throw new NotFoundError('Document not found');
+    const doc = await requireCompanyDocument(req);
     if (doc.employee_id !== req.user.id && !['hr', 'admin'].includes(req.user.role)) {
       throw new ForbiddenError('Not authorized');
     }
@@ -127,13 +149,7 @@ const remove = async (req, res, next) => {
 
 const download = async (req, res, next) => {
   try {
-    const { data: doc } = await supabaseAdmin
-      .from('documents')
-      .select('*')
-      .eq('id', req.params.id)
-      .single();
-
-    if (!doc) throw new NotFoundError('Document not found');
+    const doc = await requireCompanyDocument(req);
     if (doc.employee_id !== req.user.id && !['hr', 'admin'].includes(req.user.role)) {
       throw new ForbiddenError('Not authorized');
     }
@@ -149,13 +165,7 @@ const download = async (req, res, next) => {
 
 const verify = async (req, res, next) => {
   try {
-    const { data: doc } = await supabaseAdmin
-      .from('documents')
-      .select('*')
-      .eq('id', req.params.id)
-      .single();
-
-    if (!doc) throw new NotFoundError('Document not found');
+    const doc = await requireCompanyDocument(req);
     if (doc.is_verified) throw new BadRequestError('Document is already verified');
 
     const { data, error } = await supabaseAdmin

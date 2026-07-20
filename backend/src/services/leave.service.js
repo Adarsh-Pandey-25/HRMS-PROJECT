@@ -12,6 +12,16 @@ const settingsService = require('./settings.service');
 const config = require('../config/database');
 const { LEAVE_TYPES } = require('../utils/constants');
 const notificationService = require('./notification.service');
+const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
+
+const resolveEmployeeCompanyId = async (employeeId) => {
+  const { data } = await supabaseAdmin
+    .from('employees')
+    .select('address')
+    .eq('id', employeeId)
+    .maybeSingle();
+  return data ? getCompanyId(data) : DEFAULT_COMPANY_ID;
+};
 
 const defaultPolicy = (year) => ([
   { code: 'CL', name: 'Casual Leave', allocation: config.leaveBalances?.CL ?? 12, active: true },
@@ -24,12 +34,13 @@ const defaultPolicy = (year) => ([
   { code: 'UNPAID', name: 'Unpaid Leave', allocation: 0, active: true },
 ]);
 
-const getEffectiveLeavePolicy = async (year) => {
-  const policy = await settingsService.getSetting('leave_policy', null);
+const getEffectiveLeavePolicy = async (year, companyId = null) => {
+  const cid = companyId || DEFAULT_COMPANY_ID;
+  const policy = await settingsService.getSetting('leave_policy', null, cid);
   if (Array.isArray(policy) && policy.length) return policy;
 
   // Backward-compat: if only allocations exist
-  const alloc = await settingsService.getSetting('leave_allocations', null);
+  const alloc = await settingsService.getSetting('leave_allocations', null, cid);
   if (alloc && typeof alloc === 'object') {
     return defaultPolicy(year).map((p) => ({ ...p, allocation: Number(alloc[p.code] ?? p.allocation) }));
   }
@@ -46,9 +57,11 @@ const applyLeave = async (employeeId, data) => {
 
   const totalDays = calculateLeaveDays(from_date, to_date, is_half_day);
 
+  const companyId = await resolveEmployeeCompanyId(employeeId);
+
   // Block applying for disabled leave types
   const year = moment(from_date).year();
-  const policy = await getEffectiveLeavePolicy(year);
+  const policy = await getEffectiveLeavePolicy(year, companyId);
   const found = (policy || []).find((p) => p.code === leave_type);
   if (found && found.active === false) {
     throw new BadRequestError(`${leave_type} is disabled by Admin`);
@@ -106,14 +119,11 @@ const applyLeave = async (employeeId, data) => {
       meta: { leave_id: leave.id },
     });
   } else {
-    const { data: hrs } = await supabaseAdmin
-      .from('employees')
-      .select('id')
-      .in('role', ['hr', 'admin'])
-      .eq('is_active', true);
-    for (const u of hrs || []) {
+    const tenantService = require('./tenant.service');
+    const hrIds = await tenantService.getCompanyHrAdminIds(companyId);
+    for (const id of hrIds) {
       await notificationService.createNotification({
-        user_id: u.id,
+        user_id: id,
         type: 'LEAVE',
         title: 'Leave request submitted',
         message: `A leave request (${leave_type}) was submitted and needs review.`,
@@ -170,8 +180,8 @@ const notifyLeaveApproved = async (leave) => {
 };
 
 /** Reads Settings → Leave Policy → Approval Flow (leave_policy_meta). */
-const getLeaveApprovalLevel = async () => {
-  const meta = await settingsService.getSetting('leave_policy_meta', null);
+const getLeaveApprovalLevel = async (companyId = null) => {
+  const meta = await settingsService.getSetting('leave_policy_meta', null, companyId || DEFAULT_COMPANY_ID);
   if (!meta || typeof meta !== 'object') return 'single';
   const level = String(meta.approval_level || meta.approvalLevel || 'single').toLowerCase();
   return level === 'two-level' || level === 'two_level' || level === 'two' ? 'two-level' : 'single';
@@ -184,7 +194,12 @@ const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
     throw new BadRequestError('Leave cannot be approved in current status');
   }
 
-  const approvalLevel = await getLeaveApprovalLevel();
+  const approverCompanyId = getCompanyId(approver) || approver.company_id || DEFAULT_COMPANY_ID;
+  if (leave.employee && getCompanyId(leave.employee) !== approverCompanyId) {
+    throw new ForbiddenError('Not authorized to approve leave for another company');
+  }
+
+  const approvalLevel = await getLeaveApprovalLevel(approverCompanyId);
   const singleLevel = approvalLevel === 'single';
 
   if (isManagerApproval && approver.role === 'manager') {
@@ -223,14 +238,11 @@ const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
       .select()
       .single();
 
-    const { data: hrs } = await supabaseAdmin
-      .from('employees')
-      .select('id')
-      .in('role', ['hr', 'admin'])
-      .eq('is_active', true);
-    for (const u of hrs || []) {
+    const tenantService = require('./tenant.service');
+    const hrIds = await tenantService.getCompanyHrAdminIds(approverCompanyId);
+    for (const id of hrIds) {
       await notificationService.createNotification({
-        user_id: u.id,
+        user_id: id,
         type: 'LEAVE',
         title: 'Leave needs HR approval',
         message: `Manager approved a leave request (${leave.leave_type}). Please review and approve/reject.`,
@@ -271,6 +283,11 @@ const rejectLeave = async (approver, leaveId, rejection_reason) => {
   if (!leave) throw new NotFoundError('Leave not found');
   if (!['pending'].includes(leave.status)) {
     throw new BadRequestError('Leave cannot be rejected');
+  }
+
+  const approverCompanyId = getCompanyId(approver) || approver.company_id || DEFAULT_COMPANY_ID;
+  if (leave.employee && getCompanyId(leave.employee) !== approverCompanyId) {
+    throw new ForbiddenError('Not authorized to reject leave for another company');
   }
 
   const { data: updated, error } = await supabaseAdmin
@@ -321,11 +338,12 @@ const cancelLeave = async (employeeId, leaveId) => {
   return updated;
 };
 
-const getLeaveBalance = async (employeeId, year) => {
+const getLeaveBalance = async (employeeId, year, companyId = null) => {
   const targetYear = year || moment().year();
+  const cid = companyId || await resolveEmployeeCompanyId(employeeId);
 
   // Ensure employee has leave balances rows (and allocations are dynamic from Settings)
-  const policy = await getEffectiveLeavePolicy(targetYear);
+  const policy = await getEffectiveLeavePolicy(targetYear, cid);
   const activePolicy = (policy || []).filter((p) => p && p.code && p.active !== false);
   const allocations = {};
   activePolicy.forEach((p) => { allocations[p.code] = Number(p.allocation || 0); });
@@ -401,14 +419,19 @@ const getLeaveBalance = async (employeeId, year) => {
   });
 };
 
-const getLeaveCalendar = async (month, year) => {
+const getLeaveCalendar = async (month, year, companyId = null) => {
   const start = moment.tz({ year, month: month - 1, day: 1 }, TIMEZONE).format('YYYY-MM-DD');
   const end = moment.tz({ year, month: month - 1, day: 1 }, TIMEZONE).endOf('month').format('YYYY-MM-DD');
+
+  const tenantService = require('./tenant.service');
+  const employeeIds = await tenantService.getCompanyEmployeeIds(companyId || DEFAULT_COMPANY_ID);
+  const emptyId = '00000000-0000-0000-0000-000000000000';
 
   const { data, error } = await supabaseAdmin
     .from('leaves')
     .select('*, employee:employee_id(first_name, last_name, department)')
     .eq('status', 'approved')
+    .in('employee_id', employeeIds.length ? employeeIds : [emptyId])
     .lte('from_date', end)
     .gte('to_date', start);
 

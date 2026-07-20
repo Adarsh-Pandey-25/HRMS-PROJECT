@@ -6,6 +6,22 @@ const { successResponse, paginate, buildMeta } = require('../utils/helpers');
 const { BadRequestError, NotFoundError, ForbiddenError } = require('../utils/errors');
 const notificationService = require('../services/notification.service');
 
+const companyEmployeeIds = (req) =>
+  require('../services/tenant.service').getCompanyEmployeeIds(req.user.company_id);
+
+const requireCompanyReimbursement = async (req) => {
+  const { data } = await supabaseAdmin
+    .from('reimbursements')
+    .select('*')
+    .eq('id', req.params.id)
+    .maybeSingle();
+  const ids = await companyEmployeeIds(req);
+  if (!data || !ids.includes(data.employee_id)) {
+    throw new NotFoundError('Reimbursement not found');
+  }
+  return data;
+};
+
 const submit = async (req, res, next) => {
   try {
     const amount = Number(req.body.amount);
@@ -13,7 +29,7 @@ const submit = async (req, res, next) => {
       throw new BadRequestError('Enter a valid amount');
     }
 
-    const cfg = await settingsService.getSetting('expense_config', null);
+    const cfg = await settingsService.getSetting('expense_config', null, req.user.company_id);
     const requireReceiptAbove = Number(
       (cfg && typeof cfg === 'object'
         ? (cfg.requireReceiptAbove ?? cfg.require_receipt_above)
@@ -65,10 +81,11 @@ const submit = async (req, res, next) => {
     } else {
       const { data: hrs } = await supabaseAdmin
         .from('employees')
-        .select('id')
+        .select('id, address')
         .in('role', ['hr', 'admin'])
         .eq('is_active', true);
-      for (const u of hrs || []) {
+      const ids = await companyEmployeeIds(req);
+      for (const u of (hrs || []).filter((row) => ids.includes(row.id))) {
         await notificationService.createNotification({
           user_id: u.id,
           type: 'REIMBURSEMENT',
@@ -118,7 +135,7 @@ const teamReimbursements = async (req, res, next) => {
 
 const allReimbursements = async (req, res, next) => {
   try {
-    const filters = {};
+    const filters = { employee_ids: await companyEmployeeIds(req) };
     if (req.query.status) filters.status = req.query.status;
     const result = await listReimbursements(filters, req.query);
     successResponse(res, 'All reimbursements fetched', result.data, result.meta);
@@ -127,13 +144,7 @@ const allReimbursements = async (req, res, next) => {
 
 const approve = async (req, res, next) => {
   try {
-    const { data: reimbursement } = await supabaseAdmin
-      .from('reimbursements')
-      .select('*')
-      .eq('id', req.params.id)
-      .single();
-
-    if (!reimbursement) throw new NotFoundError('Reimbursement not found');
+    const reimbursement = await requireCompanyReimbursement(req);
 
     if (req.user.role === 'manager') {
       const teamIds = await attendanceService.getTeamEmployeeIds(req.user.id);
@@ -175,10 +186,11 @@ const approve = async (req, res, next) => {
       // Notify HR/Admin for final approval
       const { data: hrs } = await supabaseAdmin
         .from('employees')
-        .select('id')
+        .select('id, address')
         .in('role', ['hr', 'admin'])
         .eq('is_active', true);
-      for (const u of hrs || []) {
+      const ids = await companyEmployeeIds(req);
+      for (const u of (hrs || []).filter((row) => ids.includes(row.id))) {
         await notificationService.createNotification({
           user_id: u.id,
           type: 'REIMBURSEMENT',
@@ -206,13 +218,7 @@ const approve = async (req, res, next) => {
 
 const reject = async (req, res, next) => {
   try {
-    const { data: reimbursement } = await supabaseAdmin
-      .from('reimbursements')
-      .select('*')
-      .eq('id', req.params.id)
-      .single();
-
-    if (!reimbursement) throw new NotFoundError('Reimbursement not found');
+    const reimbursement = await requireCompanyReimbursement(req);
     if (req.user.role === 'manager') {
       const teamIds = await attendanceService.getTeamEmployeeIds(req.user.id);
       if (!teamIds.includes(reimbursement.employee_id)) {
@@ -249,13 +255,7 @@ const reject = async (req, res, next) => {
 
 const remove = async (req, res, next) => {
   try {
-    const { data: reimbursement } = await supabaseAdmin
-      .from('reimbursements')
-      .select('*')
-      .eq('id', req.params.id)
-      .single();
-
-    if (!reimbursement) throw new NotFoundError('Reimbursement not found');
+    const reimbursement = await requireCompanyReimbursement(req);
     if (reimbursement.employee_id !== req.user.id) throw new ForbiddenError('Not authorized');
     if (reimbursement.status !== 'pending') throw new BadRequestError('Only pending reimbursements can be deleted');
 
@@ -266,13 +266,7 @@ const remove = async (req, res, next) => {
 
 const receipt = async (req, res, next) => {
   try {
-    const { data: reimbursement } = await supabaseAdmin
-      .from('reimbursements')
-      .select('*')
-      .eq('id', req.params.id)
-      .single();
-
-    if (!reimbursement) throw new NotFoundError('Reimbursement not found');
+    const reimbursement = await requireCompanyReimbursement(req);
     if (!reimbursement.receipt_url) throw new NotFoundError('Receipt not uploaded');
 
     // Access rules:

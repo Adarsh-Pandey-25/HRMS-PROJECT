@@ -1,13 +1,19 @@
 const { supabaseAdmin } = require('../config/supabase');
 const { BadRequestError, NotFoundError } = require('../utils/errors');
 
-const listAssets = async (query = {}) => {
+const emptyId = '00000000-0000-0000-0000-000000000000';
+
+const listAssets = async (query = {}, companyEmployeeIds = null) => {
   let db = supabaseAdmin.from('assets').select('*').order('created_at', { ascending: false });
   if (query.status) db = db.eq('status', query.status);
   if (query.assigned_to) db = db.eq('assigned_to', query.assigned_to);
   const { data, error } = await db;
   if (error) throw new BadRequestError(error.message);
-  return data || [];
+  const rows = data || [];
+  if (!companyEmployeeIds) return rows;
+  const set = new Set(companyEmployeeIds);
+  // Company sees: unassigned inventory + assets assigned to its people
+  return rows.filter((a) => !a.assigned_to || set.has(a.assigned_to));
 };
 
 const myAssets = async (employeeId) => {
@@ -20,10 +26,13 @@ const myAssets = async (employeeId) => {
   return data || [];
 };
 
-const listRequests = async (query = {}) => {
+const listRequests = async (query = {}, companyEmployeeIds = null) => {
   let db = supabaseAdmin.from('asset_requests').select('*, employee:employee_id(id, first_name, last_name)').order('created_at', { ascending: false });
   if (query.status) db = db.eq('status', query.status);
   if (query.employee_id) db = db.eq('employee_id', query.employee_id);
+  if (companyEmployeeIds) {
+    db = db.in('employee_id', companyEmployeeIds.length ? companyEmployeeIds : [emptyId]);
+  }
   const { data, error } = await db;
   if (error) throw new BadRequestError(error.message);
   return data || [];
@@ -46,7 +55,17 @@ const createRequest = async (employeeId, body) => {
   return data;
 };
 
-const updateRequestStatus = async (id, status) => {
+const updateRequestStatus = async (id, status, companyEmployeeIds = null) => {
+  if (companyEmployeeIds) {
+    const { data: existing } = await supabaseAdmin
+      .from('asset_requests')
+      .select('employee_id')
+      .eq('id', id)
+      .maybeSingle();
+    if (!existing || !companyEmployeeIds.includes(existing.employee_id)) {
+      throw new NotFoundError('Request not found');
+    }
+  }
   const { data, error } = await supabaseAdmin
     .from('asset_requests')
     .update({ status })

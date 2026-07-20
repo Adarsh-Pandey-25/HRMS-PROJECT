@@ -30,7 +30,10 @@ const teamLeaves = async (req, res, next) => {
 
 const allLeaves = async (req, res, next) => {
   try {
-    const filters = {};
+    const tenantService = require('../services/tenant.service');
+    const filters = {
+      employee_ids: await tenantService.getCompanyEmployeeIds(req.user.company_id),
+    };
     if (req.query.status) filters.status = req.query.status;
     const result = await leaveService.getLeaves(filters, req.query);
     successResponse(res, 'All leaves fetched', result.data, result.meta);
@@ -62,7 +65,14 @@ const cancel = async (req, res, next) => {
 const balance = async (req, res, next) => {
   try {
     const year = parseInt(req.query.year, 10) || moment().tz(TIMEZONE).year();
-    const balances = await leaveService.getLeaveBalance(req.params.employeeId, year);
+    const { getCompanyId } = require('../utils/tenant');
+    const companyId = req.user.company_id || getCompanyId(req.user);
+    const tenantService = require('../services/tenant.service');
+    const ok = await tenantService.assertSameCompany(companyId, req.params.employeeId);
+    if (!ok) {
+      return res.status(403).json({ success: false, error: { message: 'Not authorized to view this leave balance' } });
+    }
+    const balances = await leaveService.getLeaveBalance(req.params.employeeId, year, companyId);
     successResponse(res, 'Leave balance fetched', balances);
   } catch (err) { next(err); }
 };
@@ -71,7 +81,9 @@ const calendar = async (req, res, next) => {
   try {
     const month = parseInt(req.query.month, 10) || moment().tz(TIMEZONE).month() + 1;
     const year = parseInt(req.query.year, 10) || moment().tz(TIMEZONE).year();
-    const data = await leaveService.getLeaveCalendar(month, year);
+    const { getCompanyId } = require('../utils/tenant');
+    const companyId = req.user.company_id || getCompanyId(req.user);
+    const data = await leaveService.getLeaveCalendar(month, year, companyId);
     successResponse(res, 'Leave calendar fetched', data);
   } catch (err) { next(err); }
 };
@@ -79,7 +91,9 @@ const calendar = async (req, res, next) => {
 const types = async (req, res, next) => {
   try {
     const year = parseInt(req.query.year, 10) || moment().tz(TIMEZONE).year();
-    const policy = await leaveService.getEffectiveLeavePolicy(year);
+    const { getCompanyId } = require('../utils/tenant');
+    const companyId = req.user.company_id || getCompanyId(req.user);
+    const policy = await leaveService.getEffectiveLeavePolicy(year, companyId);
     const active = (policy || []).filter((p) => p.active !== false);
     successResponse(res, 'Leave types fetched', active);
   } catch (err) { next(err); }

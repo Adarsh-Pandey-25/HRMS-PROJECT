@@ -24,6 +24,14 @@ const loginRules = [
   body('password').notEmpty(),
 ];
 
+const bootstrapRules = [
+  body('email').isEmail().normalizeEmail(),
+  body('password').optional().isLength({ min: 8, max: 128 }),
+  body('admin_name').trim().isLength({ min: 2, max: 200 }),
+  body('company_profile').isObject(),
+  body('company_profile.name').trim().isLength({ min: 2, max: 200 }),
+];
+
 const changePasswordRules = [
   body('currentPassword').notEmpty(),
   body('newPassword').isLength({ min: 1 }).withMessage('Password is required'),
@@ -184,12 +192,13 @@ const uuidParam = (name = 'id') => [param(name).isUUID()];
 
 const paginationQuery = [
   query('page').optional().isInt({ min: 1 }),
-  query('limit').optional().isInt({ min: 1, max: 100 }),
+  query('limit').optional().isInt({ min: 1, max: 500 }),
 ];
 
 module.exports = {
   registerRules,
   loginRules,
+  bootstrapRules,
   changePasswordRules,
   forgotPasswordRules,
   resetPasswordRules,

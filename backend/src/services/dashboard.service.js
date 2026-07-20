@@ -26,15 +26,18 @@ const relativeTime = (date) => {
 const initials = (first, last) =>
   `${(first || '')[0] || ''}${(last || '')[0] || ''}`.toUpperCase() || '?';
 
-const getActiveEmployees = async () => {
+const getActiveEmployees = async (companyId = null) => {
   const { data, error } = await supabaseAdmin
     .from('employees')
-    .select('id, first_name, last_name, email, department, designation, role, date_of_joining, date_of_birth, created_at')
+    .select('id, first_name, last_name, email, department, designation, role, date_of_joining, date_of_birth, created_at, address')
     .eq('is_active', true)
     .order('first_name');
 
   if (error) throw new BadRequestError(error.message);
-  return data || [];
+  const rows = data || [];
+  if (!companyId) return rows;
+  const { getCompanyId } = require('../utils/tenant');
+  return rows.filter((e) => getCompanyId(e) === companyId);
 };
 
 const getHeadcountTrend = (employees, months = 12) => {
@@ -106,10 +109,12 @@ const getTodayAttendanceSummary = async (employeeIds) => {
   if (error) throw new BadRequestError(error.message);
 
   const todayStr = nowIST().format('YYYY-MM-DD');
+  const scopedIds = employeeIds.length ? employeeIds : [emptyId];
   const { data: leaves } = await supabaseAdmin
     .from('leaves')
     .select('employee_id, leave_type')
     .eq('status', 'approved')
+    .in('employee_id', scopedIds)
     .lte('from_date', todayStr)
     .gte('to_date', todayStr);
 
@@ -135,12 +140,15 @@ const getTodayAttendanceSummary = async (employeeIds) => {
   return { present, wfh, late, absent, onLeave, teamSize };
 };
 
-const getOnLeaveTodayCount = async () => {
+const getOnLeaveTodayCount = async (employeeIds = []) => {
+  if (!employeeIds.length) return 0;
   const todayStr = nowIST().format('YYYY-MM-DD');
   const { count, error } = await supabaseAdmin
     .from('leaves')
     .select('id', { count: 'exact', head: true })
     .eq('status', 'approved')
+    .neq('leave_type', 'WFH')
+    .in('employee_id', employeeIds)
     .lte('from_date', todayStr)
     .gte('to_date', todayStr);
 
@@ -148,10 +156,15 @@ const getOnLeaveTodayCount = async () => {
   return count || 0;
 };
 
-const getPayrollSummary = async (month, year) => {
+const getPayrollSummary = async (month, year, employeeIds = []) => {
+  if (!employeeIds.length) {
+    return { current: 0, previous: 0, changePercent: 0 };
+  }
+
   const { data, error } = await supabaseAdmin
     .from('payroll')
     .select('gross_salary')
+    .in('employee_id', employeeIds)
     .eq('month', month)
     .eq('year', year);
 
@@ -163,6 +176,7 @@ const getPayrollSummary = async (month, year) => {
   const { data: prevData } = await supabaseAdmin
     .from('payroll')
     .select('gross_salary')
+    .in('employee_id', employeeIds)
     .eq('month', prev.month() + 1)
     .eq('year', prev.year());
 
@@ -196,10 +210,14 @@ const getNewHiresThisMonth = (employees) => {
     .sort((a, b) => new Date(b.joinedAt) - new Date(a.joinedAt));
 };
 
-const getPendingApprovals = async () => {
+const getPendingApprovals = async (employeeIds = []) => {
+  if (!employeeIds.length) {
+    return { leaves: 0, expenses: 0, assets: 0, total: 0 };
+  }
+
   const [{ count: leaves }, { count: expenses }] = await Promise.all([
-    supabaseAdmin.from('leaves').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
-    supabaseAdmin.from('reimbursements').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
+    supabaseAdmin.from('leaves').select('id', { count: 'exact', head: true }).eq('status', 'pending').in('employee_id', employeeIds),
+    supabaseAdmin.from('reimbursements').select('id', { count: 'exact', head: true }).eq('status', 'pending').in('employee_id', employeeIds),
   ]);
 
   return {
@@ -210,22 +228,31 @@ const getPendingApprovals = async () => {
   };
 };
 
-const getRecentAnnouncements = async (limit = 3) => {
+const getRecentAnnouncements = async (limit = 3, companyId = null) => {
   const { data, error } = await supabaseAdmin
     .from('announcements')
-    .select('id, title, priority, published_at, created_at')
+    .select('id, title, priority, published_at, created_at, publisher:published_by(id, address)')
     .eq('is_active', true)
     .order('published_at', { ascending: false })
-    .limit(limit);
+    .limit(Math.max(limit * 5, 20));
 
   if (error) throw new BadRequestError(error.message);
 
-  return (data || []).map((a) => ({
-    id: a.id,
-    title: a.title,
-    relativeTime: relativeTime(a.published_at || a.created_at),
-    priority: priorityLabel(a.priority),
-  }));
+  const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
+  const cid = companyId || DEFAULT_COMPANY_ID;
+
+  return (data || [])
+    .filter((a) => {
+      if (!a.publisher) return cid === DEFAULT_COMPANY_ID;
+      return getCompanyId(a.publisher) === cid;
+    })
+    .slice(0, limit)
+    .map((a) => ({
+      id: a.id,
+      title: a.title,
+      relativeTime: relativeTime(a.published_at || a.created_at),
+      priority: priorityLabel(a.priority),
+    }));
 };
 
 const getUpcomingEvents = (employees) => {
@@ -354,24 +381,28 @@ const getRecentActivity = async (employees) => {
     .slice(0, 8);
 };
 
-const globalSearch = async (query, limit = 8, { role } = {}) => {
+const globalSearch = async (query, limit = 8, { role, companyId } = {}) => {
   const q = String(query || '').trim();
   if (!q || q.length < 2) return { employees: [], leaves: [], announcements: [] };
 
   const pattern = `%${q}%`;
+  const { getCompanyId } = require('../utils/tenant');
 
   const { data: announcements } = await supabaseAdmin
     .from('announcements')
-    .select('id, title')
+    .select('id, title, publisher:published_by(address)')
     .eq('is_active', true)
     .ilike('title', pattern)
-    .limit(limit);
+    .limit(Math.max(limit * 5, 40));
 
-  const announcementResults = (announcements || []).map((a) => ({
-    id: a.id,
-    label: a.title,
-    type: 'announcement',
-  }));
+  const announcementResults = (announcements || [])
+    .filter((a) => !companyId || getCompanyId(a.publisher) === companyId)
+    .slice(0, limit)
+    .map((a) => ({
+      id: a.id,
+      label: a.title,
+      type: 'announcement',
+    }));
 
   if (role === 'employee') {
     return { employees: [], announcements: announcementResults, leaves: [] };
@@ -379,13 +410,17 @@ const globalSearch = async (query, limit = 8, { role } = {}) => {
 
   const { data: employees } = await supabaseAdmin
     .from('employees')
-    .select('id, first_name, last_name, email, department, employee_code')
+    .select('id, first_name, last_name, email, department, employee_code, address')
     .eq('is_active', true)
     .or(`first_name.ilike.${pattern},last_name.ilike.${pattern},email.ilike.${pattern},employee_code.ilike.${pattern}`)
-    .limit(limit);
+    .limit(Math.max(limit * 5, 40));
+
+  const scoped = (employees || [])
+    .filter((e) => !companyId || getCompanyId(e) === companyId)
+    .slice(0, limit);
 
   return {
-    employees: (employees || []).map((e) => ({
+    employees: scoped.map((e) => ({
       id: e.id,
       label: `${e.first_name} ${e.last_name}`,
       sublabel: e.department || e.email,
@@ -443,9 +478,12 @@ const getNewHiresTrendPercent = (employees) => {
   return Math.round(((thisMonth - lastMonth) / lastMonth) * 100);
 };
 
-const getPendingLeaveList = async (limit = 5) => {
+const getPendingLeaveList = async (limit = 5, employeeIds = [], companyId = null) => {
+  if (!employeeIds.length) return [];
+
   const settingsService = require('./settings.service');
-  const meta = await settingsService.getSetting('leave_policy_meta', null);
+  const { DEFAULT_COMPANY_ID } = require('../utils/tenant');
+  const meta = await settingsService.getSetting('leave_policy_meta', null, companyId || DEFAULT_COMPANY_ID);
   const level = String(meta?.approval_level || meta?.approvalLevel || 'single').toLowerCase();
   const twoLevel = level === 'two-level' || level === 'two_level' || level === 'two';
 
@@ -453,6 +491,7 @@ const getPendingLeaveList = async (limit = 5) => {
     .from('leaves')
     .select('id, leave_type, from_date, total_days, manager_approved_by, employee:employee_id(id, first_name, last_name, manager_id)')
     .eq('status', 'pending')
+    .in('employee_id', employeeIds)
     .order('created_at', { ascending: false })
     .limit(Math.max(limit * 3, 20));
 
@@ -485,11 +524,14 @@ const getPendingLeaveList = async (limit = 5) => {
   });
 };
 
-const getPendingExpenseList = async (limit = 5) => {
+const getPendingExpenseList = async (limit = 5, employeeIds = []) => {
+  if (!employeeIds.length) return [];
+
   const { data, error } = await supabaseAdmin
     .from('reimbursements')
     .select('id, reimbursement_type, description, employee:employee_id(id, first_name, last_name)')
     .eq('status', 'pending')
+    .in('employee_id', employeeIds)
     .order('created_at', { ascending: false })
     .limit(limit);
 
@@ -558,8 +600,9 @@ const getUpcomingInterviewsPlaceholder = () => ({
   ],
 });
 
-const getAdminDashboard = async () => {
-  const employees = await getActiveEmployees();
+const getAdminDashboard = async (companyId = null) => {
+  const employees = await getActiveEmployees(companyId);
+  const companyEmployeeIds = employees.map((e) => e.id);
   const teamEmployees = employees.filter((e) => e.role === 'employee' || e.role === 'manager');
   const teamIds = teamEmployees.map((e) => e.id);
 
@@ -576,10 +619,10 @@ const getAdminDashboard = async () => {
     recentActivity,
   ] = await Promise.all([
     getTodayAttendanceSummary(teamIds),
-    getOnLeaveTodayCount(),
-    getPayrollSummary(month, year),
-    getPendingApprovals(),
-    getRecentAnnouncements(3),
+    getOnLeaveTodayCount(companyEmployeeIds),
+    getPayrollSummary(month, year, companyEmployeeIds),
+    getPendingApprovals(companyEmployeeIds),
+    getRecentAnnouncements(3, companyId),
     getRecentActivity(employees),
   ]);
 
@@ -619,8 +662,9 @@ const getAdminDashboard = async () => {
   };
 };
 
-const getHrDashboard = async () => {
-  const employees = await getActiveEmployees();
+const getHrDashboard = async (companyId = null) => {
+  const employees = await getActiveEmployees(companyId);
+  const companyEmployeeIds = employees.map((e) => e.id);
   const teamEmployees = employees.filter((e) => e.role === 'employee' || e.role === 'manager');
   const teamIds = teamEmployees.map((e) => e.id);
 
@@ -636,11 +680,11 @@ const getHrDashboard = async () => {
     pendingCounts,
   ] = await Promise.all([
     getTodayAttendanceSummary(teamIds),
-    getOnLeaveTodayCount(),
-    getPendingLeaveList(5),
-    getPendingExpenseList(5),
-    getRecentAnnouncements(3),
-    getPendingApprovals(),
+    getOnLeaveTodayCount(companyEmployeeIds),
+    getPendingLeaveList(5, companyEmployeeIds, companyId),
+    getPendingExpenseList(5, companyEmployeeIds),
+    getRecentAnnouncements(3, companyId),
+    getPendingApprovals(companyEmployeeIds),
   ]);
 
   return {
@@ -802,7 +846,10 @@ const getAttendanceDaysThisMonth = async (employeeId) => {
 
 const getEmployeeLeaveBalances = async (employeeId) => {
   const year = nowIST().year();
-  const balances = await leaveService.getLeaveBalance(employeeId, year);
+  const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
+  const { data: me } = await supabaseAdmin.from('employees').select('address').eq('id', employeeId).maybeSingle();
+  const companyId = me ? getCompanyId(me) : DEFAULT_COMPANY_ID;
+  const balances = await leaveService.getLeaveBalance(employeeId, year, companyId);
   const displayTypes = ['EL', 'SL', 'CL', 'COMP_OFF'];
 
   return displayTypes
@@ -889,6 +936,9 @@ const getOpenExpenseClaims = async (employeeId, limit = 5) => {
 const getEmployeeDashboard = async (employeeId) => {
   const now = nowIST();
   const year = now.year();
+  const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
+  const { data: me } = await supabaseAdmin.from('employees').select('address').eq('id', employeeId).maybeSingle();
+  const companyId = me ? getCompanyId(me) : DEFAULT_COMPANY_ID;
 
   const [
     todayStatus,
@@ -906,7 +956,7 @@ const getEmployeeDashboard = async (employeeId) => {
     getEmployeeLeaveBalances(employeeId),
     getLatestPayslip(employeeId),
     getOpenExpenseClaims(employeeId, 5),
-    getRecentAnnouncements(3),
+    getRecentAnnouncements(3, companyId),
     supabaseAdmin
       .from('reimbursements')
       .select('id', { count: 'exact', head: true })
@@ -1069,6 +1119,9 @@ const getTeamPerformancePlaceholder = (teamMembers) => ({
 
 const getManagerDashboard = async (managerId) => {
   const teamIds = await getTeamEmployeeIds(managerId);
+  const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
+  const { data: mgr } = await supabaseAdmin.from('employees').select('address').eq('id', managerId).maybeSingle();
+  const companyId = mgr ? getCompanyId(mgr) : DEFAULT_COMPANY_ID;
 
   const { data: teamMembers, error: teamError } = await supabaseAdmin
     .from('employees')
@@ -1093,7 +1146,7 @@ const getManagerDashboard = async (managerId) => {
     getOnLeaveTodayForTeam(teamIds),
     getPendingLeaveListForTeam(teamIds, 5),
     getPendingExpenseListForTeam(teamIds, 5),
-    getRecentAnnouncements(3),
+    getRecentAnnouncements(3, companyId),
   ]);
 
   const pendingTotal = pendingLeaves.count + pendingExpenses.count;

@@ -1,6 +1,8 @@
 /**
- * Seed 25 test employees + attendance / leaves / payroll for easy E2E testing.
- * Keeps existing: System Admin, HR One, Neha Gupta, yash raj, Deepak Chopra.
+ * Reset test data: delete all employees except core accounts, then seed 25 new
+ * employees with attendance, leaves, payroll, documents, assets, reimbursements, etc.
+ *
+ * Kept accounts: System Admin, HR One, Neha Gupta, Deepak Chopra.
  *
  * Run: node scripts/seed-test-data.js
  */
@@ -10,6 +12,7 @@ const moment = require('moment-timezone');
 const { createClient } = require('@supabase/supabase-js');
 const { generateDefaultPassword } = require('../src/utils/helpers');
 const { TIMEZONE } = require('../src/utils/constants');
+const { withCompanyId, DEFAULT_COMPANY_ID } = require('../src/utils/tenant');
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 const YEAR = 2026;
@@ -61,6 +64,103 @@ const NEW_EMPLOYEES = [
 
 const LEAVE_ALLOC = { CL: 12, SL: 12, EL: 15, WFH: 24 };
 
+const KEEP_EMAILS = new Set([
+  'admin@company.com',
+  'hr1@company.com',
+  'neha.gupta@company.com',
+  'deepak.chopra@company.com',
+]);
+
+const DOC_TYPES = ['offer_letter', 'joining_letter', 'aadhar', 'pan', 'educational_certificate'];
+const REIMB_TYPES = ['travel', 'food', 'medical', 'internet_phone', 'office_supplies', 'other'];
+const ASSET_TYPES = ['Laptop', 'Monitor', 'Headset', 'Mobile Phone', 'Keyboard', 'Mouse'];
+
+async function deleteByEmployeeIds(table, column, ids) {
+  if (!ids.length) return;
+  const { error } = await supabase.from(table).delete().in(column, ids);
+  if (error) console.warn(`  warn ${table}:`, error.message);
+  else console.log(`  cleared ${table}`);
+}
+
+async function pruneExtras() {
+  console.log('\n=== Prune employees (keep System Admin, HR One, Neha, Deepak) ===');
+
+  const { data: allEmps, error: listErr } = await supabase.from('employees').select('id, email');
+  if (listErr) throw new Error(listErr.message);
+
+  const keepIds = (allEmps || [])
+    .filter((e) => KEEP_EMAILS.has(String(e.email || '').toLowerCase()))
+    .map((e) => e.id);
+  const deleteIds = (allEmps || [])
+    .filter((e) => !KEEP_EMAILS.has(String(e.email || '').toLowerCase()))
+    .map((e) => e.id);
+
+  if (!keepIds.length) {
+    throw new Error('No kept employees found. Run: node scripts/seed-admin.js');
+  }
+
+  if (!deleteIds.length) {
+    console.log('  No extra employees to delete');
+    return;
+  }
+
+  console.log(`  Removing ${deleteIds.length} employees, keeping ${keepIds.length}`);
+
+  await supabase.from('employees').update({ manager_id: null }).in('id', keepIds);
+  await supabase.from('assets').update({ assigned_to: null, status: 'available' }).in('assigned_to', deleteIds);
+  await supabase.from('helpdesk_tickets').update({ raised_by: null }).in('raised_by', deleteIds);
+  await supabase.from('helpdesk_tickets').update({ assigned_to: null }).in('assigned_to', deleteIds);
+  await supabase.from('helpdesk_ticket_comments').delete().in('author_id', deleteIds);
+  await supabase.from('performance_reviews').update({ manager_id: null }).in('manager_id', deleteIds);
+  await supabase.from('leaves').update({ manager_approved_by: null, approved_by: null }).in('manager_approved_by', deleteIds);
+  await supabase.from('leaves').update({ approved_by: null }).in('approved_by', deleteIds);
+  await supabase.from('reimbursements').update({ manager_approved_by: null, approved_by: null }).in('manager_approved_by', deleteIds);
+  await supabase.from('reimbursements').update({ approved_by: null }).in('approved_by', deleteIds);
+  await supabase.from('wfh_day_requests').update({ reviewed_by: null }).in('reviewed_by', deleteIds);
+
+  for (const [table, col] of [
+    ['system_settings', 'updated_by'],
+    ['payroll_months', 'created_by'],
+    ['trainings', 'created_by'],
+    ['holidays', 'created_by'],
+    ['announcements', 'published_by'],
+    ['documents', 'uploaded_by'],
+    ['documents', 'verified_by'],
+    ['employee_trainings', 'assigned_by'],
+    ['courses', 'created_by'],
+  ]) {
+    const { error } = await supabase.from(table).update({ [col]: null }).in(col, deleteIds);
+    if (error) console.warn(`  warn null ${table}.${col}:`, error.message);
+  }
+
+  for (const [table, col] of [
+    ['refresh_tokens', 'employee_id'],
+    ['password_reset_tokens', 'employee_id'],
+    ['notifications', 'user_id'],
+    ['announcement_acknowledgements', 'employee_id'],
+    ['documents', 'employee_id'],
+    ['leave_balances', 'employee_id'],
+    ['attendance', 'employee_id'],
+    ['leaves', 'employee_id'],
+    ['payroll', 'employee_id'],
+    ['reimbursements', 'employee_id'],
+    ['employee_trainings', 'employee_id'],
+    ['asset_requests', 'employee_id'],
+    ['performance_goals', 'employee_id'],
+    ['performance_reviews', 'employee_id'],
+    ['wfh_day_requests', 'employee_id'],
+    ['course_enrollments', 'employee_id'],
+    ['course_enrollments', 'user_id'],
+  ]) {
+    await deleteByEmployeeIds(table, col, deleteIds);
+  }
+
+  const { error: delErr } = await supabase.from('employees').delete().in('id', deleteIds);
+  if (delErr) throw new Error(`Delete employees: ${delErr.message}`);
+
+  console.log(`  deleted ${deleteIds.length} employee records`);
+}
+
 async function upsertEmployee(emp, managerId = null) {
   const { data: existing } = await supabase.from('employees').select('id').eq('email', emp.email).maybeSingle();
   const passwordHash = await bcrypt.hash(generateDefaultPassword(emp.first_name, emp.last_name), 10);
@@ -75,6 +175,7 @@ async function upsertEmployee(emp, managerId = null) {
       is_active: true,
       salary_details: emp.salary,
       employment_type: emp.employment_type || 'full_time',
+      address: withCompanyId({}, DEFAULT_COMPANY_ID),
     }).eq('id', existing.id);
     console.log(`  ~ updated ${emp.first_name} ${emp.last_name}`);
     return existing.id;
@@ -96,6 +197,7 @@ async function upsertEmployee(emp, managerId = null) {
     phone: `9${rand(100000000, 999999999)}`,
     is_active: true,
     salary_details: emp.salary || { basic: 45000, hra: 18000, da: 2000, special: 3000 },
+    address: withCompanyId({}, DEFAULT_COMPANY_ID),
   }).select('id').single();
 
   if (error) throw new Error(`${emp.email}: ${error.message}`);
@@ -122,24 +224,15 @@ async function seedEmployees(nehaId) {
     created.push(id);
   }
 
-  // Wire existing Deepak → Neha, Yash → Vikram
+  // Wire existing Deepak → Neha
   if (nehaId) {
     await supabase.from('employees').update({
       manager_id: nehaId,
       salary_details: { basic: 47000, hra: 18800, da: 2000, special: 3200 },
       department: 'Sales',
       designation: 'Business Development',
+      address: withCompanyId({}, DEFAULT_COMPANY_ID),
     }).eq('email', 'deepak.chopra@company.com');
-  }
-  if (byDeptManager.Engineering) {
-    await supabase.from('employees').update({
-      manager_id: byDeptManager.Engineering,
-      salary_details: { basic: 50000, hra: 20000, da: 2200, special: 3500 },
-      department: 'Engineering',
-      designation: 'Software Engineer',
-      role: 'employee',
-      is_active: true,
-    }).eq('email', 'yash@gmail.com');
   }
   // Ensure Neha has salary + Sales Manager
   if (nehaId) {
@@ -244,50 +337,58 @@ async function seedAttendance(employeeIds) {
   console.log(`  + ${inserted} check-in / check-out records`);
 }
 
-async function seedLeaves(employeeIds, managerIds, hrId) {
-  console.log('\n=== Leave requests ===');
+async function insertLeave(empId, managerIds, hrId, status) {
   const types = ['CL', 'SL', 'EL', 'WFH'];
   const reasons = [
     'Family function', 'Medical appointment', 'Personal work', 'Vacation',
     'WFH - home repair', 'Not feeling well', 'Doctor visit', 'Out of town',
   ];
+  const from = moment().tz(TZ).add(rand(-10, 20), 'days');
+  while (from.day() === 0 || from.day() === 6) from.add(1, 'day');
+  const days = pick([1, 1, 2, 3]);
+  const to = from.clone().add(days - 1, 'days');
+  const isHalf = days === 1 && pick([false, false, true]);
+  const managerId = pick(managerIds);
+
+  const row = {
+    employee_id: empId,
+    leave_type: pick(types),
+    from_date: from.format('YYYY-MM-DD'),
+    to_date: to.format('YYYY-MM-DD'),
+    total_days: isHalf ? 0.5 : days,
+    is_half_day: isHalf,
+    reason: pick(reasons),
+    status,
+  };
+  if (status === 'approved') {
+    row.manager_approved_by = managerId;
+    row.manager_approved_at = moment().subtract(rand(1, 8), 'days').toISOString();
+    row.approved_by = hrId;
+    row.approved_at = moment().subtract(rand(0, 3), 'days').toISOString();
+  } else if (status === 'rejected') {
+    row.rejection_reason = 'Team coverage insufficient for that period';
+    row.manager_approved_by = managerId;
+  }
+
+  const { error } = await supabase.from('leaves').insert(row);
+  return !error;
+}
+
+async function seedLeaves(employeeIds, managerIds, hrId) {
+  console.log('\n=== Leave requests ===');
   let n = 0;
 
-  for (let i = 0; i < 35; i++) {
-    const empId = pick(employeeIds);
-    const from = moment().tz(TZ).add(rand(-40, 25), 'days');
-    // skip weekends for start
-    while (from.day() === 0 || from.day() === 6) from.add(1, 'day');
-    const days = pick([1, 1, 2, 3]);
-    const to = from.clone().add(days - 1, 'days');
-    const status = pick(['pending', 'approved', 'approved', 'approved', 'rejected']);
-    const isHalf = days === 1 && pick([false, false, true]);
-    const managerId = pick(managerIds);
-
-    const row = {
-      employee_id: empId,
-      leave_type: pick(types),
-      from_date: from.format('YYYY-MM-DD'),
-      to_date: to.format('YYYY-MM-DD'),
-      total_days: isHalf ? 0.5 : days,
-      is_half_day: isHalf,
-      reason: pick(reasons),
-      status,
-    };
-    if (status === 'approved') {
-      row.manager_approved_by = managerId;
-      row.manager_approved_at = moment().subtract(rand(1, 8), 'days').toISOString();
-      row.approved_by = hrId;
-      row.approved_at = moment().subtract(rand(0, 3), 'days').toISOString();
-    } else if (status === 'rejected') {
-      row.rejection_reason = 'Team coverage insufficient for that period';
-      row.manager_approved_by = managerId;
-    }
-
-    const { error } = await supabase.from('leaves').insert(row);
-    if (!error) n += 1;
+  // Guaranteed pending queue for Leave Approvals UI
+  for (let i = 0; i < 12; i++) {
+    if (await insertLeave(pick(employeeIds), managerIds, hrId, 'pending')) n += 1;
   }
-  console.log(`  + ${n} leave requests (pending / approved / rejected)`);
+
+  for (let i = 0; i < 28; i++) {
+    const status = pick(['approved', 'approved', 'approved', 'rejected']);
+    if (await insertLeave(pick(employeeIds), managerIds, hrId, status)) n += 1;
+  }
+
+  console.log(`  + ${n} leave requests (12+ pending for approvals)`);
 }
 
 function buildPayslip(emp, month, year, { unpaidDays = 0, publish = false } = {}) {
@@ -420,8 +521,221 @@ async function seedHolidays(adminId) {
   console.log(`  + ${n} holidays`);
 }
 
+async function seedDocuments(employees, hrId) {
+  console.log('\n=== Employee documents ===');
+  let n = 0;
+  for (const emp of employees) {
+    if (emp.role === 'admin') continue;
+    for (const docType of DOC_TYPES) {
+      const { error } = await supabase.from('documents').insert({
+        employee_id: emp.id,
+        document_type: docType,
+        document_name: `${docType.replace(/_/g, ' ')} - ${emp.first_name}`,
+        document_url: `https://placehold.co/600x800/png?text=${encodeURIComponent(docType)}`,
+        uploaded_by: hrId,
+        is_verified: pick([true, false, false]),
+      });
+      if (!error) n += 1;
+    }
+  }
+  console.log(`  + ${n} documents`);
+}
+
+async function seedAssets(employees) {
+  console.log('\n=== Asset inventory + assignments ===');
+  const pool = [
+    { name: 'MacBook Pro 14"', category: 'Laptop', brand: 'Apple', model: 'M3 Pro', cost: 185000 },
+    { name: 'ThinkPad X1 Carbon', category: 'Laptop', brand: 'Lenovo', model: 'Gen 11', cost: 125000 },
+    { name: 'Dell UltraSharp 27"', category: 'Monitor', brand: 'Dell', model: 'U2723QE', cost: 52000 },
+    { name: 'LG 24" Monitor', category: 'Monitor', brand: 'LG', model: '24MK600', cost: 14000 },
+    { name: 'Sony WH-1000XM5', category: 'Headset', brand: 'Sony', model: 'XM5', cost: 28000 },
+    { name: 'Jabra Evolve2', category: 'Headset', brand: 'Jabra', model: '65', cost: 22000 },
+    { name: 'iPhone 15', category: 'Mobile Phone', brand: 'Apple', model: '128GB', cost: 79900 },
+    { name: 'Samsung Galaxy S24', category: 'Mobile Phone', brand: 'Samsung', model: '256GB', cost: 74999 },
+    { name: 'Logitech MX Keys', category: 'Keyboard', brand: 'Logitech', model: 'MX Keys', cost: 9995 },
+    { name: 'Logitech MX Master 3S', category: 'Mouse', brand: 'Logitech', model: 'MX Master 3S', cost: 9995 },
+  ];
+
+  const staff = employees.filter((e) => e.role !== 'admin');
+  let assigned = 0;
+  let available = 0;
+
+  for (let i = 0; i < pool.length; i++) {
+    const item = pool[i];
+    const assignee = i < staff.length ? staff[i] : null;
+    const { error } = await supabase.from('assets').insert({
+      name: item.name,
+      category: item.category,
+      brand: item.brand,
+      model: item.model,
+      serial_number: `SN-${rand(100000, 999999)}`,
+      purchase_date: moment().subtract(rand(30, 800), 'days').format('YYYY-MM-DD'),
+      purchase_cost: item.cost,
+      warranty_expiry: moment().add(rand(180, 900), 'days').format('YYYY-MM-DD'),
+      status: assignee ? 'assigned' : 'available',
+      assigned_to: assignee?.id || null,
+      assigned_on: assignee ? moment().subtract(rand(10, 200), 'days').format('YYYY-MM-DD') : null,
+      location: 'HQ - Floor 3',
+    });
+    if (!error) {
+      if (assignee) assigned += 1;
+      else available += 1;
+    }
+  }
+  console.log(`  + ${assigned} assigned assets, ${available} available in inventory`);
+}
+
+async function seedAssetRequests(employeeIds) {
+  console.log('\n=== Asset requests (for approvals) ===');
+  const reasons = [
+    'Need laptop for client demos',
+    'Current monitor flickering',
+    'Headset mic not working on calls',
+    'New joiner equipment',
+    'Replacement after damage',
+  ];
+  let n = 0;
+  let pending = 0;
+
+  for (let i = 0; i < 18; i++) {
+    const status = i < 10 ? 'requested' : pick(['approved', 'rejected']);
+    const { error } = await supabase.from('asset_requests').insert({
+      employee_id: pick(employeeIds),
+      asset_type: pick(ASSET_TYPES),
+      reason: pick(reasons),
+      urgency: pick(['low', 'medium', 'high']),
+      status,
+      requested_on: moment().subtract(rand(0, 14), 'days').format('YYYY-MM-DD'),
+    });
+    if (!error) {
+      n += 1;
+      if (status === 'requested') pending += 1;
+    }
+  }
+  console.log(`  + ${n} asset requests (${pending} pending for approvals)`);
+}
+
+async function seedReimbursements(employeeIds, managerIds, hrId) {
+  console.log('\n=== Reimbursement claims ===');
+  const descriptions = [
+    'Client lunch meeting', 'Cab to airport', 'Team dinner', 'Medical bills',
+    'Internet reimbursement', 'Office stationery', 'Conference travel',
+  ];
+  let n = 0;
+  let pending = 0;
+
+  for (let i = 0; i < 20; i++) {
+    const status = i < 8 ? 'pending' : pick(['approved', 'approved', 'rejected']);
+    const managerId = pick(managerIds);
+    const row = {
+      employee_id: pick(employeeIds),
+      reimbursement_type: pick(REIMB_TYPES),
+      amount: rand(500, 12000),
+      description: pick(descriptions),
+      expense_date: moment().subtract(rand(1, 45), 'days').format('YYYY-MM-DD'),
+      status,
+      receipt_url: 'https://placehold.co/400x600/png?text=Receipt',
+    };
+    if (status === 'approved') {
+      row.manager_approved_by = managerId;
+      row.manager_approved_at = moment().subtract(rand(1, 5), 'days').toISOString();
+      row.approved_by = hrId;
+      row.approval_date = moment().subtract(rand(0, 2), 'days').toISOString();
+      row.payment_date = moment().format('YYYY-MM-DD');
+    } else if (status === 'rejected') {
+      row.rejection_reason = 'Receipt unclear / policy not met';
+      row.manager_approved_by = managerId;
+    }
+    const { error } = await supabase.from('reimbursements').insert(row);
+    if (!error) {
+      n += 1;
+      if (status === 'pending') pending += 1;
+    }
+  }
+  console.log(`  + ${n} reimbursement claims (${pending} pending)`);
+}
+
+async function seedWfhRequests(employeeIds, managerIds) {
+  console.log('\n=== WFH day requests ===');
+  let n = 0;
+  for (let i = 0; i < 10; i++) {
+    const status = i < 5 ? 'pending' : pick(['approved', 'rejected']);
+    const workDate = moment().add(rand(1, 14), 'days');
+    while (workDate.day() === 0 || workDate.day() === 6) workDate.add(1, 'day');
+    const row = {
+      employee_id: pick(employeeIds),
+      work_date: workDate.format('YYYY-MM-DD'),
+      status,
+      reason: pick(['Plumber visit', 'Doctor appointment', 'Home internet upgrade', 'Family commitment']),
+    };
+    if (status !== 'pending') {
+      row.reviewed_by = pick(managerIds);
+      row.reviewed_at = moment().subtract(rand(0, 3), 'days').toISOString();
+      if (status === 'rejected') row.review_note = 'Team needs in-office presence that day';
+    }
+    const { error } = await supabase.from('wfh_day_requests').insert(row);
+    if (!error) n += 1;
+  }
+  console.log(`  + ${n} WFH requests`);
+}
+
+async function seedHelpdesk(employeeIds, hrId) {
+  console.log('\n=== Helpdesk tickets ===');
+  const subjects = [
+    'VPN not connecting', 'Payroll query', 'Leave balance mismatch',
+    'Laptop slow performance', 'Email access issue', 'Payslip download error',
+  ];
+  let n = 0;
+  for (let i = 0; i < 12; i++) {
+    const status = pick(['open', 'open', 'in_progress', 'resolved']);
+    const { data, error } = await supabase.from('helpdesk_tickets').insert({
+      raised_by: pick(employeeIds),
+      subject: pick(subjects),
+      category: pick(['it', 'payroll', 'leave', 'benefits']),
+      priority: pick(['low', 'medium', 'high']),
+      status,
+      description: 'Auto-seeded ticket for testing helpdesk workflows.',
+      assigned_to: status === 'open' ? null : hrId,
+      sla_due_by: moment().add(2, 'days').toISOString(),
+      resolved_at: status === 'resolved' ? moment().toISOString() : null,
+    }).select('id').single();
+    if (!error && data?.id) {
+      n += 1;
+      await supabase.from('helpdesk_ticket_comments').insert({
+        ticket_id: data.id,
+        author_id: pick(employeeIds),
+        text: 'Following up on this issue.',
+      });
+    }
+  }
+  console.log(`  + ${n} helpdesk tickets`);
+}
+
+async function seedPerformanceGoals(employeeIds) {
+  console.log('\n=== Performance goals ===');
+  const titles = [
+    'Complete Q3 sales target', 'Ship feature X', 'Reduce bug backlog',
+    'Improve NPS score', 'Mentor 2 juniors', 'Cut processing time 20%',
+  ];
+  let n = 0;
+  for (const empId of employeeIds.slice(0, 15)) {
+    const { error } = await supabase.from('performance_goals').insert({
+      employee_id: empId,
+      title: pick(titles),
+      cycle: 'H1 2026',
+      progress: rand(10, 90),
+      status: pick(['on_track', 'at_risk', 'completed']),
+      due_date: moment().add(rand(30, 120), 'days').format('YYYY-MM-DD'),
+    });
+    if (!error) n += 1;
+  }
+  console.log(`  + ${n} performance goals`);
+}
+
 async function main() {
-  console.log('Seeding rich test data for HRMS...\n');
+  console.log('Reset + seed rich test data for HRMS...\n');
+
+  await pruneExtras();
 
   const { data: admin } = await supabase.from('employees').select('id').eq('role', 'admin').limit(1).maybeSingle();
   const { data: hr } = await supabase.from('employees').select('id').eq('role', 'hr').limit(1).maybeSingle();
@@ -445,23 +759,38 @@ async function main() {
   await seedAttendance(staffIds);
   await seedLeaves(employeeOnlyIds.length ? employeeOnlyIds : staffIds, managerIds, hr?.id || admin.id);
   await seedPayroll(all, admin.id);
+  await seedDocuments(all, hr?.id || admin.id);
+  await seedAssets(all);
+  await seedAssetRequests(employeeOnlyIds.length ? employeeOnlyIds : staffIds);
+  await seedReimbursements(employeeOnlyIds.length ? employeeOnlyIds : staffIds, managerIds, hr?.id || admin.id);
+  await seedWfhRequests(employeeOnlyIds.length ? employeeOnlyIds : staffIds, managerIds);
+  await seedHelpdesk(staffIds, hr?.id || admin.id);
+  await seedPerformanceGoals(employeeOnlyIds.length ? employeeOnlyIds : staffIds);
+
+  const { count: pendingLeaves } = await supabase.from('leaves').select('id', { count: 'exact', head: true }).eq('status', 'pending');
+  const { count: pendingAssets } = await supabase.from('asset_requests').select('id', { count: 'exact', head: true }).eq('status', 'requested');
 
   console.log('\n✓ Test data ready\n');
-  console.log(`Active people: ${all.length}`);
-  console.log('Kept + new employees with managers, attendance, leaves, payroll.\n');
+  console.log(`Active people: ${all.length} (4 kept + 25 new)`);
+  console.log(`Pending leave approvals: ${pendingLeaves ?? '?'}`);
+  console.log(`Pending asset requests: ${pendingAssets ?? '?'}\n`);
   console.log('Login password pattern: FirstNameLastName@123\n');
-  console.log('Sample accounts:');
-  console.log('  admin@company.com        / SystemAdmin@123');
-  console.log('  hr1@company.com          / HROne@123');
-  console.log('  neha.gupta@company.com   / NehaGupta@123');
-  console.log('  vikram.singh@company.com / VikramSingh@123');
-  console.log('  arjun.mehta@company.com  / ArjunMehta@123');
-  console.log('  deepak.chopra@company.com/ DeepakChopra@123');
-  console.log('  yash@gmail.com           / yashraj@123');
+  console.log('Core accounts:');
+  console.log('  admin@company.com         / SystemAdmin@123');
+  console.log('  hr1@company.com           / HROne@123');
+  console.log('  neha.gupta@company.com    / NehaGupta@123');
+  console.log('  deepak.chopra@company.com / DeepakChopra@123');
+  console.log('\nSample new employees:');
+  console.log('  vikram.singh@company.com  / VikramSingh@123  (Engineering Manager)');
+  console.log('  arjun.mehta@company.com   / ArjunMehta@123');
+  console.log('  aditya.nair@company.com   / AdityaNair@123');
   console.log('\nWhat to test:');
-  console.log('  • Attendance → Team Attendance (present / late / half-day / absences)');
-  console.log('  • Leave → Approvals (pending) + My Leaves');
-  console.log('  • Payroll → My Payslips (June published) + Run Payroll (July drafts)');
+  console.log('  • Leave → Approvals (12+ pending)');
+  console.log('  • Assets → Asset Requests (10+ pending)');
+  console.log('  • Expense → Approvals (8+ pending reimbursements)');
+  console.log('  • Attendance → Team Attendance');
+  console.log('  • Payroll → My Payslips (June) + Run Payroll (July drafts)');
+  console.log('  • Employees → profiles with documents');
 }
 
 main().catch((err) => {

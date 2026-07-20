@@ -3,13 +3,17 @@ const { getClientIp, ipInCidr } = require('../utils/helpers');
 const { ForbiddenError } = require('../utils/errors');
 const logger = require('../utils/logger');
 const settingsService = require('../services/settings.service');
+const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
+
+const companyIdFromReq = (req) =>
+  req.user?.company_id || (req.user ? getCompanyId(req.user) : null) || DEFAULT_COMPANY_ID;
 
 const validateOfficeIp = async (req, res, next) => {
   try {
     const clientIp = getClientIp(req);
     req.clientIp = clientIp;
 
-    const { allowRemoteLogin, officeCidr } = await settingsService.getEffectiveOfficeConfig();
+    const { allowRemoteLogin, officeCidr } = await settingsService.getEffectiveOfficeConfig(companyIdFromReq(req));
     if (allowRemoteLogin) return next();
 
     const isOfficeIp = ipInCidr(clientIp, officeCidr || config.officeCidr);
@@ -35,7 +39,7 @@ const validateOfficeIpOptional = (req, res, next) => {
     .then(async () => {
       const clientIp = getClientIp(req);
       req.clientIp = clientIp;
-      const { officeCidr } = await settingsService.getEffectiveOfficeConfig();
+      const { officeCidr } = await settingsService.getEffectiveOfficeConfig(companyIdFromReq(req));
       req.isOfficeIp = ipInCidr(clientIp, officeCidr || config.officeCidr);
     })
     .then(() => next())
@@ -46,7 +50,7 @@ const requireOfficeIpForMethod = (methodsRequiringOffice = ['office_ip']) => (re
   Promise.resolve()
     .then(async () => {
       const method = req.body?.method || 'web';
-      const { allowRemoteLogin, officeCidr } = await settingsService.getEffectiveOfficeConfig();
+      const { allowRemoteLogin, officeCidr } = await settingsService.getEffectiveOfficeConfig(companyIdFromReq(req));
       const cidr = officeCidr || config.officeCidr;
 
       if (methodsRequiringOffice.includes(method) && !allowRemoteLogin) {

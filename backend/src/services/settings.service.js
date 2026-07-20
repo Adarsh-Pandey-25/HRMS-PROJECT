@@ -1,6 +1,7 @@
 const { supabaseAdmin } = require('../config/supabase');
 const config = require('../config/database');
 const logger = require('../utils/logger');
+const { DEFAULT_COMPANY_ID, settingsKey, parseSettingsKey } = require('../utils/tenant');
 
 const CACHE_TTL_MS = 60 * 1000;
 
@@ -32,14 +33,64 @@ const ensureCache = async (force = false) => {
   }
 };
 
-const getSetting = async (key, defaultValue = null) => {
+const resolveKey = (key, companyId) => {
+  if (!companyId) return key;
+  return settingsKey(companyId, key);
+};
+
+/**
+ * Read a setting for a company. Prefers t:{companyId}:{key}, then legacy bare key
+ * (only as fallback — used by default company / older rows).
+ */
+const getSetting = async (key, defaultValue = null, companyId = null) => {
   await ensureCache(false);
-  if (cache.map.has(key)) return cache.map.get(key);
+  // Unscoped callers resolve against the default (legacy) company so existing
+  // modules keep working; new workspaces must always pass their companyId.
+  const cid = companyId || DEFAULT_COMPANY_ID;
+  const tenantKey = resolveKey(key, cid);
+  if (cache.map.has(tenantKey)) return cache.map.get(tenantKey);
+  // Default company may still use unprefixed legacy keys
+  if (cid === DEFAULT_COMPANY_ID && cache.map.has(key)) {
+    return cache.map.get(key);
+  }
   return defaultValue;
 };
 
-const getBoolean = async (key, defaultValue = false) => {
-  const v = await getSetting(key, defaultValue);
+/**
+ * Copy bare legacy settings into t:{DEFAULT}:* so company-scoped reads
+ * match the Settings UI you already tested (single-tenant path).
+ */
+const migrateLegacySettingsToDefaultCompany = async () => {
+  await ensureCache(true);
+  const LEGACY_KEYS = [
+    'leave_policy', 'leave_policy_meta', 'leave_allocations',
+    'payroll_config', 'payroll_working_days', 'payroll_pf_rate',
+    'payroll_professional_tax', 'payroll_tds_percent',
+    'payroll_esi_employee_percent', 'payroll_esi_threshold',
+    'payroll_halfday_before_goal_enabled',
+    'expense_config', 'security_config', 'role_permissions',
+    'company_profile', 'allow_remote_login', 'office_cidr', 'office_ip',
+  ];
+  let copied = 0;
+  for (const key of LEGACY_KEYS) {
+    if (!cache.map.has(key)) continue;
+    const tenantKey = settingsKey(DEFAULT_COMPANY_ID, key);
+    if (cache.map.has(tenantKey)) continue;
+    const { error } = await supabaseAdmin.from('system_settings').upsert({
+      key: tenantKey,
+      value: cache.map.get(key),
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'key' });
+    if (!error) {
+      cache.map.set(tenantKey, cache.map.get(key));
+      copied += 1;
+    }
+  }
+  if (copied) logger.info('Migrated legacy settings to default company', { copied });
+};
+
+const getBoolean = async (key, defaultValue = false, companyId = null) => {
+  const v = await getSetting(key, defaultValue, companyId);
   if (typeof v === 'boolean') return v;
   if (typeof v === 'number') return v !== 0;
   if (typeof v === 'string') {
@@ -50,20 +101,21 @@ const getBoolean = async (key, defaultValue = false) => {
   return Boolean(v);
 };
 
-const getNumber = async (key, defaultValue = 0) => {
-  const v = await getSetting(key, defaultValue);
+const getNumber = async (key, defaultValue = 0, companyId = null) => {
+  const v = await getSetting(key, defaultValue, companyId);
   const n = typeof v === 'number' ? v : parseFloat(v);
   return Number.isFinite(n) ? n : defaultValue;
 };
 
-const getString = async (key, defaultValue = '') => {
-  const v = await getSetting(key, defaultValue);
+const getString = async (key, defaultValue = '', companyId = null) => {
+  const v = await getSetting(key, defaultValue, companyId);
   return typeof v === 'string' ? v : (v == null ? defaultValue : String(v));
 };
 
-const setSetting = async (key, value, updatedBy = null) => {
+const setSetting = async (key, value, updatedBy = null, companyId = null) => {
+  const storageKey = companyId ? resolveKey(key, companyId) : key;
   const payload = {
-    key,
+    key: storageKey,
     value,
     updated_by: updatedBy,
     updated_at: new Date().toISOString(),
@@ -76,21 +128,70 @@ const setSetting = async (key, value, updatedBy = null) => {
     .single();
 
   if (!error) {
-    cache.map.set(key, data.value);
+    cache.map.set(storageKey, data.value);
     cache.loadedAt = Date.now();
   }
 
   return { data, error };
 };
 
-const getEffectiveOfficeConfig = async () => {
-  // DB settings win for office network (Attendance Settings → IP whitelist).
-  // ENV is fallback only — so Admin can restrict office check-in without editing .env.
-  const allowRemoteLogin = await getBoolean('allow_remote_login', config.allowRemoteLogin);
-  const officeCidr = (await getString('office_cidr', '')) || config.officeCidr;
-  const officeIp = (await getString('office_ip', '')) || config.officeIp;
+/** List settings for one company as { key, value, ... } with logical (unprefixed) keys. */
+const listSettingsForCompany = async (companyId) => {
+  await ensureCache(true);
+  const { data, error } = await supabaseAdmin
+    .from('system_settings')
+    .select('key,value,updated_at,updated_by')
+    .order('key', { ascending: true });
 
+  if (error) return { data: null, error };
+
+  const prefix = `t:${companyId}:`;
+  const byLogical = new Map();
+
+  for (const row of data || []) {
+    const parsed = parseSettingsKey(row.key);
+    if (parsed.companyId === companyId) {
+      byLogical.set(parsed.key, { ...row, key: parsed.key });
+    } else if (!parsed.companyId && companyId === DEFAULT_COMPANY_ID && !byLogical.has(row.key)) {
+      // Legacy unprefixed rows for default company
+      byLogical.set(row.key, row);
+    }
+  }
+
+  // Ignore other tenants' prefixed keys and bare keys when not default company
+  return { data: Array.from(byLogical.values()), error: null };
+};
+
+const getEffectiveOfficeConfig = async (companyId = null) => {
+  const allowRemoteLogin = await getBoolean('allow_remote_login', config.allowRemoteLogin, companyId);
+  const officeCidr = (await getString('office_cidr', '', companyId)) || config.officeCidr;
+  const officeIp = (await getString('office_ip', '', companyId)) || config.officeIp;
   return { allowRemoteLogin, officeCidr, officeIp };
+};
+
+/** Seed essential settings for a brand-new company workspace. */
+const seedCompanySettings = async (companyId, companyProfile, updatedBy = null) => {
+  const defaults = {
+    company_profile: companyProfile || {},
+    allow_remote_login: false,
+  };
+
+  const copyKeys = [
+    'role_permissions', 'leave_policy', 'leave_policy_meta', 'leave_allocations',
+    'payroll_config', 'payroll_working_days', 'payroll_pf_rate',
+    'payroll_professional_tax', 'payroll_tds_percent',
+    'payroll_esi_employee_percent', 'payroll_esi_threshold',
+    'payroll_halfday_before_goal_enabled',
+    'expense_config', 'security_config',
+  ];
+  for (const key of copyKeys) {
+    const v = await getSetting(key, null, DEFAULT_COMPANY_ID);
+    if (v != null) defaults[key] = v;
+  }
+
+  for (const [key, value] of Object.entries(defaults)) {
+    await setSetting(key, value, updatedBy, companyId);
+  }
 };
 
 module.exports = {
@@ -102,5 +203,7 @@ module.exports = {
   getString,
   setSetting,
   getEffectiveOfficeConfig,
+  listSettingsForCompany,
+  seedCompanySettings,
+  migrateLegacySettingsToDefaultCompany,
 };
-

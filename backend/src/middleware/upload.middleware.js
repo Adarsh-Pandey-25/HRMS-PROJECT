@@ -4,17 +4,36 @@ const { BadRequestError } = require('../utils/errors');
 
 const storage = multer.memoryStorage();
 
+const MIME_BY_EXTENSION = {
+  pdf: ['application/pdf'],
+  doc: ['application/msword'],
+  docx: ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+  jpg: ['image/jpeg'],
+  jpeg: ['image/jpeg'],
+  png: ['image/png'],
+};
+
 const fileFilter = (req, file, cb) => {
-  const ext = file.originalname.split('.').pop().toLowerCase();
+  const name = String(file.originalname || '');
+  const ext = name.includes('.') ? name.split('.').pop().toLowerCase() : '';
   if (!config.upload.allowedTypes.includes(ext)) {
     return cb(new BadRequestError(`File type .${ext} not allowed`), false);
+  }
+  const allowedMimes = MIME_BY_EXTENSION[ext] || [];
+  if (!allowedMimes.includes(String(file.mimetype || '').toLowerCase())) {
+    return cb(new BadRequestError('File content type does not match its extension'), false);
   }
   cb(null, true);
 };
 
 const upload = multer({
   storage,
-  limits: { fileSize: config.upload.maxFileSize },
+  limits: {
+    fileSize: config.upload.maxFileSize,
+    files: 10,
+    fields: 50,
+    parts: 60,
+  },
   fileFilter,
 });
 

@@ -21,16 +21,23 @@ const getMonthStatus = async (req, res, next) => {
 const generatePayslip = async (req, res, next) => {
   try {
     const { payroll_month_id, user_id } = req.body;
+    if (user_id) {
+      const ids = await require('../services/tenant.service')
+        .getCompanyEmployeeIds(req.user.company_id);
+      if (!ids.includes(user_id)) {
+        throw new (require('../utils/errors').NotFoundError)('Employee not found');
+      }
+    }
     const data = user_id
       ? await payrollService.generateDraftPayslip(payroll_month_id, user_id)
-      : await payrollService.generateAllDraftPayslips(payroll_month_id);
+      : await payrollService.generateAllDraftPayslips(payroll_month_id, req.user.company_id);
     successResponse(res, user_id ? 'Draft payslip generated' : 'Draft payslips generated', data, null, 201);
   } catch (err) { next(err); }
 };
 
 const publishPayslip = async (req, res, next) => {
   try {
-    const data = await payrollService.publishPayslip(req.params.id, req.user.id);
+    const data = await payrollService.publishPayslip(req.params.id, req.user);
     successResponse(res, 'Payslip published', data);
   } catch (err) { next(err); }
 };
@@ -46,6 +53,7 @@ const listPayslips = async (req, res, next) => {
       user: req.user,
       role: req.user.role,
       mine,
+      companyId: req.user.company_id,
     });
     successResponse(res, 'Payslips fetched', data);
   } catch (err) { next(err); }
@@ -63,7 +71,16 @@ const recalculateFromSettings = async (req, res, next) => {
     const month = req.body?.month != null ? parseInt(req.body.month, 10) : undefined;
     const year = req.body?.year != null ? parseInt(req.body.year, 10) : undefined;
     const employeeId = req.body?.employee_id || req.body?.employeeId || undefined;
-    const data = await payrollService.recalculatePayslipsFromSettings({ month, year, employeeId });
+    if (employeeId) {
+      const ids = await require('../services/tenant.service')
+        .getCompanyEmployeeIds(req.user.company_id);
+      if (!ids.includes(employeeId)) {
+        throw new (require('../utils/errors').NotFoundError)('Employee not found');
+      }
+    }
+    const data = await payrollService.recalculatePayslipsFromSettings({
+      month, year, employeeId, companyId: req.user.company_id,
+    });
     successResponse(res, 'Payslips recalculated from settings', data);
   } catch (err) { next(err); }
 };

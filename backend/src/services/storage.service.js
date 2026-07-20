@@ -4,8 +4,31 @@ const { STORAGE_BUCKETS } = require('../utils/constants');
 const { BadRequestError } = require('../utils/errors');
 const logger = require('../utils/logger');
 
+const hasValidSignature = (file, ext) => {
+  const b = file?.buffer;
+  if (!Buffer.isBuffer(b) || b.length < 8) return false;
+  if (ext === 'pdf') return b.subarray(0, 5).toString() === '%PDF-';
+  if (ext === 'jpg' || ext === 'jpeg') return b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
+  if (ext === 'png') {
+    return b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  }
+  if (ext === 'webp') {
+    return b.subarray(0, 4).toString() === 'RIFF' && b.subarray(8, 12).toString() === 'WEBP';
+  }
+  if (ext === 'docx') return b[0] === 0x50 && b[1] === 0x4b; // ZIP container
+  if (ext === 'doc') {
+    return b.subarray(0, 8).equals(Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]));
+  }
+  if (['mp4', 'mov', 'm4v'].includes(ext)) return b.subarray(4, 8).toString() === 'ftyp';
+  if (ext === 'webm') return b.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]));
+  return false;
+};
+
 const uploadFile = async (bucket, file, folder = '') => {
   const ext = file.originalname.split('.').pop().toLowerCase();
+  if (!hasValidSignature(file, ext)) {
+    throw new BadRequestError('File content is invalid or does not match its extension');
+  }
   const fileName = `${folder ? folder + '/' : ''}${uuidv4()}.${ext}`;
 
   const { data, error } = await supabaseAdmin.storage

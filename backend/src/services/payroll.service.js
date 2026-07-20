@@ -32,22 +32,25 @@ const round2 = (n) => Math.round(Number(n) * 100) / 100;
  * Net      = Gross − all deductions
  */
 const calculateContractPayslip = async (employee, attendanceSummary) => {
-  const workingDaysSetting = Math.max(1, await settingsService.getNumber('payroll_working_days', WORKING_DAYS_PER_MONTH));
-  const pfRate = Math.max(0, await settingsService.getNumber('payroll_pf_rate', 0.12));
-  const ptAmount = Math.max(0, await settingsService.getNumber('payroll_professional_tax', 200));
-  const tdsPercent = Math.max(0, await settingsService.getNumber('payroll_tds_percent', 8));
+  const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
+  const companyId = getCompanyId(employee) || DEFAULT_COMPANY_ID;
 
-  const payrollConfig = (await settingsService.getSetting('payroll_config', null)) || {};
+  const workingDaysSetting = Math.max(1, await settingsService.getNumber('payroll_working_days', WORKING_DAYS_PER_MONTH, companyId));
+  const pfRate = Math.max(0, await settingsService.getNumber('payroll_pf_rate', 0.12, companyId));
+  const ptAmount = Math.max(0, await settingsService.getNumber('payroll_professional_tax', 200, companyId));
+  const tdsPercent = Math.max(0, await settingsService.getNumber('payroll_tds_percent', 8, companyId));
+
+  const payrollConfig = (await settingsService.getSetting('payroll_config', null, companyId)) || {};
   const pfWageCeiling = payrollConfig.pf_wage_ceiling != null
     ? Number(payrollConfig.pf_wage_ceiling)
     : null;
   const esiEmployeePercent = Number(
     payrollConfig.esi_employee_percent
-      ?? (await settingsService.getNumber('payroll_esi_employee_percent', 0.75))
+      ?? (await settingsService.getNumber('payroll_esi_employee_percent', 0.75, companyId))
   );
   const esiThreshold = Number(
     payrollConfig.esi_threshold
-      ?? (await settingsService.getNumber('payroll_esi_threshold', 21000))
+      ?? (await settingsService.getNumber('payroll_esi_threshold', 21000, companyId))
   );
   const companyTdsMode = String(payrollConfig.tds_mode || 'auto');
 
@@ -475,13 +478,20 @@ const generateDraftPayslip = async (payrollMonthId, userId) => {
   return mapPayslipRow(payslip);
 };
 
-const generateAllDraftPayslips = async (payrollMonthId) => {
-  const { data: employees, error } = await supabaseAdmin
-    .from('employees')
-    .select('id')
-    .eq('is_active', true);
-
-  if (error) throw new BadRequestError(error.message);
+const generateAllDraftPayslips = async (payrollMonthId, companyId = null) => {
+  let employees;
+  if (companyId) {
+    const tenantService = require('./tenant.service');
+    const ids = await tenantService.getCompanyEmployeeIds(companyId);
+    employees = ids.map((id) => ({ id }));
+  } else {
+    const { data, error } = await supabaseAdmin
+      .from('employees')
+      .select('id')
+      .eq('is_active', true);
+    if (error) throw new BadRequestError(error.message);
+    employees = data || [];
+  }
 
   const results = [];
   for (const emp of employees || []) {
@@ -561,7 +571,7 @@ const maybeCloseMonth = async (payrollMonthId) => {
   }
 };
 
-const publishPayslip = async (payslipId, publisherId) => {
+const publishPayslip = async (payslipId, publisher) => {
   const { data: payslip } = await supabaseAdmin
     .from('payroll')
     .select('*, employee:employee_id(*)')
@@ -569,6 +579,9 @@ const publishPayslip = async (payslipId, publisherId) => {
     .single();
 
   if (!payslip) throw new NotFoundError('Payslip not found');
+  if (require('../utils/tenant').getCompanyId(payslip.employee) !== publisher.company_id) {
+    throw new NotFoundError('Payslip not found');
+  }
   if (payslip.payslip_status === PAYSLIP_STATUS.PUBLISHED) {
     throw new BadRequestError('Payslip is already published');
   }
@@ -600,7 +613,7 @@ const publishPayslip = async (payslipId, publisherId) => {
         month: payslip.month,
         year: payslip.year,
         status: MONTH_STATUS.PENDING,
-        created_by: publisherId,
+        created_by: publisher.id,
       })
       .select('*')
       .single();
@@ -634,7 +647,7 @@ const publishPayslip = async (payslipId, publisherId) => {
   if (error) throw new BadRequestError(error.message);
 
   await maybeCloseMonth(payslip.payroll_month_id);
-  logger.info('Payslip published', { payslipId, publisherId });
+  logger.info('Payslip published', { payslipId, publisherId: publisher.id });
 
   // Notify employee
   await notificationService.createNotification({
@@ -654,7 +667,7 @@ const publishPayslip = async (payslipId, publisherId) => {
   };
 };
 
-const listPayslips = async ({ month, year, user, role, mine = false }) => {
+const listPayslips = async ({ month, year, user, role, mine = false, companyId = null }) => {
   let query = supabaseAdmin
     .from('payroll')
     .select('*, employee:employee_id(id, first_name, last_name, employee_code, email)')
@@ -666,6 +679,13 @@ const listPayslips = async ({ month, year, user, role, mine = false }) => {
   const personalOnly = mine || role === 'employee' || role === 'manager';
   if (personalOnly) {
     query = query.eq('employee_id', user.id).eq('payslip_status', PAYSLIP_STATUS.PUBLISHED);
+  } else if (companyId) {
+    const tenantService = require('./tenant.service');
+    const ids = await tenantService.getCompanyEmployeeIds(companyId);
+    query = query.in(
+      'employee_id',
+      ids.length ? ids : ['00000000-0000-0000-0000-000000000000']
+    );
   }
   // hr / admin without mine=true keep company-wide list (Run Payroll / Salary Sheet)
 
@@ -679,7 +699,9 @@ const listPayslips = async ({ month, year, user, role, mine = false }) => {
  * Default: current calendar month + any PENDING payroll months.
  * Published slips keep PUBLISHED status; PDF is regenerated when present.
  */
-const recalculatePayslipsFromSettings = async ({ month, year, employeeId } = {}) => {
+const recalculatePayslipsFromSettings = async ({
+  month, year, employeeId, companyId,
+} = {}) => {
   const now = moment.tz(TIMEZONE);
   const focusMonth = Number(month) || now.month() + 1;
   const focusYear = Number(year) || now.year();
@@ -710,6 +732,10 @@ const recalculatePayslipsFromSettings = async ({ month, year, employeeId } = {})
 
   let updated = 0;
   const details = [];
+  let companyEmployeeIds = null;
+  if (companyId) {
+    companyEmployeeIds = await require('./tenant.service').getCompanyEmployeeIds(companyId);
+  }
 
   for (const t of targets.values()) {
     let query = supabaseAdmin
@@ -718,6 +744,14 @@ const recalculatePayslipsFromSettings = async ({ month, year, employeeId } = {})
       .eq('month', t.month)
       .eq('year', t.year);
     if (employeeId) query = query.eq('employee_id', employeeId);
+    else if (companyEmployeeIds) {
+      query = query.in(
+        'employee_id',
+        companyEmployeeIds.length
+          ? companyEmployeeIds
+          : ['00000000-0000-0000-0000-000000000000']
+      );
+    }
 
     const { data: slips, error } = await query;
 
@@ -784,7 +818,7 @@ const recalculatePayslipsFromSettings = async ({ month, year, employeeId } = {})
 const downloadPayslip = async (payslipId, user) => {
   const { data: payslip } = await supabaseAdmin
     .from('payroll')
-    .select('*, employee:employee_id(id, first_name, last_name)')
+    .select('*, employee:employee_id(id, first_name, last_name, address)')
     .eq('id', payslipId)
     .single();
 
@@ -792,6 +826,9 @@ const downloadPayslip = async (payslipId, user) => {
 
   const isOwn = payslip.employee_id === user.id;
   const isHrAdmin = ['hr', 'admin'].includes(user.role);
+  if (require('../utils/tenant').getCompanyId(payslip.employee) !== user.company_id) {
+    throw new NotFoundError('Payslip not found');
+  }
   if (!isOwn && !isHrAdmin) throw new ForbiddenError('Not authorized');
 
   // Contract: draft download forbidden for everyone

@@ -1,9 +1,16 @@
 const assetsService = require('../services/assets.service');
 const { successResponse } = require('../utils/helpers');
 
+const companyIds = async (req) => {
+  const tenantService = require('../services/tenant.service');
+  const { getCompanyId } = require('../utils/tenant');
+  return tenantService.getCompanyEmployeeIds(req.user.company_id || getCompanyId(req.user));
+};
+
 const list = async (req, res, next) => {
   try {
-    const data = await assetsService.listAssets(req.query);
+    const ids = await companyIds(req);
+    const data = await assetsService.listAssets(req.query, ids);
     successResponse(res, 'Assets fetched', data);
   } catch (err) { next(err); }
 };
@@ -17,7 +24,8 @@ const mine = async (req, res, next) => {
 
 const requests = async (req, res, next) => {
   try {
-    const data = await assetsService.listRequests(req.query);
+    const ids = await companyIds(req);
+    const data = await assetsService.listRequests(req.query, ids);
     successResponse(res, 'Asset requests fetched', data);
   } catch (err) { next(err); }
 };
@@ -31,7 +39,8 @@ const submitRequest = async (req, res, next) => {
 
 const actOnRequest = async (req, res, next) => {
   try {
-    const data = await assetsService.updateRequestStatus(req.params.id, req.body.status);
+    const ids = await companyIds(req);
+    const data = await assetsService.updateRequestStatus(req.params.id, req.body.status, ids);
     if (!data) return res.status(404).json({ success: false, error: { message: 'Request not found' } });
     successResponse(res, 'Request updated', data);
   } catch (err) { next(err); }

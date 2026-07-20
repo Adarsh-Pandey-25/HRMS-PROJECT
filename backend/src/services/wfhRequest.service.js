@@ -103,14 +103,17 @@ const notifyReviewers = async (employeeId, workDate, requestId) => {
       meta,
     });
   } else {
-    const { data: hrs } = await supabaseAdmin
+    const tenantService = require('./tenant.service');
+    const { getCompanyId } = require('../utils/tenant');
+    const { data: empFull } = await supabaseAdmin
       .from('employees')
-      .select('id')
-      .in('role', ['hr', 'admin'])
-      .eq('is_active', true);
-    for (const u of hrs || []) {
+      .select('address')
+      .eq('id', employeeId)
+      .maybeSingle();
+    const hrIds = await tenantService.getCompanyHrAdminIds(empFull ? getCompanyId(empFull) : null);
+    for (const id of hrIds) {
       await notificationService.createNotification({
-        user_id: u.id,
+        user_id: id,
         type: 'ATTENDANCE',
         title: 'WFH request pending',
         message,
@@ -161,16 +164,20 @@ const listPendingForReviewer = async (reviewer, query = {}) => {
   if (role === 'manager') {
     employeeIds = await getTeamEmployeeIds(reviewer.id);
     if (!employeeIds.length) return { data: [], meta: buildMeta(page, limit, 0) };
+  } else {
+    const tenantService = require('./tenant.service');
+    const { getCompanyId } = require('../utils/tenant');
+    employeeIds = await tenantService.getCompanyEmployeeIds(reviewer.company_id || getCompanyId(reviewer));
+    if (!employeeIds.length) return { data: [], meta: buildMeta(page, limit, 0) };
   }
 
   let dbQuery = supabaseAdmin
     .from('wfh_day_requests')
     .select('*, employee:employee_id(id, first_name, last_name, employee_code, department, designation, manager_id)', { count: 'exact' })
     .eq('status', query.status || 'pending')
+    .in('employee_id', employeeIds)
     .order('created_at', { ascending: true })
     .range(offset, offset + limit - 1);
-
-  if (employeeIds) dbQuery = dbQuery.in('employee_id', employeeIds);
 
   const { data, error, count } = await dbQuery;
   if (error) throw new BadRequestError(error.message);
@@ -184,7 +191,7 @@ const review = async (reviewer, requestId, { status, review_note } = {}) => {
 
   const { data: row } = await supabaseAdmin
     .from('wfh_day_requests')
-    .select('*, employee:employee_id(id, first_name, last_name, manager_id)')
+    .select('*, employee:employee_id(id, first_name, last_name, manager_id, address)')
     .eq('id', requestId)
     .single();
   if (!row) throw new NotFoundError('WFH request not found');
@@ -196,7 +203,13 @@ const review = async (reviewer, requestId, { status, review_note } = {}) => {
     if (!teamIds.includes(row.employee_id)) {
       throw new ForbiddenError('You can only review your team members');
     }
-  } else if (!['hr', 'admin'].includes(role)) {
+  } else if (['hr', 'admin'].includes(role)) {
+    const { getCompanyId } = require('../utils/tenant');
+    const reviewerCompany = reviewer.company_id || getCompanyId(reviewer);
+    if (row.employee && getCompanyId(row.employee) !== reviewerCompany) {
+      throw new ForbiddenError('Not authorized to review WFH for another company');
+    }
+  } else {
     throw new ForbiddenError('Only manager, HR or Admin can review WFH requests');
   }
 

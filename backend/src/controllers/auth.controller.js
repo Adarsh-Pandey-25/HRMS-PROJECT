@@ -2,17 +2,13 @@ const authService = require('../services/auth.service');
 const { successResponse } = require('../utils/helpers');
 const config = require('../config/database');
 
-const cookieOptions = {
+const cookieOptions = (req, maxAge, path = '/') => ({
   httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
+  secure: config.cookieSecure || req.secure || req.get('x-forwarded-proto') === 'https',
   sameSite: 'strict',
-  maxAge: 24 * 60 * 60 * 1000,
-};
-
-const refreshCookieOptions = {
-  ...cookieOptions,
-  maxAge: 7 * 24 * 60 * 60 * 1000,
-};
+  path,
+  maxAge,
+});
 
 const register = async (req, res, next) => {
   try {
@@ -24,28 +20,37 @@ const register = async (req, res, next) => {
 const login = async (req, res, next) => {
   try {
     const { employee, accessToken, refreshToken } = await authService.login(req.body.email, req.body.password);
-    res.cookie('accessToken', accessToken, cookieOptions);
-    res.cookie('refreshToken', refreshToken, refreshCookieOptions);
-    successResponse(res, 'Login successful', { employee, accessToken, refreshToken });
+    res.cookie('accessToken', accessToken, cookieOptions(req, 24 * 60 * 60 * 1000));
+    res.cookie(
+      'refreshToken',
+      refreshToken,
+      cookieOptions(req, 7 * 24 * 60 * 60 * 1000, '/api/auth')
+    );
+    // Tokens stay in HttpOnly cookies and are never exposed to frontend JavaScript.
+    successResponse(res, 'Login successful', { employee });
   } catch (err) { next(err); }
 };
 
 const logout = async (req, res, next) => {
   try {
     await authService.logout(req.user.id, req.cookies?.refreshToken);
-    res.clearCookie('accessToken');
-    res.clearCookie('refreshToken');
+    res.clearCookie('accessToken', cookieOptions(req, 0));
+    res.clearCookie('refreshToken', cookieOptions(req, 0, '/api/auth'));
     successResponse(res, 'Logged out successfully');
   } catch (err) { next(err); }
 };
 
 const refreshToken = async (req, res, next) => {
   try {
-    const token = req.cookies?.refreshToken || req.body.refreshToken;
+    const token = req.cookies?.refreshToken;
     const result = await authService.refreshAccessToken(token);
-    res.cookie('accessToken', result.accessToken, cookieOptions);
-    res.cookie('refreshToken', result.refreshToken, refreshCookieOptions);
-    successResponse(res, 'Token refreshed', result);
+    res.cookie('accessToken', result.accessToken, cookieOptions(req, 24 * 60 * 60 * 1000));
+    res.cookie(
+      'refreshToken',
+      result.refreshToken,
+      cookieOptions(req, 7 * 24 * 60 * 60 * 1000, '/api/auth')
+    );
+    successResponse(res, 'Token refreshed');
   } catch (err) { next(err); }
 };
 
@@ -77,6 +82,26 @@ const resetPassword = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+const bootstrapAdmin = async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const fullName = String(body.admin_name || body.adminName || '').trim();
+    const parts = fullName.split(/\s+/).filter(Boolean);
+    const first_name = body.first_name || parts[0] || 'Admin';
+    const last_name = body.last_name || (parts.length > 1 ? parts.slice(1).join(' ') : 'User');
+
+    const employee = await authService.bootstrapAdmin({
+      email: body.email || body.admin_email || body.adminEmail,
+      password: body.password,
+      first_name,
+      last_name,
+      company_profile: body.company_profile || body.companyProfile || null,
+    });
+    successResponse(res, 'Admin account ready', employee, null, 201);
+  } catch (err) { next(err); }
+};
+
 module.exports = {
   register, login, logout, refreshToken, getMe, changePassword, forgotPassword, resetPassword,
+  bootstrapAdmin,
 };

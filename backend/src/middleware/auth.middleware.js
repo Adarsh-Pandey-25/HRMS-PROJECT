@@ -1,6 +1,13 @@
 const jwt = require('jsonwebtoken');
 const { supabaseAdmin } = require('../config/supabase');
 const { UnauthorizedError } = require('../utils/errors');
+const { getCompanyId } = require('../utils/tenant');
+
+const attachTenant = (employee) => {
+  if (!employee) return employee;
+  employee.company_id = getCompanyId(employee);
+  return employee;
+};
 
 const authenticate = async (req, res, next) => {
   try {
@@ -27,7 +34,7 @@ const authenticate = async (req, res, next) => {
       throw new UnauthorizedError('Invalid or expired token');
     }
 
-    req.user = employee;
+    req.user = attachTenant(employee);
     req.token = token;
     next();
   } catch (err) {
@@ -56,7 +63,7 @@ const optionalAuth = async (req, res, next) => {
       .eq('is_active', true)
       .single();
 
-    if (employee) req.user = employee;
+    if (employee) req.user = attachTenant(employee);
     next();
   } catch {
     next();

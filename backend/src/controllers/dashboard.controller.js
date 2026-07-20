@@ -1,9 +1,10 @@
 const dashboardService = require('../services/dashboard.service');
 const { successResponse } = require('../utils/helpers');
+const { getCompanyId } = require('../utils/tenant');
 
 const getAdminDashboard = async (req, res, next) => {
   try {
-    const data = await dashboardService.getAdminDashboard();
+    const data = await dashboardService.getAdminDashboard(req.user.company_id || getCompanyId(req.user));
     successResponse(res, 'Admin dashboard fetched', data);
   } catch (err) {
     next(err);
@@ -12,7 +13,7 @@ const getAdminDashboard = async (req, res, next) => {
 
 const getHrDashboard = async (req, res, next) => {
   try {
-    const data = await dashboardService.getHrDashboard();
+    const data = await dashboardService.getHrDashboard(req.user.company_id || getCompanyId(req.user));
     successResponse(res, 'HR dashboard fetched', data);
   } catch (err) {
     next(err);
@@ -40,7 +41,10 @@ const getEmployeeDashboard = async (req, res, next) => {
 const search = async (req, res, next) => {
   try {
     const q = String(req.query.q || '').trim();
-    const data = await dashboardService.globalSearch(q, 8, { role: req.user.role });
+    const data = await dashboardService.globalSearch(q, 8, {
+      role: req.user.role,
+      companyId: req.user.company_id || getCompanyId(req.user),
+    });
     successResponse(res, 'Search results', data);
   } catch (err) {
     next(err);

@@ -7,3 +7,5 @@ uploads/
 coverage/
 .nyc_output/
 dist/
+proj.json
+supabase/.temp/

@@ -30,14 +30,19 @@ const helpdeskRoutes = require('./routes/helpdesk.routes');
 
 const app = express();
 
-app.set('trust proxy', 1);
+app.disable('x-powered-by');
+// Only trust proxy headers from the local Vite/ngrok proxy hop.
+app.set('trust proxy', 'loopback');
 
-app.use(helmet());
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'same-site' },
+  referrerPolicy: { policy: 'no-referrer' },
+}));
 app.use(compression());
 app.use(cors(config.cors));
 app.use(morgan(config.env === 'production' ? 'combined' : 'dev'));
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '1mb', strict: true }));
+app.use(express.urlencoded({ extended: false, limit: '100kb' }));
 app.use(cookieParser());
 app.use(generalLimiter);
 
@@ -45,23 +50,6 @@ app.get('/', (req, res) => {
   res.json({
     success: true,
     message: 'HRMS Backend API',
-    version: '1.0.0',
-    docs: 'Use Postman collection: backend/postman/HRMS-API.postman_collection.json',
-    endpoints: {
-      health: 'GET /health',
-      auth: '/api/auth',
-      employees: '/api/employees',
-      attendance: '/api/attendance',
-      leaves: '/api/leaves',
-      payroll: '/api/payroll',
-      reimbursements: '/api/reimbursements',
-      training: '/api/training',
-      announcements: '/api/announcements',
-      holidays: '/api/holidays',
-      documents: '/api/documents',
-    },
-    timestamp: new Date().toISOString(),
-    timezone: config.timezone,
   });
 });
 
@@ -69,8 +57,6 @@ app.get('/health', (req, res) => {
   res.json({
     success: true,
     message: 'HRMS API is running',
-    timestamp: new Date().toISOString(),
-    timezone: config.timezone,
   });
 });
 

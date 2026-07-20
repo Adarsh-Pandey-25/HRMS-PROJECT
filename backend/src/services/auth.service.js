@@ -10,14 +10,15 @@ const { omitSensitive, generateEmployeeCode, generateDefaultPassword } = require
 const { welcomeEmail, passwordResetEmail } = require('./email.service');
 const settingsService = require('./settings.service');
 const logger = require('../utils/logger');
+const { getCompanyId, withCompanyId, newCompanyId } = require('../utils/tenant');
 
 const SALT_ROUNDS = 10;
 
 const hashPassword = (password) => bcrypt.hash(password, SALT_ROUNDS);
 const comparePassword = (password, hash) => bcrypt.compare(password, hash);
 
-const assertPasswordPolicy = async (password) => {
-  const cfg = await settingsService.getSetting('security_config', null);
+const assertPasswordPolicy = async (password, companyId = null) => {
+  const cfg = await settingsService.getSetting('security_config', null, companyId);
   const minLength = Number(cfg?.passwordMinLength ?? cfg?.password_min_length ?? 8);
   const requireSpecial = cfg?.passwordRequireSpecialChar ?? cfg?.password_require_special_char ?? true;
   const requireNumber = cfg?.passwordRequireNumber ?? cfg?.password_require_number ?? true;
@@ -34,7 +35,12 @@ const assertPasswordPolicy = async (password) => {
 };
 
 const generateTokens = (employee) => {
-  const payload = { id: employee.id, email: employee.email, role: employee.role };
+  const payload = {
+    id: employee.id,
+    email: employee.email,
+    role: employee.role,
+    company_id: getCompanyId(employee),
+  };
   const accessToken = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: config.jwt.expire });
   const refreshToken = jwt.sign(payload, process.env.JWT_REFRESH_SECRET, {
     expiresIn: config.jwt.refreshExpire,
@@ -67,6 +73,8 @@ const register = async (adminUser, data) => {
   const passwordHash = await hashPassword(password);
   const employeeCode = rest.employee_code || generateEmployeeCode();
 
+  const companyId = getCompanyId(adminUser);
+  const { address: _addr, ...restWithoutAddress } = rest;
   const { data: employee, error } = await supabaseAdmin
     .from('employees')
     .insert({
@@ -76,7 +84,8 @@ const register = async (adminUser, data) => {
       last_name,
       role,
       employee_code: employeeCode,
-      ...rest,
+      ...restWithoutAddress,
+      address: withCompanyId(rest.address, companyId),
     })
     .select()
     .single();
@@ -106,7 +115,7 @@ const login = async (email, password, options = {}) => {
   await storeRefreshToken(employee.id, refreshToken);
 
   return {
-    employee: omitSensitive(employee, ['password_hash']),
+    employee: { ...omitSensitive(employee, ['password_hash']), company_id: getCompanyId(employee) },
     accessToken,
     refreshToken,
   };
@@ -197,7 +206,7 @@ const forgotPassword = async (email) => {
   }
 
   // Generate 6-digit OTP and store hashed OTP in DB
-  const otp = String(Math.floor(100000 + Math.random() * 900000));
+  const otp = String(crypto.randomInt(100000, 1000000));
   const tokenHash = crypto.createHash('sha256').update(otp).digest('hex');
 
   // Invalidate any previous active tokens for this user
@@ -260,7 +269,79 @@ const getMe = async (employeeId) => {
     .single();
 
   if (error || !employee) throw new NotFoundError('Employee not found');
-  return omitSensitive(employee, ['password_hash']);
+  return {
+    ...omitSensitive(employee, ['password_hash']),
+    company_id: getCompanyId(employee),
+  };
+};
+
+/**
+ * Onboarding: create a NEW isolated company workspace + its first admin.
+ * Existing demo/legacy employees stay under the default company and are NOT visible here.
+ */
+const bootstrapAdmin = async ({
+  email,
+  password,
+  first_name,
+  last_name,
+  company_profile = null,
+}) => {
+  if (!email) throw new BadRequestError('email is required');
+  if (!first_name) throw new BadRequestError('first_name is required');
+
+  const last = last_name || 'Admin';
+  const resolvedPassword = password || generateDefaultPassword(first_name, last);
+  if (password) await assertPasswordPolicy(password);
+  const passwordHash = await hashPassword(resolvedPassword);
+  const normalizedEmail = String(email).toLowerCase().trim();
+
+  const { data: existing } = await supabaseAdmin
+    .from('employees')
+    .select('id, email, role, address')
+    .eq('email', normalizedEmail)
+    .maybeSingle();
+
+  if (existing) {
+    // Account recovery must use the verified forgot-password flow.
+    throw new ConflictError('An account with this email already exists');
+  }
+
+  const companyId = newCompanyId();
+  const { data, error } = await supabaseAdmin
+    .from('employees')
+    .insert({
+      employee_code: generateEmployeeCode(),
+      email: normalizedEmail,
+      password_hash: passwordHash,
+      first_name,
+      last_name: last,
+      role: 'admin',
+      department: 'Administration',
+      designation: 'Super Admin',
+      date_of_joining: new Date().toISOString().split('T')[0],
+      employment_type: 'full_time',
+      is_active: true,
+      address: withCompanyId({}, companyId),
+    })
+    .select()
+    .single();
+  if (error) throw new BadRequestError(error.message);
+
+  await settingsService.seedCompanySettings(companyId, company_profile || {
+    name: company_profile?.name,
+    adminName: `${first_name} ${last}`.trim(),
+    adminEmail: normalizedEmail,
+  }, data.id);
+
+  logger.info('Onboarding company + admin created', {
+    id: data.id, email: data.email, companyId,
+  });
+
+  return {
+    ...omitSensitive(data, ['password_hash']),
+    company_id: companyId,
+    tempPassword: resolvedPassword,
+  };
 };
 
 module.exports = {
@@ -273,4 +354,5 @@ module.exports = {
   resetPassword,
   getMe,
   hashPassword,
+  bootstrapAdmin,
 };

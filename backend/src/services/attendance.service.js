@@ -24,8 +24,8 @@ const resolveAttendanceMode = (employee) => {
   return (raw === 'wfh' || raw === 'remote' || raw === 'work_from_home') ? 'wfh' : 'office';
 };
 
-const assertOfficeIpAllowed = async (clientIp) => {
-  const { officeCidr, officeIp } = await settingsService.getEffectiveOfficeConfig();
+const assertOfficeIpAllowed = async (clientIp, companyId = null) => {
+  const { officeCidr, officeIp } = await settingsService.getEffectiveOfficeConfig(companyId);
   // Prefer DB whitelist; fall back to seeded office IP
   const cidr = String(officeCidr || officeIp || '').trim();
   if (!cidr) return;
@@ -94,7 +94,7 @@ const checkIn = async (employeeId, { method, device_id, location, clientIp, is_w
 
   // Office IP required only for office-mode employees who are NOT on approved WFH today (HR/Admin exempt)
   if (attendanceMode === 'office' && !wantsWfh && !isPrivilegedRole) {
-    await assertOfficeIpAllowed(clientIp);
+    await assertOfficeIpAllowed(clientIp, require('../utils/tenant').getCompanyId(emp));
   }
 
   const todayRecord = await getTodayAttendance(employeeId);
@@ -161,7 +161,10 @@ const checkOut = async (employeeId, { method, clientIp, break_minutes = 0 }) => 
   let status = determineAttendanceStatus(active.check_in_time, totalHours);
 
   // Payroll rule (admin toggle): if checkout before goal hours, treat as half-day (not early_departure)
-  const halfDayBeforeGoal = await settingsService.getBoolean('payroll_halfday_before_goal_enabled', false);
+  const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
+  const { data: empRow } = await supabaseAdmin.from('employees').select('address').eq('id', employeeId).maybeSingle();
+  const companyId = empRow ? getCompanyId(empRow) : DEFAULT_COMPANY_ID;
+  const halfDayBeforeGoal = await settingsService.getBoolean('payroll_halfday_before_goal_enabled', false, companyId);
   if (!wasWfh && halfDayBeforeGoal && totalHours < WORK_HOURS && totalHours > 0) {
     status = 'half_day';
   }
@@ -278,7 +281,7 @@ const getAttendance = async (filters, query) => {
 
   let dbQuery = supabaseAdmin
     .from('attendance')
-    .select('*, employee:employee_id(id, first_name, last_name, employee_code, department, designation, attendance_mode)', { count: 'exact' })
+    .select('*, employee:employee_id(id, first_name, last_name, employee_code, department, designation, address)', { count: 'exact' })
     .order('check_in_time', { ascending: false })
     .range(offset, offset + limit - 1);
 
@@ -292,7 +295,18 @@ const getAttendance = async (filters, query) => {
 
   const { data, error, count } = await dbQuery;
   if (error) throw new BadRequestError(error.message);
-  return { data: data || [], meta: buildMeta(page, limit, count) };
+
+  // attendance_mode lives in address JSON — expose it on employee for the UI
+  const rows = (data || []).map((row) => {
+    if (!row?.employee) return row;
+    const attendance_mode = resolveAttendanceMode(row.employee);
+    return {
+      ...row,
+      employee: { ...row.employee, attendance_mode },
+    };
+  });
+
+  return { data: rows, meta: buildMeta(page, limit, count) };
 };
 
 const getMonthlySummary = async (employeeId, month, year) => {
@@ -377,7 +391,7 @@ const processAutoCheckout = async () => {
 
   const { data: activeRecords, error } = await supabaseAdmin
     .from('attendance')
-    .select('*, employee:employee_id(id, email, first_name, last_name)')
+    .select('*, employee:employee_id(id, email, first_name, last_name, address)')
     .is('check_out_time', null);
 
   if (error) {
@@ -385,13 +399,24 @@ const processAutoCheckout = async () => {
     return { processed: 0 };
   }
 
-  const halfDayBeforeGoal = await settingsService.getBoolean('payroll_halfday_before_goal_enabled', false);
+  const halfDayBeforeGoalByCompany = new Map();
+  const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
 
   let processed = 0;
   for (const record of activeRecords || []) {
     const deadline = getAutoCheckoutDeadline(record.check_in_time);
     // Only checkout once the 4:00 AM cutoff for this session has passed
     if (now.isBefore(deadline)) continue;
+
+    const companyId = record.employee ? getCompanyId(record.employee) : DEFAULT_COMPANY_ID;
+    if (!halfDayBeforeGoalByCompany.has(companyId)) {
+      // eslint-disable-next-line no-await-in-loop
+      halfDayBeforeGoalByCompany.set(
+        companyId,
+        await settingsService.getBoolean('payroll_halfday_before_goal_enabled', false, companyId)
+      );
+    }
+    const halfDayBeforeGoal = halfDayBeforeGoalByCompany.get(companyId);
 
     const checkoutIso = deadline.toISOString();
     const totalHours = calculateWorkingHours(record.check_in_time, checkoutIso);

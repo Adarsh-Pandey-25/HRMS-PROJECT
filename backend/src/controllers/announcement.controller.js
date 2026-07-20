@@ -2,6 +2,22 @@ const { supabaseAdmin } = require('../config/supabase');
 const { announcementEmail } = require('../services/email.service');
 const { successResponse, paginate, buildMeta } = require('../utils/helpers');
 const { BadRequestError } = require('../utils/errors');
+const { getCompanyId } = require('../utils/tenant');
+
+const isTenantAnnouncement = (row, companyId) =>
+  row?.publisher && getCompanyId(row.publisher) === companyId;
+
+const requireTenantAnnouncement = async (id, companyId) => {
+  const { data } = await supabaseAdmin
+    .from('announcements')
+    .select('id, published_by, publisher:published_by(id, address)')
+    .eq('id', id)
+    .maybeSingle();
+  if (!data || !isTenantAnnouncement(data, companyId)) {
+    throw new (require('../utils/errors').NotFoundError)('Announcement not found');
+  }
+  return data;
+};
 
 const create = async (req, res, next) => {
   try {
@@ -39,10 +55,13 @@ const create = async (req, res, next) => {
     if (data.priority === 'urgent' || data.priority === 'high') {
       const { data: employees } = await supabaseAdmin
         .from('employees')
-        .select('email, first_name')
+        .select('email, first_name, address')
         .eq('is_active', true);
 
-      (employees || []).slice(0, 50).forEach((emp) => {
+      (employees || [])
+        .filter((emp) => getCompanyId(emp) === req.user.company_id)
+        .slice(0, 50)
+        .forEach((emp) => {
         announcementEmail(emp, data).catch(() => {});
       });
     }
@@ -54,14 +73,20 @@ const create = async (req, res, next) => {
 const all = async (req, res, next) => {
   try {
     const { page, limit, offset } = paginate(req.query);
-    const { data, error, count } = await supabaseAdmin
+    const { data, error } = await supabaseAdmin
       .from('announcements')
-      .select('*, publisher:published_by(first_name, last_name)', { count: 'exact' })
+      .select('*, publisher:published_by(first_name, last_name, address)')
       .order('published_at', { ascending: false })
-      .range(offset, offset + limit - 1);
+      .limit(5000);
 
     if (error) throw new BadRequestError(error.message);
-    successResponse(res, 'Announcements fetched', data, buildMeta(page, limit, count));
+    const scoped = (data || []).filter((row) => isTenantAnnouncement(row, req.user.company_id));
+    successResponse(
+      res,
+      'Announcements fetched',
+      scoped.slice(offset, offset + limit),
+      buildMeta(page, limit, scoped.length)
+    );
   } catch (err) { next(err); }
 };
 
@@ -70,7 +95,7 @@ const active = async (req, res, next) => {
     const now = new Date().toISOString();
     let query = supabaseAdmin
       .from('announcements')
-      .select('*, publisher:published_by(first_name, last_name)')
+      .select('*, publisher:published_by(first_name, last_name, address)')
       .eq('is_active', true)
       .or(`expires_at.is.null,expires_at.gt.${now}`)
       .order('priority', { ascending: false });
@@ -84,12 +109,14 @@ const active = async (req, res, next) => {
 
     const { data, error } = await query;
     if (error) throw new BadRequestError(error.message);
-    successResponse(res, 'Active announcements fetched', data);
+    const scoped = (data || []).filter((row) => isTenantAnnouncement(row, req.user.company_id));
+    successResponse(res, 'Active announcements fetched', scoped);
   } catch (err) { next(err); }
 };
 
 const update = async (req, res, next) => {
   try {
+    await requireTenantAnnouncement(req.params.id, req.user.company_id);
     const { data, error } = await supabaseAdmin
       .from('announcements')
       .update(req.body)
@@ -104,6 +131,7 @@ const update = async (req, res, next) => {
 
 const remove = async (req, res, next) => {
   try {
+    await requireTenantAnnouncement(req.params.id, req.user.company_id);
     await supabaseAdmin.from('announcements').delete().eq('id', req.params.id);
     successResponse(res, 'Announcement deleted');
   } catch (err) { next(err); }
@@ -111,6 +139,7 @@ const remove = async (req, res, next) => {
 
 const acknowledge = async (req, res, next) => {
   try {
+    await requireTenantAnnouncement(req.params.id, req.user.company_id);
     const { data, error } = await supabaseAdmin
       .from('announcement_acknowledgements')
       .upsert({
