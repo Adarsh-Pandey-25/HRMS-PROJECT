@@ -1,4 +1,3 @@
-const PDFDocument = require('pdfkit');
 const moment = require('moment-timezone');
 const { supabaseAdmin } = require('../config/supabase');
 const {
@@ -10,11 +9,11 @@ const logger = require('../utils/logger');
 const { TIMEZONE } = require('../utils/constants');
 const settingsService = require('./settings.service');
 const notificationService = require('./notification.service');
+const { buildPayslipPdfBuffer } = require('./payslipPdf.service');
 
 const WORKING_DAYS_PER_MONTH = 26;
 const MONTH_STATUS = { PENDING: 'PENDING', COMPLETED: 'COMPLETED' };
 const PAYSLIP_STATUS = { DRAFT: 'DRAFT', PUBLISHED: 'PUBLISHED' };
-const COMPANY_NAME = process.env.COMPANY_NAME || 'HRMS Company Pvt Ltd';
 
 const round2 = (n) => Math.round(Number(n) * 100) / 100;
 
@@ -27,7 +26,6 @@ const round2 = (n) => Math.round(Number(n) * 100) / 100;
  * PF       = Basic × rate (company payroll_pf_rate or employee pf_percent) unless pf_applicable=false
  * PT       = payroll_professional_tax (flat ₹) unless pt_applicable=false
  * TDS      = employee tds_mode company|fixed|none; company uses settings auto/manual
- * ESI      = if esi_applicable and Gross ≤ threshold → Gross × esiEmployee%/100
  * Custom   = from Settings → payroll_config.custom_payroll_options + payroll_components
  * Net      = Gross − all deductions
  */
@@ -44,14 +42,6 @@ const calculateContractPayslip = async (employee, attendanceSummary) => {
   const pfWageCeiling = payrollConfig.pf_wage_ceiling != null
     ? Number(payrollConfig.pf_wage_ceiling)
     : null;
-  const esiEmployeePercent = Number(
-    payrollConfig.esi_employee_percent
-      ?? (await settingsService.getNumber('payroll_esi_employee_percent', 0.75, companyId))
-  );
-  const esiThreshold = Number(
-    payrollConfig.esi_threshold
-      ?? (await settingsService.getNumber('payroll_esi_threshold', 21000, companyId))
-  );
   const companyTdsMode = String(payrollConfig.tds_mode || 'auto');
 
   const salary = employee.salary_details || {};
@@ -73,7 +63,6 @@ const calculateContractPayslip = async (employee, attendanceSummary) => {
   };
   const pfApplicable = flagOn(salary.pf_applicable ?? salary.pfApplicable, true);
   const ptApplicable = flagOn(salary.pt_applicable ?? salary.ptApplicable, true);
-  const esiApplicable = flagOn(salary.esi_applicable ?? salary.esiApplicable, true);
   const empPfPercent = salary.pf_percent ?? salary.pfPercent;
   const empPfRate = empPfPercent != null && empPfPercent !== ''
     ? Math.max(0, Number(empPfPercent) / 100)
@@ -92,7 +81,7 @@ const calculateContractPayslip = async (employee, attendanceSummary) => {
 
   let gross = round2(earnings.reduce((s, e) => s + Number(e.amount || 0), 0));
 
-  // Custom allowances first so TDS/ESI/LOP use final gross
+  // Custom allowances first so TDS/LOP use final gross
   const customOptions = Array.isArray(payrollConfig.custom_payroll_options)
     ? payrollConfig.custom_payroll_options
     : [];
@@ -148,12 +137,6 @@ const calculateContractPayslip = async (employee, attendanceSummary) => {
     tds_deduction = round2(gross * (tdsPercent / 100));
   }
 
-  // ESI: only when applicable + gross ≤ statutory threshold
-  let esi_deduction = 0;
-  if (esiApplicable && gross > 0 && gross <= esiThreshold && esiEmployeePercent > 0) {
-    esi_deduction = round2(gross * (esiEmployeePercent / 100));
-  }
-
   const vars = {
     basic_salary: basic,
     hra,
@@ -166,7 +149,7 @@ const calculateContractPayslip = async (employee, attendanceSummary) => {
     pf_deduction,
     professional_tax,
     tds_deduction,
-    esi_deduction,
+    esi_deduction: 0,
   };
 
   const deductions = [];
@@ -174,7 +157,6 @@ const calculateContractPayslip = async (employee, attendanceSummary) => {
   if (pf_deduction > 0) deductions.push({ name: 'PF', amount: pf_deduction });
   if (professional_tax > 0) deductions.push({ name: 'Professional Tax', amount: professional_tax });
   if (tds_deduction > 0) deductions.push({ name: 'TDS', amount: tds_deduction });
-  if (esi_deduction > 0) deductions.push({ name: 'ESI', amount: esi_deduction });
   for (const d of pendingCustomDeductions) deductions.push(d);
 
   // Legacy / DB payroll_components (if configured)
@@ -182,6 +164,7 @@ const calculateContractPayslip = async (employee, attendanceSummary) => {
     .from('payroll_components')
     .select('*')
     .eq('is_active', true)
+    .eq('company_id', companyId)
     .order('display_order', { ascending: true });
   if (compErr) throw new BadRequestError(compErr.message);
 
@@ -222,14 +205,11 @@ const calculateContractPayslip = async (employee, attendanceSummary) => {
       company_pf_rate: pfRate,
       professional_tax: professional_tax,
       tds_percent: tdsPercent,
-      esi_employee_percent: esiEmployeePercent,
-      esi_threshold: esiThreshold,
       unpaid_leave_days,
       absent,
       half_day: halfDay,
       pf_applicable: pfApplicable,
       pt_applicable: ptApplicable,
-      esi_applicable: esiApplicable,
       tds_mode: empTdsMode,
     },
   };
@@ -365,20 +345,30 @@ const mapPayslipRow = (row) => ({
   employee_code: row.employee?.employee_code,
 });
 
-const initializeMonth = async (month, year, createdBy) => {
-  const { data: existing } = await supabaseAdmin
+const initializeMonth = async (month, year, createdBy, companyId = null) => {
+  const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
+  const cid = companyId || DEFAULT_COMPANY_ID;
+
+  let q = supabaseAdmin
     .from('payroll_months')
     .select('*')
     .eq('month', month)
     .eq('year', year)
-    .maybeSingle();
+    .eq('company_id', cid);
+  const { data: existing } = await q.maybeSingle();
 
   // Contract: treat initialize as idempotent
   if (existing) return existing;
 
   const { data, error } = await supabaseAdmin
     .from('payroll_months')
-    .insert({ month, year, status: MONTH_STATUS.PENDING, created_by: createdBy })
+    .insert({
+      month,
+      year,
+      status: MONTH_STATUS.PENDING,
+      created_by: createdBy,
+      company_id: cid,
+    })
     .select()
     .single();
 
@@ -386,12 +376,15 @@ const initializeMonth = async (month, year, createdBy) => {
   return data;
 };
 
-const getMonthStatus = async (month, year) => {
+const getMonthStatus = async (month, year, companyId = null) => {
+  const { DEFAULT_COMPANY_ID } = require('../utils/tenant');
+  const cid = companyId || DEFAULT_COMPANY_ID;
   const { data, error } = await supabaseAdmin
     .from('payroll_months')
     .select('*')
     .eq('month', month)
     .eq('year', year)
+    .eq('company_id', cid)
     .maybeSingle();
 
   if (error) throw new BadRequestError(error.message);
@@ -451,7 +444,7 @@ const generateDraftPayslip = async (payrollMonthId, userId) => {
         updated_at: new Date().toISOString(),
       })
       .eq('id', existing.id)
-      .select('*, employee:employee_id(id, first_name, last_name, employee_code, email)')
+      .select('*, employee:employee_id(id, first_name, last_name, employee_code, email, company_id, address)')
       .single();
     if (updErr) throw new BadRequestError(updErr.message);
     return mapPayslipRow(updated);
@@ -471,7 +464,7 @@ const generateDraftPayslip = async (payrollMonthId, userId) => {
       payslip_status: PAYSLIP_STATUS.DRAFT,
       payment_status: 'pending',
     })
-    .select('*, employee:employee_id(id, first_name, last_name, employee_code, email)')
+    .select('*, employee:employee_id(id, first_name, last_name, employee_code, email, company_id, address)')
     .single();
 
   if (error) throw new BadRequestError(error.message);
@@ -505,43 +498,8 @@ const generateAllDraftPayslips = async (payrollMonthId, companyId = null) => {
   return results;
 };
 
-const generatePayslipPdf = (employee, payslip, payrollMonth) => new Promise((resolve, reject) => {
-  const doc = new PDFDocument({ margin: 50 });
-  const chunks = [];
-  doc.on('data', (chunk) => chunks.push(chunk));
-  doc.on('end', () => resolve(Buffer.concat(chunks)));
-  doc.on('error', reject);
-
-  const fmt = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
-  doc.fontSize(18).text(COMPANY_NAME, { align: 'center' });
-  doc.fontSize(14).text('PAYSLIP', { align: 'center' });
-  doc.moveDown();
-  doc.fontSize(12);
-  doc.text(`Employee: ${employee.first_name} ${employee.last_name}`);
-  doc.text(`Employee Code: ${employee.employee_code || '—'}`);
-  doc.text(`Period: ${moment.tz({ year: payrollMonth.year, month: payrollMonth.month - 1 }, TIMEZONE).format('MMMM YYYY')}`);
-  doc.moveDown();
-  const breakdown = payslip.breakdown_json || {};
-  const earnings = breakdown.earnings || [];
-  const deductions = breakdown.deductions || [];
-  const totals = breakdown.totals || {};
-
-  doc.text('Earnings', { underline: true });
-  for (const e of earnings) {
-    doc.text(`  ${e.name}: ${fmt(e.amount)}`);
-  }
-  doc.text(`  Gross Pay: ${fmt(totals.gross_salary ?? payslip.gross_salary)}`);
-  doc.moveDown();
-  doc.text('Deductions', { underline: true });
-  for (const d of deductions) {
-    doc.text(`  ${d.name}: ${fmt(d.amount)}`);
-  }
-  doc.text(`  Total Deductions: ${fmt(totals.total_deductions ?? payslip.total_deductions)}`);
-  doc.moveDown();
-  doc.fontSize(14).text(`Net Pay: ${fmt(totals.net_pay ?? payslip.net_salary)}`, { underline: true });
-  doc.end();
-});
+const generatePayslipPdf = (employee, payslip, payrollMonth, companyId) =>
+  buildPayslipPdfBuffer(employee, payslip, payrollMonth, { companyId });
 
 const maybeCloseMonth = async (payrollMonthId) => {
   const { data: payrollMonth } = await supabaseAdmin
@@ -574,7 +532,7 @@ const maybeCloseMonth = async (payrollMonthId) => {
 const publishPayslip = async (payslipId, publisher) => {
   const { data: payslip } = await supabaseAdmin
     .from('payroll')
-    .select('*, employee:employee_id(*)')
+    .select('*, employee:employee_id(id, first_name, last_name, employee_code, email, company_id, address)')
     .eq('id', payslipId)
     .single();
 
@@ -629,7 +587,7 @@ const publishPayslip = async (payslipId, publisher) => {
     payslip.payroll_month_id = payrollMonth.id;
   }
 
-  const pdfBuffer = await generatePayslipPdf(payslip.employee, payslip, payrollMonth);
+  const pdfBuffer = await generatePayslipPdf(payslip.employee, payslip, payrollMonth, publisher.company_id);
   const { path } = await uploadPayslip(pdfBuffer, payslip.employee_id, payslip.month, payslip.year);
   const signedUrl = await getSignedUrl(STORAGE_BUCKETS.payslips, path, 60 * 60 * 24 * 365);
 
@@ -670,7 +628,7 @@ const publishPayslip = async (payslipId, publisher) => {
 const listPayslips = async ({ month, year, user, role, mine = false, companyId = null }) => {
   let query = supabaseAdmin
     .from('payroll')
-    .select('*, employee:employee_id(id, first_name, last_name, employee_code, email)')
+    .select('*, employee:employee_id(id, first_name, last_name, employee_code, email, company_id, address)')
     .eq('month', month)
     .eq('year', year)
     .order('created_at', { ascending: false });
@@ -740,7 +698,7 @@ const recalculatePayslipsFromSettings = async ({
   for (const t of targets.values()) {
     let query = supabaseAdmin
       .from('payroll')
-      .select('*, employee:employee_id(*)')
+      .select('*, employee:employee_id(id, first_name, last_name, employee_code, email, company_id, address)')
       .eq('month', t.month)
       .eq('year', t.year);
     if (employeeId) query = query.eq('employee_id', employeeId);
@@ -784,7 +742,7 @@ const recalculatePayslipsFromSettings = async ({
             year: row.year,
           };
           const forPdf = { ...row, ...calc };
-          const pdfBuffer = await generatePayslipPdf(employee, forPdf, payrollMonth);
+          const pdfBuffer = await generatePayslipPdf(employee, forPdf, payrollMonth, companyId);
           const { path } = await uploadPayslip(pdfBuffer, row.employee_id, row.month, row.year);
           patch.payslip_url = await getSignedUrl(STORAGE_BUCKETS.payslips, path, 60 * 60 * 24 * 365);
         }
@@ -818,7 +776,7 @@ const recalculatePayslipsFromSettings = async ({
 const downloadPayslip = async (payslipId, user) => {
   const { data: payslip } = await supabaseAdmin
     .from('payroll')
-    .select('*, employee:employee_id(id, first_name, last_name, address)')
+    .select('*, employee:employee_id(id, first_name, last_name, employee_code, email, company_id, address)')
     .eq('id', payslipId)
     .single();
 
@@ -831,14 +789,49 @@ const downloadPayslip = async (payslipId, user) => {
   }
   if (!isOwn && !isHrAdmin) throw new ForbiddenError('Not authorized');
 
-  // Contract: draft download forbidden for everyone
-  if (payslip.payslip_status === PAYSLIP_STATUS.DRAFT) {
+  if (String(payslip.payslip_status || '').toUpperCase() === PAYSLIP_STATUS.DRAFT) {
     throw new ForbiddenError('Payslip is not published yet');
   }
 
-  if (!payslip.payslip_url) throw new NotFoundError('Payslip PDF not available');
+  let payrollMonth = null;
+  if (payslip.payroll_month_id) {
+    const { data } = await supabaseAdmin
+      .from('payroll_months')
+      .select('*')
+      .eq('id', payslip.payroll_month_id)
+      .maybeSingle();
+    payrollMonth = data;
+  }
+  if (!payrollMonth) {
+    const { data } = await supabaseAdmin
+      .from('payroll_months')
+      .select('*')
+      .eq('month', payslip.month)
+      .eq('year', payslip.year)
+      .maybeSingle();
+    payrollMonth = data;
+  }
 
-  return { redirectUrl: payslip.payslip_url, payslip: mapPayslipRow(payslip) };
+  const pdfBuffer = await generatePayslipPdf(
+    payslip.employee,
+    payslip,
+    payrollMonth || { month: payslip.month, year: payslip.year },
+    user.company_id,
+  );
+
+  // Refresh stored copy in background so email/deep links stay current
+  uploadPayslip(pdfBuffer, payslip.employee_id, payslip.month, payslip.year)
+    .then(async ({ path }) => {
+      const signedUrl = await getSignedUrl(STORAGE_BUCKETS.payslips, path, 60 * 60 * 24 * 365);
+      await supabaseAdmin
+        .from('payroll')
+        .update({ payslip_url: signedUrl })
+        .eq('id', payslipId);
+    })
+    .catch((err) => logger.warn('Payslip storage refresh failed', { payslipId, err: err.message }));
+
+  const filename = `payslip-${payslip.year}-${String(payslip.month).padStart(2, '0')}.pdf`;
+  return { buffer: pdfBuffer, filename, payslip: mapPayslipRow(payslip) };
 };
 
 module.exports = {

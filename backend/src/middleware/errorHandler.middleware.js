@@ -15,14 +15,13 @@ const errorHandler = (err, req, res, next) => {
   if (statusCode >= 500) {
     logger.error('Server error', {
       message: err.message,
-      stack: err.stack,
+      stack: process.env.NODE_ENV === 'production' ? undefined : err.stack,
       path: req.path,
       method: req.method,
     });
-    if (process.env.NODE_ENV === 'production') {
-      message = 'Internal server error';
-      details = null;
-    }
+    message = 'Internal server error';
+    details = null;
+    code = 'INTERNAL_ERROR';
   } else {
     logger.warn('Client error', { code, message, path: req.path });
   }

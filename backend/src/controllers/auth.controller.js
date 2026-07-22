@@ -71,7 +71,11 @@ const changePassword = async (req, res, next) => {
 const forgotPassword = async (req, res, next) => {
   try {
     const result = await authService.forgotPassword(req.body.email);
-    successResponse(res, result.message);
+    successResponse(res, result.message, {
+      nextResendAt: result.nextResendAt || null,
+      retryAfterSeconds: result.retryAfterSeconds ?? null,
+      attemptsRemaining: result.attemptsRemaining ?? 3,
+    });
   } catch (err) { next(err); }
 };
 
@@ -79,6 +83,29 @@ const resetPassword = async (req, res, next) => {
   try {
     await authService.resetPassword(req.body.email, req.body.otp, req.body.newPassword);
     successResponse(res, 'Password reset successful');
+  } catch (err) { next(err); }
+};
+
+const sendOnboardingOtp = async (req, res, next) => {
+  try {
+    const email = req.body.email;
+    const adminName = req.body.adminName || req.body.admin_name || '';
+    const result = await authService.sendOnboardingOtp(email, adminName);
+    successResponse(res, result.message, {
+      nextResendAt: result.nextResendAt,
+      retryAfterSeconds: result.retryAfterSeconds,
+      expiresInSeconds: result.expiresInSeconds,
+    });
+  } catch (err) { next(err); }
+};
+
+const verifyOnboardingOtp = async (req, res, next) => {
+  try {
+    const result = await authService.verifyOnboardingOtp(req.body.email, req.body.otp);
+    successResponse(res, result.message, {
+      verificationToken: result.verificationToken,
+      expiresInSeconds: result.expiresInSeconds,
+    });
   } catch (err) { next(err); }
 };
 
@@ -96,6 +123,7 @@ const bootstrapAdmin = async (req, res, next) => {
       first_name,
       last_name,
       company_profile: body.company_profile || body.companyProfile || null,
+      verificationToken: body.verificationToken || body.verification_token,
     });
     successResponse(res, 'Admin account ready', employee, null, 201);
   } catch (err) { next(err); }
@@ -103,5 +131,5 @@ const bootstrapAdmin = async (req, res, next) => {
 
 module.exports = {
   register, login, logout, refreshToken, getMe, changePassword, forgotPassword, resetPassword,
-  bootstrapAdmin,
+  sendOnboardingOtp, verifyOnboardingOtp, bootstrapAdmin,
 };

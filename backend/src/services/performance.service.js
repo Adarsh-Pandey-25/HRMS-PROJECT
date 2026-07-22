@@ -1,5 +1,8 @@
 const { supabaseAdmin } = require('../config/supabase');
 const { BadRequestError, NotFoundError, ForbiddenError } = require('../utils/errors');
+const { DEFAULT_COMPANY_ID } = require('../utils/tenant');
+
+const resolveCompanyId = (companyId) => companyId || DEFAULT_COMPANY_ID;
 
 const myGoals = async (employeeId) => {
   const { data, error } = await supabaseAdmin
@@ -11,13 +14,19 @@ const myGoals = async (employeeId) => {
   return data || [];
 };
 
-const listCycles = async () => {
-  const { data, error } = await supabaseAdmin.from('review_cycles').select('*').order('start_date', { ascending: false });
+const listCycles = async (companyId) => {
+  const cid = resolveCompanyId(companyId);
+  const { data, error } = await supabaseAdmin
+    .from('review_cycles')
+    .select('*')
+    .eq('company_id', cid)
+    .order('start_date', { ascending: false });
   if (error) throw new BadRequestError(error.message);
   return data || [];
 };
 
-const createCycle = async (body) => {
+const createCycle = async (body, companyId) => {
+  const cid = resolveCompanyId(companyId);
   const name = String(body.name || '').trim();
   if (!name) throw new BadRequestError('Cycle name is required');
   const payload = {
@@ -26,6 +35,7 @@ const createCycle = async (body) => {
     start_date: body.start_date || body.startDate || null,
     end_date: body.end_date || body.endDate || null,
     participants: Number(body.participants) || 0,
+    company_id: cid,
   };
   const { data, error } = await supabaseAdmin.from('review_cycles').insert(payload).select().single();
   if (error) throw new BadRequestError(error.message);
@@ -43,16 +53,23 @@ const teamReviewsForManager = async (managerId) => {
 };
 
 /** Open pending reviews for direct reports against the active (or given) cycle */
-const openTeamReviews = async (managerId, cycleId) => {
+const openTeamReviews = async (managerId, cycleId, companyId) => {
+  const cid = resolveCompanyId(companyId);
   let cycle = null;
   if (cycleId) {
-    const { data } = await supabaseAdmin.from('review_cycles').select('*').eq('id', cycleId).maybeSingle();
+    const { data } = await supabaseAdmin
+      .from('review_cycles')
+      .select('*')
+      .eq('id', cycleId)
+      .eq('company_id', cid)
+      .maybeSingle();
     cycle = data;
   }
   if (!cycle) {
     const { data } = await supabaseAdmin
       .from('review_cycles')
       .select('*')
+      .eq('company_id', cid)
       .eq('status', 'active')
       .order('start_date', { ascending: false })
       .limit(1)

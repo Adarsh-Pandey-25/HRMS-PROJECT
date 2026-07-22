@@ -157,7 +157,11 @@ const checkContext = async (req, res, next) => {
 
     const addr = (emp?.address && typeof emp.address === 'object') ? emp.address : {};
     const raw = String(addr.attendance_mode || addr.attendanceMode || 'office').toLowerCase();
-    const attendanceMode = (raw === 'wfh' || raw === 'remote') ? 'wfh' : 'office';
+    const attendanceMode = raw === 'wfh' || raw === 'remote'
+      ? 'wfh'
+      : raw === 'hybrid'
+        ? 'hybrid'
+        : 'office';
     const officeIpRequired = attendanceMode === 'office';
     const canCheckInFromThisIp = !officeIpRequired || isOfficeIp;
 
@@ -165,7 +169,7 @@ const checkContext = async (req, res, next) => {
     const todayDate = wfhRequestService.todayIST();
     const wfhReq = await wfhRequestService.getRequestForDate(req.user.id, todayDate);
     const dailyWfhStatus = wfhReq?.status || null;
-    const dailyWfhApproved = attendanceMode === 'wfh' || dailyWfhStatus === 'approved';
+    const dailyWfhApproved = attendanceMode === 'wfh' || attendanceMode === 'hybrid' || dailyWfhStatus === 'approved';
 
     // Source of truth for My Attendance clock UI (avoid relying only on month list)
     const todayRow = await attendanceService.getTodayAttendance(req.user.id);
@@ -188,7 +192,9 @@ const checkContext = async (req, res, next) => {
       canCheckInAsWfh: dailyWfhApproved,
       hint: attendanceMode === 'wfh'
         ? 'WFH employee — check-in allowed from any network'
-        : dailyWfhStatus === 'approved'
+        : attendanceMode === 'hybrid'
+          ? 'Hybrid employee — check-in allowed from any network'
+          : dailyWfhStatus === 'approved'
           ? 'WFH approved for today — office IP not required'
           : dailyWfhStatus === 'pending'
             ? 'WFH request pending Manager/HR approval'

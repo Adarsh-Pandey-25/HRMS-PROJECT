@@ -25,7 +25,13 @@ const logger = winston.createLogger({
       format: winston.format.combine(
         winston.format.colorize(),
         winston.format.printf(({ timestamp, level, message, ...meta }) => {
-          const metaStr = Object.keys(meta).length ? JSON.stringify(meta) : '';
+          const safe = { ...meta };
+          delete safe.service;
+          if (safe.stack && process.env.NODE_ENV === 'production') delete safe.stack;
+          for (const k of Object.keys(safe)) {
+            if (/password|token|secret|otp|authorization/i.test(k)) safe[k] = '[redacted]';
+          }
+          const metaStr = Object.keys(safe).length ? JSON.stringify(safe) : '';
           return `${timestamp} [${level}]: ${message} ${metaStr}`;
         })
       ),

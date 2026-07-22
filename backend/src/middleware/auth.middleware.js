@@ -2,11 +2,19 @@ const jwt = require('jsonwebtoken');
 const { supabaseAdmin } = require('../config/supabase');
 const { UnauthorizedError } = require('../utils/errors');
 const { getCompanyId } = require('../utils/tenant');
+const { omitSensitive } = require('../utils/helpers');
 
 const attachTenant = (employee) => {
   if (!employee) return employee;
-  employee.company_id = getCompanyId(employee);
-  return employee;
+  const safe = omitSensitive(employee, [
+    'password_hash',
+    'passwordHash',
+    'password',
+    'temp_password',
+    'tempPassword',
+  ]);
+  safe.company_id = getCompanyId(employee);
+  return safe;
 };
 
 const authenticate = async (req, res, next) => {
@@ -25,7 +33,7 @@ const authenticate = async (req, res, next) => {
 
     const { data: employee, error } = await supabaseAdmin
       .from('employees')
-      .select('*')
+      .select('id, employee_code, first_name, last_name, email, role, department, designation, manager_id, is_active, company_id, address, date_of_joining, phone, profile_picture')
       .eq('id', decoded.id)
       .eq('is_active', true)
       .single();
@@ -58,7 +66,7 @@ const optionalAuth = async (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const { data: employee } = await supabaseAdmin
       .from('employees')
-      .select('*')
+      .select('id, employee_code, first_name, last_name, email, role, department, designation, manager_id, is_active, company_id, address, date_of_joining, phone, profile_picture')
       .eq('id', decoded.id)
       .eq('is_active', true)
       .single();

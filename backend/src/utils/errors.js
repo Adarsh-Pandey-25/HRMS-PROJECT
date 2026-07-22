@@ -39,6 +39,12 @@ class ConflictError extends AppError {
   }
 }
 
+class TooManyRequestsError extends AppError {
+  constructor(message = 'Too many requests', details = null) {
+    super(message, 429, 'TOO_MANY_REQUESTS', details);
+  }
+}
+
 module.exports = {
   AppError,
   BadRequestError,
@@ -46,4 +52,5 @@ module.exports = {
   ForbiddenError,
   NotFoundError,
   ConflictError,
+  TooManyRequestsError,
 };

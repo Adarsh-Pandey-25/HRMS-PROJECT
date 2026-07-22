@@ -3,9 +3,15 @@ const logger = require('../utils/logger');
 
 const sendEmail = async ({ to, subject, html, text }) => {
   const transporter = createTransporter();
+  const redactTo = (addr) => {
+    const s = String(addr || '');
+    const at = s.indexOf('@');
+    if (at < 1) return '[redacted]';
+    return `${s[0]}***${s.slice(at)}`;
+  };
 
   if (!transporter) {
-    logger.info('Email (mock)', { to, subject });
+    logger.info('Email (mock)', { to: redactTo(to), subject: String(subject || '').slice(0, 80) });
     return { success: true, mock: true };
   }
 
@@ -17,10 +23,10 @@ const sendEmail = async ({ to, subject, html, text }) => {
       html,
       text: text || html.replace(/<[^>]*>/g, ''),
     });
-    logger.info('Email sent', { to, messageId: info.messageId });
+    logger.info('Email sent', { to: redactTo(to), messageId: info.messageId });
     return { success: true, messageId: info.messageId };
   } catch (err) {
-    logger.error('Email send failed', { to, error: err.message });
+    logger.error('Email send failed', { to: redactTo(to), error: err.message });
     throw err;
   }
 };
@@ -76,6 +82,19 @@ const passwordResetEmail = (employee, otp) =>
     `,
   });
 
+const onboardingOtpEmail = (email, name, otp) =>
+  sendEmail({
+    to: email,
+    subject: 'Verify your email — HRMS workspace setup',
+    html: `
+      <h2>Verify your admin email</h2>
+      <p>Hi ${name || 'there'},</p>
+      <p>Use this OTP to verify your email and launch your HRMS workspace (valid for 10 minutes):</p>
+      <p style="font-size: 24px; letter-spacing: 4px;"><strong>${otp}</strong></p>
+      <p>If you did not start company setup, you can ignore this email.</p>
+    `,
+  });
+
 const autoCheckoutEmail = (employee, attendance) =>
   sendEmail({
     to: employee.email,
@@ -88,15 +107,34 @@ const autoCheckoutEmail = (employee, attendance) =>
     `,
   });
 
-const announcementEmail = (employee, announcement) =>
-  sendEmail({
+const escapeHtml = (value) =>
+  String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+
+const announcementEmail = (employee, announcement, options = {}) => {
+  const priority = String(announcement.priority || 'medium').toUpperCase();
+  const appUrl = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+  const contentHtml = escapeHtml(announcement.content).replace(/\n/g, '<br/>');
+  const subject = options.subject
+    || `[${priority}] ${announcement.title}`;
+
+  return sendEmail({
     to: employee.email,
-    subject: `[${announcement.priority.toUpperCase()}] ${announcement.title}`,
+    subject,
     html: `
-      <h2>${announcement.title}</h2>
-      <p>${announcement.content}</p>
+      <h2>${escapeHtml(announcement.title)}</h2>
+      <p>Hi ${escapeHtml(employee.first_name || 'there')},</p>
+      <p><strong>Priority:</strong> ${priority}</p>
+      <div>${contentHtml}</div>
+      <p style="margin-top: 24px;">
+        <a href="${appUrl}/announcements">View announcement in HRMS</a>
+      </p>
     `,
   });
+};
 
 const trainingAssignmentEmail = (employee, training) =>
   sendEmail({
@@ -116,6 +154,7 @@ module.exports = {
   leaveStatusEmail,
   payslipEmail,
   passwordResetEmail,
+  onboardingOtpEmail,
   autoCheckoutEmail,
   announcementEmail,
   trainingAssignmentEmail,

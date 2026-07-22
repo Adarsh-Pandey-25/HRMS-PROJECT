@@ -28,7 +28,7 @@ CREATE TYPE document_type AS ENUM ('offer_letter', 'joining_letter', 'aadhar', '
 CREATE TABLE employees (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   auth_user_id UUID UNIQUE,
-  employee_code VARCHAR(20) UNIQUE NOT NULL,
+  employee_code VARCHAR(20) NOT NULL, -- unique per company: UNIQUE(company_id, employee_code)
   first_name VARCHAR(100) NOT NULL,
   last_name VARCHAR(100) NOT NULL,
   email VARCHAR(255) UNIQUE NOT NULL,

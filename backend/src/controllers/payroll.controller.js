@@ -4,7 +4,8 @@ const { successResponse } = require('../utils/helpers');
 const initializeMonth = async (req, res, next) => {
   try {
     const { month, year } = req.body;
-    const data = await payrollService.initializeMonth(month, year, req.user.id);
+    const companyId = req.user.company_id || require('../utils/tenant').getCompanyId(req.user);
+    const data = await payrollService.initializeMonth(month, year, req.user.id, companyId);
     successResponse(res, 'Payroll month initialized', data, null, 201);
   } catch (err) { next(err); }
 };
@@ -13,7 +14,8 @@ const getMonthStatus = async (req, res, next) => {
   try {
     const month = parseInt(req.query.month, 10);
     const year = parseInt(req.query.year, 10);
-    const data = await payrollService.getMonthStatus(month, year);
+    const companyId = req.user.company_id || require('../utils/tenant').getCompanyId(req.user);
+    const data = await payrollService.getMonthStatus(month, year, companyId);
     successResponse(res, 'Payroll month fetched', data);
   } catch (err) { next(err); }
 };
@@ -61,8 +63,12 @@ const listPayslips = async (req, res, next) => {
 
 const downloadPayslip = async (req, res, next) => {
   try {
-    const { redirectUrl } = await payrollService.downloadPayslip(req.params.id, req.user);
-    return res.redirect(302, redirectUrl);
+    const { buffer, filename } = await payrollService.downloadPayslip(req.params.id, req.user);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', buffer.length);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.send(buffer);
   } catch (err) { next(err); }
 };
 

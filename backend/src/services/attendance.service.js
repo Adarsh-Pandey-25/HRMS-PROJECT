@@ -12,7 +12,7 @@ const { autoCheckoutEmail } = require('./email.service');
 const logger = require('../utils/logger');
 const settingsService = require('./settings.service');
 
-/** office = office IP required; wfh = any network */
+/** office = office IP required; wfh = any network; hybrid = any network */
 const resolveAttendanceMode = (employee) => {
   const addr = (employee?.address && typeof employee.address === 'object') ? employee.address : {};
   const raw = String(
@@ -21,7 +21,9 @@ const resolveAttendanceMode = (employee) => {
     || addr.attendanceMode
     || 'office'
   ).toLowerCase();
-  return (raw === 'wfh' || raw === 'remote' || raw === 'work_from_home') ? 'wfh' : 'office';
+  if (raw === 'wfh' || raw === 'remote' || raw === 'work_from_home') return 'wfh';
+  if (raw === 'hybrid') return 'hybrid';
+  return 'office';
 };
 
 const assertOfficeIpAllowed = async (clientIp, companyId = null) => {
@@ -84,7 +86,7 @@ const checkIn = async (employeeId, { method, device_id, location, clientIp, is_w
   const wfhRequestService = require('./wfhRequest.service');
   const approvedDailyWfh = await wfhRequestService.isApprovedForDate(employeeId);
   // Daily WFH only counts when Manager/HR approved — permanent WFH mode always allowed
-  const wantsWfh = attendanceMode === 'wfh' || (Boolean(is_wfh) && approvedDailyWfh);
+  const wantsWfh = attendanceMode === 'wfh' || attendanceMode === 'hybrid' || (Boolean(is_wfh) && approvedDailyWfh);
 
   if (Boolean(is_wfh) && attendanceMode === 'office' && !approvedDailyWfh && !isPrivilegedRole) {
     throw new ForbiddenError(
@@ -192,14 +194,19 @@ const checkOut = async (employeeId, { method, clientIp, break_minutes = 0 }) => 
 };
 
 const biometricWebhook = async (payload) => {
-  const { employee_code, action, timestamp, device_id } = payload;
-  const { data: employee } = await supabaseAdmin
+  const { employee_code, action, timestamp, device_id, company_id } = payload;
+  let query = supabaseAdmin
     .from('employees')
     .select('id')
-    .eq('employee_code', employee_code)
-    .single();
-
-  if (!employee) throw new NotFoundError('Employee not found');
+    .eq('employee_code', employee_code);
+  if (company_id) query = query.eq('company_id', company_id);
+  const { data: employees, error } = await query.limit(2);
+  if (error) throw new BadRequestError(error.message);
+  if (!employees?.length) throw new NotFoundError('Employee not found');
+  if (employees.length > 1) {
+    throw new BadRequestError('Multiple employees match this code; company_id is required');
+  }
+  const employee = employees[0];
 
   if (action === 'check_in') {
     return checkIn(employee.id, {

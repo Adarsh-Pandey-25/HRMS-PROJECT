@@ -27,17 +27,17 @@ const initials = (first, last) =>
   `${(first || '')[0] || ''}${(last || '')[0] || ''}`.toUpperCase() || '?';
 
 const getActiveEmployees = async (companyId = null) => {
-  const { data, error } = await supabaseAdmin
+  let query = supabaseAdmin
     .from('employees')
-    .select('id, first_name, last_name, email, department, designation, role, date_of_joining, date_of_birth, created_at, address')
+    .select('id, first_name, last_name, email, department, designation, role, date_of_joining, date_of_birth, created_at, address, company_id')
     .eq('is_active', true)
     .order('first_name');
 
+  if (companyId) query = query.eq('company_id', companyId);
+
+  const { data, error } = await query;
   if (error) throw new BadRequestError(error.message);
-  const rows = data || [];
-  if (!companyId) return rows;
-  const { getCompanyId } = require('../utils/tenant');
-  return rows.filter((e) => getCompanyId(e) === companyId);
+  return data || [];
 };
 
 const getHeadcountTrend = (employees, months = 12) => {
@@ -215,16 +215,17 @@ const getPendingApprovals = async (employeeIds = []) => {
     return { leaves: 0, expenses: 0, assets: 0, total: 0 };
   }
 
-  const [{ count: leaves }, { count: expenses }] = await Promise.all([
+  const [{ count: leaves }, { count: expenses }, assets] = await Promise.all([
     supabaseAdmin.from('leaves').select('id', { count: 'exact', head: true }).eq('status', 'pending').in('employee_id', employeeIds),
     supabaseAdmin.from('reimbursements').select('id', { count: 'exact', head: true }).eq('status', 'pending').in('employee_id', employeeIds),
+    require('./assets.service').countPendingRequests(employeeIds),
   ]);
 
   return {
     leaves: leaves || 0,
     expenses: expenses || 0,
-    assets: 0,
-    total: (leaves || 0) + (expenses || 0),
+    assets: assets || 0,
+    total: (leaves || 0) + (expenses || 0) + (assets || 0),
   };
 };
 
@@ -410,8 +411,9 @@ const globalSearch = async (query, limit = 8, { role, companyId } = {}) => {
 
   const { data: employees } = await supabaseAdmin
     .from('employees')
-    .select('id, first_name, last_name, email, department, employee_code, address')
+    .select('id, first_name, last_name, email, department, employee_code, address, role')
     .eq('is_active', true)
+    .neq('role', 'admin')
     .or(`first_name.ilike.${pattern},last_name.ilike.${pattern},email.ilike.${pattern},employee_code.ilike.${pattern}`)
     .limit(Math.max(limit * 5, 40));
 
@@ -422,6 +424,7 @@ const globalSearch = async (query, limit = 8, { role, companyId } = {}) => {
   return {
     employees: scoped.map((e) => ({
       id: e.id,
+      employeeCode: e.employee_code,
       label: `${e.first_name} ${e.last_name}`,
       sublabel: e.department || e.email,
       type: 'employee',

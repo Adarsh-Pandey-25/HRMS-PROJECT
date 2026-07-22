@@ -1,15 +1,24 @@
 const { supabaseAdmin } = require('../config/supabase');
 const { BadRequestError, NotFoundError } = require('../utils/errors');
+const { DEFAULT_COMPANY_ID } = require('../utils/tenant');
 
-const listJobs = async (query = {}) => {
-  let db = supabaseAdmin.from('job_openings').select('*').order('created_at', { ascending: false });
+const resolveCompanyId = (companyId) => companyId || DEFAULT_COMPANY_ID;
+
+const listJobs = async (query = {}, companyId) => {
+  const cid = resolveCompanyId(companyId);
+  let db = supabaseAdmin
+    .from('job_openings')
+    .select('*')
+    .eq('company_id', cid)
+    .order('created_at', { ascending: false });
   if (query.status) db = db.eq('status', query.status);
   const { data, error } = await db;
   if (error) throw new BadRequestError(error.message);
   return data || [];
 };
 
-const createJob = async (body) => {
+const createJob = async (body, companyId) => {
+  const cid = resolveCompanyId(companyId);
   const statusRaw = String(body.status || 'open').toLowerCase();
   const status = ['active', 'open'].includes(statusRaw) ? 'open'
     : ['closed', 'inactive', 'filled'].includes(statusRaw) ? 'closed'
@@ -22,6 +31,7 @@ const createJob = async (body) => {
     employment_type: body.employment_type || body.employmentType || 'full_time',
     status,
     openings: Number(body.openings) > 0 ? Number(body.openings) : 1,
+    company_id: cid,
   };
 
   if (!payload.title) throw new BadRequestError('Job title is required');
@@ -38,8 +48,13 @@ const createJob = async (body) => {
   return data;
 };
 
-const listCandidates = async (query = {}) => {
-  let db = supabaseAdmin.from('candidates').select('*').order('applied_on', { ascending: false });
+const listCandidates = async (query = {}, companyId) => {
+  const cid = resolveCompanyId(companyId);
+  let db = supabaseAdmin
+    .from('candidates')
+    .select('*')
+    .eq('company_id', cid)
+    .order('applied_on', { ascending: false });
   if (query.job_id) db = db.eq('job_id', query.job_id);
   if (query.stage) db = db.eq('stage', query.stage);
   const { data, error } = await db;
@@ -47,11 +62,13 @@ const listCandidates = async (query = {}) => {
   return data || [];
 };
 
-const moveCandidate = async (id, stage) => {
+const moveCandidate = async (id, stage, companyId) => {
+  const cid = resolveCompanyId(companyId);
   const { data, error } = await supabaseAdmin
     .from('candidates')
     .update({ stage, days_in_stage: 0 })
     .eq('id', id)
+    .eq('company_id', cid)
     .select()
     .single();
   if (error) throw new BadRequestError(error.message);
@@ -59,14 +76,24 @@ const moveCandidate = async (id, stage) => {
   return data;
 };
 
-const listInterviews = async () => {
-  const { data, error } = await supabaseAdmin.from('interviews').select('*').order('scheduled_at', { ascending: true });
+const listInterviews = async (companyId) => {
+  const cid = resolveCompanyId(companyId);
+  const { data, error } = await supabaseAdmin
+    .from('interviews')
+    .select('*')
+    .eq('company_id', cid)
+    .order('scheduled_at', { ascending: true });
   if (error) throw new BadRequestError(error.message);
   return data || [];
 };
 
-const listOffers = async () => {
-  const { data, error } = await supabaseAdmin.from('job_offers').select('*').order('offered_on', { ascending: false });
+const listOffers = async (companyId) => {
+  const cid = resolveCompanyId(companyId);
+  const { data, error } = await supabaseAdmin
+    .from('job_offers')
+    .select('*')
+    .eq('company_id', cid)
+    .order('offered_on', { ascending: false });
   if (error) throw new BadRequestError(error.message);
   return data || [];
 };

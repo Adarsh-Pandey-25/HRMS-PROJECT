@@ -52,4 +52,18 @@ const bootstrapLimiter = rateLimit({
   },
 });
 
-module.exports = { generalLimiter, authLimiter, bootstrapLimiter };
+/** OTP send/verify during onboarding — higher allowance than final Launch. */
+const onboardingOtpLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  max: config.rateLimit.onboardingOtpMax,
+  keyGenerator: authKeyGenerator,
+  message: {
+    success: false,
+    error: { code: 'RATE_LIMIT', message: 'Too many OTP attempts. Please try again later.' },
+    timestamp: new Date().toISOString(),
+  },
+});
+
+module.exports = { generalLimiter, authLimiter, bootstrapLimiter, onboardingOtpLimiter };

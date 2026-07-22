@@ -1,8 +1,21 @@
 const settingsService = require('../services/settings.service');
 const { supabaseAdmin } = require('../config/supabase');
+const { uploadCompanyLogo, getSignedUrl, STORAGE_BUCKETS } = require('../services/storage.service');
 const { successResponse } = require('../utils/helpers');
 const { BadRequestError, NotFoundError } = require('../utils/errors');
 const { LEAVE_TYPES } = require('../utils/constants');
+
+const enrichCompanyProfileValue = async (value) => {
+  if (!value || typeof value !== 'object') return value;
+  const logoPath = value.logoPath || value.logo_path;
+  if (!logoPath) return value;
+  try {
+    const logoUrl = await getSignedUrl(STORAGE_BUCKETS.documents, logoPath, 86400);
+    return { ...value, logoPath, logoUrl };
+  } catch {
+    return value;
+  }
+};
 
 const normalizeLeavePolicy = (policy) => {
   if (!Array.isArray(policy)) throw new BadRequestError('policy array is required');
@@ -44,7 +57,11 @@ const getAll = async (req, res, next) => {
     const companyId = req.user.company_id;
     const { data, error } = await settingsService.listSettingsForCompany(companyId);
     if (error) throw new BadRequestError(error.message);
-    successResponse(res, 'System settings fetched', data);
+    const enriched = await Promise.all((data || []).map(async (row) => {
+      if (row.key !== 'company_profile') return row;
+      return { ...row, value: await enrichCompanyProfileValue(row.value) };
+    }));
+    successResponse(res, 'System settings fetched', enriched);
   } catch (err) {
     next(err);
   }
@@ -54,8 +71,11 @@ const getByKey = async (req, res, next) => {
   try {
     const key = req.params.key;
     const companyId = req.user.company_id;
-    const value = await settingsService.getSetting(key, null, companyId);
+    let value = await settingsService.getSetting(key, null, companyId);
     if (value === null || typeof value === 'undefined') throw new NotFoundError('Setting not found');
+    if (key === 'company_profile') {
+      value = await enrichCompanyProfileValue(value);
+    }
     successResponse(res, 'Setting fetched', { key, value });
   } catch (err) {
     next(err);
@@ -69,15 +89,70 @@ const updateKey = async (req, res, next) => {
       throw new BadRequestError('value is required');
     }
 
+    let value = req.body.value;
+    if (key === 'company_profile' && value && typeof value === 'object') {
+      const existing = await settingsService.getSetting('company_profile', {}, req.user.company_id);
+      value = { ...(existing || {}), ...value };
+    }
+
     const { data, error } = await settingsService.setSetting(
       key,
-      req.body.value,
+      value,
       req.user.id,
       req.user.company_id
     );
     if (error) throw new BadRequestError(error.message);
 
-    successResponse(res, 'Setting updated', data ? { ...data, key } : { key, value: req.body.value });
+    let responseValue = req.body.value;
+    if (key === 'company_profile') {
+      responseValue = await enrichCompanyProfileValue(value);
+    }
+
+    successResponse(res, 'Setting updated', data ? { ...data, key, value: responseValue } : { key, value: responseValue });
+  } catch (err) {
+    next(err);
+  }
+};
+
+const getCompanyProfile = async (req, res, next) => {
+  try {
+    const companyId = req.user.company_id;
+    const value = await settingsService.getSetting('company_profile', {}, companyId);
+    const enriched = await enrichCompanyProfileValue(value || {});
+    successResponse(res, 'Company profile fetched', enriched);
+  } catch (err) {
+    next(err);
+  }
+};
+
+const uploadCompanyLogoHandler = async (req, res, next) => {
+  try {
+    if (!req.file) throw new BadRequestError('Logo file is required');
+    const ext = String(req.file.originalname || '').split('.').pop().toLowerCase();
+    if (!['png', 'jpg', 'jpeg'].includes(ext)) {
+      throw new BadRequestError('Logo must be PNG or JPG');
+    }
+    if (req.file.size > 2 * 1024 * 1024) {
+      throw new BadRequestError('Logo must be 2MB or smaller');
+    }
+
+    const companyId = req.user.company_id;
+    const { path } = await uploadCompanyLogo(req.file, companyId);
+    const existing = await settingsService.getSetting('company_profile', {}, companyId) || {};
+    const profile = {
+      ...existing,
+      logoPath: path,
+      logoName: req.file.originalname,
+    };
+    await settingsService.setSetting('company_profile', profile, req.user.id, companyId);
+    const logoUrl = await getSignedUrl(STORAGE_BUCKETS.documents, path, 86400);
+    const enriched = await enrichCompanyProfileValue(profile);
+    successResponse(res, 'Company logo uploaded', {
+      logoPath: path,
+      logoUrl,
+      logoName: req.file.originalname,
+      companyProfile: enriched,
+    });
   } catch (err) {
     next(err);
   }
@@ -86,9 +161,11 @@ const updateKey = async (req, res, next) => {
 // Payroll Components (Dynamic Salary Structure)
 const getPayrollComponents = async (req, res, next) => {
   try {
+    const companyId = req.user.company_id;
     const { data, error } = await supabaseAdmin
       .from('payroll_components')
       .select('*')
+      .eq('company_id', companyId)
       .order('display_order', { ascending: true });
     if (error) throw new BadRequestError(error.message);
     successResponse(res, 'Payroll components fetched', data);
@@ -112,6 +189,7 @@ const createPayrollComponent = async (req, res, next) => {
         output_field: payload.output_field ?? null,
         display_order: payload.display_order ?? 0,
         is_active: payload.is_active !== false,
+        company_id: req.user.company_id,
       })
       .select()
       .single();
@@ -140,6 +218,7 @@ const updatePayrollComponent = async (req, res, next) => {
       .from('payroll_components')
       .update(patch)
       .eq('id', req.params.id)
+      .eq('company_id', req.user.company_id)
       .select()
       .maybeSingle();
     if (error) throw new BadRequestError(error.message);
@@ -154,6 +233,7 @@ const deletePayrollComponent = async (req, res, next) => {
       .from('payroll_components')
       .delete()
       .eq('id', req.params.id)
+      .eq('company_id', req.user.company_id)
       .select('id')
       .maybeSingle();
     if (error) throw new BadRequestError(error.message);
@@ -292,6 +372,8 @@ module.exports = {
   getAll,
   getByKey,
   updateKey,
+  uploadCompanyLogo: uploadCompanyLogoHandler,
+  getCompanyProfile,
   getRolePermissions,
   getPayrollComponents,
   createPayrollComponent,

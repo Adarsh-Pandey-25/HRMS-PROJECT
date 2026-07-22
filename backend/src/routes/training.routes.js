@@ -27,6 +27,8 @@ router.get('/progress-report', isManagerOrAbove, courseController.trainingProgre
 router.get('/catalog', isEmployee, courseController.listCatalog);
 router.get('/enrollments', isHROrAdmin, courseController.listEnrollments);
 router.post('/enrollments', isHROrAdmin, courseController.createEnrollments);
+router.put('/enrollments/:id/archive', isHROrAdmin, uuidParam(), validate, courseController.archiveEnrollment);
+router.post('/enrollments/:id/archive', isHROrAdmin, uuidParam(), validate, courseController.archiveEnrollment);
 
 router.post('/courses', isManagerOrAbove, uploadThumbnail.single('thumbnail'), courseCreateRules, validate, courseController.createCourse);
 router.get('/courses/manage', isManagerOrAbove, courseController.listManageCourses);

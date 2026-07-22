@@ -1,11 +1,48 @@
 const moment = require('moment-timezone');
 const { TIMEZONE, WORK_HOURS } = require('./constants');
 
+/** Never send these fields to the client (including nested objects/arrays). */
+const SENSITIVE_RESPONSE_KEYS = new Set([
+  'password',
+  'password_hash',
+  'passwordHash',
+  'temp_password',
+  'tempPassword',
+  'current_password',
+  'currentPassword',
+  'new_password',
+  'newPassword',
+  'refresh_token',
+  'refreshToken',
+  'token_hash',
+  'tokenHash',
+  'smtp_password',
+  'smtpPassword',
+  'api_key',
+  'apiKey',
+  'secret',
+  'private_key',
+  'privateKey',
+]);
+
+const sanitizeForClient = (value) => {
+  if (value == null) return value;
+  if (Array.isArray(value)) return value.map(sanitizeForClient);
+  if (typeof value !== 'object') return value;
+  if (value instanceof Date) return value;
+  const out = {};
+  for (const [key, val] of Object.entries(value)) {
+    if (SENSITIVE_RESPONSE_KEYS.has(key)) continue;
+    out[key] = sanitizeForClient(val);
+  }
+  return out;
+};
+
 const successResponse = (res, message, data = null, meta = null, statusCode = 200) => {
   const response = {
     success: true,
     message,
-    data,
+    data: sanitizeForClient(data),
     timestamp: new Date().toISOString(),
   };
   if (meta) response.meta = meta;
@@ -103,13 +140,24 @@ const buildMeta = (page, limit, total) => ({
   totalPages: Math.ceil(total / limit),
 });
 
-const omitSensitive = (obj, fields = ['password', 'bank_details']) => {
+const DEFAULT_OMIT_FIELDS = [
+  'password',
+  'password_hash',
+  'passwordHash',
+  'temp_password',
+  'tempPassword',
+  'token_hash',
+  'tokenHash',
+];
+
+const omitSensitive = (obj, fields = DEFAULT_OMIT_FIELDS) => {
   if (!obj) return obj;
   const result = { ...obj };
   fields.forEach((f) => delete result[f]);
   return result;
 };
 
+/** @deprecated Prefer allocateNextEmployeeCode(companyId) — kept for scripts only */
 const generateEmployeeCode = () => {
   const prefix = 'EMP';
   const num = Math.floor(10000 + Math.random() * 90000);
@@ -144,6 +192,7 @@ module.exports = {
   paginate,
   buildMeta,
   omitSensitive,
+  sanitizeForClient,
   generateEmployeeCode,
   generateDefaultPassword,
 };

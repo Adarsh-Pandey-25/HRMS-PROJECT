@@ -69,7 +69,7 @@ const assign = async (req, res, next) => {
           assigned_by: req.user.id,
           status: 'assigned',
         }, { onConflict: 'training_id,employee_id' })
-        .select('*, employee:employee_id(*), training:training_id(*)')
+        .select('*, employee:employee_id(id, first_name, last_name, email, employee_code, department), training:training_id(*)')
         .single();
 
       if (!error && data?.employee && data?.training) {

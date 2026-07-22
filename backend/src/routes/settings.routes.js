@@ -2,6 +2,7 @@ const express = require('express');
 const settingsController = require('../controllers/settings.controller');
 const { authenticate } = require('../middleware/auth.middleware');
 const { isHROrAdmin } = require('../middleware/role.middleware');
+const { upload } = require('../middleware/upload.middleware');
 
 const router = express.Router();
 
@@ -9,9 +10,11 @@ router.use(authenticate);
 
 // Every authenticated user needs the matrix to authorize UI / routes
 router.get('/role_permissions', settingsController.getRolePermissions);
+router.get('/company-profile', settingsController.getCompanyProfile);
 
 router.use(isHROrAdmin);
 
+router.post('/company-logo', upload.single('logo'), settingsController.uploadCompanyLogo);
 router.get('/', settingsController.getAll);
 router.get('/payroll-components', settingsController.getPayrollComponents);
 router.post('/payroll-components', settingsController.createPayrollComponent);

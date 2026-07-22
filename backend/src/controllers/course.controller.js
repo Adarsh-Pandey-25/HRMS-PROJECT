@@ -1,5 +1,8 @@
 const courseService = require('../services/course.service');
 const { successResponse } = require('../utils/helpers');
+const { getCompanyId } = require('../utils/tenant');
+
+const companyIdOf = (req) => req.user.company_id || getCompanyId(req.user);
 
 const listDepartments = async (req, res, next) => {
   try {
@@ -18,6 +21,7 @@ const createCourse = async (req, res, next) => {
       { ...req.body, targetDepartments },
       req.user.id,
       req.file,
+      companyIdOf(req),
     );
     successResponse(res, 'Course created', data, null, 201);
   } catch (err) { next(err); }
@@ -41,14 +45,14 @@ const updateCourse = async (req, res, next) => {
 
 const listManageCourses = async (req, res, next) => {
   try {
-    const data = await courseService.listManageCourses();
+    const data = await courseService.listManageCourses(companyIdOf(req));
     successResponse(res, 'Courses fetched', data);
   } catch (err) { next(err); }
 };
 
 const listEmployeeCourses = async (req, res, next) => {
   try {
-    const data = await courseService.listCatalog(req.user);
+    const data = await courseService.listCatalog(req.user, companyIdOf(req));
     successResponse(res, 'Courses fetched', data);
   } catch (err) { next(err); }
 };
@@ -117,18 +121,29 @@ const createEnrollments = async (req, res, next) => {
 
 const listEnrollments = async (req, res, next) => {
   try {
-    const data = await courseService.listEnrollments();
+    const includeArchived = req.query.includeArchived === 'true';
+    const archivedOnly = req.query.archivedOnly === 'true';
+    const data = await courseService.listEnrollments({ includeArchived, archivedOnly });
     successResponse(res, 'Enrollments fetched', data);
+  } catch (err) { next(err); }
+};
+
+const archiveEnrollment = async (req, res, next) => {
+  try {
+    const data = await courseService.archiveEnrollment(req.params.id);
+    successResponse(res, 'Enrollment archived', data);
   } catch (err) { next(err); }
 };
 
 const updateProgress = async (req, res, next) => {
   try {
     const watched = req.body.watchedSeconds ?? req.body.watched_seconds;
+    const forceComplete = Boolean(req.body.forceComplete ?? req.body.force_complete);
     const data = await courseService.updateLessonProgress(
       req.params.id,
       req.user,
       watched,
+      { forceComplete },
     );
     successResponse(res, 'Progress updated', data);
   } catch (err) { next(err); }
@@ -170,6 +185,7 @@ module.exports = {
   enrollCourse,
   createEnrollments,
   listEnrollments,
+  archiveEnrollment,
   updateProgress,
   deleteCourse,
   trainingProgressReport,

@@ -1,9 +1,22 @@
 const { supabaseAdmin } = require('../config/supabase');
 const authService = require('../services/auth.service');
-const { successResponse, paginate, buildMeta, omitSensitive, generateEmployeeCode, generateDefaultPassword } = require('../utils/helpers');
+const { successResponse, paginate, buildMeta, omitSensitive, generateDefaultPassword } = require('../utils/helpers');
 const { BadRequestError, NotFoundError, ConflictError, ForbiddenError } = require('../utils/errors');
-const { getCompanyId, withCompanyId } = require('../utils/tenant');
+const { getCompanyId, withCompanyId, companyIdFields } = require('../utils/tenant');
 const { employeeBelongsToCompany } = require('../services/tenant.service');
+const { allocateNextEmployeeCode } = require('../services/employeeCode.service');
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+async function findEmployeeByRef(ref, companyId, select = '*') {
+  const isUuid = UUID_RE.test(String(ref || ''));
+  let query = supabaseAdmin.from('employees').select(select);
+  query = isUuid ? query.eq('id', ref) : query.eq('employee_code', ref).eq('company_id', companyId);
+  const { data, error } = await query.maybeSingle();
+  if (error) throw new BadRequestError(error.message);
+  if (!data || !employeeBelongsToCompany(data, companyId)) return null;
+  return data;
+}
 
 const create = async (req, res, next) => {
   try {
@@ -19,14 +32,15 @@ const create = async (req, res, next) => {
 
     if (existing) throw new ConflictError('Email already exists');
 
-    const { password_hash: _ph, address, ...body } = req.body;
+    const { password_hash: _ph, address, company_id: _cid, employee_code: _code, ...body } = req.body;
+    const employeeCode = await allocateNextEmployeeCode(companyId);
     const { data, error } = await supabaseAdmin
       .from('employees')
       .insert({
         ...body,
-        employee_code: body.employee_code || generateEmployeeCode(),
+        employee_code: employeeCode,
         password_hash: passwordHash,
-        address: withCompanyId(address, companyId),
+        ...companyIdFields(companyId, address),
       })
       .select()
       .single();
@@ -34,7 +48,14 @@ const create = async (req, res, next) => {
     if (error) throw new BadRequestError(error.message);
 
     const employee = omitSensitive(data, ['password_hash']);
-    successResponse(res, 'Employee created', { employee, tempPassword }, null, 201);
+    try {
+      const { welcomeEmail } = require('../services/email.service');
+      await welcomeEmail(employee, tempPassword);
+    } catch {
+      /* email is best-effort; do not fail create */
+    }
+    // Never return tempPassword in the API body — credentials go by email only.
+    successResponse(res, 'Employee created. Temporary password sent by email.', { employee }, null, 201);
   } catch (err) { next(err); }
 };
 
@@ -43,39 +64,36 @@ const getAll = async (req, res, next) => {
     const companyId = req.user.company_id || getCompanyId(req.user);
     const { page, limit, offset } = paginate(req.query);
 
-    // Load candidates then filter by company (address.company_id) — reliable without a DB column
     let query = supabaseAdmin
       .from('employees')
-      .select('*, manager:manager_id(id, first_name, last_name)')
+      .select('*, manager:manager_id(id, first_name, last_name)', { count: 'exact' })
+      .eq('company_id', companyId)
+      .neq('role', 'admin')
       .order('created_at', { ascending: false })
-      .limit(5000);
+      .range(offset, offset + limit - 1);
 
     if (req.query.department) query = query.eq('department', req.query.department);
     if (req.query.role) query = query.eq('role', req.query.role);
     if (req.query.is_active !== undefined) query = query.eq('is_active', req.query.is_active === 'true');
 
-    const { data, error } = await query;
+    const { data, error, count } = await query;
     if (error) throw new BadRequestError(error.message);
 
-    const scoped = (data || []).filter((e) => employeeBelongsToCompany(e, companyId));
-    const total = scoped.length;
-    const pageRows = scoped.slice(offset, offset + limit);
-    const sanitized = pageRows.map((e) => omitSensitive(e, ['password_hash']));
-    successResponse(res, 'Employees fetched', sanitized, buildMeta(page, limit, total));
+    const sanitized = (data || []).map((e) => omitSensitive(e, ['password_hash']));
+    successResponse(res, 'Employees fetched', sanitized, buildMeta(page, limit, count || 0));
   } catch (err) { next(err); }
 };
 
 const getById = async (req, res, next) => {
   try {
     const companyId = req.user.company_id || getCompanyId(req.user);
-    const { data, error } = await supabaseAdmin
-      .from('employees')
-      .select('*, manager:manager_id(id, first_name, last_name, email)')
-      .eq('id', req.params.id)
-      .single();
+    const data = await findEmployeeByRef(
+      req.params.id,
+      companyId,
+      '*, manager:manager_id(id, first_name, last_name, email)',
+    );
 
-    if (error || !data) throw new NotFoundError('Employee not found');
-    if (!employeeBelongsToCompany(data, companyId)) throw new NotFoundError('Employee not found');
+    if (!data) throw new NotFoundError('Employee not found');
 
     const isSelf = req.user.id === data.id;
     const isPrivileged = ['hr', 'admin'].includes(req.user.role);
@@ -121,6 +139,10 @@ const update = async (req, res, next) => {
     delete allowedFields.email;
     if (allowedFields.address !== undefined) {
       allowedFields.address = withCompanyId(allowedFields.address, companyId);
+      allowedFields.company_id = companyId;
+    } else if (isPrivileged) {
+      // Never allow moving an employee to another company via API
+      delete allowedFields.company_id;
     }
 
     const { data, error } = await supabaseAdmin

@@ -13,6 +13,10 @@ router.get('/categories', assetsController.categories);
 router.get('/requests', assetsController.requests);
 router.post('/requests', assetsController.submitRequest);
 router.put('/requests/:id', isHROrAdmin, assetsController.actOnRequest);
+router.post('/categories', isHROrAdmin, assetsController.createCategory);
 router.post('/', isHROrAdmin, assetsController.create);
+router.put('/:id/assign', isHROrAdmin, assetsController.assign);
+router.put('/:id/return', isHROrAdmin, assetsController.returnAsset);
+router.put('/:id', isHROrAdmin, assetsController.update);
 
 module.exports = router;

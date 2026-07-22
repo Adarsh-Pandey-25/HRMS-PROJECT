@@ -14,10 +14,15 @@ const getAddress = (employeeOrAddress) => {
   return {};
 };
 
-/** Resolve company id from employee row (or address object). */
+/**
+ * Resolve company id from employee row (or address object).
+ * Prefers real column employees.company_id, then address JSON, else default.
+ */
 const getCompanyId = (employee) => {
+  if (!employee) return DEFAULT_COMPANY_ID;
+  if (employee.company_id) return String(employee.company_id);
   const addr = getAddress(employee);
-  const raw = addr.company_id || addr.companyId || employee?.company_id || null;
+  const raw = addr.company_id || addr.companyId || null;
   return raw ? String(raw) : DEFAULT_COMPANY_ID;
 };
 
@@ -28,6 +33,12 @@ const withCompanyId = (address, companyId) => {
   addr.company_id = companyId;
   return addr;
 };
+
+/** Fields to dual-write on employee insert/update (column + JSON). */
+const companyIdFields = (companyId, address = {}) => ({
+  company_id: companyId || DEFAULT_COMPANY_ID,
+  address: withCompanyId(address, companyId || DEFAULT_COMPANY_ID),
+});
 
 const newCompanyId = () => randomUUID();
 
@@ -44,6 +55,7 @@ module.exports = {
   DEFAULT_COMPANY_ID,
   getCompanyId,
   withCompanyId,
+  companyIdFields,
   newCompanyId,
   settingsKey,
   parseSettingsKey,

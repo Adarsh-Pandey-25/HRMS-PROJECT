@@ -11,9 +11,13 @@ const {
   STORAGE_BUCKETS,
 } = require('./storage.service');
 const { BadRequestError, NotFoundError, ForbiddenError } = require('../utils/errors');
+const { DEFAULT_COMPANY_ID, getCompanyId } = require('../utils/tenant');
 const logger = require('../utils/logger');
 
 const COMPLETION_GRACE_SECONDS = 5;
+const PROGRESS_JUMP_TOLERANCE = 12;
+
+const resolveCompanyId = (companyId) => companyId || DEFAULT_COMPANY_ID;
 
 const normalizeDept = (dept) => (dept || '').trim().toLowerCase();
 
@@ -113,7 +117,7 @@ const progressStatsForEnrollment = async (enrollmentId, courseId) => {
   return { total_lessons: totalLessons, completed_lessons: completedLessons, totalLessons, completedLessons };
 };
 
-const createCourse = async (payload, userId, thumbnailFile) => {
+const createCourse = async (payload, userId, thumbnailFile, companyId) => {
   let thumbnailKey = null;
   if (thumbnailFile) {
     const { path } = await uploadCourseThumbnail(thumbnailFile);
@@ -121,6 +125,7 @@ const createCourse = async (payload, userId, thumbnailFile) => {
   }
 
   const status = String(payload.status || 'ACTIVE').toUpperCase() === 'ARCHIVED' ? 'ARCHIVED' : 'ACTIVE';
+  const cid = resolveCompanyId(companyId);
 
   const { data, error } = await supabaseAdmin
     .from('courses')
@@ -132,6 +137,7 @@ const createCourse = async (payload, userId, thumbnailFile) => {
       created_by: userId,
       status,
       is_active: status === 'ACTIVE',
+      company_id: cid,
     })
     .select()
     .single();
@@ -175,10 +181,12 @@ const updateCourse = async (courseId, payload, thumbnailFile) => {
   return attachSignedUrls(data);
 };
 
-const listManageCourses = async () => {
+const listManageCourses = async (companyId) => {
+  const cid = resolveCompanyId(companyId);
   const { data, error } = await supabaseAdmin
     .from('courses')
     .select('*')
+    .eq('company_id', cid)
     .order('created_at', { ascending: false });
 
   if (error) throw new BadRequestError(error.message);
@@ -194,11 +202,13 @@ const listManageCourses = async () => {
   }));
 };
 
-const listCatalog = async (employee) => {
+const listCatalog = async (employee, companyId) => {
+  const cid = resolveCompanyId(companyId || getCompanyId(employee));
   const [{ data: courses, error }, { data: enrollments }, lessonCounts] = await Promise.all([
     supabaseAdmin
       .from('courses')
-      .select('id, title, description, thumbnail_key, target_departments, status, is_active, created_at')
+      .select('id, title, description, thumbnail_key, target_departments, status, is_active, created_at, company_id')
+      .eq('company_id', cid)
       .order('created_at', { ascending: false }),
     supabaseAdmin
       .from('course_enrollments')
@@ -368,6 +378,9 @@ const addLessonToCourse = async (courseId, payload, videoFile) => {
   } else {
     const link = payload.externalLink || payload.external_link;
     if (!link) throw new BadRequestError('externalLink is required for EXTERNAL_LINK');
+    if (!duration || duration <= 0) {
+      throw new BadRequestError('videoDuration is required for external link lessons');
+    }
   }
 
   const { data, error } = await supabaseAdmin
@@ -507,17 +520,39 @@ const createEnrollmentsBulk = async ({ courseId, employeeIds }) => {
   return results;
 };
 
-const listEnrollments = async () => {
-  const { data, error } = await supabaseAdmin
-    .from('course_enrollments')
-    .select(`
+const listEnrollments = async ({ includeArchived = false, archivedOnly = false } = {}) => {
+  const baseSelect = `
       id, status, enrolled_at, completed_at, course_id, user_id, employee_id,
       course:course_id(id, title),
       employee:employee_id(id, first_name, last_name, department, email),
       user:user_id(id, first_name, last_name, department, email),
       course_progress(lesson_id, is_completed)
-    `)
-    .order('enrolled_at', { ascending: false });
+    `;
+
+  const runQuery = (withArchiveCol) => {
+    let query = supabaseAdmin
+      .from('course_enrollments')
+      .select(withArchiveCol ? `is_archived, ${baseSelect}` : baseSelect)
+      .order('enrolled_at', { ascending: false });
+    if (withArchiveCol) {
+      if (archivedOnly) query = query.eq('is_archived', true);
+      else if (!includeArchived) query = query.eq('is_archived', false);
+    } else if (archivedOnly) {
+      return null;
+    }
+    return query;
+  };
+
+  let query = runQuery(true);
+  let result = query ? await query : { data: [], error: null };
+  let { data, error } = result;
+  if (error && String(error.message || '').includes('is_archived')) {
+    if (archivedOnly) {
+      return [];
+    }
+    query = runQuery(false);
+    ({ data, error } = await query);
+  }
 
   if (error) throw new BadRequestError(error.message);
 
@@ -542,8 +577,39 @@ const listEnrollments = async () => {
       completed_lessons: completedLessons,
       total_lessons: totalLessons,
       progress_percent: progressPercent,
+      is_archived: Boolean(row.is_archived),
     };
   });
+};
+
+const archiveEnrollment = async (enrollmentId) => {
+  const { data: existing, error: findErr } = await supabaseAdmin
+    .from('course_enrollments')
+    .select('id, status, is_archived')
+    .eq('id', enrollmentId)
+    .maybeSingle();
+
+  if (findErr) {
+    if (String(findErr.message || '').includes('is_archived')) {
+      throw new BadRequestError(
+        'Archive is not enabled yet. Run backend/supabase/migrations/20260720_course_enrollment_archive.sql in Supabase.',
+      );
+    }
+    throw new BadRequestError(findErr.message);
+  }
+  if (!existing) throw new NotFoundError('Enrollment not found');
+  if (existing.is_archived) throw new BadRequestError('Enrollment is already archived');
+  if (existing.status !== 'COMPLETED') throw new BadRequestError('Only completed enrollments can be archived');
+
+  const { data, error } = await supabaseAdmin
+    .from('course_enrollments')
+    .update({ is_archived: true })
+    .eq('id', enrollmentId)
+    .select('id, status, is_archived')
+    .single();
+
+  if (error) throw new BadRequestError(error.message);
+  return data;
 };
 
 const checkCourseCompletion = async (enrollmentId, courseId) => {
@@ -557,7 +623,33 @@ const checkCourseCompletion = async (enrollmentId, courseId) => {
   }
 };
 
-const updateLessonProgress = async (lessonId, employee, watchedSecondsInput) => {
+const assertPriorLessonsComplete = async (enrollmentId, courseId, lessonOrder) => {
+  const order = Number(lessonOrder || 0);
+  if (!order || order <= 1) return;
+
+  const { data: priorLessons, error: lessonErr } = await supabaseAdmin
+    .from('course_lessons')
+    .select('id')
+    .eq('course_id', courseId)
+    .lt('lesson_order', order);
+
+  if (lessonErr) throw new BadRequestError(lessonErr.message);
+  if (!priorLessons?.length) return;
+
+  const { data: progress, error: progErr } = await supabaseAdmin
+    .from('course_progress')
+    .select('lesson_id, is_completed')
+    .eq('enrollment_id', enrollmentId)
+    .in('lesson_id', priorLessons.map((l) => l.id));
+
+  if (progErr) throw new BadRequestError(progErr.message);
+
+  const completed = new Set((progress || []).filter((p) => p.is_completed).map((p) => p.lesson_id));
+  const allDone = priorLessons.every((l) => completed.has(l.id));
+  if (!allDone) throw new ForbiddenError('Complete previous lessons before continuing');
+};
+
+const updateLessonProgress = async (lessonId, employee, watchedSecondsInput, { forceComplete = false } = {}) => {
   const { data: lesson, error: lessonErr } = await supabaseAdmin
     .from('course_lessons')
     .select('*')
@@ -568,38 +660,7 @@ const updateLessonProgress = async (lessonId, employee, watchedSecondsInput) => 
 
   const courseId = lesson.course_id;
   let enrollment = await enrollCourse(courseId, employee);
-
-  // EXTERNAL_LINK: cannot track watch time — mark complete immediately
-  if (lesson.type === 'EXTERNAL_LINK') {
-    const { data: progress, error: progErr } = await supabaseAdmin
-      .from('course_progress')
-      .upsert({
-        enrollment_id: enrollment.id,
-        lesson_id: lessonId,
-        watched_seconds: Number(lesson.video_duration || 0),
-        is_completed: true,
-      }, { onConflict: 'enrollment_id,lesson_id' })
-      .select()
-      .single();
-
-    if (progErr) throw new BadRequestError(progErr.message);
-    await checkCourseCompletion(enrollment.id, courseId);
-    const { data: updatedEnrollment } = await supabaseAdmin
-      .from('course_enrollments')
-      .select('status, completed_at')
-      .eq('id', enrollment.id)
-      .single();
-
-    return {
-      lessonId,
-      enrollmentId: enrollment.id,
-      watchedSeconds: progress.watched_seconds,
-      isCompleted: true,
-      courseId,
-      enrollmentStatus: updatedEnrollment?.status || enrollment.status,
-      completedAt: updatedEnrollment?.completed_at || null,
-    };
-  }
+  await assertPriorLessonsComplete(enrollment.id, courseId, lesson.lesson_order);
 
   const duration = Number(lesson.video_duration || 0);
   if (!duration || duration <= 0) throw new BadRequestError('Lesson duration not configured');
@@ -616,8 +677,14 @@ const updateLessonProgress = async (lessonId, employee, watchedSecondsInput) => 
   let incoming = Math.min(Math.max(0, parseFloat(watchedSecondsInput) || 0), duration);
   // Monotonic: never decrease stored progress
   incoming = Math.max(prior, incoming);
+  // Reject large forward jumps (anti-skip)
+  if (incoming - prior > PROGRESS_JUMP_TOLERANCE) {
+    incoming = prior + PROGRESS_JUMP_TOLERANCE;
+  }
 
-  const isCompleted = incoming >= (duration - COMPLETION_GRACE_SECONDS);
+  const isCompleted = incoming >= (duration - COMPLETION_GRACE_SECONDS)
+    || (forceComplete && incoming >= Math.max(duration * 0.85, duration - 30))
+    || Boolean(existing?.is_completed);
 
   const { data: progress, error: progErr } = await supabaseAdmin
     .from('course_progress')
@@ -799,6 +866,7 @@ module.exports = {
   enrollCourse,
   createEnrollmentsBulk,
   listEnrollments,
+  archiveEnrollment,
   updateLessonProgress,
   deleteCourse,
   listTrainingProgressReport,

@@ -106,6 +106,9 @@ const resolveCourseVideoBucket = (pathOrKey) => {
 const uploadProfilePicture = (file, employeeId) =>
   uploadFile(STORAGE_BUCKETS.profilePictures, file, employeeId);
 
+const uploadCompanyLogo = (file, companyId) =>
+  uploadFile(STORAGE_BUCKETS.documents, file, `company-logos/${companyId}`);
+
 const uploadPayslip = (buffer, employeeId, month, year) => {
   const fileName = `${employeeId}/${year}-${String(month).padStart(2, '0')}.pdf`;
   return supabaseAdmin.storage
@@ -127,6 +130,7 @@ module.exports = {
   uploadCourseThumbnail,
   uploadCourseVideo,
   uploadProfilePicture,
+  uploadCompanyLogo,
   uploadPayslip,
   resolveCourseVideoBucket,
   STORAGE_BUCKETS,

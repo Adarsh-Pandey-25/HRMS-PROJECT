@@ -46,7 +46,8 @@ module.exports = {
     windowMs: (parseInt(process.env.RATE_LIMIT_WINDOW, 10) || 1) * 60 * 1000,
     max: parseInt(process.env.RATE_LIMIT_MAX, 10) || 100,
     authMax: parseInt(process.env.AUTH_RATE_LIMIT_MAX, 10) || 10,
-    bootstrapMax: parseInt(process.env.BOOTSTRAP_RATE_LIMIT_MAX, 10) || 5,
+    bootstrapMax: parseInt(process.env.BOOTSTRAP_RATE_LIMIT_MAX, 10) || 10,
+    onboardingOtpMax: parseInt(process.env.ONBOARDING_OTP_RATE_LIMIT_MAX, 10) || 30,
   },
   cookieSecure: process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production',
   leaveBalances: {

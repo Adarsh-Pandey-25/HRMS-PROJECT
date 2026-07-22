@@ -28,6 +28,25 @@ const createNotification = async ({
   return data;
 };
 
+/** Fan-out the same notification shape to many users (batch insert). */
+const createNotifications = async (items = []) => {
+  const rows = (items || []).filter((i) => i?.user_id).map(({
+    user_id, type, title, message, link = null, meta = {},
+  }) => ({
+    user_id,
+    type,
+    title,
+    message,
+    link,
+    meta,
+    is_read: false,
+  }));
+  if (!rows.length) return [];
+  const { data, error } = await supabaseAdmin.from('notifications').insert(rows).select();
+  if (error) throw new BadRequestError(error.message);
+  return data || [];
+};
+
 const listMyNotifications = async (userId, query) => {
   const { page, limit, offset } = paginate(query);
   let dbQuery = supabaseAdmin
@@ -78,6 +97,7 @@ const markAllRead = async (userId) => {
 
 module.exports = {
   createNotification,
+  createNotifications,
   listMyNotifications,
   getUnreadCount,
   markRead,

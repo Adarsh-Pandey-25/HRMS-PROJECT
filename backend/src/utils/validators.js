@@ -30,6 +30,19 @@ const bootstrapRules = [
   body('admin_name').trim().isLength({ min: 2, max: 200 }),
   body('company_profile').isObject(),
   body('company_profile.name').trim().isLength({ min: 2, max: 200 }),
+  body('verificationToken').optional().isString().isLength({ min: 16, max: 128 }),
+  body('verification_token').optional().isString().isLength({ min: 16, max: 128 }),
+];
+
+const onboardingSendOtpRules = [
+  body('email').isEmail().normalizeEmail(),
+  body('adminName').optional().trim().isLength({ max: 200 }),
+  body('admin_name').optional().trim().isLength({ max: 200 }),
+];
+
+const onboardingVerifyOtpRules = [
+  body('email').isEmail().normalizeEmail(),
+  body('otp').isLength({ min: 4, max: 10 }).withMessage('OTP is required'),
 ];
 
 const changePasswordRules = [
@@ -62,6 +75,8 @@ const employeeCreateRules = [
   body('date_of_joining').optional().isISO8601(),
   body('employment_type').optional().isIn(EMPLOYMENT_TYPES),
   body('salary_details').optional().isObject(),
+  body('bank_details').optional().isObject(),
+  body('emergency_contact').optional().isObject(),
 ];
 
 const checkInRules = [
@@ -190,6 +205,10 @@ const lessonProgressRules = [
 
 const uuidParam = (name = 'id') => [param(name).isUUID()];
 
+const employeeRefParam = (name = 'id') => [
+  param(name).trim().notEmpty().isLength({ min: 1, max: 64 }),
+];
+
 const paginationQuery = [
   query('page').optional().isInt({ min: 1 }),
   query('limit').optional().isInt({ min: 1, max: 500 }),
@@ -199,6 +218,8 @@ module.exports = {
   registerRules,
   loginRules,
   bootstrapRules,
+  onboardingSendOtpRules,
+  onboardingVerifyOtpRules,
   changePasswordRules,
   forgotPasswordRules,
   resetPasswordRules,
@@ -219,5 +240,6 @@ module.exports = {
   payrollGeneratePayslipRules,
   payrollListQueryRules,
   uuidParam,
+  employeeRefParam,
   paginationQuery,
 };
