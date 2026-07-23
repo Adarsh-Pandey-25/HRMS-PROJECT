@@ -3,24 +3,81 @@ const authService = require('../services/auth.service');
 const { successResponse, paginate, buildMeta, omitSensitive, generateDefaultPassword } = require('../utils/helpers');
 const { BadRequestError, NotFoundError, ConflictError, ForbiddenError } = require('../utils/errors');
 const { getCompanyId, withCompanyId, companyIdFields } = require('../utils/tenant');
-const { employeeBelongsToCompany } = require('../services/tenant.service');
+const {
+  employeeBelongsToCompany,
+  getOrgCompanyIds,
+  isCompanyInOrg,
+  getCompanyById,
+} = require('../services/tenant.service');
 const { allocateNextEmployeeCode } = require('../services/employeeCode.service');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-async function findEmployeeByRef(ref, companyId, select = '*') {
+/** Resolve which company IDs this actor may see/manage. */
+async function resolveScopeCompanyIds(req) {
+  const homeId = req.user.company_id || getCompanyId(req.user);
+  if (req.user.role === 'admin' || req.user.role === 'hr') {
+    return getOrgCompanyIds(homeId);
+  }
+  return [homeId];
+}
+
+async function findEmployeeByRef(ref, scopeCompanyIds, select = '*') {
+  const scopeIds = [...new Set((scopeCompanyIds || []).map(String).filter(Boolean))];
+  if (!scopeIds.length) return null;
+
   const isUuid = UUID_RE.test(String(ref || ''));
-  let query = supabaseAdmin.from('employees').select(select);
-  query = isUuid ? query.eq('id', ref) : query.eq('employee_code', ref).eq('company_id', companyId);
-  const { data, error } = await query.maybeSingle();
+  let query = supabaseAdmin
+    .from('employees')
+    .select(select)
+    .in('company_id', scopeIds);
+
+  if (isUuid) {
+    query = query.eq('id', ref);
+  } else {
+    // Employee codes restart per company (EMP001…) — may match multiple rows in org scope
+    query = query.eq('employee_code', ref).limit(5);
+  }
+
+  const { data, error } = await query;
   if (error) throw new BadRequestError(error.message);
-  if (!data || !employeeBelongsToCompany(data, companyId)) return null;
-  return data;
+
+  const rows = Array.isArray(data) ? data : (data ? [data] : []);
+  if (!rows.length) return null;
+
+  // Prefer exact UUID match; for codes take first in-scope row
+  if (isUuid) {
+    return rows.find((r) => String(r.id) === String(ref)) || rows[0];
+  }
+  return rows[0];
+}
+
+/**
+ * Admin / HR may assign company_id to home or any child in the org.
+ * Others always use their home company.
+ */
+async function resolveTargetCompanyId(req, requestedCompanyId) {
+  const homeId = req.user.company_id || getCompanyId(req.user);
+  const canAssign = req.user.role === 'admin' || req.user.role === 'hr';
+  if (!canAssign || !requestedCompanyId) {
+    return homeId;
+  }
+  const target = String(requestedCompanyId);
+  const allowed = await isCompanyInOrg(homeId, target);
+  if (!allowed) {
+    throw new ForbiddenError('You can only assign employees to your company or its child companies');
+  }
+  const row = await getCompanyById(target);
+  if (!row || row.is_active === false) {
+    throw new BadRequestError('Target company is inactive or not found');
+  }
+  return target;
 }
 
 const create = async (req, res, next) => {
   try {
-    const companyId = req.user.company_id || getCompanyId(req.user);
+    const requestedCompanyId = req.body.company_id || req.body.companyId;
+    const companyId = await resolveTargetCompanyId(req, requestedCompanyId);
     const tempPassword = generateDefaultPassword(req.body.first_name, req.body.last_name);
     const passwordHash = await authService.hashPassword(tempPassword);
 
@@ -32,7 +89,14 @@ const create = async (req, res, next) => {
 
     if (existing) throw new ConflictError('Email already exists');
 
-    const { password_hash: _ph, address, company_id: _cid, employee_code: _code, ...body } = req.body;
+    const {
+      password_hash: _ph,
+      address,
+      company_id: _cid,
+      companyId: _cId,
+      employee_code: _code,
+      ...body
+    } = req.body;
     const employeeCode = await allocateNextEmployeeCode(companyId);
     const { data, error } = await supabaseAdmin
       .from('employees')
@@ -61,13 +125,18 @@ const create = async (req, res, next) => {
 
 const getAll = async (req, res, next) => {
   try {
-    const companyId = req.user.company_id || getCompanyId(req.user);
+    const scopeIds = await resolveScopeCompanyIds(req);
     const { page, limit, offset } = paginate(req.query);
+
+    const scopeIdSet = new Set((scopeIds || []).map(String));
 
     let query = supabaseAdmin
       .from('employees')
-      .select('*, manager:manager_id(id, first_name, last_name)', { count: 'exact' })
-      .eq('company_id', companyId)
+      .select(
+        '*, manager:manager_id(id, first_name, last_name), company:company_id(id, name, slug)',
+        { count: 'exact' },
+      )
+      .in('company_id', scopeIds)
       .neq('role', 'admin')
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1);
@@ -75,6 +144,13 @@ const getAll = async (req, res, next) => {
     if (req.query.department) query = query.eq('department', req.query.department);
     if (req.query.role) query = query.eq('role', req.query.role);
     if (req.query.is_active !== undefined) query = query.eq('is_active', req.query.is_active === 'true');
+    if (req.query.company_id || req.query.companyId) {
+      const filterCid = String(req.query.company_id || req.query.companyId);
+      if (!scopeIdSet.has(filterCid)) {
+        throw new ForbiddenError('Invalid company filter');
+      }
+      query = query.eq('company_id', filterCid);
+    }
 
     const { data, error, count } = await query;
     if (error) throw new BadRequestError(error.message);
@@ -86,11 +162,11 @@ const getAll = async (req, res, next) => {
 
 const getById = async (req, res, next) => {
   try {
-    const companyId = req.user.company_id || getCompanyId(req.user);
+    const scopeIds = await resolveScopeCompanyIds(req);
     const data = await findEmployeeByRef(
       req.params.id,
-      companyId,
-      '*, manager:manager_id(id, first_name, last_name, email)',
+      scopeIds,
+      '*, manager:manager_id(id, first_name, last_name, email), company:company_id(id, name, slug)',
     );
 
     if (!data) throw new NotFoundError('Employee not found');
@@ -109,13 +185,13 @@ const getById = async (req, res, next) => {
 
 const update = async (req, res, next) => {
   try {
-    const companyId = req.user.company_id || getCompanyId(req.user);
+    const scopeIds = await resolveScopeCompanyIds(req);
     const { data: existing } = await supabaseAdmin
       .from('employees')
-      .select('id, address')
+      .select('id, address, company_id')
       .eq('id', req.params.id)
       .maybeSingle();
-    if (!existing || !employeeBelongsToCompany(existing, companyId)) {
+    if (!existing || !scopeIds.map(String).includes(String(getCompanyId(existing)))) {
       throw new NotFoundError('Employee not found');
     }
 
@@ -137,12 +213,26 @@ const update = async (req, res, next) => {
 
     delete allowedFields.password_hash;
     delete allowedFields.email;
-    if (allowedFields.address !== undefined) {
-      allowedFields.address = withCompanyId(allowedFields.address, companyId);
-      allowedFields.company_id = companyId;
-    } else if (isPrivileged) {
-      // Never allow moving an employee to another company via API
+    delete allowedFields.companyId;
+
+    // Admin / HR may move employee within org (parent ↔ child)
+    let stampCompanyId = getCompanyId(existing);
+    if (
+      isPrivileged
+      && (req.user.role === 'admin' || req.user.role === 'hr')
+      && (req.body.company_id || req.body.companyId)
+    ) {
+      stampCompanyId = await resolveTargetCompanyId(req, req.body.company_id || req.body.companyId);
+      allowedFields.company_id = stampCompanyId;
+    } else {
       delete allowedFields.company_id;
+    }
+
+    if (allowedFields.address !== undefined) {
+      allowedFields.address = withCompanyId(allowedFields.address, stampCompanyId);
+      allowedFields.company_id = stampCompanyId;
+    } else if (allowedFields.company_id) {
+      allowedFields.address = withCompanyId(existing.address, stampCompanyId);
     }
 
     const { data, error } = await supabaseAdmin
@@ -159,13 +249,13 @@ const update = async (req, res, next) => {
 
 const remove = async (req, res, next) => {
   try {
-    const companyId = req.user.company_id || getCompanyId(req.user);
+    const scopeIds = await resolveScopeCompanyIds(req);
     const { data: existing } = await supabaseAdmin
       .from('employees')
-      .select('id, address')
+      .select('id, address, company_id')
       .eq('id', req.params.id)
       .maybeSingle();
-    if (!existing || !employeeBelongsToCompany(existing, companyId)) {
+    if (!existing || !scopeIds.map(String).includes(String(getCompanyId(existing)))) {
       throw new NotFoundError('Employee not found');
     }
     await supabaseAdmin.from('employees').delete().eq('id', req.params.id);
@@ -175,16 +265,16 @@ const remove = async (req, res, next) => {
 
 const getTeam = async (req, res, next) => {
   try {
-    const companyId = req.user.company_id || getCompanyId(req.user);
+    const scopeIds = await resolveScopeCompanyIds(req);
     const managerId = req.params.managerId || req.user.id;
     const { data, error } = await supabaseAdmin
       .from('employees')
-      .select('id, employee_code, first_name, last_name, email, department, designation, is_active, address')
+      .select('id, employee_code, first_name, last_name, email, department, designation, is_active, address, company_id')
       .eq('manager_id', managerId)
       .eq('is_active', true);
 
     if (error) throw new BadRequestError(error.message);
-    const scoped = (data || []).filter((e) => employeeBelongsToCompany(e, companyId));
+    const scoped = (data || []).filter((e) => scopeIds.includes(getCompanyId(e)));
     successResponse(res, 'Team fetched', scoped.map((e) => {
       const { address, ...rest } = e;
       return rest;
@@ -194,13 +284,13 @@ const getTeam = async (req, res, next) => {
 
 const deactivate = async (req, res, next) => {
   try {
-    const companyId = req.user.company_id || getCompanyId(req.user);
+    const scopeIds = await resolveScopeCompanyIds(req);
     const { data: existing } = await supabaseAdmin
       .from('employees')
-      .select('id, address')
+      .select('id, address, company_id')
       .eq('id', req.params.id)
       .maybeSingle();
-    if (!existing || !employeeBelongsToCompany(existing, companyId)) {
+    if (!existing || !scopeIds.map(String).includes(String(getCompanyId(existing)))) {
       throw new NotFoundError('Employee not found');
     }
 
@@ -212,7 +302,6 @@ const deactivate = async (req, res, next) => {
       .single();
 
     if (error) throw new BadRequestError(error.message);
-    await supabaseAdmin.from('refresh_tokens').delete().eq('employee_id', req.params.id);
     successResponse(res, 'Employee deactivated', omitSensitive(data, ['password_hash']));
   } catch (err) { next(err); }
 };

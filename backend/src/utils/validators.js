@@ -77,6 +77,8 @@ const employeeCreateRules = [
   body('salary_details').optional().isObject(),
   body('bank_details').optional().isObject(),
   body('emergency_contact').optional().isObject(),
+  body('company_id').optional({ nullable: true }).isUUID(),
+  body('companyId').optional({ nullable: true }).isUUID(),
 ];
 
 const checkInRules = [

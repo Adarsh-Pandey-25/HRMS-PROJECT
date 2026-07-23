@@ -44,13 +44,19 @@ const myAttendance = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+const resolveAttendanceEmployeeScope = async (req) => {
+  const tenantService = require('../services/tenant.service');
+  if (['admin', 'hr'].includes(req.user.role)) {
+    return tenantService.getOrgEmployeeIds(req.user.company_id);
+  }
+  return tenantService.getCompanyEmployeeIds(req.user.company_id);
+};
+
 const teamAttendance = async (req, res, next) => {
   try {
     const filters = {};
-    const companyId = req.user.company_id;
-    const tenantService = require('../services/tenant.service');
-    const companyEmployeeIds = await tenantService.getCompanyEmployeeIds(companyId);
-    // Admin/HR see company-wide attendance; managers see direct reports only
+    const companyEmployeeIds = await resolveAttendanceEmployeeScope(req);
+    // Admin/HR see org-wide attendance; managers see direct reports only
     if (['admin', 'hr'].includes(req.user.role)) {
       if (req.query.employee_id) {
         if (!companyEmployeeIds.includes(req.query.employee_id)) {
@@ -73,9 +79,8 @@ const teamAttendance = async (req, res, next) => {
 
 const allAttendance = async (req, res, next) => {
   try {
-    const tenantService = require('../services/tenant.service');
     const filters = {
-      employee_ids: await tenantService.getCompanyEmployeeIds(req.user.company_id),
+      employee_ids: await resolveAttendanceEmployeeScope(req),
     };
     if (req.query.employee_id) filters.employee_id = req.query.employee_id;
     if (req.query.from) filters.from = req.query.from;
@@ -88,8 +93,7 @@ const allAttendance = async (req, res, next) => {
 const employeeReport = async (req, res, next) => {
   try {
     const employeeId = req.params.employeeId;
-    const companyIds = await require('../services/tenant.service')
-      .getCompanyEmployeeIds(req.user.company_id);
+    const companyIds = await resolveAttendanceEmployeeScope(req);
     if (!companyIds.includes(employeeId)) {
       throw new (require('../utils/errors').NotFoundError)('Employee not found');
     }
@@ -120,8 +124,7 @@ const monthlySummary = async (req, res, next) => {
   try {
     const employeeId = req.query.employee_id || req.user.id;
     if (employeeId !== req.user.id) {
-      const companyIds = await require('../services/tenant.service')
-        .getCompanyEmployeeIds(req.user.company_id);
+      const companyIds = await resolveAttendanceEmployeeScope(req);
       if (!companyIds.includes(employeeId)) {
         throw new (require('../utils/errors').NotFoundError)('Employee not found');
       }

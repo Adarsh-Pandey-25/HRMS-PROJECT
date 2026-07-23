@@ -157,11 +157,10 @@ const omitSensitive = (obj, fields = DEFAULT_OMIT_FIELDS) => {
   return result;
 };
 
-/** @deprecated Prefer allocateNextEmployeeCode(companyId) — kept for scripts only */
+/** @deprecated Prefer allocateNextEmployeeCode(companyId). Do not use random codes. */
 const generateEmployeeCode = () => {
-  const prefix = 'EMP';
-  const num = Math.floor(10000 + Math.random() * 90000);
-  return `${prefix}${num}`;
+  // Legacy helper — not used for real creates. Format matches EMP001 style for display only.
+  return 'EMP001';
 };
 
 /** Default login password: {FirstName}{LastName}@123 (each name part title-cased, no spaces). */

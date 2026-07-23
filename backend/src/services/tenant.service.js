@@ -6,6 +6,7 @@ const {
   withCompanyId,
   settingsKey,
 } = require('../utils/tenant');
+const { ForbiddenError, BadRequestError } = require('../utils/errors');
 
 let backfillDone = false;
 
@@ -74,33 +75,202 @@ const ensureTenantBackfill = async () => {
 };
 
 /** Create / ensure a companies row (onboarding + repairs). */
-const ensureCompanyRow = async ({ id, name, slug } = {}) => {
+const ensureCompanyRow = async ({
+  id,
+  name,
+  slug,
+  parent_company_id = null,
+  company_type = 'standalone',
+} = {}) => {
   const companyId = id || DEFAULT_COMPANY_ID;
-  const { data: existing } = await supabaseAdmin
-    .from('companies')
-    .select('id')
-    .eq('id', companyId)
-    .maybeSingle();
+  const existing = await getCompanyById(companyId);
   if (existing) return existing;
 
   const safeSlug = (slug || `co-${String(companyId).replace(/-/g, '')}`).slice(0, 100);
-  const { data, error } = await supabaseAdmin
+  const type = ['standalone', 'parent', 'child'].includes(company_type)
+    ? company_type
+    : 'standalone';
+
+  const basePayload = {
+    id: companyId,
+    name: name || 'Company',
+    slug: safeSlug,
+    is_active: true,
+  };
+
+  // Prefer hierarchy insert; fall back if migration not applied yet
+  const withHierarchy = {
+    ...basePayload,
+    company_type: type,
+    parent_company_id: type === 'child' ? parent_company_id : null,
+  };
+
+  let { data, error } = await supabaseAdmin
     .from('companies')
-    .insert({
-      id: companyId,
-      name: name || 'Company',
-      slug: safeSlug,
-      is_active: true,
-    })
-    .select('id')
+    .insert(withHierarchy)
+    .select('id, name, slug, is_active, parent_company_id, company_type, created_at')
     .single();
 
+  if (error && isMissingHierarchyColumn(error)) {
+    hierarchyColumnsReady = false;
+    ({ data, error } = await supabaseAdmin
+      .from('companies')
+      .insert(basePayload)
+      .select('id, name, slug, is_active, created_at')
+      .single());
+    if (!error && data) {
+      return { ...data, parent_company_id: null, company_type: 'standalone' };
+    }
+  }
+
   if (error) {
-    // Race / slug conflict — try update name only
     logger.warn('ensureCompanyRow insert failed', { companyId, error: error.message });
     return { id: companyId };
   }
+  if (data?.company_type) hierarchyColumnsReady = true;
   return data;
+};
+
+/** True when Postgres error is about missing hierarchy columns. */
+const isMissingHierarchyColumn = (err) => {
+  const msg = String(err?.message || err?.details || err?.hint || '');
+  return /parent_company_id|company_type/i.test(msg) && /does not exist/i.test(msg);
+};
+
+/** Cached: null = unknown, true/false after first probe. */
+let hierarchyColumnsReady = null;
+
+/**
+ * Fetch one companies row (or null).
+ * Falls back when hierarchy migration is not applied yet.
+ */
+const getCompanyById = async (companyId) => {
+  if (!companyId) return null;
+
+  const basicSelect = 'id, name, slug, is_active, created_at, updated_at';
+  const fullSelect = `${basicSelect}, parent_company_id, company_type`;
+
+  const runBasic = async () => {
+    const { data, error } = await supabaseAdmin
+      .from('companies')
+      .select(basicSelect)
+      .eq('id', companyId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return null;
+    return { ...data, parent_company_id: null, company_type: 'standalone' };
+  };
+
+  if (hierarchyColumnsReady === false) {
+    return runBasic();
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from('companies')
+    .select(fullSelect)
+    .eq('id', companyId)
+    .maybeSingle();
+
+  if (error) {
+    if (isMissingHierarchyColumn(error)) {
+      hierarchyColumnsReady = false;
+      logger.warn(
+        'Company hierarchy columns missing — run backend/supabase/migrations/20260723_company_hierarchy.sql in Supabase. Using single-company scope until then.',
+      );
+      return runBasic();
+    }
+    throw error;
+  }
+
+  hierarchyColumnsReady = true;
+  return data;
+};
+
+/**
+ * Company IDs the actor may manage:
+ * - parent → self + all children
+ * - standalone / child → self only
+ * - hierarchy not migrated → self only (safe fallback)
+ */
+const getOrgCompanyIds = async (actorCompanyId) => {
+  const cid = actorCompanyId || DEFAULT_COMPANY_ID;
+  try {
+    const self = await getCompanyById(cid);
+    if (!self) return [cid];
+
+    if (self.company_type === 'parent' && hierarchyColumnsReady !== false) {
+      const { data: children, error } = await supabaseAdmin
+        .from('companies')
+        .select('id')
+        .eq('parent_company_id', cid);
+      if (error) {
+        if (isMissingHierarchyColumn(error)) {
+          hierarchyColumnsReady = false;
+          return [cid];
+        }
+        throw error;
+      }
+      return [cid, ...(children || []).map((c) => c.id)];
+    }
+    return [cid];
+  } catch (err) {
+    if (isMissingHierarchyColumn(err)) {
+      hierarchyColumnsReady = false;
+      return [cid];
+    }
+    throw err;
+  }
+};
+
+/** True when targetCompanyId is actor's company or a child of it. */
+const isCompanyInOrg = async (actorCompanyId, targetCompanyId) => {
+  if (!targetCompanyId) return false;
+  const ids = await getOrgCompanyIds(actorCompanyId);
+  const target = String(targetCompanyId);
+  return (ids || []).some((id) => String(id) === target);
+};
+
+/** Promote standalone → parent when first child is added. */
+const promoteToParentIfNeeded = async (companyId) => {
+  if (hierarchyColumnsReady === false) {
+    throw new BadRequestError(
+      'Run migration 20260723_company_hierarchy.sql in Supabase before creating child companies.',
+    );
+  }
+  const row = await getCompanyById(companyId);
+  if (!row) return null;
+  if (row.company_type === 'parent') return row;
+  if (row.company_type === 'child') {
+    throw new ForbiddenError('Child companies cannot create subsidiaries');
+  }
+  const { data, error } = await supabaseAdmin
+    .from('companies')
+    .update({
+      company_type: 'parent',
+      parent_company_id: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', companyId)
+    .select('id, name, slug, is_active, parent_company_id, company_type, created_at, updated_at')
+    .single();
+  if (error) {
+    if (isMissingHierarchyColumn(error)) {
+      hierarchyColumnsReady = false;
+      throw new BadRequestError(
+        'Run migration 20260723_company_hierarchy.sql in Supabase before creating child companies.',
+      );
+    }
+    throw error;
+  }
+  return data;
+};
+
+const assertHierarchyReady = () => {
+  if (hierarchyColumnsReady === false) {
+    throw new BadRequestError(
+      'Company hierarchy is not set up yet. Run backend/supabase/migrations/20260723_company_hierarchy.sql in the Supabase SQL Editor, then retry.',
+    );
+  }
 };
 
 /** All employee ids belonging to a company (uses real column when present). */
@@ -122,6 +292,25 @@ const getCompanyEmployeeIds = async (companyId) => {
     return (rows || []).filter((e) => getCompanyId(e) === cid).map((e) => e.id);
   }
 
+  return (data || []).map((e) => e.id);
+};
+
+/**
+ * Employee ids across the actor's org (parent + children for admin/HR home).
+ * Standalone / child → same as getCompanyEmployeeIds.
+ */
+const getOrgEmployeeIds = async (actorCompanyId) => {
+  const companyIds = await getOrgCompanyIds(actorCompanyId);
+  if (!companyIds.length) return [];
+  if (companyIds.length === 1) {
+    return getCompanyEmployeeIds(companyIds[0]);
+  }
+  const { data, error } = await supabaseAdmin
+    .from('employees')
+    .select('id')
+    .in('company_id', companyIds)
+    .limit(10000);
+  if (error) throw error;
   return (data || []).map((e) => e.id);
 };
 
@@ -152,7 +341,7 @@ const getCompanyHrAdminIds = async (companyId) => {
   return (data || []).map((e) => e.id);
 };
 
-/** True when target employee belongs to the same company as actor. */
+/** True when target employee belongs to the actor's company or org (main + subsidiaries). */
 const assertSameCompany = async (actorCompanyId, employeeId) => {
   const { data } = await supabaseAdmin
     .from('employees')
@@ -160,13 +349,22 @@ const assertSameCompany = async (actorCompanyId, employeeId) => {
     .eq('id', employeeId)
     .maybeSingle();
   if (!data) return false;
-  return getCompanyId(data) === (actorCompanyId || DEFAULT_COMPANY_ID);
+  const empCompanyId = getCompanyId(data);
+  const home = actorCompanyId || DEFAULT_COMPANY_ID;
+  if (empCompanyId === home) return true;
+  return await isCompanyInOrg(home, empCompanyId);
 };
 
 module.exports = {
   ensureTenantBackfill,
   ensureCompanyRow,
+  getCompanyById,
+  getOrgCompanyIds,
+  isCompanyInOrg,
+  promoteToParentIfNeeded,
+  assertHierarchyReady,
   getCompanyEmployeeIds,
+  getOrgEmployeeIds,
   getCompanyHrAdminIds,
   employeeBelongsToCompany,
   assertSameCompany,

@@ -32,7 +32,7 @@ const allLeaves = async (req, res, next) => {
   try {
     const tenantService = require('../services/tenant.service');
     const filters = {
-      employee_ids: await tenantService.getCompanyEmployeeIds(req.user.company_id),
+      employee_ids: await tenantService.getOrgEmployeeIds(req.user.company_id),
     };
     if (req.query.status) filters.status = req.query.status;
     const result = await leaveService.getLeaves(filters, req.query);

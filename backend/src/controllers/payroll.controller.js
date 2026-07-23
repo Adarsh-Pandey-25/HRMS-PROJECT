@@ -25,7 +25,7 @@ const generatePayslip = async (req, res, next) => {
     const { payroll_month_id, user_id } = req.body;
     if (user_id) {
       const ids = await require('../services/tenant.service')
-        .getCompanyEmployeeIds(req.user.company_id);
+        .getOrgEmployeeIds(req.user.company_id);
       if (!ids.includes(user_id)) {
         throw new (require('../utils/errors').NotFoundError)('Employee not found');
       }
@@ -79,7 +79,7 @@ const recalculateFromSettings = async (req, res, next) => {
     const employeeId = req.body?.employee_id || req.body?.employeeId || undefined;
     if (employeeId) {
       const ids = await require('../services/tenant.service')
-        .getCompanyEmployeeIds(req.user.company_id);
+        .getOrgEmployeeIds(req.user.company_id);
       if (!ids.includes(employeeId)) {
         throw new (require('../utils/errors').NotFoundError)('Employee not found');
       }

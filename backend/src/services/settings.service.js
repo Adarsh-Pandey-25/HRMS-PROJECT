@@ -170,7 +170,8 @@ const getEffectiveOfficeConfig = async (companyId = null) => {
 };
 
 /** Seed essential settings for a brand-new company workspace. */
-const seedCompanySettings = async (companyId, companyProfile, updatedBy = null) => {
+const seedCompanySettings = async (companyId, companyProfile, updatedBy = null, fromCompanyId = null) => {
+  const sourceId = fromCompanyId || DEFAULT_COMPANY_ID;
   const defaults = {
     company_profile: companyProfile || {},
     allow_remote_login: false,
@@ -185,7 +186,7 @@ const seedCompanySettings = async (companyId, companyProfile, updatedBy = null) 
     'expense_config', 'security_config',
   ];
   for (const key of copyKeys) {
-    const v = await getSetting(key, null, DEFAULT_COMPANY_ID);
+    const v = await getSetting(key, null, sourceId);
     if (v != null) defaults[key] = v;
   }
 

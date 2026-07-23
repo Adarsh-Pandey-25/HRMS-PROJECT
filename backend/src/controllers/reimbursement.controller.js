@@ -6,8 +6,14 @@ const { successResponse, paginate, buildMeta } = require('../utils/helpers');
 const { BadRequestError, NotFoundError, ForbiddenError } = require('../utils/errors');
 const notificationService = require('../services/notification.service');
 
-const companyEmployeeIds = (req) =>
-  require('../services/tenant.service').getCompanyEmployeeIds(req.user.company_id);
+const companyEmployeeIds = (req) => {
+  const tenant = require('../services/tenant.service');
+  const home = req.user.company_id;
+  if (['admin', 'hr'].includes(req.user.role)) {
+    return tenant.getOrgEmployeeIds(home);
+  }
+  return tenant.getCompanyEmployeeIds(home);
+};
 
 const requireCompanyReimbursement = async (req) => {
   const { data } = await supabaseAdmin

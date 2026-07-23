@@ -1,10 +1,12 @@
 const { supabaseAdmin } = require('../config/supabase');
 const { BadRequestError } = require('../utils/errors');
 
-const formatEmployeeCode = (n) => `EMP${String(n).padStart(2, '0')}`;
+/** EMP001, EMP002, … (at least 3 digits; grows naturally after 999). */
+const formatEmployeeCode = (n) => `EMP${String(n).padStart(3, '0')}`;
 
 /**
- * Next human-facing employee code for a company: EMP01, EMP02, …
+ * Next human-facing employee code for a company: EMP001, EMP002, …
+ * Unique per company — each company has its own sequence starting at 1.
  * Prefers the atomic DB function; falls back to max(EMP#) + 1 if RPC is missing.
  */
 const allocateNextEmployeeCode = async (companyId) => {

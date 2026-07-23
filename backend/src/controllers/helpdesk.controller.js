@@ -6,7 +6,11 @@ const companyIdOf = (req) => req.user.company_id || getCompanyId(req.user);
 
 const companyIds = async (req) => {
   const tenantService = require('../services/tenant.service');
-  return tenantService.getCompanyEmployeeIds(companyIdOf(req));
+  const home = companyIdOf(req);
+  if (['admin', 'hr'].includes(req.user.role)) {
+    return tenantService.getOrgEmployeeIds(home);
+  }
+  return tenantService.getCompanyEmployeeIds(home);
 };
 
 const tickets = async (req, res, next) => {
