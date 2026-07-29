@@ -20,10 +20,13 @@ const SENSITIVE_RESPONSE_KEYS = new Set([
   'smtpPassword',
   'api_key',
   'apiKey',
+  'key_hash',
+  'keyHash',
   'secret',
   'private_key',
   'privateKey',
 ]);
+// Note: plaintextKey is intentionally NOT listed — returned once on API key create.
 
 const sanitizeForClient = (value) => {
   if (value == null) return value;

@@ -720,12 +720,71 @@ const updateLessonProgress = async (lessonId, employee, watchedSecondsInput, { f
   };
 };
 
-const deleteCourse = async (courseId) => {
-  const { error } = await supabaseAdmin
+const archiveCourse = async (courseId) => {
+  const { data, error } = await supabaseAdmin
     .from('courses')
     .update({ status: 'ARCHIVED', is_active: false })
+    .eq('id', courseId)
+    .select('id')
+    .maybeSingle();
+  if (error) throw new BadRequestError(error.message);
+  if (!data) throw new NotFoundError('Course not found');
+  return data;
+};
+
+/** Permanently remove a course and related LMS rows. */
+const deleteCourse = async (courseId) => {
+  const { data: existing, error: findErr } = await supabaseAdmin
+    .from('courses')
+    .select('id')
+    .eq('id', courseId)
+    .maybeSingle();
+  if (findErr) throw new BadRequestError(findErr.message);
+  if (!existing) throw new NotFoundError('Course not found');
+
+  // Remove dependents first in case DB FKs are not cascading in this environment.
+  const { data: lessons } = await supabaseAdmin
+    .from('course_lessons')
+    .select('id')
+    .eq('course_id', courseId);
+  const lessonIds = (lessons || []).map((l) => l.id);
+
+  const { data: enrollments } = await supabaseAdmin
+    .from('course_enrollments')
+    .select('id')
+    .eq('course_id', courseId);
+  const enrollmentIds = (enrollments || []).map((e) => e.id);
+
+  if (enrollmentIds.length) {
+    await supabaseAdmin.from('course_progress').delete().in('enrollment_id', enrollmentIds);
+  }
+  if (lessonIds.length) {
+    await supabaseAdmin.from('course_progress').delete().in('lesson_id', lessonIds);
+  }
+  if (enrollmentIds.length) {
+    const { error: enrErr } = await supabaseAdmin
+      .from('course_enrollments')
+      .delete()
+      .eq('course_id', courseId);
+    if (enrErr) throw new BadRequestError(enrErr.message);
+  }
+  if (lessonIds.length) {
+    const { error: lesErr } = await supabaseAdmin
+      .from('course_lessons')
+      .delete()
+      .eq('course_id', courseId);
+    if (lesErr) throw new BadRequestError(lesErr.message);
+  }
+
+  // Optional chapter tables from older schemas
+  await supabaseAdmin.from('course_chapters').delete().eq('course_id', courseId);
+
+  const { error, count } = await supabaseAdmin
+    .from('courses')
+    .delete({ count: 'exact' })
     .eq('id', courseId);
   if (error) throw new BadRequestError(error.message);
+  if (count === 0) throw new BadRequestError('Course could not be deleted');
 };
 
 const getLessonVideoUrl = async (lessonId, employee) => {
@@ -868,6 +927,7 @@ module.exports = {
   listEnrollments,
   archiveEnrollment,
   updateLessonProgress,
+  archiveCourse,
   deleteCourse,
   listTrainingProgressReport,
   getLessonVideoUrl,

@@ -94,8 +94,10 @@ const checkIn = async (employeeId, { method, device_id, location, clientIp, is_w
     );
   }
 
-  // Office IP required only for office-mode employees who are NOT on approved WFH today (HR/Admin exempt)
-  if (attendanceMode === 'office' && !wantsWfh && !isPrivilegedRole) {
+  // Office IP required only for office-mode employees who are NOT on approved WFH today (HR/Admin exempt).
+  // Biometric / device punches are trusted via API key — skip office IP (clientIp is usually null).
+  const isBiometric = String(method || '').toLowerCase() === 'biometric';
+  if (attendanceMode === 'office' && !wantsWfh && !isPrivilegedRole && !isBiometric) {
     await assertOfficeIpAllowed(clientIp, require('../utils/tenant').getCompanyId(emp));
   }
 

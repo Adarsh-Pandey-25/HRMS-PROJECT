@@ -152,7 +152,14 @@ const updateProgress = async (req, res, next) => {
 const deleteCourse = async (req, res, next) => {
   try {
     await courseService.deleteCourse(req.params.id);
-    successResponse(res, 'Course archived');
+    successResponse(res, 'Course deleted');
+  } catch (err) { next(err); }
+};
+
+const archiveCourse = async (req, res, next) => {
+  try {
+    const data = await courseService.archiveCourse(req.params.id);
+    successResponse(res, 'Course archived', data);
   } catch (err) { next(err); }
 };
 
@@ -188,6 +195,7 @@ module.exports = {
   archiveEnrollment,
   updateProgress,
   deleteCourse,
+  archiveCourse,
   trainingProgressReport,
   getLessonVideoUrl,
 };

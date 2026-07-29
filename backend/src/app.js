@@ -28,6 +28,8 @@ const performanceRoutes = require('./routes/performance.routes');
 const recruitmentRoutes = require('./routes/recruitment.routes');
 const helpdeskRoutes = require('./routes/helpdesk.routes');
 const companyRoutes = require('./routes/company.routes');
+const apiKeyRoutes = require('./routes/apiKey.routes');
+const integrationRoutes = require('./routes/integration.routes');
 
 const app = express();
 
@@ -81,6 +83,8 @@ app.use('/api/performance', performanceRoutes);
 app.use('/api/recruitment', recruitmentRoutes);
 app.use('/api/helpdesk', helpdeskRoutes);
 app.use('/api/companies', companyRoutes);
+app.use('/api/api-keys', apiKeyRoutes);
+app.use('/api/integration', integrationRoutes);
 
 app.use(notFoundHandler);
 app.use(handleMulterError);

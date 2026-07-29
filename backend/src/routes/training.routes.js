@@ -34,6 +34,7 @@ router.post('/courses', isManagerOrAbove, uploadThumbnail.single('thumbnail'), c
 router.get('/courses/manage', isManagerOrAbove, courseController.listManageCourses);
 router.get('/courses/manage/:id', isManagerOrAbove, uuidParam(), validate, courseController.getManageCourse);
 router.put('/courses/:id', isManagerOrAbove, uuidParam(), uploadThumbnail.single('thumbnail'), validate, courseController.updateCourse);
+router.post('/courses/:id/archive', isManagerOrAbove, uuidParam(), validate, courseController.archiveCourse);
 router.delete('/courses/:id', isManagerOrAbove, uuidParam(), validate, courseController.deleteCourse);
 router.post(
   '/courses/:id/lessons',

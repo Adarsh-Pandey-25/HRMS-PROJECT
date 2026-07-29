@@ -29,7 +29,14 @@ const checkOut = async (req, res, next) => {
 
 const biometricWebhook = async (req, res, next) => {
   try {
-    const record = await attendanceService.biometricWebhook(req.body);
+    const payload = { ...req.body };
+    // Company-scoped API keys always bind punches to that company
+    if (req.user?.is_api_key && req.user.company_id) {
+      payload.company_id = req.user.company_id;
+    } else if (req.user?.company_id && !payload.company_id) {
+      payload.company_id = req.user.company_id;
+    }
+    const record = await attendanceService.biometricWebhook(payload);
     successResponse(res, 'Biometric event processed', record);
   } catch (err) { next(err); }
 };

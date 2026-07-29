@@ -3,6 +3,11 @@ const { supabaseAdmin } = require('../config/supabase');
 const { UnauthorizedError } = require('../utils/errors');
 const { getCompanyId } = require('../utils/tenant');
 const { omitSensitive } = require('../utils/helpers');
+const {
+  extractApiKey,
+  attachApiKeyUser,
+} = require('./apiKey.middleware');
+const apiKeyService = require('../services/apiKey.service');
 
 const attachTenant = (employee) => {
   if (!employee) return employee;
@@ -19,6 +24,18 @@ const attachTenant = (employee) => {
 
 const authenticate = async (req, res, next) => {
   try {
+    // 1) Company API key (integrations / biometric devices)
+    const rawApiKey = extractApiKey(req);
+    if (rawApiKey) {
+      const keyRow = await apiKeyService.verifyApiKey(rawApiKey);
+      if (!keyRow) {
+        throw new UnauthorizedError('Invalid or revoked API key');
+      }
+      attachApiKeyUser(req, keyRow);
+      return next();
+    }
+
+    // 2) User JWT (cookie or Bearer)
     const token =
       req.cookies?.accessToken ||
       (req.headers.authorization?.startsWith('Bearer ')
@@ -26,7 +43,7 @@ const authenticate = async (req, res, next) => {
         : null);
 
     if (!token) {
-      throw new UnauthorizedError('Access token required');
+      throw new UnauthorizedError('Access token or API key required');
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
@@ -44,6 +61,7 @@ const authenticate = async (req, res, next) => {
 
     req.user = attachTenant(employee);
     req.token = token;
+    req.authType = 'jwt';
     next();
   } catch (err) {
     if (err.name === 'JsonWebTokenError' || err.name === 'TokenExpiredError') {
