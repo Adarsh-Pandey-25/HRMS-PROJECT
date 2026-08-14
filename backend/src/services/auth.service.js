@@ -18,8 +18,8 @@ const SALT_ROUNDS = 10;
 
 /** Max wrong OTP tries before a progressive lockout. */
 const OTP_MAX_ATTEMPTS = 3;
-/** Lock / resend waits: 30s → 1m → 2m → 5m → 10m */
-const OTP_WAIT_SECONDS = [30, 60, 120, 300, 600];
+/** Lock / resend waits after failed OTP batches: 1m → 3m → 10m */
+const OTP_WAIT_SECONDS = [60, 180, 600];
 
 /** In-memory OTP guards keyed by normalized email (survives for process lifetime). */
 const otpGuards = new Map();

@@ -148,6 +148,29 @@ const trainingAssignmentEmail = (employee, training) =>
     `,
   });
 
+const getAppUrl = () => (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+
+/** Generic email for in-app notifications (leave pending, WFH, tickets, etc.). */
+const notificationEmail = (employee, { title, message, link, type }) => {
+  const appUrl = getAppUrl();
+  const actionUrl = link ? `${appUrl}${link.startsWith('/') ? link : `/${link}`}` : appUrl;
+  const typeLabel = type ? String(type).replace(/_/g, ' ') : 'Notification';
+
+  return sendEmail({
+    to: employee.email,
+    subject: title || 'HRMS notification',
+    html: `
+      <h2>${escapeHtml(title || 'Notification')}</h2>
+      <p>Hi ${escapeHtml(employee.first_name || 'there')},</p>
+      <p>${escapeHtml(message || '').replace(/\n/g, '<br/>')}</p>
+      ${type ? `<p style="color:#666;font-size:12px;">Type: ${escapeHtml(typeLabel)}</p>` : ''}
+      <p style="margin-top: 24px;">
+        <a href="${actionUrl}">Open in HRMS</a>
+      </p>
+    `,
+  });
+};
+
 module.exports = {
   sendEmail,
   welcomeEmail,
@@ -158,4 +181,5 @@ module.exports = {
   autoCheckoutEmail,
   announcementEmail,
   trainingAssignmentEmail,
+  notificationEmail,
 };

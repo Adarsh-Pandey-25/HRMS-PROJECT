@@ -122,6 +122,7 @@ const notifyAnnouncementAudience = async (announcement, companyId, options = {})
         message: announcement.title,
         link: '/announcements',
         meta: { announcement_id: announcement.id, priority: announcement.priority },
+        skipEmail: Boolean(channels.email),
       })),
     );
   }

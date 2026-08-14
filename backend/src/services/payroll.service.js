@@ -14,6 +14,7 @@ const { buildPayslipPdfBuffer } = require('./payslipPdf.service');
 const WORKING_DAYS_PER_MONTH = 26;
 const MONTH_STATUS = { PENDING: 'PENDING', COMPLETED: 'COMPLETED' };
 const PAYSLIP_STATUS = { DRAFT: 'DRAFT', PUBLISHED: 'PUBLISHED' };
+const PAYSLIP_EMPLOYEE_SELECT = 'id, first_name, last_name, employee_code, email, company_id, address, designation, date_of_joining, bank_details, salary_details';
 
 const round2 = (n) => Math.round(Number(n) * 100) / 100;
 
@@ -244,6 +245,62 @@ const computeRule = (vars, component) => {
   return round2(base);
 };
 
+const fetchMonthReimbursements = async (employeeId, month, year) => {
+  if (!employeeId || !month || !year) return [];
+  const start = moment.tz({ year, month: month - 1, day: 1 }, TIMEZONE).startOf('month').format('YYYY-MM-DD');
+  const end = moment.tz({ year, month: month - 1, day: 1 }, TIMEZONE).endOf('month').format('YYYY-MM-DD');
+  const { data } = await supabaseAdmin
+    .from('reimbursements')
+    .select('id, reimbursement_type, amount, description, expense_date, status')
+    .eq('employee_id', employeeId)
+    .eq('status', 'approved')
+    .gte('expense_date', start)
+    .lte('expense_date', end);
+  return (data || []).map((r) => ({
+    name: r.description
+      || String(r.reimbursement_type || 'Reimbursement').replace(/_/g, ' '),
+    amount: round2(Number(r.amount || 0)),
+  }));
+};
+
+const enrichPayslipBreakdown = async (employee, calc, month, year) => {
+  const salary = employee?.salary_details || {};
+  const bank = employee?.bank_details || {};
+  const monthly = ['basic', 'hra', 'da', 'special', 'transport', 'medical']
+    .reduce((s, k) => s + Number(salary[k] || 0), 0);
+  const ctc = round2(Number(salary.ctc || salary.annual_ctc || salary.annualCtc || monthly * 12));
+  const cfg = calc.breakdown_json?.config || {};
+  const working = Number(cfg.working_days || 0);
+  const lop = Number(calc.unpaid_leave_days || cfg.unpaid_leave_days || 0);
+  const paidDays = round2(Math.max(0, working - lop));
+  const reimbursements = await fetchMonthReimbursements(employee.id, month, year);
+  const totalReimb = round2(reimbursements.reduce((s, r) => s + Number(r.amount || 0), 0));
+  const account = bank.account_number || bank.accountNumber || bank.account || '';
+  const netPay = Number(calc.breakdown_json?.totals?.net_pay ?? calc.net_salary ?? 0);
+
+  calc.breakdown_json = {
+    ...calc.breakdown_json,
+    reimbursements,
+    totals: {
+      ...(calc.breakdown_json?.totals || {}),
+      total_reimbursements: totalReimb,
+      net_payable: round2(netPay + totalReimb),
+    },
+    meta: {
+      employee_name: `${employee.first_name || ''} ${employee.last_name || ''}`.trim(),
+      designation: employee.designation || '',
+      date_of_joining: employee.date_of_joining || '',
+      pay_method: account ? 'Net Banking' : '—',
+      account_number: account,
+      ctc,
+      paid_days: paidDays,
+      lop_days: lop,
+      working_days: working,
+    },
+  };
+  return calc;
+};
+
 /**
  * Dynamic payroll engine
  * - Rules are managed by Admin in Settings → Salary Structure (payroll_components table)
@@ -433,7 +490,12 @@ const generateDraftPayslip = async (payrollMonthId, userId) => {
     }
 
     const { summary } = await attendanceService.getMonthlySummary(userId, payrollMonth.month, payrollMonth.year);
-    const calc = await calculateContractPayslip(employee, summary);
+    const calc = await enrichPayslipBreakdown(
+      employee,
+      await calculateContractPayslip(employee, summary),
+      payrollMonth.month,
+      payrollMonth.year,
+    );
 
     const { data: updated, error: updErr } = await supabaseAdmin
       .from('payroll')
@@ -444,14 +506,19 @@ const generateDraftPayslip = async (payrollMonthId, userId) => {
         updated_at: new Date().toISOString(),
       })
       .eq('id', existing.id)
-      .select('*, employee:employee_id(id, first_name, last_name, employee_code, email, company_id, address)')
+      .select(`*, employee:employee_id(${PAYSLIP_EMPLOYEE_SELECT})`)
       .single();
     if (updErr) throw new BadRequestError(updErr.message);
     return mapPayslipRow(updated);
   }
 
   const { summary } = await attendanceService.getMonthlySummary(userId, payrollMonth.month, payrollMonth.year);
-  const calc = await calculateContractPayslip(employee, summary);
+  const calc = await enrichPayslipBreakdown(
+    employee,
+    await calculateContractPayslip(employee, summary),
+    payrollMonth.month,
+    payrollMonth.year,
+  );
 
   const { data: payslip, error } = await supabaseAdmin
     .from('payroll')
@@ -532,7 +599,7 @@ const maybeCloseMonth = async (payrollMonthId) => {
 const publishPayslip = async (payslipId, publisher) => {
   const { data: payslip } = await supabaseAdmin
     .from('payroll')
-    .select('*, employee:employee_id(id, first_name, last_name, employee_code, email, company_id, address)')
+    .select(`*, employee:employee_id(${PAYSLIP_EMPLOYEE_SELECT})`)
     .eq('id', payslipId)
     .single();
 
@@ -698,7 +765,7 @@ const recalculatePayslipsFromSettings = async ({
   for (const t of targets.values()) {
     let query = supabaseAdmin
       .from('payroll')
-      .select('*, employee:employee_id(id, first_name, last_name, employee_code, email, company_id, address)')
+      .select(`*, employee:employee_id(${PAYSLIP_EMPLOYEE_SELECT})`)
       .eq('month', t.month)
       .eq('year', t.year);
     if (employeeId) query = query.eq('employee_id', employeeId);
@@ -728,7 +795,12 @@ const recalculatePayslipsFromSettings = async ({
           row.month,
           row.year
         );
-        const calc = await calculateContractPayslip(employee, summary);
+        const calc = await enrichPayslipBreakdown(
+          employee,
+          await calculateContractPayslip(employee, summary),
+          row.month,
+          row.year,
+        );
         const wasPublished = String(row.payslip_status || '').toUpperCase() === PAYSLIP_STATUS.PUBLISHED;
 
         const patch = {
@@ -776,7 +848,7 @@ const recalculatePayslipsFromSettings = async ({
 const downloadPayslip = async (payslipId, user) => {
   const { data: payslip } = await supabaseAdmin
     .from('payroll')
-    .select('*, employee:employee_id(id, first_name, last_name, employee_code, email, company_id, address)')
+    .select(`*, employee:employee_id(${PAYSLIP_EMPLOYEE_SELECT})`)
     .eq('id', payslipId)
     .single();
 

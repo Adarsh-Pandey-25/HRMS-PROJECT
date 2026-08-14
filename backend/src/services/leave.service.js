@@ -5,7 +5,6 @@ const {
   BadRequestError, NotFoundError, ForbiddenError,
 } = require('../utils/errors');
 const { calculateLeaveDays, paginate, buildMeta } = require('../utils/helpers');
-const { leaveStatusEmail } = require('./email.service');
 const { getTeamEmployeeIds } = require('./attendance.service');
 const logger = require('../utils/logger');
 const settingsService = require('./settings.service');
@@ -154,9 +153,6 @@ const getLeaves = async (filters, query) => {
 };
 
 const notifyLeaveApproved = async (leave) => {
-  if (leave.employee) {
-    leaveStatusEmail(leave.employee, leave, 'approved').catch(() => {});
-  }
   await notificationService.createNotification({
     user_id: leave.employee_id,
     type: 'LEAVE',
@@ -303,9 +299,6 @@ const rejectLeave = async (approver, leaveId, rejection_reason) => {
     .single();
 
   if (error) throw new BadRequestError(error.message);
-  if (leave.employee) {
-    leaveStatusEmail(leave.employee, leave, 'rejected', rejection_reason).catch(() => {});
-  }
 
   await notificationService.createNotification({
     user_id: leave.employee_id,

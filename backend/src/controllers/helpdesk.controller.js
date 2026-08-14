@@ -55,7 +55,9 @@ const updateStatus = async (req, res, next) => {
 
 const comment = async (req, res, next) => {
   try {
-    const ids = await companyIds(req);
+    const isPrivileged = ['admin', 'hr'].includes(req.user.role);
+    // HR/Admin: any company ticket. Everyone else: only tickets they raised.
+    const ids = isPrivileged ? await companyIds(req) : [req.user.id];
     const data = await helpdeskService.addComment(req.params.id, {
       by: req.user.id,
       text: req.body.text,

@@ -3,12 +3,69 @@ const { BadRequestError, NotFoundError } = require('../utils/errors');
 const { DEFAULT_COMPANY_ID } = require('../utils/tenant');
 const moment = require('moment-timezone');
 const { TIMEZONE } = require('../utils/constants');
+const settingsService = require('./settings.service');
 
 const emptyId = '00000000-0000-0000-0000-000000000000';
 const REQUEST_STATUSES = new Set(['requested', 'pending', 'approved', 'rejected', 'fulfilled', 'cancelled']);
 const ASSET_STATUSES = new Set(['available', 'assigned', 'in-repair', 'retired']);
+const DEFAULT_CATEGORIES = ['Laptop', 'Phone', 'Tablet', 'Monitor', 'Furniture', 'Peripheral'];
 
 const resolveCompanyId = (companyId) => companyId || DEFAULT_COMPANY_ID;
+
+const round2 = (n) => Math.round(Number(n || 0) * 100) / 100;
+
+const getAssetConfig = async (companyId) => {
+  const cfg = (await settingsService.getSetting('asset_config', null, companyId)) || {};
+  return {
+    categories: Array.isArray(cfg.categories) ? cfg.categories.filter(Boolean) : [],
+    depreciationMethod: String(cfg.depreciationMethod || cfg.depreciation_method || 'straight-line'),
+    depreciationYears: Math.max(1, Number(cfg.depreciationYears ?? cfg.depreciation_years ?? 3) || 3),
+    exitRecoveryReminderDays: Math.max(
+      0,
+      Number(cfg.exitRecoveryReminderDays ?? cfg.exit_recovery_reminder_days ?? 7) || 0,
+    ),
+  };
+};
+
+const computeBookValue = (asset, cfg) => {
+  const cost = Number(asset.purchase_cost || 0);
+  if (cost <= 0) return 0;
+  if (!asset.purchase_date) return round2(cost);
+  const years = cfg.depreciationYears;
+  const ageYears = Math.max(
+    0,
+    moment.tz(TIMEZONE).diff(moment.tz(asset.purchase_date, TIMEZONE), 'days', true) / 365.25,
+  );
+  if (String(cfg.depreciationMethod).includes('declining')) {
+    const rate = 1 / years;
+    return round2(Math.max(0, cost * ((1 - rate) ** ageYears)));
+  }
+  const used = Math.min(1, ageYears / years);
+  return round2(cost * (1 - used));
+};
+
+const enrichAssets = async (rows, companyId) => {
+  const cfg = await getAssetConfig(companyId);
+  const assignedIds = [...new Set((rows || []).map((r) => r.assigned_to).filter(Boolean))];
+  const inactive = new Set();
+  if (assignedIds.length) {
+    const { data: emps } = await supabaseAdmin
+      .from('employees')
+      .select('id, is_active')
+      .in('id', assignedIds);
+    for (const e of emps || []) {
+      if (e.is_active === false) inactive.add(e.id);
+    }
+  }
+  return (rows || []).map((a) => ({
+    ...a,
+    current_value: computeBookValue(a, cfg),
+    depreciation_method: cfg.depreciationMethod,
+    depreciation_years: cfg.depreciationYears,
+    exit_recovery: Boolean(a.assigned_to && inactive.has(a.assigned_to)),
+    exit_recovery_reminder_days: cfg.exitRecoveryReminderDays,
+  }));
+};
 
 const todayIST = () => moment.tz(TIMEZONE).format('YYYY-MM-DD');
 
@@ -57,7 +114,7 @@ const listAssets = async (query = {}, _companyEmployeeIds = null, companyId = nu
   if (query.assigned_to) db = db.eq('assigned_to', query.assigned_to);
   const { data, error } = await db;
   if (error) throw new BadRequestError(error.message);
-  return data || [];
+  return enrichAssets(data || [], cid);
 };
 
 const myAssets = async (employeeId, companyId = null) => {
@@ -69,7 +126,7 @@ const myAssets = async (employeeId, companyId = null) => {
   if (companyId) db = db.eq('company_id', resolveCompanyId(companyId));
   const { data, error } = await db;
   if (error) throw new BadRequestError(error.message);
-  return data || [];
+  return enrichAssets(data || [], companyId);
 };
 
 const listRequests = async (query = {}, companyEmployeeIds = null, companyId = null) => {
@@ -280,13 +337,39 @@ const listCategories = async (companyId) => {
     .eq('company_id', cid)
     .order('name');
   if (error) throw new BadRequestError(error.message);
-  return data || [];
+  let rows = data || [];
+  if (!rows.length) {
+    const cfg = await getAssetConfig(cid);
+    const names = (cfg.categories.length ? cfg.categories : DEFAULT_CATEGORIES)
+      .map((n) => String(n).trim())
+      .filter(Boolean);
+    for (const name of names) {
+      await ensureCategory(name, cid);
+    }
+    const { data: seeded } = await supabaseAdmin
+      .from('asset_categories')
+      .select('*')
+      .eq('company_id', cid)
+      .order('name');
+    rows = seeded || [];
+  }
+  return rows;
+};
+
+const syncAssetConfigCategories = async (companyId, names) => {
+  const cid = resolveCompanyId(companyId);
+  const cfg = await getAssetConfig(cid);
+  const next = [...new Set((names || []).map((n) => String(n).trim()).filter(Boolean))];
+  await settingsService.setSetting('asset_config', { ...cfg, categories: next }, null, cid);
 };
 
 const createCategory = async (body, companyId) => {
   const name = String(body.name || '').trim();
   if (!name) throw new BadRequestError('Category name is required');
-  return ensureCategory(name, companyId);
+  const row = await ensureCategory(name, companyId);
+  const existing = await listCategories(companyId);
+  await syncAssetConfigCategories(companyId, existing.map((c) => c.name));
+  return row;
 };
 
 const countPendingRequests = async (companyEmployeeIds = [], companyId = null) => {
@@ -315,4 +398,6 @@ module.exports = {
   listCategories,
   createCategory,
   countPendingRequests,
+  getAssetConfig,
+  ensureCategory,
 };

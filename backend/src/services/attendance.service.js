@@ -26,14 +26,18 @@ const resolveAttendanceMode = (employee) => {
   return 'office';
 };
 
-const assertOfficeIpAllowed = async (clientIp, companyId = null) => {
+const assertOfficeIpAllowed = async (clientIp, companyId = null, clientIps = null) => {
   const { officeCidr, officeIp } = await settingsService.getEffectiveOfficeConfig(companyId);
   // Prefer DB whitelist; fall back to seeded office IP
   const cidr = String(officeCidr || officeIp || '').trim();
   if (!cidr) return;
-  if (!ipInCidr(clientIp, cidr)) {
+  const { anyIpInCidr } = require('../utils/helpers');
+  const ips = Array.isArray(clientIps) && clientIps.length
+    ? clientIps
+    : [clientIp].filter(Boolean);
+  if (!anyIpInCidr(ips, cidr)) {
     throw new ForbiddenError(
-      `Check-in allowed only from office network (${cidr}). Your IP: ${clientIp || 'unknown'}`
+      `Check-in allowed only from office network (${cidr}). Your IP: ${ips.join(', ') || clientIp || 'unknown'}`
     );
   }
 };
@@ -73,19 +77,67 @@ const isWfhLocation = (location) => {
   return Boolean(loc.is_wfh || loc.wfh);
 };
 
-const checkIn = async (employeeId, { method, device_id, location, clientIp, is_wfh }) => {
+const DEFAULT_ATTENDANCE_METHODS = {
+  web: true,
+  app: true,
+  biometric: false,
+  ipWeb: true,
+  ipApp: false,
+};
+
+/** Load company attendance_config with safe defaults. */
+const getAttendanceConfig = async (companyId = null) => {
+  const raw = await settingsService.getSetting('attendance_config', null, companyId);
+  const cfg = (raw && typeof raw === 'object') ? raw : {};
+  const methods = { ...DEFAULT_ATTENDANCE_METHODS, ...(cfg.methods || {}) };
+  return {
+    methods,
+    selfieRequired: Boolean(cfg.selfieRequired ?? cfg.selfie_required),
+    gracePeriodMinutes: Number(cfg.gracePeriodMinutes ?? cfg.grace_period_minutes ?? 15),
+  };
+};
+
+/** Map client method names → DB check_in_method values.
+ *  Phone and desktop both use web check-in; office IP is the gate (no GPS). */
+const normalizeCheckInMethod = (method) => {
+  const m = String(method || 'web').toLowerCase().trim();
+  if (m === 'biometric') return 'biometric';
+  if (m === 'office_ip' || m === 'office-ip') return 'office_ip';
+  // app / mobile → same as web (mobile browser)
+  return 'web';
+};
+
+const assertMethodAllowed = (normalizedMethod, methods) => {
+  if (normalizedMethod === 'biometric') {
+    if (methods.biometric === false) {
+      throw new ForbiddenError('Biometric check-in is disabled in Attendance Config');
+    }
+    return;
+  }
+  if (methods.web === false) {
+    throw new ForbiddenError('Web check-in is disabled in Attendance Config');
+  }
+};
+
+const checkIn = async (employeeId, { method, device_id, location, clientIp, clientIps, is_wfh }) => {
   const { data: emp, error: empErr } = await supabaseAdmin
     .from('employees')
-    .select('id, address, role')
+    .select('id, address, role, company_id')
     .eq('id', employeeId)
     .single();
   if (empErr) throw new BadRequestError(empErr.message);
+
+  const companyId = require('../utils/tenant').getCompanyId(emp);
+  const attendanceConfig = await getAttendanceConfig(companyId);
+  const normalizedMethod = normalizeCheckInMethod(method);
+  assertMethodAllowed(normalizedMethod, attendanceConfig.methods);
+
+  const baseLocation = (location && typeof location === 'object') ? { ...location } : {};
 
   const attendanceMode = resolveAttendanceMode(emp || {});
   const isPrivilegedRole = ['admin', 'hr'].includes(emp?.role);
   const wfhRequestService = require('./wfhRequest.service');
   const approvedDailyWfh = await wfhRequestService.isApprovedForDate(employeeId);
-  // Daily WFH only counts when Manager/HR approved — permanent WFH mode always allowed
   const wantsWfh = attendanceMode === 'wfh' || attendanceMode === 'hybrid' || (Boolean(is_wfh) && approvedDailyWfh);
 
   if (Boolean(is_wfh) && attendanceMode === 'office' && !approvedDailyWfh && !isPrivilegedRole) {
@@ -94,11 +146,11 @@ const checkIn = async (employeeId, { method, device_id, location, clientIp, is_w
     );
   }
 
-  // Office IP required only for office-mode employees who are NOT on approved WFH today (HR/Admin exempt).
-  // Biometric / device punches are trusted via API key — skip office IP (clientIp is usually null).
-  const isBiometric = String(method || '').toLowerCase() === 'biometric';
-  if (attendanceMode === 'office' && !wantsWfh && !isPrivilegedRole && !isBiometric) {
-    await assertOfficeIpAllowed(clientIp, require('../utils/tenant').getCompanyId(emp));
+  // Office IP for browser check-in when IP-based Web is enabled (default on).
+  const isBiometric = normalizedMethod === 'biometric';
+  const ipRequired = attendanceConfig.methods.ipWeb !== false;
+  if (attendanceMode === 'office' && !wantsWfh && !isPrivilegedRole && !isBiometric && ipRequired) {
+    await assertOfficeIpAllowed(clientIp, companyId, clientIps);
   }
 
   const todayRecord = await getTodayAttendance(employeeId);
@@ -113,18 +165,16 @@ const checkIn = async (employeeId, { method, device_id, location, clientIp, is_w
   const active = await getActiveCheckIn(employeeId);
   if (active) throw new ConflictError('Already checked in. Please check out first.');
 
-  const baseLocation = (location && typeof location === 'object') ? location : {};
   const savedLocation = wantsWfh
     ? { ...baseLocation, is_wfh: true }
     : baseLocation;
 
-  // Prefer native 'wfh' status when the DB enum supports it; fall back to present + location flag
   let insertPayload = {
     employee_id: employeeId,
     check_in_time: nowIST().toISOString(),
-    check_in_method: method,
+    check_in_method: normalizedMethod,
     check_in_ip: clientIp,
-    device_id,
+    device_id: device_id || null,
     location: Object.keys(savedLocation).length ? savedLocation : null,
     status: wantsWfh ? 'wfh' : 'present',
   };
@@ -145,7 +195,13 @@ const checkIn = async (employeeId, { method, device_id, location, clientIp, is_w
   }
 
   if (error) throw new BadRequestError(error.message);
-  logger.info('Check-in recorded', { employeeId, method, attendanceMode, wantsWfh, clientIp });
+  logger.info('Check-in recorded', {
+    employeeId,
+    method: normalizedMethod,
+    attendanceMode,
+    wantsWfh,
+    clientIp,
+  });
   return { ...data, attendance_mode: attendanceMode, is_wfh: wantsWfh };
 };
 
@@ -482,4 +538,6 @@ module.exports = {
   getTeamEmployeeIds,
   getActiveCheckIn,
   getTodayAttendance,
+  getAttendanceConfig,
+  normalizeCheckInMethod,
 };

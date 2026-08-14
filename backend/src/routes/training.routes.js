@@ -55,11 +55,11 @@ router.get('/lessons/:id/video-url', isEmployee, uuidParam(), validate, courseCo
 
 // ----- Legacy training endpoints -----
 router.post('/create', isHROrAdmin, upload.single('materials'), trainingCreateRules, validate, trainingController.create);
-router.get('/all-trainings', paginationQuery, validate, trainingController.allTrainings);
+router.get('/all-trainings', isManagerOrAbove, paginationQuery, validate, trainingController.allTrainings);
 router.get('/my-trainings', isEmployee, trainingController.myTrainings);
 router.post('/assign', isManagerOrAbove, trainingController.assign);
 router.put('/:id/complete', isEmployee, uuidParam(), validate, trainingController.complete);
-router.get('/:id/participants', uuidParam(), validate, trainingController.participants);
+router.get('/:id/participants', isManagerOrAbove, uuidParam(), validate, trainingController.participants);
 router.delete('/:id', isHROrAdmin, uuidParam(), validate, trainingController.remove);
 
 module.exports = router;

@@ -32,7 +32,6 @@ const listTickets = async (query = {}, companyEmployeeIds = null, companyId = nu
 };
 
 const createTicket = async (employeeId, body, companyId = null) => {
-  const slaDue = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString();
   let cid = companyId;
   if (!cid) {
     const { data: emp } = await supabaseAdmin
@@ -42,6 +41,18 @@ const createTicket = async (employeeId, body, companyId = null) => {
       .maybeSingle();
     cid = getCompanyId(emp);
   }
+  let slaHours = 48;
+  try {
+    const settingsService = require('./settings.service');
+    const cfg = await settingsService.getSetting('helpdesk_config', null, resolveCompanyId(cid));
+    const map = cfg?.slaHours || cfg?.sla_hours || {};
+    const key = String(body.priority || 'medium').toLowerCase();
+    const hours = Number(map[key] ?? map.medium ?? 48);
+    if (Number.isFinite(hours) && hours > 0) slaHours = hours;
+  } catch {
+    /* keep default */
+  }
+  const slaDue = new Date(Date.now() + slaHours * 60 * 60 * 1000).toISOString();
   const { data, error } = await supabaseAdmin
     .from('helpdesk_tickets')
     .insert({

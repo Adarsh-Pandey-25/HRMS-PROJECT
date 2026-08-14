@@ -94,6 +94,13 @@ const updateKey = async (req, res, next) => {
       const existing = await settingsService.getSetting('company_profile', {}, req.user.company_id);
       value = { ...(existing || {}), ...value };
     }
+    if (key === 'asset_config' && value && typeof value === 'object') {
+      const names = Array.isArray(value.categories) ? value.categories : [];
+      const assetsService = require('../services/assets.service');
+      for (const name of names) {
+        await assetsService.ensureCategory(name, req.user.company_id);
+      }
+    }
 
     const { data, error } = await settingsService.setSetting(
       key,

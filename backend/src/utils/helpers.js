@@ -60,45 +60,113 @@ const errorResponse = (res, code, message, details = null, statusCode = 400) => 
   });
 };
 
-const getClientIp = (req) => {
-  const forwarded = req.headers['x-forwarded-for'];
-  if (forwarded) {
-    return forwarded.split(',')[0].trim();
-  }
-  return req.ip || req.connection?.remoteAddress || '';
-};
+const { BlockList, isIP } = require('net');
 
 const normalizeIp = (ip) => {
   if (!ip) return '';
-  if (ip.startsWith('::ffff:')) return ip.replace('::ffff:', '');
-  return ip;
+  let v = String(ip).trim().toLowerCase();
+  // Strip IPv6 zone id (e.g. fe80::1%eth0)
+  if (v.includes('%')) v = v.split('%')[0];
+  if (v.startsWith('::ffff:')) v = v.replace('::ffff:', '');
+  // Remove surrounding brackets used in URLs [::1]
+  if (v.startsWith('[') && v.endsWith(']')) v = v.slice(1, -1);
+  return v;
+};
+
+const looksLikeIp = (value) => isIP(normalizeIp(value)) !== 0;
+
+const isLoopbackIp = (ip) => {
+  const v = normalizeIp(ip);
+  return v === '127.0.0.1' || v === '::1' || v === '0:0:0:0:0:0:0:1';
+};
+
+/** Collect every valid client IP from proxy headers (IPv4 + IPv6). */
+const getClientIps = (req) => {
+  const candidates = [];
+  const push = (raw) => {
+    if (!raw) return;
+    String(raw).split(',').forEach((part) => {
+      const v = normalizeIp(part);
+      if (v && looksLikeIp(v) && !candidates.includes(v)) candidates.push(v);
+    });
+  };
+
+  // Leftmost X-Forwarded-For is the original client (ngrok / CDN).
+  push(req.headers['x-forwarded-for']);
+  push(req.headers['x-real-ip']);
+  push(req.headers['cf-connecting-ip']);
+  // True-Client-IP / ngrok variants
+  push(req.headers['true-client-ip']);
+  push(req.headers['x-client-ip']);
+  push(req.ip);
+  push(req.connection?.remoteAddress);
+  push(req.socket?.remoteAddress);
+
+  return candidates;
+};
+
+/**
+ * Pick the best client IP for display / primary checks.
+ * Never prefer 127.0.0.1 / ::1 when a real remote IP exists (Vite→API hop).
+ */
+const getClientIp = (req) => {
+  const ips = getClientIps(req);
+  const remote = ips.filter((ip) => !isLoopbackIp(ip));
+  const pool = remote.length ? remote : ips;
+
+  const v4 = pool.find((ip) => isIP(ip) === 4);
+  if (v4) return v4;
+  const v6 = pool.find((ip) => isIP(ip) === 6);
+  if (v6) return v6;
+  return pool[0] || '';
 };
 
 const ipInCidr = (ip, cidr) => {
   if (!cidr) return false;
   const normalizedIp = normalizeIp(ip);
-  // Support comma/semicolon-separated whitelist from Settings → Attendance
+  const family = isIP(normalizedIp);
+  if (!family) return false;
+
   const ranges = String(cidr)
     .split(/[,;]+/)
     .map((s) => s.trim())
     .filter(Boolean);
   if (!ranges.length) return false;
 
-  const ipToNum = (addr) =>
-    addr.split('.').reduce((acc, octet) => (acc << 8) + parseInt(octet, 10), 0) >>> 0;
-
   return ranges.some((entry) => {
-    if (!entry.includes('/')) {
-      return normalizedIp === normalizeIp(entry);
-    }
-    const [range, bits] = entry.split('/');
-    const mask = ~(2 ** (32 - parseInt(bits, 10)) - 1);
     try {
-      return (ipToNum(normalizedIp) & mask) === (ipToNum(range) & mask);
+      const raw = entry.trim();
+      if (!raw.includes('/')) {
+        const entryIp = normalizeIp(raw);
+        if (isIP(entryIp) !== family) return false;
+        if (family === 4) return entryIp === normalizedIp;
+        const bl = new BlockList();
+        bl.addAddress(entryIp, 'ipv6');
+        return bl.check(normalizedIp, 'ipv6');
+      }
+
+      const slash = raw.lastIndexOf('/');
+      const range = normalizeIp(raw.slice(0, slash));
+      const bits = Number(raw.slice(slash + 1));
+      if (!isIP(range) || !Number.isFinite(bits)) return false;
+      if (isIP(range) !== family) return false;
+
+      const bl = new BlockList();
+      bl.addSubnet(range, bits, family === 6 ? 'ipv6' : 'ipv4');
+      return bl.check(normalizedIp, family === 6 ? 'ipv6' : 'ipv4');
     } catch {
       return false;
     }
   });
+};
+
+/** True if any observed client IP matches the office whitelist. */
+const anyIpInCidr = (ips, cidr) => {
+  const list = (Array.isArray(ips) ? ips : [ips]).filter(Boolean);
+  // Prefer matching non-loopback IPs (ngrok/phone). Fall back to all if only localhost.
+  const remote = list.filter((ip) => !isLoopbackIp(ip));
+  const pool = remote.length ? remote : list;
+  return pool.some((ip) => ipInCidr(ip, cidr));
 };
 
 const nowIST = () => moment().tz(TIMEZONE);
@@ -184,6 +252,8 @@ module.exports = {
   successResponse,
   errorResponse,
   getClientIp,
+  getClientIps,
+  anyIpInCidr,
   normalizeIp,
   ipInCidr,
   nowIST,

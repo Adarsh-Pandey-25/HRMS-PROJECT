@@ -30,7 +30,9 @@ const mine = async (req, res, next) => {
 
 const requests = async (req, res, next) => {
   try {
-    const ids = await companyIds(req);
+    const isPrivileged = ['admin', 'hr'].includes(req.user.role);
+    // Employees only see their own requests; HR/Admin see the company queue.
+    const ids = isPrivileged ? await companyIds(req) : [req.user.id];
     const data = await assetsService.listRequests(req.query, ids, companyIdOf(req));
     successResponse(res, 'Asset requests fetched', data);
   } catch (err) { next(err); }

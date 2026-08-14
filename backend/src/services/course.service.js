@@ -13,11 +13,22 @@ const {
 const { BadRequestError, NotFoundError, ForbiddenError } = require('../utils/errors');
 const { DEFAULT_COMPANY_ID, getCompanyId } = require('../utils/tenant');
 const logger = require('../utils/logger');
+const settingsService = require('./settings.service');
 
 const COMPLETION_GRACE_SECONDS = 5;
 const PROGRESS_JUMP_TOLERANCE = 12;
 
 const resolveCompanyId = (companyId) => companyId || DEFAULT_COMPANY_ID;
+
+const shouldEnforceWatchOrder = async (companyId) => {
+  const cid = resolveCompanyId(companyId);
+  const tc = await settingsService.getSetting('training_config', null, cid);
+  if (tc && typeof tc === 'object' && (tc.enforceWatchOrder != null || tc.enforce_watch_order != null)) {
+    return Boolean(tc.enforceWatchOrder ?? tc.enforce_watch_order);
+  }
+  const ac = await settingsService.getSetting('attendance_config', null, cid);
+  return Boolean(ac?.orderedNewJoinerVideos ?? ac?.ordered_new_joiner_videos ?? true);
+};
 
 const normalizeDept = (dept) => (dept || '').trim().toLowerCase();
 
@@ -283,6 +294,7 @@ const getCourseForEmployee = async (courseId, employee) => {
   const withThumb = await attachSignedUrls(course);
   const lessons = await listLessonsForCourse(courseId, { withUrls: true });
   const progressMap = new Map((enrollment?.course_progress || []).map((p) => [p.lesson_id, p]));
+  const enforceOrder = await shouldEnforceWatchOrder(getCompanyId(employee));
   const lessonsWithProgress = lessons.map((l, idx) => {
     const prog = progressMap.get(l.id);
     const priorDone = idx === 0 || lessons.slice(0, idx).every((prev) => progressMap.get(prev.id)?.is_completed);
@@ -290,7 +302,7 @@ const getCourseForEmployee = async (courseId, employee) => {
       ...l,
       progress: prog || null,
       is_completed: Boolean(prog?.is_completed),
-      locked: !priorDone && !prog?.is_completed,
+      locked: enforceOrder && !priorDone && !prog?.is_completed,
     };
   });
 
@@ -623,7 +635,8 @@ const checkCourseCompletion = async (enrollmentId, courseId) => {
   }
 };
 
-const assertPriorLessonsComplete = async (enrollmentId, courseId, lessonOrder) => {
+const assertPriorLessonsComplete = async (enrollmentId, courseId, lessonOrder, companyId) => {
+  if (!(await shouldEnforceWatchOrder(companyId))) return;
   const order = Number(lessonOrder || 0);
   if (!order || order <= 1) return;
 
@@ -660,7 +673,7 @@ const updateLessonProgress = async (lessonId, employee, watchedSecondsInput, { f
 
   const courseId = lesson.course_id;
   let enrollment = await enrollCourse(courseId, employee);
-  await assertPriorLessonsComplete(enrollment.id, courseId, lesson.lesson_order);
+  await assertPriorLessonsComplete(enrollment.id, courseId, lesson.lesson_order, getCompanyId(employee));
 
   const duration = Number(lesson.video_duration || 0);
   if (!duration || duration <= 0) throw new BadRequestError('Lesson duration not configured');

@@ -70,6 +70,10 @@ const migrateLegacySettingsToDefaultCompany = async () => {
     'payroll_halfday_before_goal_enabled',
     'expense_config', 'security_config', 'role_permissions',
     'company_profile', 'allow_remote_login', 'office_cidr', 'office_ip',
+    'asset_config', 'helpdesk_config', 'training_config',
+    'recruitment_config', 'announcement_config',
+    'notification_config', 'document_types', 'integrations_config',
+    'backup_config', 'attendance_config',
   ];
   let copied = 0;
   for (const key of LEGACY_KEYS) {
@@ -184,6 +188,10 @@ const seedCompanySettings = async (companyId, companyProfile, updatedBy = null, 
     'payroll_esi_employee_percent', 'payroll_esi_threshold',
     'payroll_halfday_before_goal_enabled',
     'expense_config', 'security_config',
+    'asset_config', 'helpdesk_config', 'training_config',
+    'recruitment_config', 'announcement_config',
+    'notification_config', 'document_types', 'integrations_config',
+    'backup_config', 'attendance_config',
   ];
   for (const key of copyKeys) {
     const v = await getSetting(key, null, sourceId);

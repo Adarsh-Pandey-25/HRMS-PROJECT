@@ -1,5 +1,5 @@
 const config = require('../config/database');
-const { getClientIp, ipInCidr } = require('../utils/helpers');
+const { getClientIp, getClientIps, anyIpInCidr } = require('../utils/helpers');
 const { ForbiddenError } = require('../utils/errors');
 const logger = require('../utils/logger');
 const settingsService = require('../services/settings.service');
@@ -10,16 +10,18 @@ const companyIdFromReq = (req) =>
 
 const validateOfficeIp = async (req, res, next) => {
   try {
-    const clientIp = getClientIp(req);
+    const clientIps = getClientIps(req);
+    const clientIp = getClientIp(req) || clientIps[0] || '';
     req.clientIp = clientIp;
+    req.clientIps = clientIps;
 
     const { allowRemoteLogin, officeCidr } = await settingsService.getEffectiveOfficeConfig(companyIdFromReq(req));
     if (allowRemoteLogin) return next();
 
-    const isOfficeIp = ipInCidr(clientIp, officeCidr || config.officeCidr);
+    const isOfficeIp = anyIpInCidr(clientIps.length ? clientIps : [clientIp], officeCidr || config.officeCidr);
 
     if (!isOfficeIp) {
-      logger.warn('Unauthorized IP access attempt', { ip: clientIp, path: req.path });
+      logger.warn('Unauthorized IP access attempt', { ip: clientIp, ips: clientIps, path: req.path });
       return next(new ForbiddenError('Access denied: Office IP required'));
     }
 
@@ -30,17 +32,20 @@ const validateOfficeIp = async (req, res, next) => {
 };
 
 const attachClientIp = (req, res, next) => {
-  req.clientIp = getClientIp(req);
+  req.clientIps = getClientIps(req);
+  req.clientIp = getClientIp(req) || req.clientIps[0] || '';
   next();
 };
 
 const validateOfficeIpOptional = (req, res, next) => {
   Promise.resolve()
     .then(async () => {
-      const clientIp = getClientIp(req);
+      const clientIps = getClientIps(req);
+      const clientIp = getClientIp(req) || clientIps[0] || '';
       req.clientIp = clientIp;
+      req.clientIps = clientIps;
       const { officeCidr } = await settingsService.getEffectiveOfficeConfig(companyIdFromReq(req));
-      req.isOfficeIp = ipInCidr(clientIp, officeCidr || config.officeCidr);
+      req.isOfficeIp = anyIpInCidr(clientIps.length ? clientIps : [clientIp], officeCidr || config.officeCidr);
     })
     .then(() => next())
     .catch((err) => next(err));
@@ -52,15 +57,15 @@ const requireOfficeIpForMethod = (methodsRequiringOffice = ['office_ip']) => (re
       const method = req.body?.method || 'web';
       const { allowRemoteLogin, officeCidr } = await settingsService.getEffectiveOfficeConfig(companyIdFromReq(req));
       const cidr = officeCidr || config.officeCidr;
+      const clientIps = getClientIps(req);
+      const clientIp = getClientIp(req) || clientIps[0] || '';
+      req.clientIp = clientIp;
+      req.clientIps = clientIps;
 
       if (methodsRequiringOffice.includes(method) && !allowRemoteLogin) {
-        const clientIp = getClientIp(req);
-        if (!ipInCidr(clientIp, cidr)) {
+        if (!anyIpInCidr(clientIps.length ? clientIps : [clientIp], cidr)) {
           throw new ForbiddenError('Office IP required for this check-in method');
         }
-        req.clientIp = clientIp;
-      } else {
-        req.clientIp = getClientIp(req);
       }
     })
     .then(() => next())

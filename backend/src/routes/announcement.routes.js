@@ -11,7 +11,7 @@ const router = express.Router();
 router.use(authenticate);
 
 router.post('/create', isHROrAdmin, upload.single('attachment'), announcementRules, validate, announcementController.create);
-router.get('/all', paginationQuery, validate, announcementController.all);
+router.get('/all', isHROrAdmin, paginationQuery, validate, announcementController.all);
 router.get('/active', isEmployee, announcementController.active);
 router.put('/:id/update', isHROrAdmin, uuidParam(), validate, announcementController.update);
 router.delete('/:id', isHROrAdmin, uuidParam(), validate, announcementController.remove);

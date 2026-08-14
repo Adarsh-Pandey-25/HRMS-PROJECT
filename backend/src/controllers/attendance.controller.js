@@ -2,15 +2,18 @@ const attendanceService = require('../services/attendance.service');
 const settingsService = require('../services/settings.service');
 const { supabaseAdmin } = require('../config/supabase');
 const config = require('../config/database');
-const { successResponse, getClientIp, ipInCidr } = require('../utils/helpers');
+const { successResponse, getClientIp, getClientIps, anyIpInCidr } = require('../utils/helpers');
 const moment = require('moment-timezone');
 const { TIMEZONE } = require('../utils/constants');
 
 const checkIn = async (req, res, next) => {
   try {
+    const clientIps = getClientIps(req);
+    const clientIp = req.clientIp || getClientIp(req) || clientIps[0] || '';
     const record = await attendanceService.checkIn(req.user.id, {
       ...req.body,
-      clientIp: req.clientIp,
+      clientIp,
+      clientIps,
     });
     successResponse(res, 'Checked in successfully', record, null, 201);
   } catch (err) { next(err); }
@@ -154,16 +157,20 @@ const monthlySummary = async (req, res, next) => {
 
 const checkContext = async (req, res, next) => {
   try {
-    const clientIp = getClientIp(req);
+    const clientIps = getClientIps(req);
+    const clientIp = getClientIp(req) || clientIps[0] || '';
     const { officeCidr, officeIp } = await settingsService.getEffectiveOfficeConfig(req.user.company_id);
     const cidr = String(officeCidr || officeIp || config.officeCidr || '').trim();
-    const isOfficeIp = cidr ? ipInCidr(clientIp, cidr) : true;
+    const isOfficeIp = cidr ? anyIpInCidr(clientIps.length ? clientIps : [clientIp], cidr) : true;
 
     const { data: emp } = await supabaseAdmin
       .from('employees')
-      .select('id, address')
+      .select('id, address, company_id')
       .eq('id', req.user.id)
       .single();
+
+    const attendanceConfig = await attendanceService.getAttendanceConfig(req.user.company_id);
+    const methods = attendanceConfig.methods;
 
     const addr = (emp?.address && typeof emp.address === 'object') ? emp.address : {};
     const raw = String(addr.attendance_mode || addr.attendanceMode || 'office').toLowerCase();
@@ -190,6 +197,7 @@ const checkContext = async (req, res, next) => {
 
     successResponse(res, 'Check-in context fetched', {
       clientIp,
+      clientIps,
       officeIp: officeIp || cidr,
       officeCidr: cidr,
       attendanceMode,
@@ -200,6 +208,12 @@ const checkContext = async (req, res, next) => {
       dailyWfhApproved,
       dailyWfhRequestId: wfhReq?.id || null,
       canCheckInAsWfh: dailyWfhApproved,
+      methods,
+      selfieRequired: attendanceConfig.selfieRequired,
+      appCheckInEnabled: methods.app !== false,
+      webCheckInEnabled: methods.web !== false,
+      ipRequiredForWeb: methods.ipWeb !== false,
+      ipRequiredForApp: methods.ipApp === true,
       hint: attendanceMode === 'wfh'
         ? 'WFH employee — check-in allowed from any network'
         : attendanceMode === 'hybrid'

@@ -1,6 +1,7 @@
 const leaveService = require('../services/leave.service');
 const attendanceService = require('../services/attendance.service');
 const { successResponse } = require('../utils/helpers');
+const { ForbiddenError } = require('../utils/errors');
 const moment = require('moment-timezone');
 const { TIMEZONE } = require('../utils/constants');
 
@@ -68,11 +69,30 @@ const balance = async (req, res, next) => {
     const { getCompanyId } = require('../utils/tenant');
     const companyId = req.user.company_id || getCompanyId(req.user);
     const tenantService = require('../services/tenant.service');
-    const ok = await tenantService.assertSameCompany(companyId, req.params.employeeId);
+    const targetId = req.params.employeeId;
+    const ok = await tenantService.assertSameCompany(companyId, targetId);
     if (!ok) {
-      return res.status(403).json({ success: false, error: { message: 'Not authorized to view this leave balance' } });
+      throw new ForbiddenError('Not authorized to view this leave balance');
     }
-    const balances = await leaveService.getLeaveBalance(req.params.employeeId, year, companyId);
+
+    // Self, HR/Admin, or the employee's manager — not every coworker.
+    const isSelf = String(req.user.id) === String(targetId);
+    const isPrivileged = ['hr', 'admin'].includes(req.user.role);
+    let isManagerOf = false;
+    if (!isSelf && !isPrivileged && req.user.role === 'manager') {
+      const { supabaseAdmin } = require('../config/supabase');
+      const { data: target } = await supabaseAdmin
+        .from('employees')
+        .select('manager_id')
+        .eq('id', targetId)
+        .maybeSingle();
+      isManagerOf = Boolean(target && String(target.manager_id) === String(req.user.id));
+    }
+    if (!isSelf && !isPrivileged && !isManagerOf) {
+      throw new ForbiddenError('Not authorized to view this leave balance');
+    }
+
+    const balances = await leaveService.getLeaveBalance(targetId, year, companyId);
     successResponse(res, 'Leave balance fetched', balances);
   } catch (err) { next(err); }
 };

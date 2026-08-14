@@ -175,8 +175,9 @@ const getById = async (req, res, next) => {
     const isPrivileged = ['hr', 'admin'].includes(req.user.role);
     const isManager = req.user.role === 'manager' && data.manager_id === req.user.id;
 
+    // Employees may only open their own profile; managers see direct reports; HR/Admin see all.
     if (!isSelf && !isPrivileged && !isManager) {
-      return successResponse(res, 'Employee fetched', omitSensitive(data, ['password_hash', 'bank_details', 'salary_details']));
+      throw new ForbiddenError('Not authorized to view this employee');
     }
 
     successResponse(res, 'Employee fetched', omitSensitive(data, ['password_hash']));
@@ -267,6 +268,11 @@ const getTeam = async (req, res, next) => {
   try {
     const scopeIds = await resolveScopeCompanyIds(req);
     const managerId = req.params.managerId || req.user.id;
+    const isPrivileged = ['hr', 'admin'].includes(req.user.role);
+    // Managers may only fetch their own reports; HR/Admin may query any manager.
+    if (!isPrivileged && String(managerId) !== String(req.user.id)) {
+      throw new ForbiddenError('Not authorized to view this team');
+    }
     const { data, error } = await supabaseAdmin
       .from('employees')
       .select('id, employee_code, first_name, last_name, email, department, designation, is_active, address, company_id')
@@ -274,7 +280,7 @@ const getTeam = async (req, res, next) => {
       .eq('is_active', true);
 
     if (error) throw new BadRequestError(error.message);
-    const scoped = (data || []).filter((e) => scopeIds.includes(getCompanyId(e)));
+    const scoped = (data || []).filter((e) => scopeIds.map(String).includes(String(getCompanyId(e))));
     successResponse(res, 'Team fetched', scoped.map((e) => {
       const { address, ...rest } = e;
       return rest;
