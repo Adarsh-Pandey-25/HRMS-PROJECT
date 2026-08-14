@@ -184,7 +184,7 @@ const getLeaveApprovalLevel = async (companyId = null) => {
 };
 
 const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
-  const { data: leave } = await supabaseAdmin.from('leaves').select('*, employee:employee_id(id, first_name, last_name, email, employee_code, department, manager_id)').eq('id', leaveId).single();
+  const { data: leave } = await supabaseAdmin.from('leaves').select('*, employee:employee_id(id, first_name, last_name, email, employee_code, department, manager_id, company_id, address)').eq('id', leaveId).single();
   if (!leave) throw new NotFoundError('Leave not found');
   if (leave.status !== 'pending' && !(isManagerApproval && !leave.manager_approved_by)) {
     throw new BadRequestError('Leave cannot be approved in current status');
@@ -275,7 +275,7 @@ const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
 };
 
 const rejectLeave = async (approver, leaveId, rejection_reason) => {
-  const { data: leave } = await supabaseAdmin.from('leaves').select('*, employee:employee_id(id, first_name, last_name, email, employee_code, department, manager_id)').eq('id', leaveId).single();
+  const { data: leave } = await supabaseAdmin.from('leaves').select('*, employee:employee_id(id, first_name, last_name, email, employee_code, department, manager_id, company_id, address)').eq('id', leaveId).single();
   if (!leave) throw new NotFoundError('Leave not found');
   if (!['pending'].includes(leave.status)) {
     throw new BadRequestError('Leave cannot be rejected');

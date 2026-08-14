@@ -138,7 +138,7 @@ const register = async (adminUser, data) => {
   const companyId = getCompanyId(adminUser);
   const employeeCode = await allocateNextEmployeeCode(companyId);
 
-  const { address: _addr, employee_code: _code, ...restWithoutAddress } = rest;
+  const { address: _addr, employee_code: _code, password: _pw, ...restWithoutAddress } = rest;
   const { data: employee, error } = await supabaseAdmin
     .from('employees')
     .insert({
@@ -148,6 +148,7 @@ const register = async (adminUser, data) => {
       last_name,
       role,
       employee_code: employeeCode,
+      company_id: companyId,
       ...restWithoutAddress,
       address: withCompanyId(rest.address, companyId),
     })
