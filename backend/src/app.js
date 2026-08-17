@@ -35,8 +35,8 @@ const superAdminRoutes = require('./routes/superAdmin.routes');
 const app = express();
 
 app.disable('x-powered-by');
-// Only trust proxy headers from the local Vite/ngrok proxy hop.
-app.set('trust proxy', 'loopback');
+// Local Vite/ngrok: loopback only. Render/production: trust the first proxy hop for HTTPS cookies.
+app.set('trust proxy', config.env === 'production' || process.env.RENDER ? 1 : 'loopback');
 
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'same-site' },

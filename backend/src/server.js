@@ -21,7 +21,7 @@ if (config.env === 'production' && !process.env.SUPABASE_SERVICE_KEY) {
 }
 
 const server = app.listen(PORT, config.host, () => {
-  logger.info(`HRMS Backend running on port ${PORT} [${config.env}]`);
+  logger.info(`HRMS Backend running on ${config.host}:${PORT} [${config.env}]`);
   logger.info(`Timezone: ${config.timezone}`);
   startAutoCheckoutCron();
   startAutoPayrollCron();

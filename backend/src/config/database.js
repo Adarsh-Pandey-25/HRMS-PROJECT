@@ -7,7 +7,9 @@ const corsOrigins = (process.env.CORS_ORIGINS || process.env.FRONTEND_URL || 'ht
 
 module.exports = {
   env: process.env.NODE_ENV || 'development',
-  host: process.env.HOST || '127.0.0.1',
+  // Render (and most PaaS) require binding 0.0.0.0 — 127.0.0.1 fails health checks.
+  host: process.env.HOST
+    || (process.env.RENDER || process.env.NODE_ENV === 'production' ? '0.0.0.0' : '127.0.0.1'),
   port: parseInt(process.env.PORT, 10) || 5000,
   timezone: process.env.TZ || 'Asia/Kolkata',
   workHours: parseFloat(process.env.WORK_HOURS) || 9,
