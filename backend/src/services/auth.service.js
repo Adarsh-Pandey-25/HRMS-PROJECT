@@ -133,12 +133,28 @@ const register = async (adminUser, data) => {
 
   if (existing) throw new ConflictError('Email already registered');
 
-  const password = generateDefaultPassword(first_name, last_name);
-  const passwordHash = await hashPassword(password);
   const companyId = getCompanyId(adminUser);
+  const password = generateDefaultPassword();
+  await assertPasswordPolicy(password, companyId);
+  const passwordHash = await hashPassword(password);
   const employeeCode = await allocateNextEmployeeCode(companyId);
 
-  const { address: _addr, employee_code: _code, password: _pw, ...restWithoutAddress } = rest;
+  const allowedRoles = adminUser.role === 'admin'
+    ? ['admin', 'hr', 'manager', 'employee']
+    : ['hr', 'manager', 'employee'];
+  const resolvedRole = allowedRoles.includes(role) ? role : 'employee';
+
+  const {
+    address: _addr,
+    employee_code: _code,
+    password: _pw,
+    password_hash: _ph,
+    role: _role,
+    company_id: _cid,
+    id: _id,
+    ..._rest
+  } = rest;
+
   const { data: employee, error } = await supabaseAdmin
     .from('employees')
     .insert({
@@ -146,10 +162,15 @@ const register = async (adminUser, data) => {
       password_hash: passwordHash,
       first_name,
       last_name,
-      role,
+      role: resolvedRole,
       employee_code: employeeCode,
       company_id: companyId,
-      ...restWithoutAddress,
+      department: rest.department || null,
+      designation: rest.designation || null,
+      manager_id: rest.manager_id || null,
+      phone: rest.phone || null,
+      date_of_joining: rest.date_of_joining || null,
+      employment_type: rest.employment_type || 'full_time',
       address: withCompanyId(rest.address, companyId),
     })
     .select()
@@ -547,8 +568,9 @@ const bootstrapAdmin = async ({
   assertOnboardingEmailVerified(email, verificationToken);
 
   const last = last_name || 'Admin';
-  const resolvedPassword = password || generateDefaultPassword(first_name, last);
-  if (password) await assertPasswordPolicy(password);
+  if (!password) throw new BadRequestError('password is required');
+  await assertPasswordPolicy(password);
+  const resolvedPassword = password;
   const passwordHash = await hashPassword(resolvedPassword);
   const normalizedEmail = String(email).toLowerCase().trim();
 
@@ -622,6 +644,7 @@ module.exports = {
   resetPassword,
   getMe,
   hashPassword,
+  assertPasswordPolicy,
   sendOnboardingOtp,
   verifyOnboardingOtp,
   bootstrapAdmin,

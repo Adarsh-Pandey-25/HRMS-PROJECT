@@ -6,7 +6,7 @@ const companyIdOf = (req) => req.user.company_id || getCompanyId(req.user);
 
 const listDepartments = async (req, res, next) => {
   try {
-    const data = await courseService.listDepartments();
+    const data = await courseService.listDepartments(companyIdOf(req));
     successResponse(res, 'Departments fetched', data);
   } catch (err) { next(err); }
 };

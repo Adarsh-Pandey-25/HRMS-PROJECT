@@ -386,18 +386,23 @@ const globalSearch = async (query, limit = 8, { role, companyId } = {}) => {
   const q = String(query || '').trim();
   if (!q || q.length < 2) return { employees: [], leaves: [], announcements: [] };
 
-  const pattern = `%${q}%`;
+  const { escapePostgrestFilter } = require('../utils/helpers');
+  const safe = escapePostgrestFilter(q).slice(0, 80);
+  const pattern = `%${safe}%`;
   const { getCompanyId } = require('../utils/tenant');
 
-  const { data: announcements } = await supabaseAdmin
+  let announcementQuery = supabaseAdmin
     .from('announcements')
-    .select('id, title, publisher:published_by(address)')
+    .select('id, title, company_id, publisher:published_by(address, company_id)')
     .eq('is_active', true)
     .ilike('title', pattern)
     .limit(Math.max(limit * 5, 40));
+  if (companyId) announcementQuery = announcementQuery.eq('company_id', companyId);
+
+  const { data: announcements } = await announcementQuery;
 
   const announcementResults = (announcements || [])
-    .filter((a) => !companyId || getCompanyId(a.publisher) === companyId)
+    .filter((a) => !companyId || a.company_id === companyId || getCompanyId(a.publisher) === companyId)
     .slice(0, limit)
     .map((a) => ({
       id: a.id,
@@ -409,16 +414,20 @@ const globalSearch = async (query, limit = 8, { role, companyId } = {}) => {
     return { employees: [], announcements: announcementResults, leaves: [] };
   }
 
-  const { data: employees } = await supabaseAdmin
+  // Use separate filters instead of raw .or() string interpolation
+  let employeeQuery = supabaseAdmin
     .from('employees')
-    .select('id, first_name, last_name, email, department, employee_code, address, role')
+    .select('id, first_name, last_name, email, department, employee_code, address, role, company_id')
     .eq('is_active', true)
     .neq('role', 'admin')
     .or(`first_name.ilike.${pattern},last_name.ilike.${pattern},email.ilike.${pattern},employee_code.ilike.${pattern}`)
     .limit(Math.max(limit * 5, 40));
+  if (companyId) employeeQuery = employeeQuery.eq('company_id', companyId);
+
+  const { data: employees } = await employeeQuery;
 
   const scoped = (employees || [])
-    .filter((e) => !companyId || getCompanyId(e) === companyId)
+    .filter((e) => !companyId || e.company_id === companyId || getCompanyId(e) === companyId)
     .slice(0, limit);
 
   return {

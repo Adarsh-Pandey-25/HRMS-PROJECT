@@ -252,19 +252,16 @@ const checkOut = async (employeeId, { method, clientIp, break_minutes = 0 }) => 
 };
 
 const biometricWebhook = async (payload) => {
-  const { employee_code, action, timestamp, device_id, company_id } = payload;
-  let query = supabaseAdmin
+  const { employee_code, action, device_id, company_id } = payload;
+  if (!company_id) throw new BadRequestError('company_id is required');
+  const { data: employee, error } = await supabaseAdmin
     .from('employees')
     .select('id')
-    .eq('employee_code', employee_code);
-  if (company_id) query = query.eq('company_id', company_id);
-  const { data: employees, error } = await query.limit(2);
+    .eq('employee_code', employee_code)
+    .eq('company_id', company_id)
+    .maybeSingle();
   if (error) throw new BadRequestError(error.message);
-  if (!employees?.length) throw new NotFoundError('Employee not found');
-  if (employees.length > 1) {
-    throw new BadRequestError('Multiple employees match this code; company_id is required');
-  }
-  const employee = employees[0];
+  if (!employee) throw new NotFoundError('Employee not found');
 
   if (action === 'check_in') {
     return checkIn(employee.id, {

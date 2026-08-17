@@ -6,6 +6,19 @@ const { startAutoCheckoutCron } = require('./cron/autoCheckout.cron');
 
 const PORT = config.port;
 
+if (!process.env.JWT_SECRET || String(process.env.JWT_SECRET).length < 32) {
+  logger.error('JWT_SECRET must be set and at least 32 characters');
+  process.exit(1);
+}
+if (!process.env.JWT_REFRESH_SECRET || String(process.env.JWT_REFRESH_SECRET).length < 32) {
+  logger.error('JWT_REFRESH_SECRET must be set and at least 32 characters');
+  process.exit(1);
+}
+if (config.env === 'production' && !process.env.SUPABASE_SERVICE_KEY) {
+  logger.error('SUPABASE_SERVICE_KEY is required in production');
+  process.exit(1);
+}
+
 const server = app.listen(PORT, config.host, () => {
   logger.info(`HRMS Backend running on port ${PORT} [${config.env}]`);
   logger.info(`Timezone: ${config.timezone}`);

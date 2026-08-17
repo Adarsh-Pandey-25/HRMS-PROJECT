@@ -33,12 +33,11 @@ const checkOut = async (req, res, next) => {
 const biometricWebhook = async (req, res, next) => {
   try {
     const payload = { ...req.body };
-    // Company-scoped API keys always bind punches to that company
-    if (req.user?.is_api_key && req.user.company_id) {
-      payload.company_id = req.user.company_id;
-    } else if (req.user?.company_id && !payload.company_id) {
-      payload.company_id = req.user.company_id;
+    // Always bind to the API key's company — never trust body.company_id
+    if (!req.user?.is_api_key || !req.user.company_id) {
+      throw new (require('../utils/errors').ForbiddenError)('Biometric webhook requires a company API key');
     }
+    payload.company_id = req.user.company_id;
     const record = await attendanceService.biometricWebhook(payload);
     successResponse(res, 'Biometric event processed', record);
   } catch (err) { next(err); }
@@ -125,6 +124,10 @@ const employeeReport = async (req, res, next) => {
 
 const manualEntry = async (req, res, next) => {
   try {
+    const companyIds = await resolveAttendanceEmployeeScope(req);
+    if (!companyIds.includes(req.body.employee_id)) {
+      throw new (require('../utils/errors').NotFoundError)('Employee not found');
+    }
     const record = await attendanceService.manualEntry(req.user.id, req.body);
     successResponse(res, 'Manual entry created', record, null, 201);
   } catch (err) { next(err); }

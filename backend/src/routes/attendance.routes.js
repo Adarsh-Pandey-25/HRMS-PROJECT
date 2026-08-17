@@ -2,7 +2,7 @@ const express = require('express');
 const attendanceController = require('../controllers/attendance.controller');
 const { authenticate } = require('../middleware/auth.middleware');
 const { isHROrAdmin, isManagerOrAbove, isEmployee } = require('../middleware/role.middleware');
-const { allowJwtOrApiScope } = require('../middleware/apiKey.middleware');
+const { requireApiScope } = require('../middleware/apiKey.middleware');
 const { attachClientIp } = require('../middleware/ipValidation.middleware');
 const { validate } = require('../middleware/validation.middleware');
 const { checkInRules, uuidParam, paginationQuery } = require('../utils/validators');
@@ -14,10 +14,10 @@ router.use(authenticate);
 router.post('/check-in', isEmployee, checkInRules, validate, attachClientIp, attendanceController.checkIn);
 router.post('/check-out', isEmployee, attachClientIp, attendanceController.checkOut);
 router.get('/check-context', isEmployee, attendanceController.checkContext);
-// Devices: X-API-Key with scope attendance:write (or a logged-in user JWT)
+// Devices only: X-API-Key with scope attendance:write (JWT users cannot punch for others)
 router.post(
   '/biometric-webhook',
-  allowJwtOrApiScope('attendance:write'),
+  requireApiScope('attendance:write'),
   attendanceController.biometricWebhook,
 );
 router.get('/my-attendance', isEmployee, paginationQuery, validate, attendanceController.myAttendance);

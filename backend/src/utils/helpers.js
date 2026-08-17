@@ -80,7 +80,7 @@ const isLoopbackIp = (ip) => {
   return v === '127.0.0.1' || v === '::1' || v === '0:0:0:0:0:0:0:1';
 };
 
-/** Collect every valid client IP from proxy headers (IPv4 + IPv6). */
+/** Collect client IPs. Forwarded headers are trusted only from a loopback peer (Vite/ngrok hop). */
 const getClientIps = (req) => {
   const candidates = [];
   const push = (raw) => {
@@ -91,16 +91,20 @@ const getClientIps = (req) => {
     });
   };
 
-  // Leftmost X-Forwarded-For is the original client (ngrok / CDN).
-  push(req.headers['x-forwarded-for']);
-  push(req.headers['x-real-ip']);
-  push(req.headers['cf-connecting-ip']);
-  // True-Client-IP / ngrok variants
-  push(req.headers['true-client-ip']);
-  push(req.headers['x-client-ip']);
+  // Express req.ip already respects `trust proxy` (loopback in this app).
   push(req.ip);
-  push(req.connection?.remoteAddress);
   push(req.socket?.remoteAddress);
+  push(req.connection?.remoteAddress);
+
+  const peer = normalizeIp(req.socket?.remoteAddress || req.connection?.remoteAddress || '');
+  if (isLoopbackIp(peer)) {
+    // Leftmost X-Forwarded-For is the original client behind the local proxy.
+    push(req.headers['x-forwarded-for']);
+    push(req.headers['x-real-ip']);
+    push(req.headers['cf-connecting-ip']);
+    push(req.headers['true-client-ip']);
+    push(req.headers['x-client-ip']);
+  }
 
   return candidates;
 };
@@ -234,19 +238,36 @@ const generateEmployeeCode = () => {
   return 'EMP001';
 };
 
-/** Default login password: {FirstName}{LastName}@123 (each name part title-cased, no spaces). */
-const generateDefaultPassword = (firstName = '', lastName = '') => {
-  const titleCaseParts = (str) => {
-    if (!str) return '';
-    return String(str)
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean)
-      .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-      .join('');
-  };
-  return `${titleCaseParts(firstName)}${titleCaseParts(lastName)}@123`;
+/**
+ * Cryptographically random temporary password (never derived from name).
+ * Meets typical policy: length 14, upper, lower, digit, special.
+ */
+const generateDefaultPassword = () => {
+  const crypto = require('crypto');
+  const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const lower = 'abcdefghijkmnopqrstuvwxyz';
+  const digits = '23456789';
+  const special = '!@#$%&*';
+  const all = upper + lower + digits + special;
+  const pick = (set) => set[crypto.randomInt(0, set.length)];
+  const chars = [pick(upper), pick(lower), pick(digits), pick(special)];
+  for (let i = chars.length; i < 14; i += 1) chars.push(pick(all));
+  for (let i = chars.length - 1; i > 0; i -= 1) {
+    const j = crypto.randomInt(0, i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join('');
 };
+
+/** Escape user text for PostgREST `.or()` / `.ilike` filter strings. */
+const escapePostgrestFilter = (value) => String(value || '')
+  .replace(/\\/g, '\\\\')
+  .replace(/%/g, '\\%')
+  .replace(/_/g, '\\_')
+  .replace(/,/g, ' ')
+  .replace(/\(/g, ' ')
+  .replace(/\)/g, ' ')
+  .replace(/\./g, ' ');
 
 module.exports = {
   successResponse,
@@ -267,4 +288,5 @@ module.exports = {
   sanitizeForClient,
   generateEmployeeCode,
   generateDefaultPassword,
+  escapePostgrestFilter,
 };

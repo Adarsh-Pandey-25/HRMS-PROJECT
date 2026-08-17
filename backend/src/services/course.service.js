@@ -45,13 +45,15 @@ const enrollmentUserFilter = (employeeId) => (
   `user_id.eq.${employeeId},employee_id.eq.${employeeId}`
 );
 
-const listDepartments = async () => {
-  const { data, error } = await supabaseAdmin
+const listDepartments = async (companyId = null) => {
+  let query = supabaseAdmin
     .from('employees')
     .select('department')
     .not('department', 'is', null)
     .eq('is_active', true);
+  if (companyId) query = query.eq('company_id', resolveCompanyId(companyId));
 
+  const { data, error } = await query;
   if (error) throw new BadRequestError(error.message);
 
   const seen = new Map();

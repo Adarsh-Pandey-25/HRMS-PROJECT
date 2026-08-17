@@ -13,6 +13,38 @@ const { allocateNextEmployeeCode } = require('../services/employeeCode.service')
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+const EMPLOYEE_WRITE_FIELDS = [
+  'first_name', 'last_name', 'phone', 'role', 'department', 'designation',
+  'manager_id', 'date_of_joining', 'employment_type', 'gender', 'date_of_birth',
+  'blood_group', 'marital_status', 'nationality', 'address', 'emergency_contact',
+  'bank_details', 'salary_details', 'is_active', 'profile_picture',
+];
+
+const pickEmployeeFields = (body = {}, { includeRole = true } = {}) => {
+  const out = {};
+  for (const key of EMPLOYEE_WRITE_FIELDS) {
+    if (body[key] === undefined) continue;
+    if (key === 'role' && !includeRole) continue;
+    out[key] = body[key];
+  }
+  return out;
+};
+
+const resolveAssignableRole = (actorRole, requestedRole, fallback = 'employee') => {
+  const allowed = actorRole === 'admin'
+    ? ['admin', 'hr', 'manager', 'employee']
+    : ['hr', 'manager', 'employee'];
+  if (!requestedRole) return fallback;
+  if (!allowed.includes(requestedRole)) {
+    throw new ForbiddenError(
+      actorRole === 'admin'
+        ? 'Invalid role'
+        : 'HR cannot assign the admin role',
+    );
+  }
+  return requestedRole;
+};
+
 /** Resolve which company IDs this actor may see/manage. */
 async function resolveScopeCompanyIds(req) {
   const homeId = req.user.company_id || getCompanyId(req.user);
@@ -78,7 +110,8 @@ const create = async (req, res, next) => {
   try {
     const requestedCompanyId = req.body.company_id || req.body.companyId;
     const companyId = await resolveTargetCompanyId(req, requestedCompanyId);
-    const tempPassword = generateDefaultPassword(req.body.first_name, req.body.last_name);
+    const tempPassword = generateDefaultPassword();
+    await authService.assertPasswordPolicy(tempPassword, companyId);
     const passwordHash = await authService.hashPassword(tempPassword);
 
     const { data: existing } = await supabaseAdmin
@@ -89,22 +122,17 @@ const create = async (req, res, next) => {
 
     if (existing) throw new ConflictError('Email already exists');
 
-    const {
-      password_hash: _ph,
-      address,
-      company_id: _cid,
-      companyId: _cId,
-      employee_code: _code,
-      ...body
-    } = req.body;
+    const fields = pickEmployeeFields(req.body);
+    fields.role = resolveAssignableRole(req.user.role, fields.role || req.body.role, 'employee');
     const employeeCode = await allocateNextEmployeeCode(companyId);
     const { data, error } = await supabaseAdmin
       .from('employees')
       .insert({
-        ...body,
+        ...fields,
+        email: req.body.email,
         employee_code: employeeCode,
         password_hash: passwordHash,
-        ...companyIdFields(companyId, address),
+        ...companyIdFields(companyId, fields.address),
       })
       .select()
       .single();
@@ -204,13 +232,17 @@ const update = async (req, res, next) => {
     }
 
     const allowedFields = isPrivileged
-      ? { ...req.body }
+      ? pickEmployeeFields(req.body)
       : {
           phone: req.body.phone,
           address: req.body.address,
           emergency_contact: req.body.emergency_contact,
           profile_picture: req.body.profile_picture,
         };
+
+    if (isPrivileged && req.body.role !== undefined) {
+      allowedFields.role = resolveAssignableRole(req.user.role, req.body.role);
+    }
 
     delete allowedFields.password_hash;
     delete allowedFields.email;
