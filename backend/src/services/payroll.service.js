@@ -734,25 +734,15 @@ const recalculatePayslipsFromSettings = async ({
   const targets = new Map();
   targets.set(`${focusYear}-${focusMonth}`, { month: focusMonth, year: focusYear });
 
-  const { data: pendingMonths } = await supabaseAdmin
+  let pendingQuery = supabaseAdmin
     .from('payroll_months')
-    .select('id, month, year, status')
+    .select('id, month, year, status, company_id')
     .eq('status', MONTH_STATUS.PENDING);
+  if (companyId) pendingQuery = pendingQuery.eq('company_id', companyId);
+  const { data: pendingMonths } = await pendingQuery;
 
   for (const pm of pendingMonths || []) {
     targets.set(`${pm.year}-${pm.month}`, { month: pm.month, year: pm.year, id: pm.id });
-  }
-
-  // Resolve payroll_months rows for PDF generation
-  const monthRows = new Map();
-  for (const t of targets.values()) {
-    const { data: pm } = await supabaseAdmin
-      .from('payroll_months')
-      .select('*')
-      .eq('month', t.month)
-      .eq('year', t.year)
-      .maybeSingle();
-    if (pm) monthRows.set(`${t.year}-${t.month}`, pm);
   }
 
   let updated = 0;
@@ -808,16 +798,7 @@ const recalculatePayslipsFromSettings = async ({
           updated_at: new Date().toISOString(),
         };
 
-        if (wasPublished) {
-          const payrollMonth = monthRows.get(`${row.year}-${row.month}`) || {
-            month: row.month,
-            year: row.year,
-          };
-          const forPdf = { ...row, ...calc };
-          const pdfBuffer = await generatePayslipPdf(employee, forPdf, payrollMonth, companyId);
-          const { path } = await uploadPayslip(pdfBuffer, row.employee_id, row.month, row.year);
-          patch.payslip_url = await getSignedUrl(STORAGE_BUCKETS.payslips, path, 60 * 60 * 24 * 365);
-        }
+        // Numbers only here — downloadPayslip always rebuilds PDF from live row data.
 
         const { error: updErr } = await supabaseAdmin
           .from('payroll')
@@ -906,6 +887,98 @@ const downloadPayslip = async (payslipId, user) => {
   return { buffer: pdfBuffer, filename, payslip: mapPayslipRow(payslip) };
 };
 
+/**
+ * Auto-process for one company: initialize current month + generate draft payslips.
+ * Idempotent per calendar month via payroll_config.last_auto_payroll_ym.
+ */
+const autoRunPayrollForCompany = async (companyId, { force = false } = {}) => {
+  const settingsService = require('./settings.service');
+  const tenantService = require('./tenant.service');
+
+  const now = moment.tz(TIMEZONE);
+  const month = now.month() + 1;
+  const year = now.year();
+  const ym = `${year}-${String(month).padStart(2, '0')}`;
+
+  const payrollConfig = (await settingsService.getSetting('payroll_config', {}, companyId)) || {};
+  const autoProcess = Boolean(
+    payrollConfig.auto_process ?? payrollConfig.autoProcess ?? false,
+  );
+  if (!autoProcess && !force) {
+    return { companyId, skipped: true, reason: 'auto_process_off' };
+  }
+
+  const runDate = Math.min(
+    28,
+    Math.max(1, Number(payrollConfig.run_date ?? payrollConfig.runDate ?? 25) || 25),
+  );
+  if (!force && now.date() !== runDate) {
+    return { companyId, skipped: true, reason: 'not_run_date', runDate, today: now.date() };
+  }
+
+  const lastYm = payrollConfig.last_auto_payroll_ym || payrollConfig.lastAutoPayrollYm;
+  if (!force && lastYm === ym) {
+    return { companyId, skipped: true, reason: 'already_ran', ym };
+  }
+
+  const adminIds = await tenantService.getCompanyHrAdminIds(companyId);
+  const createdBy = adminIds[0] || null;
+
+  const payrollMonth = await initializeMonth(month, year, createdBy, companyId);
+  const results = await generateAllDraftPayslips(payrollMonth.id, companyId);
+  const generated = results.filter((r) => r.status === 'generated').length;
+  const skippedEmployees = results.filter((r) => r.status === 'skipped').length;
+
+  await settingsService.setSetting(
+    'payroll_config',
+    {
+      ...payrollConfig,
+      auto_process: autoProcess || Boolean(payrollConfig.auto_process ?? payrollConfig.autoProcess),
+      run_date: runDate,
+      last_auto_payroll_ym: ym,
+      last_auto_payroll_at: now.toISOString(),
+    },
+    createdBy,
+    companyId,
+  );
+
+  return {
+    companyId,
+    month,
+    year,
+    payrollMonthId: payrollMonth.id,
+    generated,
+    skippedEmployees,
+    skipped: false,
+  };
+};
+
+/** Scan all active companies and auto-run payroll when due. */
+const processAutoPayroll = async (reason = 'cron') => {
+  const tenantService = require('./tenant.service');
+  const companies = await tenantService.listActiveCompanies();
+  const summary = { reason, companies: companies.length, ran: 0, skipped: 0, errors: 0, details: [] };
+
+  for (const company of companies) {
+    try {
+      const result = await autoRunPayrollForCompany(company.id);
+      summary.details.push({ name: company.name, ...result });
+      if (result.skipped) summary.skipped += 1;
+      else summary.ran += 1;
+    } catch (err) {
+      summary.errors += 1;
+      summary.details.push({ companyId: company.id, name: company.name, error: err.message });
+      logger.error('Auto payroll failed for company', {
+        companyId: company.id,
+        name: company.name,
+        error: err.message,
+      });
+    }
+  }
+
+  return summary;
+};
+
 module.exports = {
   calculateDynamicPayslip,
   calculateContractPayslip,
@@ -918,4 +991,6 @@ module.exports = {
   downloadPayslip,
   recalculatePayslipsFromSettings,
   mapPayslipRow,
+  autoRunPayrollForCompany,
+  processAutoPayroll,
 };

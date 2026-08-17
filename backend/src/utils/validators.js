@@ -32,12 +32,16 @@ const bootstrapRules = [
   body('company_profile.name').trim().isLength({ min: 2, max: 200 }),
   body('verificationToken').optional().isString().isLength({ min: 16, max: 128 }),
   body('verification_token').optional().isString().isLength({ min: 16, max: 128 }),
+  body('inviteToken').optional().isString().isLength({ min: 16, max: 128 }),
+  body('invite_token').optional().isString().isLength({ min: 16, max: 128 }),
 ];
 
 const onboardingSendOtpRules = [
   body('email').isEmail().normalizeEmail(),
   body('adminName').optional().trim().isLength({ max: 200 }),
   body('admin_name').optional().trim().isLength({ max: 200 }),
+  body('inviteToken').optional().isString().isLength({ min: 16, max: 128 }),
+  body('invite_token').optional().isString().isLength({ min: 16, max: 128 }),
 ];
 
 const onboardingVerifyOtpRules = [

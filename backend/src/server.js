@@ -3,6 +3,7 @@ const app = require('./app');
 const config = require('./config/database');
 const logger = require('./utils/logger');
 const { startAutoCheckoutCron } = require('./cron/autoCheckout.cron');
+const { startAutoPayrollCron } = require('./cron/autoPayroll.cron');
 
 const PORT = config.port;
 
@@ -23,9 +24,11 @@ const server = app.listen(PORT, config.host, () => {
   logger.info(`HRMS Backend running on port ${PORT} [${config.env}]`);
   logger.info(`Timezone: ${config.timezone}`);
   startAutoCheckoutCron();
+  startAutoPayrollCron();
   // Tag legacy employees under the default company so new workspaces stay empty
   require('./services/tenant.service').ensureTenantBackfill()
     .then(() => require('./services/settings.service').migrateLegacySettingsToDefaultCompany())
+    .then(() => require('./services/superAdmin.service').ensureSeedSuperAdmin())
     .catch(() => {});
 });
 

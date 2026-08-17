@@ -341,6 +341,17 @@ const getCompanyHrAdminIds = async (companyId) => {
   return (data || []).map((e) => e.id);
 };
 
+/** Active tenant workspaces for platform jobs (e.g. auto payroll). */
+const listActiveCompanies = async () => {
+  const { data, error } = await supabaseAdmin
+    .from('companies')
+    .select('id, name, slug, is_active')
+    .eq('is_active', true)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return data || [];
+};
+
 /** True when target employee belongs to the actor's company or org (main + subsidiaries). */
 const assertSameCompany = async (actorCompanyId, employeeId) => {
   const { data } = await supabaseAdmin
@@ -366,6 +377,7 @@ module.exports = {
   getCompanyEmployeeIds,
   getOrgEmployeeIds,
   getCompanyHrAdminIds,
+  listActiveCompanies,
   employeeBelongsToCompany,
   assertSameCompany,
 };

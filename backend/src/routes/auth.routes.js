@@ -29,6 +29,11 @@ router.post(
   validate,
   authController.verifyOnboardingOtp
 );
+router.get(
+  '/onboarding/invite/:token',
+  onboardingOtpLimiter,
+  authController.peekOnboardingInvite
+);
 router.post(
   '/bootstrap-admin',
   bootstrapLimiter,

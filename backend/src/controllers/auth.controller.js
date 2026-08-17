@@ -90,7 +90,8 @@ const sendOnboardingOtp = async (req, res, next) => {
   try {
     const email = req.body.email;
     const adminName = req.body.adminName || req.body.admin_name || '';
-    const result = await authService.sendOnboardingOtp(email, adminName);
+    const inviteToken = req.body.inviteToken || req.body.invite_token || null;
+    const result = await authService.sendOnboardingOtp(email, adminName, inviteToken);
     successResponse(res, result.message, {
       nextResendAt: result.nextResendAt,
       retryAfterSeconds: result.retryAfterSeconds,
@@ -124,12 +125,22 @@ const bootstrapAdmin = async (req, res, next) => {
       last_name,
       company_profile: body.company_profile || body.companyProfile || null,
       verificationToken: body.verificationToken || body.verification_token,
+      inviteToken: body.inviteToken || body.invite_token,
     });
     successResponse(res, 'Admin account ready', employee, null, 201);
   } catch (err) { next(err); }
 };
 
+const peekOnboardingInvite = async (req, res, next) => {
+  try {
+    const token = req.params.token || req.query.token;
+    const superAdminService = require('../services/superAdmin.service');
+    const data = await superAdminService.peekInvite(token);
+    successResponse(res, 'Invite is valid', data);
+  } catch (err) { next(err); }
+};
+
 module.exports = {
   register, login, logout, refreshToken, getMe, changePassword, forgotPassword, resetPassword,
-  sendOnboardingOtp, verifyOnboardingOtp, bootstrapAdmin,
+  sendOnboardingOtp, verifyOnboardingOtp, bootstrapAdmin, peekOnboardingInvite,
 };

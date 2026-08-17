@@ -30,6 +30,7 @@ const helpdeskRoutes = require('./routes/helpdesk.routes');
 const companyRoutes = require('./routes/company.routes');
 const apiKeyRoutes = require('./routes/apiKey.routes');
 const integrationRoutes = require('./routes/integration.routes');
+const superAdminRoutes = require('./routes/superAdmin.routes');
 
 const app = express();
 
@@ -85,6 +86,7 @@ app.use('/api/helpdesk', helpdeskRoutes);
 app.use('/api/companies', companyRoutes);
 app.use('/api/api-keys', apiKeyRoutes);
 app.use('/api/integration', integrationRoutes);
+app.use('/api/super-admin', superAdminRoutes);
 
 app.use(notFoundHandler);
 app.use(handleMulterError);

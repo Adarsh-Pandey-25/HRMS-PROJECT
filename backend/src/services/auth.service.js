@@ -194,6 +194,18 @@ const login = async (email, password, options = {}) => {
   if (error || !employee) throw new UnauthorizedError('Invalid email or password');
   if (!employee.is_active) throw new ForbiddenError('Account is deactivated');
 
+  const companyId = getCompanyId(employee);
+  if (companyId) {
+    const { data: company } = await supabaseAdmin
+      .from('companies')
+      .select('id, is_active')
+      .eq('id', companyId)
+      .maybeSingle();
+    if (company && company.is_active === false) {
+      throw new ForbiddenError('This company workspace is deactivated. Contact your platform administrator.');
+    }
+  }
+
   const valid = await comparePassword(password, employee.password_hash);
   if (!valid) throw new UnauthorizedError('Invalid email or password');
 
@@ -201,7 +213,7 @@ const login = async (email, password, options = {}) => {
   await storeRefreshToken(employee.id, refreshToken);
 
   return {
-    employee: { ...omitSensitive(employee, ['password_hash']), company_id: getCompanyId(employee) },
+    employee: { ...omitSensitive(employee, ['password_hash']), company_id: companyId },
     accessToken,
     refreshToken,
   };
@@ -435,9 +447,15 @@ const getMe = async (employeeId) => {
 /** In-memory onboarding email OTP store: email -> { hash, expiresAt, failedAttempts, nextResendAt, verifiedToken, verifiedUntil } */
 const onboardingOtps = new Map();
 
-const sendOnboardingOtp = async (email, adminName = '') => {
+const sendOnboardingOtp = async (email, adminName = '', inviteToken = null) => {
+  const superAdminService = require('./superAdmin.service');
+  const invite = await superAdminService.assertInviteValid(inviteToken);
+
   const key = normalizeEmailKey(email);
   if (!key) throw new BadRequestError('Valid email is required');
+  if (invite.email && invite.email !== key) {
+    throw new ForbiddenError('This invite is locked to a different email address');
+  }
 
   const { data: existing } = await supabaseAdmin
     .from('employees')
@@ -561,18 +579,28 @@ const bootstrapAdmin = async ({
   last_name,
   company_profile = null,
   verificationToken = null,
+  inviteToken = null,
 }) => {
   if (!email) throw new BadRequestError('email is required');
   if (!first_name) throw new BadRequestError('first_name is required');
 
+  const superAdminService = require('./superAdmin.service');
+  const invite = await superAdminService.assertInviteValid(inviteToken);
+  const normalizedEmail = String(email).toLowerCase().trim();
+  if (invite.email && invite.email !== normalizedEmail) {
+    throw new ForbiddenError('This invite is locked to a different email address');
+  }
+  const submittedCompanyName = String(company_profile?.name || '').trim();
+  if (submittedCompanyName !== invite.companyNameHint) {
+    throw new ForbiddenError('The company name must match the onboarding invitation');
+  }
+
   assertOnboardingEmailVerified(email, verificationToken);
 
   const last = last_name || 'Admin';
-  if (!password) throw new BadRequestError('password is required');
-  await assertPasswordPolicy(password);
-  const resolvedPassword = password;
+  const resolvedPassword = password || generateDefaultPassword();
+  await assertPasswordPolicy(resolvedPassword);
   const passwordHash = await hashPassword(resolvedPassword);
-  const normalizedEmail = String(email).toLowerCase().trim();
 
   const { data: existing } = await supabaseAdmin
     .from('employees')
@@ -586,7 +614,7 @@ const bootstrapAdmin = async ({
   }
 
   const companyId = newCompanyId();
-  const companyName = company_profile?.name || `${first_name}'s Company`;
+  const companyName = invite.companyNameHint;
   await tenantService.ensureCompanyRow({
     id: companyId,
     name: companyName,
@@ -603,7 +631,7 @@ const bootstrapAdmin = async ({
       last_name: last,
       role: 'admin',
       department: 'Administration',
-      designation: 'Super Admin',
+      designation: 'Company Admin',
       date_of_joining: new Date().toISOString().split('T')[0],
       employment_type: 'full_time',
       is_active: true,
@@ -619,12 +647,13 @@ const bootstrapAdmin = async ({
     adminEmail: normalizedEmail,
   }, data.id);
 
+  await superAdminService.consumeInvite(inviteToken, companyId);
   consumeOnboardingVerification(normalizedEmail);
 
   welcomeEmail(data, resolvedPassword).catch((e) => logger.warn('Welcome email failed', e.message));
 
   logger.info('Onboarding company + admin created', {
-    id: data.id, email: data.email, companyId,
+    id: data.id, email: data.email, companyId, inviteId: invite.inviteId,
   });
 
   return {
