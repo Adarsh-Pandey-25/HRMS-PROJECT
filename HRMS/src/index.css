@@ -1,0 +1,140 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ------------------------------------------------------------------ */
+/*  Theme tokens — RGB channels so Tailwind opacity modifiers work     */
+/* ------------------------------------------------------------------ */
+:root {
+  --color-primary: 108 99 255; /* #6C63FF */
+  --color-primary-light: 238 240 255; /* #EEF0FF */
+  --color-primary-dark: 75 68 204; /* #4B44CC */
+
+  --color-page: 240 239 255; /* #F0EFFF */
+  --color-card: 255 255 255; /* #FFFFFF */
+  --color-sidebar: 255 255 255; /* #FFFFFF */
+  --color-muted: 247 247 251; /* #F7F7FB */
+  --color-border: 231 230 245; /* soft lavender border */
+
+  --color-text-primary: 30 27 75; /* #1E1B4B */
+  --color-text-secondary: 107 114 128; /* #6B7280 */
+  --color-text-muted: 156 163 175; /* #9CA3AF */
+}
+
+.dark {
+  --color-primary: 124 116 255; /* #7C74FF */
+  --color-primary-light: 40 38 72;
+  --color-primary-dark: 108 99 255;
+
+  --color-page: 15 14 26; /* #0F0E1A */
+  --color-card: 26 24 48; /* #1A1830 */
+  --color-sidebar: 19 18 42; /* #13122A */
+  --color-muted: 33 31 58;
+  --color-border: 45 43 70;
+
+  --color-text-primary: 240 239 255; /* #F0EFFF */
+  --color-text-secondary: 165 163 192;
+  --color-text-muted: 120 117 150;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Base                                                               */
+/* ------------------------------------------------------------------ */
+@layer base {
+  * {
+    border-color: rgb(var(--color-border));
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-page text-fg font-sans;
+    font-feature-settings: 'cv11', 'ss01';
+    margin: 0;
+    overscroll-behavior-y: none;
+  }
+
+  ::selection {
+    background: rgb(var(--color-primary) / 0.2);
+  }
+
+  /* Visible focus ring for keyboard users on any element that doesn't set its
+     own (tables rows, the skip link, etc.). Components that already declare a
+     `focus-visible:ring-*` win on specificity, so this is only a fallback. */
+  :focus-visible {
+    outline: 2px solid rgb(var(--color-primary));
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+  /* Never show a focus ring for plain mouse clicks. */
+  :focus:not(:focus-visible) {
+    outline: none;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Scrollbar                                                          */
+/* ------------------------------------------------------------------ */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--color-primary) / 0.25);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--color-primary) / 0.4);
+  background-clip: content-box;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Utilities                                                          */
+/* ------------------------------------------------------------------ */
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  /* GPU-accelerated scrolling for virtualized tables and long lists */
+  .scroll-smooth-gpu {
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+    will-change: scroll-position;
+    contain: strict;
+  }
+  .scroll-contain {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 52px;
+  }
+  /* shimmer for skeletons */
+  .shimmer {
+    position: relative;
+    overflow: hidden;
+  }
+  .shimmer::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgb(var(--color-primary) / 0.06),
+      transparent
+    );
+    animation: shimmer 1.6s infinite;
+  }
+}

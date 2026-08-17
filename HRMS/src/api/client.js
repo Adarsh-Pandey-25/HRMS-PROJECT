@@ -1,0 +1,109 @@
+import axios from 'axios';
+import { unwrapApiData, toCamelCase } from '../lib/case';
+
+const TOKEN_KEY = 'hrms_access_token';
+
+export const api = axios.create({
+  baseURL: import.meta.env.VITE_API_URL || '/api',
+  timeout: 30_000,
+  withCredentials: true,
+  headers: {
+    'Content-Type': 'application/json',
+    // Free ngrok returns an HTML interstitial unless this header is set
+    'ngrok-skip-browser-warning': 'true',
+  },
+});
+
+/** Clear any legacy localStorage JWT (cookies are the session source of truth). */
+export function setStoredToken(token) {
+  if (token) {
+    // Never persist JWTs in localStorage — ignore writes.
+    localStorage.removeItem(TOKEN_KEY);
+    return;
+  }
+  localStorage.removeItem(TOKEN_KEY);
+}
+
+export function getStoredToken() {
+  // Intentionally unused for auth — kept only to clear legacy keys.
+  return null;
+}
+
+let logoutHandler = null;
+
+/** Register the store logout fn once at app init to break circular imports. */
+export function registerLogoutHandler(fn) {
+  logoutHandler = fn;
+}
+
+api.interceptors.request.use((config) => {
+  // Cookie session only — do not attach Bearer from localStorage.
+  localStorage.removeItem(TOKEN_KEY);
+  return config;
+});
+
+api.interceptors.response.use(
+  (res) => res,
+  (error) => {
+    const status = error.response?.status;
+    const reqUrl = String(error.config?.url || '');
+    // Super-admin 401s must not clear company employee sessions.
+    const isSuperAdminRoute = reqUrl.includes('/super-admin');
+    if (status === 401 && logoutHandler && !isSuperAdminRoute) {
+      logoutHandler({ silent: true });
+    }
+    const msg =
+      error.response?.data?.error?.message ||
+      error.response?.data?.message ||
+      error.message ||
+      'Network error';
+    const details = error.response?.data?.error?.details;
+    if (Array.isArray(details) && details.length) {
+      const first = details[0];
+      const detailMsg = first.message || first.msg || msg;
+      const err = new Error(detailMsg === 'Invalid value' && first.field
+        ? `Invalid ${first.field}`
+        : detailMsg);
+      err.status = status;
+      err.details = details;
+      return Promise.reject(err);
+    }
+    const err = new Error(msg);
+    err.status = status;
+    err.details = details || null;
+    err.data = error.response?.data?.data ?? null;
+    return Promise.reject(err);
+  }
+);
+
+/** GET/POST helper that unwraps `{ success, data }` and converts keys to camelCase. */
+export async function apiRequest(config) {
+  const res = await api(config);
+  return unwrapApiData(res);
+}
+
+/** Paginated list helper — returns `{ items, meta }`. */
+export async function apiRequestPaginated(config) {
+  const res = await api(config);
+  const body = res?.data;
+  if (body && typeof body === 'object' && 'success' in body) {
+    if (!body.success) {
+      const msg = body.error?.message || body.message || 'Request failed';
+      throw new Error(msg);
+    }
+    return {
+      items: toCamelCase(Array.isArray(body.data) ? body.data : []),
+      meta: toCamelCase(body.meta || null),
+    };
+  }
+  return { items: toCamelCase(body) || [], meta: null };
+}
+
+/** Multipart form upload (receipts, documents). */
+export async function apiUpload(config) {
+  const res = await api({
+    ...config,
+    headers: { ...config.headers, 'Content-Type': 'multipart/form-data' },
+  });
+  return unwrapApiData(res);
+}

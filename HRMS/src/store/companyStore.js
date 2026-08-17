@@ -1,0 +1,69 @@
+import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
+
+/** Blank defaults — onboarding should not pre-fill another company's demo data. */
+const EMPTY_COMPANY = {
+  name: '',
+  industry: '',
+  size: '',
+  foundedYear: '',
+  website: '',
+  addressLine1: '',
+  addressLine2: '',
+  city: '',
+  state: '',
+  pincode: '',
+  country: 'India',
+  contactName: '',
+  contactEmail: '',
+  contactPhone: '',
+  emergencyName: '',
+  emergencyPhone: '',
+  emergencyRelation: '',
+  logoName: null,
+  logoPath: null,
+  logoUrl: null,
+  brandColor: '#6C63FF',
+  tagline: '',
+  fyStart: 'April',
+  currency: 'INR',
+  timezone: 'Asia/Kolkata',
+  adminName: '',
+  adminEmail: '',
+  companyId: null,
+};
+
+// Drives the first-run boot flow: /welcome -> /onboarding -> /login -> /dashboard.
+export const useCompanyStore = create(
+  persist(
+    (set) => ({
+      onboarded: false,
+      company: { ...EMPTY_COMPANY },
+
+      completeOnboarding: (company) => set({
+        company: { ...EMPTY_COMPANY, ...company },
+        onboarded: true,
+      }),
+      resetOnboarding: () => set({ onboarded: false, company: { ...EMPTY_COMPANY } }),
+      updateCompany: (patch) => set((s) => ({ company: { ...s.company, ...patch } })),
+    }),
+    {
+      name: 'zenith-company',
+      version: 2,
+      migrate: (persisted) => {
+        // Drop old Acme demo seed so a new workspace starts clean
+        if (!persisted || typeof persisted !== 'object') {
+          return { onboarded: false, company: { ...EMPTY_COMPANY } };
+        }
+        const name = persisted.company?.name;
+        if (name === 'Acme Technologies Pvt. Ltd.') {
+          return { onboarded: false, company: { ...EMPTY_COMPANY } };
+        }
+        return {
+          onboarded: Boolean(persisted.onboarded),
+          company: { ...EMPTY_COMPANY, ...(persisted.company || {}) },
+        };
+      },
+    }
+  )
+);
