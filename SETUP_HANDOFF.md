@@ -11,19 +11,14 @@ These are **gitignored** on purpose (see `.gitignore`: `**/.env`).
 | File | Why needed | How to share |
 |------|------------|--------------|
 | **`backend/.env`** | Supabase keys, JWT secrets, SMTP, CORS, office IP — backend will not start without this | Copy privately (chat/USB/password manager). **Do not commit.** |
-| **`HRMS/.env`** | Optional. Usually `VITE_API_URL=` empty (uses Vite proxy). Safe to recreate from example | Can recreate; sharing is optional |
+| **`HRMS/.env`** | Optional. Usually `VITE_API_URL=` empty (uses Vite proxy) | Can recreate; sharing is optional |
 
 ### What your coworker should do
 
 ```bash
-# After git clone
-cd backend
-cp .env.example .env
-# Then paste real values you send them into backend/.env
-
-cd ../HRMS
-# Create .env if missing:
-# VITE_API_URL=
+# After git clone — use real .env files (gitignored, share privately)
+# backend/.env  — required
+# HRMS/.env     — optional; VITE_API_URL= for local proxy
 ```
 
 Or you send them your real `backend/.env` (recommended if you share the **same** Supabase project).
@@ -44,16 +39,7 @@ Or you send them your real `backend/.env` (recommended if you share the **same**
 
 ---
 
-## 3. Already in Git (examples — not secrets)
-
-| File | Status |
-|------|--------|
-| `backend/.env.example` | Tracked — template with placeholder keys |
-| `HRMS/.env.example` | Exists locally; **not tracked yet** — commit it so coworkers see the template |
-
----
-
-## 4. Keys that must be filled in `backend/.env`
+## 3. Keys that must be filled in `backend/.env`
 
 Your coworker needs real values for at least:
 
@@ -70,7 +56,7 @@ Your coworker needs real values for at least:
 | `COOKIE_SECURE` | `false` on localhost HTTP |
 | `HOST` / `PORT` | Usually `127.0.0.1` / `5000` |
 
-Non-secret defaults (office IP, rate limits, TZ) can stay as in `.env.example`.
+Non-secret defaults (office IP, rate limits, TZ) can stay as in `backend/.env`.
 
 ---
 
@@ -115,6 +101,6 @@ If you only push an old commit, your coworker will miss those.
 | Send privately | Do not send | Put in Git instead |
 |----------------|-------------|--------------------|
 | `backend/.env` | `node_modules/`, `dist/`, `logs/` | Migrations, docs, source code |
-| Supabase access notes (if needed) | Real passwords in chat if avoidable — prefer secure channel | `HRMS/.env.example` |
+| Supabase access notes (if needed) | Real passwords in chat if avoidable — prefer secure channel | — |
 
 **Bottom line:** The only important file Git will not send is **`backend/.env`**. Everything else is either regenerable (`npm install`) or should be committed to the repo.

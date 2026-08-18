@@ -633,7 +633,7 @@ VITE_API_BASE_URL=http://localhost:5000/api
 
 ## 15. Environment variables
 
-**File:** `backend/.env` (see `backend/.env.example` for template)
+**File:** `backend/.env` (gitignored — do not commit)
 
 | Variable | Purpose |
 |----------|---------|

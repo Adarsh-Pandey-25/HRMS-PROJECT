@@ -1,6 +1,5 @@
 # Secrets
 **/.env
-!**/.env.example
 
 # Dependencies and generated output
 **/node_modules/

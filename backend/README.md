@@ -6,8 +6,7 @@ Production-ready Human Resource Management System backend built with **Node.js**
 
 ```bash
 cd backend
-cp .env.example .env
-# Edit .env with your Supabase and JWT credentials
+# Use backend/.env (already gitignored — do not commit it)
 npm install
 npm run dev
 ```
@@ -46,7 +45,7 @@ Optional: run `supabase/storage-policies.sql` for storage RLS policies.
 
 ### Step 4: Environment Variables
 
-Copy `.env.example` to `.env` and set:
+Put values in `backend/.env` (gitignored):
 
 ```env
 SUPABASE_URL=https://xxxx.supabase.co
