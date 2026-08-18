@@ -1,8 +1,7 @@
-const { createTransporter } = require('../config/email');
+const { sendWithFallback } = require('../config/email');
 const logger = require('../utils/logger');
 
 const sendEmail = async ({ to, subject, html, text }) => {
-  const transporter = createTransporter();
   const redactTo = (addr) => {
     const s = String(addr || '');
     const at = s.indexOf('@');
@@ -10,21 +9,18 @@ const sendEmail = async ({ to, subject, html, text }) => {
     return `${s[0]}***${s.slice(at)}`;
   };
 
-  if (!transporter) {
-    logger.info('Email (mock)', { to: redactTo(to), subject: String(subject || '').slice(0, 80) });
-    return { success: true, mock: true };
-  }
-
   try {
-    const info = await transporter.sendMail({
+    const info = await sendWithFallback({
       from: process.env.SMTP_FROM || process.env.SMTP_USER,
       to,
       subject,
       html,
       text: text || html.replace(/<[^>]*>/g, ''),
     });
-    logger.info('Email sent', { to: redactTo(to), messageId: info.messageId });
-    return { success: true, messageId: info.messageId };
+    if (info?.mock) {
+      logger.info('Email (mock)', { to: redactTo(to), subject: String(subject || '').slice(0, 80) });
+    }
+    return { success: true, messageId: info?.messageId, mock: Boolean(info?.mock) };
   } catch (err) {
     logger.error('Email send failed', { to: redactTo(to), error: err.message });
     throw err;
