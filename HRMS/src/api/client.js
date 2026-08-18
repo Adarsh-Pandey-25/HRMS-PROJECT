@@ -2,9 +2,18 @@ import axios from 'axios';
 import { unwrapApiData, toCamelCase } from '../lib/case';
 
 const TOKEN_KEY = 'hrms_access_token';
+const rawApiBase = String(import.meta.env.VITE_API_URL || '').trim();
+const normalizedApiBase = (() => {
+  if (!rawApiBase) return '/api';
+  const base = rawApiBase.replace(/\/$/, '');
+  if (/^https?:\/\//i.test(base) && !/\/api$/i.test(base)) {
+    return `${base}/api`;
+  }
+  return base;
+})();
 
 export const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || '/api',
+  baseURL: normalizedApiBase,
   timeout: 30_000,
   withCredentials: true,
   headers: {
