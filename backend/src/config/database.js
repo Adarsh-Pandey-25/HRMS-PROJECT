@@ -1,9 +1,20 @@
 require('dotenv').config();
 
-const corsOrigins = (process.env.CORS_ORIGINS || process.env.FRONTEND_URL || 'http://localhost:5173')
+const corsOrigins = [
+  process.env.CORS_ORIGINS,
+  process.env.FRONTEND_URL,
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'https://hrms.spaxads.net',
+  'https://hrms-ten-lac.vercel.app',
+]
+  .filter(Boolean)
+  .join(',')
   .split(',')
   .map((origin) => origin.trim().replace(/\/$/, ''))
   .filter(Boolean);
+
+const uniqueCorsOrigins = [...new Set(corsOrigins)];
 
 module.exports = {
   env: process.env.NODE_ENV || 'development',
@@ -26,7 +37,7 @@ module.exports = {
   cors: {
     origin(origin, callback) {
       // Requests without Origin are server-to-server tools such as curl/Postman.
-      if (!origin || corsOrigins.includes(origin.replace(/\/$/, ''))) {
+      if (!origin || uniqueCorsOrigins.includes(origin.replace(/\/$/, ''))) {
         return callback(null, true);
       }
       const error = new Error('Origin not allowed by CORS');

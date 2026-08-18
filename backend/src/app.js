@@ -39,7 +39,7 @@ app.disable('x-powered-by');
 app.set('trust proxy', config.env === 'production' || process.env.RENDER ? 1 : 'loopback');
 
 app.use(helmet({
-  crossOriginResourcePolicy: { policy: 'same-site' },
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
   referrerPolicy: { policy: 'no-referrer' },
 }));
 app.use(compression());

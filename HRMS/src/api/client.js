@@ -58,7 +58,8 @@ api.interceptors.response.use(
     const reqUrl = String(error.config?.url || '');
     // Super-admin 401s must not clear company employee sessions.
     const isSuperAdminRoute = reqUrl.includes('/super-admin');
-    if (status === 401 && logoutHandler && !isSuperAdminRoute) {
+    const isSessionProbe = /\/auth\/me(?:\?|$)/.test(reqUrl) || /\/super-admin\/me(?:\?|$)/.test(reqUrl);
+    if (status === 401 && logoutHandler && !isSuperAdminRoute && !isSessionProbe) {
       logoutHandler({ silent: true });
     }
     const msg =

@@ -1,14 +1,24 @@
 const superAdminService = require('../services/superAdmin.service');
 const { successResponse } = require('../utils/helpers');
-const config = require('../config/database');
 
-const cookieOptions = (req, maxAge, path = '/') => ({
-  httpOnly: true,
-  secure: config.cookieSecure || req.secure || req.get('x-forwarded-proto') === 'https',
-  sameSite: 'strict',
-  path,
-  maxAge,
-});
+const cookieOptions = (req, maxAge, path = '/') => {
+  const frontend = String(process.env.FRONTEND_URL || '').replace(/\/$/, '');
+  const apiHost = String(req.get('host') || '').split(':')[0];
+  let frontendHost = '';
+  try {
+    frontendHost = frontend ? new URL(frontend).hostname : '';
+  } catch {
+    frontendHost = '';
+  }
+  const crossSite = Boolean(frontendHost && apiHost && frontendHost !== apiHost);
+  return {
+    httpOnly: true,
+    secure: true,
+    sameSite: crossSite ? 'none' : 'lax',
+    path,
+    maxAge,
+  };
+};
 
 const login = async (req, res, next) => {
   try {
