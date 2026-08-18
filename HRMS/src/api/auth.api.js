@@ -52,6 +52,7 @@ export async function sendOnboardingOtpApi(email, adminName, inviteToken) {
     method: 'POST',
     url: '/auth/onboarding/send-otp',
     data: { email, adminName, inviteToken },
+    timeout: 60_000,
   });
 }
 

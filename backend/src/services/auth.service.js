@@ -348,7 +348,9 @@ const forgotPassword = async (email) => {
     expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(), // 10 minutes
   });
 
-  await passwordResetEmail(employee, otp);
+  passwordResetEmail(employee, otp).catch((err) => {
+    logger.error('Password reset email failed', { error: err.message });
+  });
   return {
     message: 'If the email exists, an OTP has been sent',
     nextResendAt: guard.nextResendAt,
@@ -492,7 +494,10 @@ const sendOnboardingOtp = async (email, adminName = '', inviteToken = null) => {
   entry.nextResendAt = now + 30 * 1000;
   onboardingOtps.set(key, entry);
 
-  await onboardingOtpEmail(key, adminName, otp);
+  // Do not block the HTTP response on SMTP — Render + Gmail often exceeds 30s.
+  onboardingOtpEmail(key, adminName, otp).catch((err) => {
+    logger.error('Onboarding OTP email failed', { error: err.message });
+  });
 
   return {
     message: 'OTP sent to your email',
