@@ -86,6 +86,14 @@ const sendWithFallback = async (mail) => {
     return { success: true, mock: true };
   }
 
+  // Render's free web services block all outbound SMTP traffic (ports 25/465/587),
+  // so every SMTP attempt there is guaranteed to time out (~12s each) no matter how
+  // correct the credentials are. Skip straight to the HTTP API instead of stalling
+  // requests (e.g. employee creation awaits this) for ~25s before falling back.
+  if (onRender && process.env.RESEND_API_KEY) {
+    return sendViaResend(mail);
+  }
+
   let lastErr;
   for (const attempt of smtpAttempts()) {
     try {

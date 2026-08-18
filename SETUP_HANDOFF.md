@@ -52,7 +52,8 @@ Your coworker needs real values for at least:
 | `JWT_REFRESH_SECRET` | Refresh token signing |
 | `FRONTEND_URL` | Usually `http://localhost:5173` |
 | `CORS_ORIGINS` | Usually `http://localhost:5173` |
-| `SMTP_*` | Optional for email; without SMTP, emails are mocked/logged |
+| `SMTP_*` | Optional for email; without SMTP, emails are mocked/logged. **Does not work on Render free web services** — Render blocks all outbound SMTP traffic (ports 25/465/587) there, so SMTP will always time out regardless of credentials. Set `RESEND_API_KEY` too (see below) so email delivery works in production. |
+| `RESEND_API_KEY` | HTTP-based email fallback (via [resend.com](https://resend.com), free tier available). Required for real email delivery on Render, since SMTP is network-blocked there. When set and running on Render, the backend sends via Resend directly instead of attempting (and failing) SMTP first. Sign up, verify your sending domain, and put the API key here and in the Render dashboard env vars. |
 | `COOKIE_SECURE` | `false` on localhost HTTP |
 | `HOST` / `PORT` | Usually `127.0.0.1` / `5000` |
 
