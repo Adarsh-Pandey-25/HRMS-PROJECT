@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy, Link2, Plus, Ban } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { Card, CardHeader, Button, Badge, Input, Skeleton, Modal } from '../../components/ui';
+import { Card, CardHeader, Button, Badge, Input, Skeleton, Modal, ConfirmDialog } from '../../components/ui';
 import { createInviteApi, listInvitesApi, revokeInviteApi } from '../../api/superAdmin.api';
 import { formatDateTime } from '../../lib/utils';
 
@@ -26,6 +26,23 @@ export default function SuperAdminInvites() {
   const [creating, setCreating] = useState(false);
   const [lastLink, setLastLink] = useState(null);
   const [revoking, setRevoking] = useState(null);
+  const [revokeTarget, setRevokeTarget] = useState(null);
+
+  const confirmRevoke = async () => {
+    const id = revokeTarget;
+    if (!id) return;
+    setRevoking(id);
+    try {
+      await revokeInviteApi(id);
+      toast.success('Invite revoked');
+      await qc.invalidateQueries({ queryKey: ['super-admin', 'invites'] });
+    } catch (err) {
+      toast.error(err.message || 'Revoke failed');
+    } finally {
+      setRevoking(null);
+      setRevokeTarget(null);
+    }
+  };
 
   const create = async () => {
     const lockedEmail = email.trim();
@@ -65,19 +82,7 @@ export default function SuperAdminInvites() {
     }
   };
 
-  const revoke = async (id) => {
-    if (!window.confirm('Revoke this invite? It can no longer be used.')) return;
-    setRevoking(id);
-    try {
-      await revokeInviteApi(id);
-      toast.success('Invite revoked');
-      await qc.invalidateQueries({ queryKey: ['super-admin', 'invites'] });
-    } catch (err) {
-      toast.error(err.message || 'Revoke failed');
-    } finally {
-      setRevoking(null);
-    }
-  };
+  const revoke = (id) => setRevokeTarget(id);
 
   return (
     <div className="space-y-6 animate-fade-in max-w-5xl">
@@ -199,6 +204,17 @@ export default function SuperAdminInvites() {
           />
         </div>
       </Modal>
+
+      <ConfirmDialog
+        open={Boolean(revokeTarget)}
+        onClose={() => setRevokeTarget(null)}
+        onConfirm={confirmRevoke}
+        title="Revoke invite?"
+        message="This invite link will be permanently deactivated. Anyone with the link will no longer be able to onboard."
+        confirmLabel="Revoke"
+        tone="danger"
+        loading={Boolean(revoking)}
+      />
     </div>
   );
 }

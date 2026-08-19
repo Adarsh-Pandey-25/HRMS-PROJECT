@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Save, RefreshCw } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { Card, CardHeader, Input, Select, Toggle, Button, Badge } from '../../components/ui';
+import { Card, CardHeader, Input, Select, Toggle, Button, Badge, ConfirmDialog } from '../../components/ui';
 import { ExportButton } from '../../components/shared/ExportButton';
 import { useSettingsStore } from '../../store/settingsStore';
 import { useCompanyStore } from '../../store/companyStore';
@@ -394,6 +394,7 @@ export function IntegrationsSection() {
   const [selectedScopes, setSelectedScopes] = useState(['ping', 'attendance:write']);
   const [revealedKey, setRevealedKey] = useState(null);
   const [revokingId, setRevokingId] = useState(null);
+  const [revokeTarget, setRevokeTarget] = useState(null);
 
   const SCOPE_OPTIONS = [
     { id: 'ping', label: 'Ping (test connection)' },
@@ -445,8 +446,11 @@ export function IntegrationsSection() {
     }
   };
 
-  const revokeKey = async (id) => {
-    if (!window.confirm('Revoke this API key? Connected tools will stop working immediately.')) return;
+  const revokeKey = (id) => setRevokeTarget(id);
+
+  const confirmRevokeKey = async () => {
+    const id = revokeTarget;
+    if (!id) return;
     setRevokingId(id);
     try {
       await revokeApiKeyApi(id);
@@ -456,6 +460,7 @@ export function IntegrationsSection() {
       toast.error(err.message || 'Failed to revoke');
     } finally {
       setRevokingId(null);
+      setRevokeTarget(null);
     }
   };
 
@@ -648,6 +653,16 @@ export function IntegrationsSection() {
             webhooks: rest.webhooks || [],
           }, 'Integrations settings saved');
         }}
+      />
+      <ConfirmDialog
+        open={Boolean(revokeTarget)}
+        onClose={() => setRevokeTarget(null)}
+        onConfirm={confirmRevokeKey}
+        title="Revoke API key?"
+        message="Connected tools and devices using this key will stop working immediately. This cannot be undone."
+        confirmLabel="Revoke"
+        tone="danger"
+        loading={Boolean(revokingId)}
       />
     </div>
   );
