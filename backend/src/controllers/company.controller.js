@@ -75,6 +75,25 @@ const uploadLogo = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+const getDetails = async (req, res, next) => {
+  try {
+    const data = await companyService.getCompanyDetails(companyIdOf(req), req.params.id);
+    successResponse(res, 'Company details fetched', data);
+  } catch (err) { next(err); }
+};
+
+const updateDetails = async (req, res, next) => {
+  try {
+    const data = await companyService.updateCompanyDetails(
+      companyIdOf(req),
+      req.params.id,
+      req.body || {},
+      req.user.id,
+    );
+    successResponse(res, 'Company details updated', data);
+  } catch (err) { next(err); }
+};
+
 module.exports = {
   getMe,
   listAccessible,
@@ -83,4 +102,6 @@ module.exports = {
   updateChild,
   listEmployees,
   uploadLogo,
+  getDetails,
+  updateDetails,
 };

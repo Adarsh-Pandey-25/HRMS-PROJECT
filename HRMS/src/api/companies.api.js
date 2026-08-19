@@ -36,3 +36,11 @@ export async function uploadCompanyLogoApi(companyId, file) {
     data: form,
   });
 }
+
+export async function fetchCompanyDetailsApi(companyId) {
+  return apiRequest({ method: 'GET', url: `/companies/${companyId}/details` });
+}
+
+export async function updateCompanyDetailsApi(companyId, payload) {
+  return apiRequest({ method: 'PATCH', url: `/companies/${companyId}/details`, data: payload });
+}

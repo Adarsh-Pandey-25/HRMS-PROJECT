@@ -30,9 +30,9 @@ export const NAV_ITEMS = [
   {
     icon: Building2,
     label: 'Organizations',
-    roles: ['admin'],
+    roles: ['admin', 'hr'],
     children: [
-      { label: 'Companies', path: '/organizations', roles: ['admin'] },
+      { label: 'Companies', path: '/organizations', roles: ['admin', 'hr'] },
     ],
   },
   {

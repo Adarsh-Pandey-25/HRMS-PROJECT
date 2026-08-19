@@ -33,8 +33,10 @@ router.get('/children', isAdmin, companyController.listChildren);
 router.post('/children', isAdmin, createChildRules, validate, companyController.createChild);
 router.patch('/children/:id', isAdmin, updateChildRules, validate, companyController.updateChild);
 
-// Org-scoped company detail actions (Admin)
+// Org-scoped company detail actions (Admin / HR)
+router.get('/:id/details', isHROrAdmin, companyIdParam, validate, companyController.getDetails);
+router.patch('/:id/details', isHROrAdmin, companyIdParam, validate, companyController.updateDetails);
 router.get('/:id/employees', isAdmin, companyIdParam, validate, companyController.listEmployees);
-router.post('/:id/logo', isAdmin, companyIdParam, validate, upload.single('logo'), companyController.uploadLogo);
+router.post('/:id/logo', isHROrAdmin, companyIdParam, validate, upload.single('logo'), companyController.uploadLogo);
 
 module.exports = router;

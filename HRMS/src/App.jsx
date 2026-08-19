@@ -203,7 +203,7 @@ export default function App() {
             <Route path="/helpdesk/kb" element={page(KnowledgeBase, { module: 'helpdesk', action: 'view' })} />
 
             <Route path="/announcements" element={page(Announcements, { module: 'announcements', action: 'view' })} />
-            <Route path="/organizations" element={page(Organizations, ['admin'])} />
+            <Route path="/organizations" element={page(Organizations, ['admin', 'hr'])} />
             <Route path="/settings" element={page(Settings, { module: 'settings', action: 'manage' })} />
             <Route path="/search" element={page(SearchResults)} />
             <Route path="/404" element={page(NotFound)} />

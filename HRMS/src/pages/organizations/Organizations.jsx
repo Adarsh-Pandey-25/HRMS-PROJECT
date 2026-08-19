@@ -1,8 +1,7 @@
 import { useMemo, useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
 import {
-  Building2, Plus, Eye, ShieldCheck, Users, ToggleLeft, ToggleRight,
-  ImagePlus, ChevronRight, Mail, Briefcase, ArrowRightLeft, Pencil, Check, X,
+  Building2, Plus, Eye, ShieldCheck, ToggleLeft, ToggleRight,
+  ImagePlus, ChevronRight, Pencil, Check, X, MapPin, Landmark, FileText, BadgeCheck,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import {
@@ -12,16 +11,15 @@ import {
 import {
   useMyCompany,
   useAccessibleCompanies,
-  useCompanyEmployees,
+  useCompanyDetails,
   useCompanyMutations,
-  companyKeys,
 } from '../../hooks/useCompanies';
-import { useEmployees } from '../../hooks/useEmployees';
-import { ChangeCompanyModal } from '../../components/shared/ChangeCompanyModal';
 import { cn, formatDate } from '../../lib/utils';
-import { filterDirectoryEmployees, employeeProfilePath } from '../../lib/employeeRoutes';
-import { useQueryClient } from '@tanstack/react-query';
 import { companyTypeLabel } from '../../lib/companyLabels';
+import { mergeLegalProfile, formatRegisteredAddress } from '../../lib/companyLegal';
+import { CompanyLegalFields } from '../../components/shared/CompanyLegalFields';
+import { useAuthStore } from '../../store/authStore';
+import { useCompanyStore } from '../../store/companyStore';
 
 const TABS = [
   { id: 'view', label: 'View companies', icon: Eye },
@@ -80,12 +78,12 @@ function CompanyCard({ company, selected, onSelect, onToggle, toggling }) {
             {company.isHome && <Badge tone="neutral">Your company</Badge>}
           </div>
           <div className="flex items-center justify-between gap-2 text-sm text-fg-muted">
-            <span className="inline-flex items-center gap-1.5">
-              <Users className="w-3.5 h-3.5" />
-              {company.employeeCount ?? 0} employee{(company.employeeCount ?? 0) === 1 ? '' : 's'}
+            <span className="inline-flex items-center gap-1.5 min-w-0 truncate">
+              <MapPin className="w-3.5 h-3.5 shrink-0" />
+              {[company.city, company.state].filter(Boolean).join(', ') || 'Address not set'}
             </span>
-            <span className="text-xs text-fg-subtle">
-              {company.createdAt ? formatDate(company.createdAt) : ''}
+            <span className="text-xs text-fg-subtle shrink-0">
+              {company.gstin || (company.createdAt ? formatDate(company.createdAt) : '')}
             </span>
           </div>
         </div>
@@ -111,22 +109,66 @@ function CompanyCard({ company, selected, onSelect, onToggle, toggling }) {
   );
 }
 
-function EmployeesDrawer({ company, open, onClose, canManage, uploadLogo, updateChild }) {
-  const employeesQ = useCompanyEmployees(company?.id, open);
-  const { employees: allEmployees } = useEmployees();
-  const qc = useQueryClient();
+function DetailRow({ label, value }) {
+  const text = String(value || '').trim();
+  return (
+    <div>
+      <p className="text-[11px] uppercase tracking-wide text-fg-subtle">{label}</p>
+      <p className={cn('text-sm mt-0.5 whitespace-pre-line', text ? 'text-fg' : 'text-fg-subtle')}>
+        {text || 'Not provided'}
+      </p>
+    </div>
+  );
+}
+
+function PeopleList({ people, empty, extra }) {
+  if (!people?.length) {
+    return <p className="text-sm text-fg-subtle">{empty}</p>;
+  }
+  return (
+    <ul className="space-y-2">
+      {people.map((p) => (
+        <li key={p.id || p.name} className="rounded-lg border border-border px-3 py-2">
+          <p className="text-sm font-medium text-fg">{p.name}</p>
+          <p className="text-xs text-fg-muted mt-0.5">{extra(p)}</p>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function CompanyDetailsDrawer({ company, open, onClose, canEdit, uploadLogo, updateChild, updateDetails }) {
+  const detailsQ = useCompanyDetails(company?.id, open);
+  const updateHomeCompany = useCompanyStore((s) => s.updateCompany);
   const [uploading, setUploading] = useState(false);
-  const [changeEmp, setChangeEmp] = useState(null);
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState('');
   const [savingName, setSavingName] = useState(false);
+  const [editingLegal, setEditingLegal] = useState(false);
+  const [legalForm, setLegalForm] = useState(() => mergeLegalProfile({}));
+  const [savingLegal, setSavingLegal] = useState(false);
 
-  const canEditName = Boolean(canManage && company && !company.isHome && company.companyType === 'child');
+  const profile = detailsQ.data?.profile || mergeLegalProfile({});
+  const canEditName = Boolean(canEdit && company && !company.isHome && company.companyType === 'child');
 
   useEffect(() => {
     setEditingName(false);
     setNameDraft('');
+    setEditingLegal(false);
   }, [company?.id, open]);
+
+  useEffect(() => {
+    if (editingLegal) return;
+    setLegalForm({
+      ...mergeLegalProfile(detailsQ.data?.profile || {}),
+      addressLine1: detailsQ.data?.profile?.addressLine1 || '',
+      addressLine2: detailsQ.data?.profile?.addressLine2 || '',
+      city: detailsQ.data?.profile?.city || '',
+      state: detailsQ.data?.profile?.state || '',
+      pincode: detailsQ.data?.profile?.pincode || '',
+      country: detailsQ.data?.profile?.country || 'India',
+    });
+  }, [detailsQ.data, editingLegal]);
 
   const startEditName = () => {
     setNameDraft(company?.name || '');
@@ -150,12 +192,9 @@ function EmployeesDrawer({ company, open, onClose, canManage, uploadLogo, update
     }
     setSavingName(true);
     try {
-      // Always PATCH so slug stays in sync even if display name is unchanged
       await updateChild.mutateAsync({ id: company.id, name: trimmed });
       toast.success('Company name updated');
       setEditingName(false);
-      qc.invalidateQueries({ queryKey: ['companies'] });
-      qc.invalidateQueries({ queryKey: ['employees'] });
     } catch (err) {
       toast.error(err.message || 'Failed to update name');
     } finally {
@@ -177,62 +216,70 @@ function EmployeesDrawer({ company, open, onClose, canManage, uploadLogo, update
     }
   };
 
-  const employees = useMemo(() => {
-    const fromApi = employeesQ.data;
-    if (Array.isArray(fromApi) && fromApi.length > 0) return fromApi;
-    if (employeesQ.isLoading) return [];
-    const cid = String(company?.id || '');
-    if (!cid) return [];
-    return filterDirectoryEmployees(allEmployees || [])
-      .filter((e) => String(e.companyId || e.company_id || '') === cid)
-      .map((e) => ({
-        id: e.id,
-        employeeCode: e.employeeCode,
-        name: e.name,
-        email: e.workEmail || e.email,
-        department: e.department,
-        designation: e.designation,
-        role: e.role,
-        isActive: e.status !== 'resigned' && e.isActive !== false,
-        companyId: e.companyId || e.company_id,
-        companyName: e.companyName || company?.name,
-      }));
-  }, [employeesQ.data, employeesQ.isLoading, allEmployees, company?.id, company?.name]);
+  const startEditLegal = () => {
+    setLegalForm({
+      ...mergeLegalProfile(profile),
+      addressLine1: profile.addressLine1 || '',
+      addressLine2: profile.addressLine2 || '',
+      city: profile.city || '',
+      state: profile.state || '',
+      pincode: profile.pincode || '',
+      country: profile.country || 'India',
+    });
+    setEditingLegal(true);
+  };
 
-  const shownCount = employees.length || company?.employeeCount || 0;
-
-  const refreshAfterMove = () => {
-    qc.invalidateQueries({ queryKey: ['companies'] });
-    qc.invalidateQueries({ queryKey: ['employees'] });
-    if (company?.id) {
-      qc.invalidateQueries({ queryKey: companyKeys.employees(company.id) });
+  const saveLegal = async () => {
+    if (!company?.id) return;
+    setSavingLegal(true);
+    try {
+      const saved = await updateDetails.mutateAsync({
+        id: company.id,
+        ...legalForm,
+      });
+      if (company.isHome && saved?.profile) {
+        updateHomeCompany(saved.profile);
+      }
+      toast.success('Company details saved');
+      setEditingLegal(false);
+    } catch (err) {
+      toast.error(err.message || 'Could not save details');
+    } finally {
+      setSavingLegal(false);
     }
   };
 
+  const address = formatRegisteredAddress(profile);
+
   return (
-    <>
     <Drawer
       open={open}
       onClose={() => {
         cancelEditName();
+        setEditingLegal(false);
         onClose();
       }}
-      width="w-[480px]"
+      width="w-[520px]"
       title={company?.name || 'Company'}
-      subtitle={
-        company
-          ? `${company.companyType === 'child' ? 'Subsidiary' : 'Company'} · ${shownCount} employee${shownCount === 1 ? '' : 's'}`
-          : undefined
-      }
+      subtitle={company ? `${company.companyType === 'child' ? 'Subsidiary' : 'Company'} details` : undefined}
       footer={
-        company && (
-          <Link
-            to={`/employees?company=${company.id}`}
-            className="inline-flex w-full items-center justify-center rounded-input font-medium h-10 px-4 text-sm gap-2 border border-border bg-card text-fg hover:bg-muted"
-          >
-            Open Employees module
-          </Link>
-        )
+        canEdit && company ? (
+          editingLegal ? (
+            <div className="flex w-full gap-2">
+              <Button variant="outline" className="flex-1" onClick={() => setEditingLegal(false)} disabled={savingLegal}>
+                Cancel
+              </Button>
+              <Button className="flex-1" onClick={saveLegal} loading={savingLegal} disabled={savingLegal}>
+                Save details
+              </Button>
+            </div>
+          ) : (
+            <Button className="w-full" onClick={startEditLegal}>
+              <Pencil className="w-4 h-4" />
+              Edit company details
+            </Button>
+          )
+        ) : null
       }
     >
       {!company ? null : (
@@ -254,22 +301,10 @@ function EmployeesDrawer({ company, open, onClose, canManage, uploadLogo, update
                     className="h-8 min-w-0 flex-1 rounded-md border border-primary bg-card px-2 text-sm text-fg focus:outline-none focus:ring-2 focus:ring-primary/30"
                     placeholder="Company name"
                   />
-                  <button
-                    type="button"
-                    aria-label="Save name"
-                    disabled={savingName}
-                    onClick={saveName}
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary text-white hover:bg-primary-dark disabled:opacity-50"
-                  >
+                  <button type="button" aria-label="Save name" disabled={savingName} onClick={saveName} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary text-white hover:bg-primary-dark disabled:opacity-50">
                     <Check className="w-3.5 h-3.5" />
                   </button>
-                  <button
-                    type="button"
-                    aria-label="Cancel"
-                    disabled={savingName}
-                    onClick={cancelEditName}
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border text-fg-muted hover:bg-muted"
-                  >
+                  <button type="button" aria-label="Cancel" disabled={savingName} onClick={cancelEditName} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border text-fg-muted hover:bg-muted">
                     <X className="w-3.5 h-3.5" />
                   </button>
                 </div>
@@ -277,11 +312,7 @@ function EmployeesDrawer({ company, open, onClose, canManage, uploadLogo, update
                 <div className="flex items-center gap-2 min-w-0">
                   <p className="text-base font-semibold text-fg truncate">{company.name}</p>
                   {canEditName && (
-                    <button
-                      type="button"
-                      onClick={startEditName}
-                      className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline shrink-0"
-                    >
+                    <button type="button" onClick={startEditName} className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline shrink-0">
                       <Pencil className="w-3 h-3" />
                       Edit name
                     </button>
@@ -291,12 +322,10 @@ function EmployeesDrawer({ company, open, onClose, canManage, uploadLogo, update
 
               <div className="flex flex-wrap items-center gap-1.5">
                 {typeBadge(company.companyType)}
-                {company.isActive
-                  ? <Badge tone="success">Active</Badge>
-                  : <Badge tone="danger">Inactive</Badge>}
+                {company.isActive ? <Badge tone="success">Active</Badge> : <Badge tone="danger">Inactive</Badge>}
               </div>
 
-              {canManage && (
+              {canEdit && (
                 <label className="inline-flex items-center gap-1.5 text-xs text-primary cursor-pointer">
                   <ImagePlus className="w-3.5 h-3.5" />
                   {uploading ? 'Uploading…' : 'Change logo'}
@@ -316,103 +345,101 @@ function EmployeesDrawer({ company, open, onClose, canManage, uploadLogo, update
             </div>
           </div>
 
-          <div>
-            <h3 className="text-sm font-semibold text-fg mb-3 flex items-center gap-2">
-              <Users className="w-4 h-4" />
-              Employees
-            </h3>
+          {detailsQ.isLoading && (
+            <div className="space-y-2">
+              <Skeleton className="h-20 w-full" />
+              <Skeleton className="h-24 w-full" />
+              <Skeleton className="h-24 w-full" />
+            </div>
+          )}
 
-            {employeesQ.isLoading && employees.length === 0 && (
-              <div className="space-y-2">
-                <Skeleton className="h-14 w-full" />
-                <Skeleton className="h-14 w-full" />
-                <Skeleton className="h-14 w-full" />
+          {detailsQ.isError && (
+            <EmptyState
+              icon={Building2}
+              title="Could not load company details"
+              message={detailsQ.error?.message || 'Try again in a moment.'}
+            />
+          )}
+
+          {!detailsQ.isLoading && !detailsQ.isError && editingLegal && (
+            <div className="space-y-5">
+              <div>
+                <p className="text-sm font-semibold text-fg mb-3">Registered address</p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <Input label="Address line 1" containerClass="sm:col-span-2" value={legalForm.addressLine1 || ''} onChange={(e) => setLegalForm((f) => ({ ...f, addressLine1: e.target.value }))} />
+                  <Input label="Address line 2" containerClass="sm:col-span-2" value={legalForm.addressLine2 || ''} onChange={(e) => setLegalForm((f) => ({ ...f, addressLine2: e.target.value }))} />
+                  <Input label="City" value={legalForm.city || ''} onChange={(e) => setLegalForm((f) => ({ ...f, city: e.target.value }))} />
+                  <Input label="State" value={legalForm.state || ''} onChange={(e) => setLegalForm((f) => ({ ...f, state: e.target.value }))} />
+                  <Input label="PIN code" value={legalForm.pincode || ''} onChange={(e) => setLegalForm((f) => ({ ...f, pincode: e.target.value }))} />
+                  <Input label="Country" value={legalForm.country || ''} onChange={(e) => setLegalForm((f) => ({ ...f, country: e.target.value }))} />
+                </div>
               </div>
-            )}
+              <CompanyLegalFields form={legalForm} setForm={setLegalForm} />
+            </div>
+          )}
 
-            {employeesQ.isError && employees.length === 0 && (
-              <EmptyState
-                icon={Users}
-                title="Could not load employees"
-                message={employeesQ.error?.message || 'Try again, or open the Employees module.'}
-              />
-            )}
+          {!detailsQ.isLoading && !detailsQ.isError && !editingLegal && (
+            <div className="space-y-5">
+              <section>
+                <h3 className="text-sm font-semibold text-fg mb-3 flex items-center gap-2">
+                  <MapPin className="w-4 h-4" />
+                  Registered address
+                </h3>
+                <DetailRow label="Address" value={address} />
+              </section>
 
-            {!employeesQ.isLoading && !employeesQ.isError && employees.length === 0 && (
-              <EmptyState
-                icon={Users}
-                title="No employees yet"
-                message="Assign staff to this company from Employees → Add / Edit Employee."
-              />
-            )}
+              <section>
+                <h3 className="text-sm font-semibold text-fg mb-3 flex items-center gap-2">
+                  <BadgeCheck className="w-4 h-4" />
+                  Statutory IDs
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <DetailRow label="Legal name" value={profile.legalName} />
+                  <DetailRow label="GSTIN" value={profile.gstin} />
+                  <DetailRow label="PAN" value={profile.pan} />
+                  <DetailRow label="CIN" value={profile.cin} />
+                  <DetailRow label="TAN" value={profile.tan} />
+                  <DetailRow label="Incorporation" value={profile.incorporationDate} />
+                </div>
+                <div className="mt-3">
+                  <DetailRow label="Nature of business" value={profile.natureOfBusiness} />
+                </div>
+              </section>
 
-            {employees.length > 0 && (
-              <ul className="space-y-2">
-                {employees.map((emp) => (
-                  <li
-                    key={emp.id}
-                    className="rounded-lg border border-border px-3 py-2.5 flex items-start gap-3"
-                  >
-                    <Avatar name={emp.name} size="sm" />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center justify-between gap-2">
-                        <Link
-                          to={employeeProfilePath(emp, allEmployees)}
-                          className="font-medium text-fg hover:text-primary truncate"
-                        >
-                          {emp.name}
-                        </Link>
-                        {emp.isActive === false && <Badge tone="danger">Inactive</Badge>}
-                      </div>
-                      <div className="text-xs text-fg-subtle mt-0.5">
-                        {emp.employeeCode || '—'}
-                        {emp.role ? ` · ${emp.role}` : ''}
-                      </div>
-                      <div className="mt-1.5 space-y-0.5 text-xs text-fg-muted">
-                        {emp.email && (
-                          <div className="flex items-center gap-1.5 truncate">
-                            <Mail className="w-3 h-3 shrink-0" />
-                            {emp.email}
-                          </div>
-                        )}
-                        {(emp.department || emp.designation) && (
-                          <div className="flex items-center gap-1.5 truncate">
-                            <Briefcase className="w-3 h-3 shrink-0" />
-                            {[emp.designation, emp.department].filter(Boolean).join(' · ')}
-                          </div>
-                        )}
-                      </div>
-                      {canManage && (
-                        <button
-                          type="button"
-                          onClick={() => setChangeEmp({
-                            ...emp,
-                            companyId: emp.companyId || company.id,
-                            companyName: company.name,
-                          })}
-                          className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
-                        >
-                          <ArrowRightLeft className="w-3 h-3" />
-                          Change company
-                        </button>
-                      )}
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+              <section>
+                <h3 className="text-sm font-semibold text-fg mb-3 flex items-center gap-2">
+                  <Landmark className="w-4 h-4" />
+                  Directors
+                </h3>
+                <PeopleList
+                  people={profile.directors}
+                  empty="No directors added yet."
+                  extra={(p) => [p.designation, p.din && `DIN ${p.din}`].filter(Boolean).join(' · ') || 'Director'}
+                />
+              </section>
+
+              <section>
+                <h3 className="text-sm font-semibold text-fg mb-3 flex items-center gap-2">
+                  <FileText className="w-4 h-4" />
+                  Founders
+                </h3>
+                <PeopleList
+                  people={profile.founders}
+                  empty="No founders added yet."
+                  extra={(p) => p.role || 'Founder'}
+                />
+              </section>
+
+              {canEdit && (
+                <p className="text-xs text-fg-subtle">
+                  You can also maintain these fields in Settings → Company Profile → Legal & CDD.
+                </p>
+              )}
+            </div>
+          )}
         </div>
       )}
     </Drawer>
-
-    <ChangeCompanyModal
-      open={Boolean(changeEmp)}
-      employee={changeEmp}
-      onClose={() => setChangeEmp(null)}
-      onSuccess={refreshAfterMove}
-    />
-    </>
   );
 }
 
@@ -450,11 +477,11 @@ function ViewTab({
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <StatCard label="Companies" value={stats.total} icon={Building2} />
         <StatCard label="Subsidiaries" value={stats.children} icon={Building2} />
-        <StatCard label="Employees (all)" value={stats.employees} icon={Users} />
+        <StatCard label="Active" value={stats.active} icon={ShieldCheck} />
       </div>
 
       <p className="text-sm text-fg-muted">
-        Click a company to view its employees and manage the logo.
+        Click a company to view address, GSTIN, directors, and other CDD details.
       </p>
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -527,8 +554,7 @@ function AddTab({ canManage, createChild, uploadLogo, onCreated }) {
     <Card className="p-6 max-w-xl">
       <h3 className="text-base font-semibold text-fg mb-1">Add subsidiary</h3>
       <p className="text-sm text-fg-muted mb-6">
-        Creates an isolated workspace under your main company. Assign employees from
-        Employees → Add Employee, and they will appear here under that company.
+        Creates an isolated workspace under your main company. Open it afterwards to add registered address, GSTIN, directors, and other CDD details.
       </p>
       <form onSubmit={submit} className="space-y-5">
         <Input
@@ -584,8 +610,7 @@ function AccessTab({ companies, myCompany, loading }) {
       <Card className="p-6">
         <h3 className="text-base font-semibold text-fg mb-1">Your company access</h3>
         <p className="text-sm text-fg-muted mb-4">
-          As Admin you manage the companies below. When adding an employee, pick which company
-          they belong to from this list.
+          As Admin or HR you can open each company to review and update its legal details. Subsidiary workspaces stay isolated.
         </p>
         <div className="rounded-lg border border-border bg-muted/40 p-4 space-y-2">
           <div className="flex items-center gap-3">
@@ -605,7 +630,7 @@ function AccessTab({ companies, myCompany, loading }) {
       </Card>
 
       <Card className="p-6">
-        <h3 className="text-base font-semibold text-fg mb-4">Companies you can assign employees to</h3>
+        <h3 className="text-base font-semibold text-fg mb-4">Companies in your organization</h3>
         {assignable.length === 0 ? (
           <p className="text-sm text-fg-subtle">No active companies in your access scope.</p>
         ) : (
@@ -621,14 +646,13 @@ function AccessTab({ companies, myCompany, loading }) {
                     <div className="font-medium text-fg truncate">{c.name}</div>
                     <div className="text-xs text-fg-subtle">
                       {c.isHome ? 'Your company' : 'Subsidiary'}
-                      {' · '}
-                      {c.employeeCount ?? 0} employees
+                      {c.gstin ? ` · GSTIN ${c.gstin}` : c.city ? ` · ${c.city}` : ''}
                     </div>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   {typeBadge(c.companyType)}
-                  <Badge tone="success">Assignable</Badge>
+                  {c.isActive !== false ? <Badge tone="success">Active</Badge> : <Badge tone="danger">Inactive</Badge>}
                 </div>
               </li>
             ))}
@@ -642,9 +666,10 @@ function AccessTab({ companies, myCompany, loading }) {
 export default function Organizations() {
   const [tab, setTab] = useState('view');
   const [selected, setSelected] = useState(null);
+  const role = useAuthStore((s) => s.role);
   const myCompanyQ = useMyCompany(true);
   const accessibleQ = useAccessibleCompanies(true);
-  const { createChild, updateChild, uploadLogo } = useCompanyMutations();
+  const { createChild, updateChild, uploadLogo, updateDetails } = useCompanyMutations();
 
   const companies = useMemo(() => {
     const list = accessibleQ.data || [];
@@ -664,11 +689,14 @@ export default function Organizations() {
   const stats = useMemo(() => ({
     total: companies.length,
     children: companies.filter((c) => c.companyType === 'child').length,
-    employees: companies.reduce((sum, c) => sum + (c.employeeCount || 0), 0),
+    active: companies.filter((c) => c.isActive !== false).length,
   }), [companies]);
 
-  const canManage = myCompanyQ.data?.canManageChildren !== false
+  const isAdmin = String(role || '').toLowerCase() === 'admin';
+  const canManage = isAdmin
+    && myCompanyQ.data?.canManageChildren !== false
     && myCompanyQ.data?.companyType !== 'child';
+  const canEditLegal = ['admin', 'hr'].includes(String(role || '').toLowerCase());
 
   const onToggle = async (company) => {
     try {
@@ -686,7 +714,7 @@ export default function Organizations() {
     <div className="space-y-6 animate-fade-in">
       <PageHeader
         title="Organizations"
-        subtitle="Manage your main company, subsidiaries, logos, and employees. Admin only."
+        subtitle="Company records, GSTIN, directors, and subsidiaries. Admin and HR can update details."
       />
 
       <div className="flex flex-wrap gap-2 border-b border-border pb-1">
@@ -738,13 +766,14 @@ export default function Organizations() {
         />
       )}
 
-      <EmployeesDrawer
+      <CompanyDetailsDrawer
         company={selectedLive}
         open={Boolean(selectedLive)}
         onClose={() => setSelected(null)}
-        canManage={canManage || selectedLive?.isHome}
+        canEdit={canEditLegal}
         uploadLogo={uploadLogo}
         updateChild={updateChild}
+        updateDetails={updateDetails}
       />
     </div>
   );

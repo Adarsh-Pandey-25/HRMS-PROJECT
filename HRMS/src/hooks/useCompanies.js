@@ -7,6 +7,8 @@ import {
   updateChildCompanyApi,
   fetchCompanyEmployeesApi,
   uploadCompanyLogoApi,
+  fetchCompanyDetailsApi,
+  updateCompanyDetailsApi,
 } from '../api/companies.api';
 
 export const companyKeys = {
@@ -14,6 +16,7 @@ export const companyKeys = {
   accessible: ['companies', 'accessible'],
   children: ['companies', 'children'],
   employees: (id) => ['companies', id, 'employees'],
+  details: (id) => ['companies', id, 'details'],
 };
 
 export function useMyCompany(enabled = true) {
@@ -52,6 +55,15 @@ export function useCompanyEmployees(companyId, enabled = true) {
   });
 }
 
+export function useCompanyDetails(companyId, enabled = true) {
+  return useQuery({
+    queryKey: companyKeys.details(companyId),
+    queryFn: () => fetchCompanyDetailsApi(companyId),
+    enabled: Boolean(companyId) && enabled,
+    staleTime: 15_000,
+  });
+}
+
 export function useCompanyMutations() {
   const qc = useQueryClient();
   const invalidate = () => {
@@ -73,5 +85,13 @@ export function useCompanyMutations() {
     onSuccess: invalidate,
   });
 
-  return { createChild, updateChild, uploadLogo };
+  const updateDetails = useMutation({
+    mutationFn: ({ id, ...payload }) => updateCompanyDetailsApi(id, payload),
+    onSuccess: (_data, vars) => {
+      invalidate();
+      if (vars?.id) qc.invalidateQueries({ queryKey: companyKeys.details(vars.id) });
+    },
+  });
+
+  return { createChild, updateChild, uploadLogo, updateDetails };
 }

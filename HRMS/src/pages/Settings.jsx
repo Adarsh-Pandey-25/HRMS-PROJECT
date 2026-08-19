@@ -17,6 +17,8 @@ import { INDUSTRIES, COMPANY_SIZES } from '../lib/constants';
 import { PERMISSION_MODULES, PERMISSION_ACTIONS, MODULE_LABELS, ROLES as RBAC_ROLES, isPrivilegedRole } from '../lib/permissions';
 import { cn, humanize } from '../lib/utils';
 import { invalidateAndRefetch } from '../lib/queryCache';
+import { CompanyLegalFields } from '../components/shared/CompanyLegalFields';
+import { mergeLegalProfile } from '../lib/companyLegal';
 import { DocumentConfigSection } from './settings/DocumentConfigSection';
 import { AttendanceConfigSection } from './settings/AttendanceConfigSection';
 import { LeavePolicySection } from './settings/LeavePolicySection';
@@ -188,7 +190,7 @@ function CompanyProfileSection() {
 
   // Rehydrate after bootstrap loads company_profile from server
   useEffect(() => {
-    setForm(company);
+    setForm({ ...company, ...mergeLegalProfile(company) });
   }, [company]);
 
   useEffect(() => {
@@ -321,7 +323,14 @@ function CompanyProfileSection() {
       </div>
 
       <div className="border-t border-border/60 pt-5">
-        <p className="text-sm font-semibold text-fg mb-3">Primary Contact</p>
+        <p className="text-sm font-semibold text-fg mb-1">Legal & CDD</p>
+        <p className="text-xs text-fg-muted mb-4">
+          GSTIN, directors, founders, and statutory IDs shown on Organizations when someone opens this company. Admin and HR can update these anytime.
+        </p>
+        <CompanyLegalFields form={form} setForm={setForm} />
+      </div>
+
+      <div className="border-t border-border/60 pt-5">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Input label="Contact name" placeholder="e.g. Riya Sharma" value={form.contactName} onChange={(e) => setForm({ ...form, contactName: e.target.value })} />
           <Input label="Contact email" type="email" placeholder="e.g. riya.sharma@company.com" value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} />

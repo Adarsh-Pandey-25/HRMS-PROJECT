@@ -48,23 +48,75 @@ const countEmployees = async (companyId) => {
   return count || 0;
 };
 
-const resolveLogoUrl = async (companyId) => {
+const LEGAL_STR_KEYS = [
+  'legalName', 'gstin', 'pan', 'cin', 'tan', 'incorporationDate', 'natureOfBusiness',
+  'addressLine1', 'addressLine2', 'city', 'state', 'pincode', 'country',
+  'website', 'tagline', 'contactName', 'contactEmail', 'contactPhone',
+];
+
+const publicLegalProfile = (profile = {}) => {
+  const p = profile && typeof profile === 'object' ? profile : {};
+  const people = (list, keys) => (Array.isArray(list) ? list : [])
+    .slice(0, 20)
+    .map((row, i) => {
+      const out = { id: row?.id || `p-${i}` };
+      keys.forEach((k) => { out[k] = String(row?.[k] || '').trim(); });
+      return out;
+    })
+    .filter((row) => row.name);
+
+  return {
+    legalName: p.legalName || '',
+    gstin: p.gstin || '',
+    pan: p.pan || '',
+    cin: p.cin || '',
+    tan: p.tan || '',
+    incorporationDate: p.incorporationDate || '',
+    natureOfBusiness: p.natureOfBusiness || '',
+    addressLine1: p.addressLine1 || '',
+    addressLine2: p.addressLine2 || '',
+    city: p.city || '',
+    state: p.state || '',
+    pincode: p.pincode || '',
+    country: p.country || '',
+    website: p.website || '',
+    tagline: p.tagline || '',
+    contactName: p.contactName || '',
+    contactEmail: p.contactEmail || '',
+    contactPhone: p.contactPhone || '',
+    directors: people(p.directors, ['name', 'din', 'designation']),
+    founders: people(p.founders, ['name', 'role']),
+  };
+};
+
+const loadProfileBits = async (companyId) => {
   try {
-    const profile = await settingsService.getSetting('company_profile', {}, companyId);
-    const logoPath = profile?.logoPath || profile?.logo_path;
-    if (!logoPath) return { logoPath: null, logoUrl: null };
-    const logoUrl = await getSignedUrl(STORAGE_BUCKETS.documents, logoPath, 86400);
-    return { logoPath, logoUrl };
+    const profile = await settingsService.getSetting('company_profile', {}, companyId) || {};
+    const logoPath = profile.logoPath || profile.logo_path || null;
+    let logoUrl = null;
+    if (logoPath) {
+      try {
+        logoUrl = await getSignedUrl(STORAGE_BUCKETS.documents, logoPath, 86400);
+      } catch { /* ignore */ }
+    }
+    return {
+      logoPath,
+      logoUrl,
+      gstin: profile.gstin || '',
+      city: profile.city || '',
+      state: profile.state || '',
+      profile: publicLegalProfile(profile),
+    };
   } catch {
-    return { logoPath: null, logoUrl: null };
+    return { logoPath: null, logoUrl: null, gstin: '', city: '', state: '', profile: publicLegalProfile({}) };
   }
 };
 
-const enrichCompany = async (row, { isHome = false } = {}) => {
+const enrichCompany = async (row, { isHome = false, withProfile = false } = {}) => {
   if (!row) return null;
-  const [employeeCount, logo] = await Promise.all([
+  const [employeeCount, bits] = await Promise.all([
     countEmployees(row.id),
-    resolveLogoUrl(row.id),
+    loadProfileBits(row.id),
   ]);
   return {
     id: row.id,
@@ -76,9 +128,13 @@ const enrichCompany = async (row, { isHome = false } = {}) => {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     employeeCount,
-    logoPath: logo.logoPath,
-    logoUrl: logo.logoUrl,
+    logoPath: bits.logoPath,
+    logoUrl: bits.logoUrl,
+    gstin: bits.gstin,
+    city: bits.city,
+    state: bits.state,
     isHome,
+    ...(withProfile ? { profile: bits.profile } : {}),
   };
 };
 
@@ -319,6 +375,48 @@ const uploadOrgCompanyLogo = async (actorCompanyId, targetCompanyId, file, actor
   };
 };
 
+const getCompanyDetails = async (actorCompanyId, targetCompanyId) => {
+  const row = await assertOrgCompany(actorCompanyId, targetCompanyId);
+  return enrichCompany(row, {
+    isHome: String(targetCompanyId) === String(actorCompanyId),
+    withProfile: true,
+  });
+};
+
+const updateCompanyDetails = async (actorCompanyId, targetCompanyId, patch, actorUserId) => {
+  await assertOrgCompany(actorCompanyId, targetCompanyId);
+  const existing = await settingsService.getSetting('company_profile', {}, targetCompanyId) || {};
+  const next = { ...(existing && typeof existing === 'object' ? existing : {}) };
+  const body = patch && typeof patch === 'object' ? patch : {};
+
+  for (const key of LEGAL_STR_KEYS) {
+    if (body[key] !== undefined && body[key] !== null) {
+      let val = String(body[key]).trim();
+      if (['gstin', 'pan', 'cin', 'tan'].includes(key)) val = val.toUpperCase();
+      next[key] = val.slice(0, key === 'natureOfBusiness' ? 500 : 200);
+    }
+  }
+
+  if (Array.isArray(body.directors)) {
+    next.directors = body.directors.slice(0, 20).map((row, i) => ({
+      id: row?.id || `dir-${i}`,
+      name: String(row?.name || '').trim().slice(0, 120),
+      din: String(row?.din || '').trim().slice(0, 20),
+      designation: String(row?.designation || '').trim().slice(0, 80),
+    })).filter((row) => row.name);
+  }
+  if (Array.isArray(body.founders)) {
+    next.founders = body.founders.slice(0, 20).map((row, i) => ({
+      id: row?.id || `fnd-${i}`,
+      name: String(row?.name || '').trim().slice(0, 120),
+      role: String(row?.role || '').trim().slice(0, 80),
+    })).filter((row) => row.name);
+  }
+
+  await settingsService.setSetting('company_profile', next, actorUserId, targetCompanyId);
+  return getCompanyDetails(actorCompanyId, targetCompanyId);
+};
+
 module.exports = {
   getMyCompany,
   listAccessibleCompanies,
@@ -327,4 +425,6 @@ module.exports = {
   updateChild,
   listCompanyEmployees,
   uploadOrgCompanyLogo,
+  getCompanyDetails,
+  updateCompanyDetails,
 };
