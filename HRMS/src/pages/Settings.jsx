@@ -260,6 +260,35 @@ function CompanyProfileSection() {
 
   return (
     <div className="space-y-5">
+      <div className="rounded-xl border border-border/70 bg-muted/30 p-4">
+        <p className="text-sm font-semibold text-fg">Sidebar brand logo</p>
+        <p className="text-xs text-fg-muted mt-1 mb-3">
+          Admin and HR can replace the wordmark shown at the top of the sidebar. Use a wide PNG or JPG (icon + company name), similar to a finance-dashboard lockup.
+        </p>
+        {displayLogoUrl ? (
+          <div className="mb-3 flex flex-col sm:flex-row sm:items-center gap-3">
+            <div className="flex h-16 items-center justify-start rounded-xl border border-border bg-card px-4 py-2">
+              <img
+                src={displayLogoUrl}
+                alt="Sidebar logo preview"
+                className="h-10 w-auto max-w-[240px] object-contain object-left"
+              />
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-fg truncate">{logoFile?.name || form.logoName || 'Current logo'}</p>
+              <p className="text-xs text-fg-subtle">Applies to the sidebar as soon as you pick a file</p>
+            </div>
+          </div>
+        ) : null}
+        <FileUpload
+          accept=".png,.jpg,.jpeg"
+          multiple={false}
+          maxSizeMB={2}
+          hint="PNG or JPG · up to 2MB · full wordmark recommended"
+          onChange={(files) => uploadLogoNow(files[0] || null)}
+        />
+      </div>
+
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Input label="Company name" required placeholder="e.g. Acme Technologies Pvt. Ltd." value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
         <Select label="Industry" options={INDUSTRIES} placeholder="Select industry" value={form.industry} onChange={(e) => setForm({ ...form, industry: e.target.value })} />
@@ -277,30 +306,6 @@ function CompanyProfileSection() {
             <Input className="flex-1" placeholder="e.g. #6C63FF" value={form.brandColor} onChange={(e) => { setForm({ ...form, brandColor: e.target.value }); if (/^#[0-9a-fA-F]{6}$/.test(e.target.value)) updateCompany({ brandColor: e.target.value }); }} />
           </div>
         </div>
-      </div>
-
-      <div>
-        <p className="text-xs font-medium text-fg-muted mb-1.5">Company logo</p>
-        {displayLogoUrl ? (
-          <div className="mb-3 flex items-center gap-3">
-            <img
-              src={displayLogoUrl}
-              alt="Company logo preview"
-              className="h-16 w-16 rounded-xl object-cover border border-border bg-card"
-            />
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-fg truncate">{logoFile?.name || form.logoName || 'Current logo'}</p>
-              <p className="text-xs text-fg-subtle">Updates the sidebar as soon as the file is selected</p>
-            </div>
-          </div>
-        ) : null}
-        <FileUpload
-          accept=".png,.jpg,.jpeg"
-          multiple={false}
-          maxSizeMB={2}
-          hint="PNG or JPG · up to 2MB"
-          onChange={(files) => uploadLogoNow(files[0] || null)}
-        />
       </div>
 
       <div className="border-t border-border/60 pt-5">
@@ -475,7 +480,7 @@ export default function Settings() {
 
           {active.id === 'company' && (
             <Card>
-              <CardHeader title="Company Profile" subtitle="Basic company information and branding" />
+              <CardHeader title="Company Profile" subtitle="Branding, company details, and contact. Admin and HR can change the sidebar logo here." />
               <div className="p-5 pt-3"><CompanyProfileSection /></div>
             </Card>
           )}

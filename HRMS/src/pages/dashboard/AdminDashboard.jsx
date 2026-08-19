@@ -39,7 +39,7 @@ const ACTIVITY_TONE = {
 
 export default function AdminDashboard({ user }) {
   const { data: api, isLoading, isError } = useDashboardData();
-  const { employees } = useEmployees();
+  const { employees, isFetched: staffLoaded } = useEmployees();
 
   const kpis = api?.kpis || EMPTY_KPI;
   const staffEmployees = useMemo(() => (
@@ -49,10 +49,10 @@ export default function AdminDashboard({ user }) {
     })
   ), [employees]);
 
-  const staffCount = staffEmployees.length || Number(kpis.totalEmployees || 0);
+  const staffCount = staffLoaded ? staffEmployees.length : Number(kpis.totalEmployees || 0);
 
   const donutData = useMemo(() => {
-    if (staffEmployees.length) {
+    if (staffLoaded) {
       const counts = {};
       staffEmployees.forEach((e) => {
         const dept = (e.department || 'Unassigned').trim() || 'Unassigned';
@@ -63,7 +63,7 @@ export default function AdminDashboard({ user }) {
         .map(([name, value]) => ({ name, value }));
     }
     return (api?.byDepartment || []).map((d) => ({ name: d.department, value: d.count }));
-  }, [staffEmployees, api?.byDepartment]);
+  }, [staffLoaded, staffEmployees, api?.byDepartment]);
   const attendance = api?.attendanceToday || EMPTY_ATTENDANCE;
   const pending = api?.pendingApprovals || { leaves: 0, expenses: 0, tickets: 0 };
 

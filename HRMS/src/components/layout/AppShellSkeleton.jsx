@@ -1,5 +1,4 @@
 import { Skeleton } from '../ui';
-import { PageLoader } from './PageLoader';
 
 /** App chrome skeleton — feels faster than a blank full-screen spinner on reload. */
 export function AppShellSkeleton({ children }) {
@@ -20,7 +19,7 @@ export function AppShellSkeleton({ children }) {
         </header>
         <main className="flex-1 overflow-y-auto">
           <div className="mx-auto max-w-[1600px] px-4 sm:px-6 py-6">
-            {children ?? <PageLoader />}
+            {children}
           </div>
         </main>
       </div>

@@ -19,15 +19,15 @@ const ATTENDANCE_STATS = [
 
 export default function HRDashboard({ user }) {
   const { data: api, isLoading } = useDashboardData();
-  const { employees } = useEmployees();
+  const { employees, isFetched: staffLoaded } = useEmployees();
   const kpis = api?.kpis || {};
   const staffCount = useMemo(() => {
     const fromDirectory = (employees || []).filter((e) => {
       const role = String(e.role || '').toLowerCase().trim();
       return role !== 'admin' && role !== 'super_admin';
     }).length;
-    return fromDirectory || Number(kpis.totalEmployees || 0);
-  }, [employees, kpis.totalEmployees]);
+    return staffLoaded ? fromDirectory : Number(kpis.totalEmployees || 0);
+  }, [employees, staffLoaded, kpis.totalEmployees]);
   const attendance = api?.attendanceSummary || {};
   const pendingLeaves = api?.pendingLeaveApprovals?.items || [];
   const pendingExpenses = api?.pendingExpenseClaims?.items || [];

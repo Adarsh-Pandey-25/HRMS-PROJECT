@@ -6,8 +6,7 @@ import { visibleNav, visiblePinnedItems } from '../../lib/constants';
 import { NavAccordion } from './NavAccordion';
 import { useUIStore } from '../../store/uiStore';
 import { useAuthStore } from '../../store/authStore';
-import { useCompanyStore } from '../../store/companyStore';
-import { CompanyBrandMark } from './CompanyBrandMark';
+import { SidebarBrand } from './CompanyBrandMark';
 import { useSettingsStore } from '../../store/settingsStore';
 import { handleMenuArrowKeys } from '../../hooks/useDropdown';
 import { prefetchRoute } from '../../lib/routePrefetch';
@@ -198,8 +197,6 @@ export function Sidebar() {
   const toggle = useUIStore((s) => s.toggleSidebar);
   const role = useAuthStore((s) => s.role);
   const rolePermissions = useSettingsStore((s) => s.rolePermissions);
-  const companyName = useCompanyStore((s) => s.company.name);
-  const logoUrl = useCompanyStore((s) => s.company.logoUrl);
   const navItems = visibleNav(role, rolePermissions);
   const pinnedItems = visiblePinnedItems(role, rolePermissions);
 
@@ -207,23 +204,10 @@ export function Sidebar() {
     <aside
       className={cn(
         'hidden lg:flex flex-col shrink-0 bg-sidebar border-r border-border/60 transition-all duration-200',
-        collapsed ? 'w-[76px]' : 'w-[224px]'
+        collapsed ? 'w-[76px]' : 'w-64'
       )}
     >
-      {/* Brand → Dashboard */}
-      <Link
-        to="/dashboard"
-        className="flex items-center gap-2.5 h-16 px-5 shrink-0 hover:opacity-90 transition-opacity focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
-        title="Go to Dashboard"
-      >
-        <CompanyBrandMark name={companyName} logoUrl={logoUrl} />
-        {!collapsed && (
-          <div className="min-w-0">
-            <p className="text-sm font-semibold text-fg leading-tight truncate">{companyName}</p>
-            <p className="text-[10px] text-fg-subtle leading-tight">HR Suite</p>
-          </div>
-        )}
-      </Link>
+      <SidebarBrand collapsed={collapsed} />
 
       {collapsed ? (
         <CollapsedRail items={navItems} pinned={pinnedItems} />
