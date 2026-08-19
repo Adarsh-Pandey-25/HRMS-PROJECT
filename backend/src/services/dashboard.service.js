@@ -34,7 +34,8 @@ const getActiveEmployees = async (companyId = null) => {
     .order('first_name');
 
   if (companyId) query = query.eq('company_id', companyId);
-  query = query.not('role', 'in', '(admin,super_admin)');
+  // employees.role is a Postgres enum (admin/hr/manager/employee) — never include super_admin here
+  query = query.neq('role', 'admin');
 
   const { data, error } = await query;
   if (error) throw new BadRequestError(error.message);

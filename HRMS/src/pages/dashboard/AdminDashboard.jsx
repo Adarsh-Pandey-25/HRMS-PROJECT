@@ -130,7 +130,7 @@ export default function AdminDashboard({ user }) {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard label="Total Employees" value={staffCount} icon={Users} tone="primary" delta={kpis.employeeTrendPercent ?? kpis.totalDelta} deltaLabel="vs last month" to="/employees" />
-        <StatCard label="Present Today" value={attendance.present ?? kpis.presentToday} icon={UserCheck} tone="success" footer={`of ${attendance.teamSize ?? attendance.total} team members`} to="/attendance/team" />
+        <StatCard label="Present Today" value={attendance.present ?? kpis.presentToday} icon={UserCheck} tone="success" footer={`of ${attendance.teamSize ?? attendance.total ?? staffCount} team members`} to="/attendance/team" />
         <StatCard label="On Leave Today" value={kpis.onLeaveToday} icon={CalendarOff} tone="warning" footer="Across all teams" to="/leave/team" />
         <StatCard label="Open Positions" value={kpis.openPositions} icon={Briefcase} tone="info" footer={kpis.openPositionsPlaceholder ? 'Recruitment module' : 'Actively hiring'} to="/recruitment/jobs" />
       </div>
@@ -193,7 +193,7 @@ export default function AdminDashboard({ user }) {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card>
-          <CardHeader title="Attendance Today" subtitle={`${attendance.teamSize ?? attendance.total} team members`} />
+          <CardHeader title="Attendance Today" subtitle={`${attendance.teamSize ?? attendance.total ?? staffCount} team members`} />
           <div className="p-5 pt-3 grid grid-cols-2 gap-3">
             {ATTENDANCE_STATS.map((s) => (
               <div key={s.key} className="rounded-xl bg-muted/50 p-3">
