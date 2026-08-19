@@ -1,10 +1,9 @@
 import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { Megaphone, ArrowRight } from 'lucide-react';
-import { Card, CardHeader, Badge, ProgressBar } from '../../components/ui';
+import { Card, CardHeader, Badge } from '../../components/ui';
 import { useActiveAnnouncements } from '../../hooks/useAnnouncements';
 import { PRIORITY_TONE } from '../../lib/constants';
-import { MOODS } from '../../data';
 import { formatDate, timeAgo, humanize } from '../../lib/utils';
 
 export function Greeting({ user, dateLabel }) {
@@ -49,33 +48,6 @@ export function RecentAnnouncements({ count = 3 }) {
             <Badge tone={PRIORITY_TONE[a.priority] || 'neutral'}>{humanize(a.priority)}</Badge>
             <ArrowRight className="h-4 w-4 text-fg-subtle opacity-0 group-hover:opacity-100 transition-opacity" />
           </Link>
-        ))}
-      </div>
-    </Card>
-  );
-}
-
-/** checkins: [{ mood, emoji?, count? }] */
-export function TeamMoodCard({ checkins, title = 'Team Mood', subtitle }) {
-  const hasCounts = checkins.some((c) => typeof c.count === 'number');
-  const total = hasCounts ? checkins.reduce((s, c) => s + (c.count || 0), 0) : checkins.length;
-  const counts = hasCounts
-    ? checkins
-    : MOODS.map((m) => ({ ...m, count: checkins.filter((c) => c.mood === m.key || c.mood === m.label).length }));
-
-  return (
-    <Card>
-      <CardHeader title={title} subtitle={subtitle ?? `${total} check-ins today`} />
-      <div className="p-5 pt-3 space-y-2.5">
-        {total === 0 ? (
-          <p className="text-sm text-fg-subtle">No check-ins yet today.</p>
-        ) : counts.map((m) => (
-          <div key={m.key || m.mood} className="flex items-center gap-3">
-            <span className="text-lg leading-none">{m.emoji}</span>
-            <span className="text-sm text-fg-muted w-16 shrink-0">{m.label || m.mood}</span>
-            <ProgressBar value={total ? ((m.count || 0) / total) * 100 : 0} tone={m.tone || 'primary'} className="flex-1" />
-            <span className="text-xs text-fg-subtle w-5 text-right tabular-nums">{m.count || 0}</span>
-          </div>
         ))}
       </div>
     </Card>

@@ -8,6 +8,7 @@ import { Card, CardHeader, StatCard, Avatar, Skeleton } from '../../components/u
 import { ChartSkeleton } from '../../components/charts/ChartSkeleton';
 import { ErrorBoundary } from '../../components/layout/ErrorBoundary';
 import { useDashboardData } from '../../hooks/useDashboardData';
+import { useEmployees } from '../../hooks/useEmployees';
 import { employeeProfilePath } from '../../lib/employeeRoutes';
 
 const EMPTY_KPI = { totalEmployees: 0, onLeaveToday: 0, openPositions: 0, newHires: 0 };
@@ -16,7 +17,7 @@ const EMPTY_ATTENDANCE = { present: 0, wfh: 0, late: 0, absent: 0 };
 import HeadcountDrilldownChart from '../../components/charts/HeadcountDrilldownChart';
 const DepartmentPie3D = lazy(() => import('../../components/charts/DepartmentPie3D'));
 import { formatDate, formatCompactINR, timeAgo, cn } from '../../lib/utils';
-import { Greeting, RecentAnnouncements, PendingList, TeamMoodCard } from './shared';
+import { Greeting, RecentAnnouncements, PendingList } from './shared';
 
 const ATTENDANCE_STATS = [
   { key: 'present', label: 'Present', icon: UserCheck, tone: 'text-success bg-success/10' },
@@ -38,14 +39,33 @@ const ACTIVITY_TONE = {
 
 export default function AdminDashboard({ user }) {
   const { data: api, isLoading, isError } = useDashboardData();
+  const { employees } = useEmployees();
 
   const kpis = api?.kpis || EMPTY_KPI;
+  const staffEmployees = useMemo(() => (
+    (employees || []).filter((e) => {
+      const role = String(e.role || '').toLowerCase().trim();
+      return role !== 'admin' && role !== 'super_admin';
+    })
+  ), [employees]);
+
+  const staffCount = staffEmployees.length || Number(kpis.totalEmployees || 0);
+
+  const donutData = useMemo(() => {
+    if (staffEmployees.length) {
+      const counts = {};
+      staffEmployees.forEach((e) => {
+        const dept = (e.department || 'Unassigned').trim() || 'Unassigned';
+        counts[dept] = (counts[dept] || 0) + 1;
+      });
+      return Object.entries(counts)
+        .sort((a, b) => b[1] - a[1])
+        .map(([name, value]) => ({ name, value }));
+    }
+    return (api?.byDepartment || []).map((d) => ({ name: d.department, value: d.count }));
+  }, [staffEmployees, api?.byDepartment]);
   const attendance = api?.attendanceToday || EMPTY_ATTENDANCE;
   const pending = api?.pendingApprovals || { leaves: 0, expenses: 0, tickets: 0 };
-  const donutData = useMemo(
-    () => (api?.byDepartment || []).map((d) => ({ name: d.department, value: d.count })),
-    [api?.byDepartment]
-  );
 
   const payroll = api?.payrollCost;
   const thisMonthCost = payroll ? { cost: payroll.current } : { cost: 0 };
@@ -83,13 +103,6 @@ export default function AdminDashboard({ user }) {
     at: a.sortAt || a.at,
   }));
 
-  const todaysMood = useMemo(() => {
-    if (api?.teamMood?.items) {
-      return api.teamMood.items.map((m) => ({ mood: m.mood, emoji: m.emoji, count: m.count }));
-    }
-    return [];
-  }, [api?.teamMood]);
-
   const pendingItems = [
     { label: 'Leave requests', count: pending.leaves ?? pending.leave, icon: FileClock, to: '/leave/approvals', tone: 'text-info bg-info/10' },
     { label: 'Expense claims', count: pending.expenses ?? pending.expense, icon: Receipt, to: '/expenses/approvals', tone: 'text-warning bg-warning/10' },
@@ -116,7 +129,7 @@ export default function AdminDashboard({ user }) {
       )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard label="Total Employees" value={kpis.totalEmployees} icon={Users} tone="primary" delta={kpis.employeeTrendPercent ?? kpis.totalDelta} deltaLabel="vs last month" to="/employees" />
+        <StatCard label="Total Employees" value={staffCount} icon={Users} tone="primary" delta={kpis.employeeTrendPercent ?? kpis.totalDelta} deltaLabel="vs last month" to="/employees" />
         <StatCard label="Present Today" value={attendance.present ?? kpis.presentToday} icon={UserCheck} tone="success" footer={`of ${attendance.teamSize ?? attendance.total} team members`} to="/attendance/team" />
         <StatCard label="On Leave Today" value={kpis.onLeaveToday} icon={CalendarOff} tone="warning" footer="Across all teams" to="/leave/team" />
         <StatCard label="Open Positions" value={kpis.openPositions} icon={Briefcase} tone="info" footer={kpis.openPositionsPlaceholder ? 'Recruitment module' : 'Actively hiring'} to="/recruitment/jobs" />
@@ -135,7 +148,7 @@ export default function AdminDashboard({ user }) {
         <Card>
           <CardHeader title="By Department" subtitle="Hover a slice for details" />
           <div className="px-4 pb-5 pt-3">
-            <ErrorBoundary variant="inline" label="3D chart unavailable on this device">
+            <ErrorBoundary variant="inline" label="Chart unavailable">
               <Suspense fallback={<ChartSkeleton height={340} />}>
                 <DepartmentPie3D data={donutData} />
               </Suspense>
@@ -217,8 +230,6 @@ export default function AdminDashboard({ user }) {
           </div>
         </Card>
       </div>
-
-      <TeamMoodCard checkins={todaysMood} title="Team Mood" subtitle={`${api?.teamMood?.totalCheckIns ?? todaysMood.length} check-ins today`} />
 
       <Card>
         <CardHeader title="Recent Activity" subtitle="Latest across the organisation" />

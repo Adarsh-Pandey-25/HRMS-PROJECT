@@ -1,12 +1,14 @@
+import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Users, UserPlus, CalendarOff, Briefcase, UserCheck, Home, Clock, UserX, Video,
 } from 'lucide-react';
 import { Card, CardHeader, StatCard, Avatar, StatusBadge, Skeleton } from '../../components/ui';
 import { useDashboardData } from '../../hooks/useDashboardData';
+import { useEmployees } from '../../hooks/useEmployees';
 import { formatDate, cn } from '../../lib/utils';
 import { employeeProfilePath } from '../../lib/employeeRoutes';
-import { Greeting, RecentAnnouncements, TeamMoodCard } from './shared';
+import { Greeting, RecentAnnouncements } from './shared';
 
 const ATTENDANCE_STATS = [
   { key: 'present', label: 'Present', icon: UserCheck, tone: 'text-success bg-success/10' },
@@ -17,13 +19,20 @@ const ATTENDANCE_STATS = [
 
 export default function HRDashboard({ user }) {
   const { data: api, isLoading } = useDashboardData();
+  const { employees } = useEmployees();
   const kpis = api?.kpis || {};
+  const staffCount = useMemo(() => {
+    const fromDirectory = (employees || []).filter((e) => {
+      const role = String(e.role || '').toLowerCase().trim();
+      return role !== 'admin' && role !== 'super_admin';
+    }).length;
+    return fromDirectory || Number(kpis.totalEmployees || 0);
+  }, [employees, kpis.totalEmployees]);
   const attendance = api?.attendanceSummary || {};
   const pendingLeaves = api?.pendingLeaveApprovals?.items || [];
   const pendingExpenses = api?.pendingExpenseClaims?.items || [];
   const recentHires = api?.recentHires?.items || [];
   const interviews = api?.upcomingInterviews?.items || [];
-  const moodItems = api?.teamMood?.items || [];
 
   if (isLoading) {
     return (
@@ -41,7 +50,7 @@ export default function HRDashboard({ user }) {
       <Greeting user={user} dateLabel={api?.greeting?.date} />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard label="Total Employees" value={kpis.totalEmployees} icon={Users} tone="primary" delta={kpis.employeeTrendPercent} deltaLabel="vs last month" to="/employees" />
+        <StatCard label="Total Employees" value={staffCount} icon={Users} tone="primary" delta={kpis.employeeTrendPercent} deltaLabel="vs last month" to="/employees" />
         <StatCard label="New This Month" value={kpis.newThisMonth} icon={UserPlus} tone="teal" delta={kpis.newHiresTrendPercent} deltaLabel="vs last month" to="/employees?hired=this-month" />
         <StatCard label="On Leave Today" value={kpis.onLeaveToday} icon={CalendarOff} tone="warning" footer="Across all teams" to="/leave/team" />
         <StatCard label="Open Job Positions" value={kpis.openPositions} icon={Briefcase} tone="info" footer="Recruitment module" to="/recruitment/jobs" />
@@ -139,7 +148,6 @@ export default function HRDashboard({ user }) {
         </div>
       </Card>
 
-      <TeamMoodCard checkins={moodItems.map((m) => ({ mood: m.mood, emoji: m.emoji, count: m.count }))} title="Team Mood" subtitle={`${api?.teamMood?.totalCheckIns ?? 0} check-ins today`} />
       <RecentAnnouncements />
     </div>
   );

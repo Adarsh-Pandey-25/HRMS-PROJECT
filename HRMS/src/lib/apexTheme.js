@@ -2,7 +2,17 @@ import { useUIStore } from '../store/uiStore';
 
 /** Shared ApexCharts palette — mirrors CHART_COLORS but tuned for the premium
  *  gradient/3D-style charts. */
-export const CHART_PALETTE = ['#6C63FF', '#14B8A6', '#F59E0B', '#EF4444', '#22C55E', '#3B82F6', '#EC4899'];
+export const CHART_PALETTE = [
+  '#2563EB',
+  '#14B8A6',
+  '#F59E0B',
+  '#EF4444',
+  '#22C55E',
+  '#38BDF8',
+  '#EC4899',
+  '#3B82F6',
+  '#8B5CF6',
+];
 
 /**
  * Returns the theme-aware fragments every ApexChart in the app shares. Reads

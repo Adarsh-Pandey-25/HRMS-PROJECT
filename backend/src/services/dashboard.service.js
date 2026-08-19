@@ -34,11 +34,20 @@ const getActiveEmployees = async (companyId = null) => {
     .order('first_name');
 
   if (companyId) query = query.eq('company_id', companyId);
+  query = query.not('role', 'in', '(admin,super_admin)');
 
   const { data, error } = await query;
   if (error) throw new BadRequestError(error.message);
   return data || [];
 };
+
+const isAdminRole = (employee) => {
+  const role = String(employee?.role || '').toLowerCase();
+  return role === 'admin' || role === 'super_admin';
+};
+
+/** Headcount / directory totals exclude company admins. */
+const withoutAdmins = (employees) => (employees || []).filter((e) => !isAdminRole(e));
 
 const getHeadcountTrend = (employees, months = 12) => {
   const now = nowIST();
@@ -614,6 +623,7 @@ const getUpcomingInterviewsPlaceholder = () => ({
 
 const getAdminDashboard = async (companyId = null) => {
   const employees = await getActiveEmployees(companyId);
+  const staff = withoutAdmins(employees);
   const companyEmployeeIds = employees.map((e) => e.id);
   const teamEmployees = employees.filter((e) => e.role === 'employee' || e.role === 'manager');
   const teamIds = teamEmployees.map((e) => e.id);
@@ -638,23 +648,23 @@ const getAdminDashboard = async (companyId = null) => {
     getRecentActivity(employees),
   ]);
 
-  const newHires = getNewHiresThisMonth(employees);
+  const newHires = getNewHiresThisMonth(staff);
 
   return {
     greeting: {
       date: now.format('dddd, MMMM D, YYYY'),
     },
     kpis: {
-      totalEmployees: employees.length,
-      employeeTrendPercent: getEmployeeTrendPercent(employees),
+      totalEmployees: staff.length,
+      employeeTrendPercent: getEmployeeTrendPercent(staff),
       presentToday: attendanceToday.present,
       teamSize: attendanceToday.teamSize,
       onLeaveToday,
       openPositions: 0,
       openPositionsPlaceholder: true,
     },
-    headcountTrend: getHeadcountTrend(employees, 12),
-    byDepartment: getDepartmentBreakdown(employees),
+    headcountTrend: getHeadcountTrend(staff, 12),
+    byDepartment: getDepartmentBreakdown(staff),
     payrollCost: {
       current: payroll.current,
       previous: payroll.previous,
@@ -676,12 +686,13 @@ const getAdminDashboard = async (companyId = null) => {
 
 const getHrDashboard = async (companyId = null) => {
   const employees = await getActiveEmployees(companyId);
+  const staff = withoutAdmins(employees);
   const companyEmployeeIds = employees.map((e) => e.id);
   const teamEmployees = employees.filter((e) => e.role === 'employee' || e.role === 'manager');
   const teamIds = teamEmployees.map((e) => e.id);
 
   const now = nowIST();
-  const newHiresThisMonth = getNewHiresThisMonth(employees);
+  const newHiresThisMonth = getNewHiresThisMonth(staff);
 
   const [
     attendanceSummary,
@@ -704,10 +715,10 @@ const getHrDashboard = async (companyId = null) => {
       date: now.format('dddd, MMMM D, YYYY'),
     },
     kpis: {
-      totalEmployees: employees.length,
-      employeeTrendPercent: getEmployeeTrendPercent(employees),
+      totalEmployees: staff.length,
+      employeeTrendPercent: getEmployeeTrendPercent(staff),
       newThisMonth: newHiresThisMonth.length,
-      newHiresTrendPercent: getNewHiresTrendPercent(employees),
+      newHiresTrendPercent: getNewHiresTrendPercent(staff),
       onLeaveToday,
       openPositions: 0,
       openPositionsPlaceholder: true,

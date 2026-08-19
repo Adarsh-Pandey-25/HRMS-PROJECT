@@ -4,7 +4,7 @@ import { Card, CardHeader, StatCard, Avatar, StatusBadge, Badge, ProgressBar, Sk
 import { useDashboardData } from '../../hooks/useDashboardData';
 import { formatDate, cn } from '../../lib/utils';
 import { employeeProfilePath } from '../../lib/employeeRoutes';
-import { Greeting, RecentAnnouncements, TeamMoodCard } from './shared';
+import { Greeting, RecentAnnouncements } from './shared';
 
 const ATTENDANCE_STATS = [
   { key: 'present', label: 'Present', icon: UserCheck, tone: 'text-success bg-success/10' },
@@ -21,7 +21,6 @@ export default function ManagerDashboard({ user }) {
   const teamExpenses = api?.pendingExpenseApprovals?.items || [];
   const teamPerf = api?.teamPerformance?.items || [];
   const team = api?.myTeam?.items || [];
-  const moodItems = api?.teamMood?.items || [];
 
   if (isLoading) {
     return (
@@ -141,7 +140,6 @@ export default function ManagerDashboard({ user }) {
         </Card>
       </div>
 
-      <TeamMoodCard checkins={moodItems.map((m) => ({ mood: m.mood, emoji: m.emoji, count: m.count }))} title="Team Mood" subtitle={`${api?.teamMood?.totalCheckIns ?? 0} check-ins today`} />
       <RecentAnnouncements />
     </div>
   );

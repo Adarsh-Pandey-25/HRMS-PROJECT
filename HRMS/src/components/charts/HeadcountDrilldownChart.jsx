@@ -44,7 +44,14 @@ function useMonthlyHeadcount(employees) {
 export default function HeadcountDrilldownChart() {
   const t = useApexTheme();
   const { employees } = useEmployees();
-  const months = useMonthlyHeadcount(employees);
+  const staff = useMemo(
+    () => (employees || []).filter((e) => {
+      const role = String(e.role || '').toLowerCase();
+      return role !== 'admin' && role !== 'super_admin';
+    }),
+    [employees]
+  );
+  const months = useMonthlyHeadcount(staff);
   const [drillKey, setDrillKey] = useState(null);
   const drilled = drillKey ? months.find((m) => m.key === drillKey) : null;
 
