@@ -13,6 +13,7 @@ const settingsService = require('./settings.service');
 const logger = require('../utils/logger');
 const { getCompanyId, withCompanyId, newCompanyId, companyIdFields } = require('../utils/tenant');
 const tenantService = require('./tenant.service');
+const { uploadCompanyLogo } = require('./storage.service');
 
 const SALT_ROUNDS = 10;
 
@@ -585,6 +586,7 @@ const bootstrapAdmin = async ({
   company_profile = null,
   verificationToken = null,
   inviteToken = null,
+  logoFile = null,
 }) => {
   if (!email) throw new BadRequestError('email is required');
   if (!first_name) throw new BadRequestError('first_name is required');
@@ -626,6 +628,24 @@ const bootstrapAdmin = async ({
     slug: `co-${String(companyId).replace(/-/g, '')}`,
   });
 
+  const profile = {
+    ...(company_profile && typeof company_profile === 'object' ? company_profile : {}),
+    name: companyName,
+  };
+
+  if (logoFile) {
+    const ext = String(logoFile.originalname || '').split('.').pop().toLowerCase();
+    if (!['png', 'jpg', 'jpeg'].includes(ext)) {
+      throw new BadRequestError('Logo must be PNG or JPG');
+    }
+    if (logoFile.size > 2 * 1024 * 1024) {
+      throw new BadRequestError('Logo must be 2MB or smaller');
+    }
+    const { path } = await uploadCompanyLogo(logoFile, companyId);
+    profile.logoPath = path;
+    profile.logoName = logoFile.originalname;
+  }
+
   const { data, error } = await supabaseAdmin
     .from('employees')
     .insert({
@@ -646,10 +666,10 @@ const bootstrapAdmin = async ({
     .single();
   if (error) throw new BadRequestError(error.message);
 
-  await settingsService.seedCompanySettings(companyId, company_profile || {
-    name: companyName,
-    adminName: `${first_name} ${last}`.trim(),
-    adminEmail: normalizedEmail,
+  await settingsService.seedCompanySettings(companyId, {
+    ...profile,
+    adminName: profile.adminName || `${first_name} ${last}`.trim(),
+    adminEmail: profile.adminEmail || normalizedEmail,
   }, data.id);
 
   await superAdminService.consumeInvite(inviteToken, companyId);

@@ -1,4 +1,4 @@
-import { apiRequest, setStoredToken } from './client';
+import { apiRequest, apiUpload, setStoredToken } from './client';
 import { mapEmployeeFromApi } from '../lib/case';
 
 export async function loginApi(email, password) {
@@ -66,11 +66,29 @@ export async function verifyOnboardingOtpApi(email, otp) {
 }
 
 /** Create a company + first admin during onboarding (requires inviteToken). */
-export async function bootstrapAdminApi(payload) {
+export async function bootstrapAdminApi(payload, logoFile) {
+  if (logoFile) {
+    const form = new FormData();
+    form.append('email', payload.email || payload.admin_email || '');
+    form.append('admin_email', payload.admin_email || payload.email || '');
+    form.append('admin_name', payload.admin_name || '');
+    if (payload.verificationToken) form.append('verificationToken', payload.verificationToken);
+    if (payload.inviteToken) form.append('inviteToken', payload.inviteToken);
+    form.append('company_profile', JSON.stringify(payload.company_profile || {}));
+    form.append('logo', logoFile);
+    return apiUpload({
+      method: 'POST',
+      url: '/auth/bootstrap-admin',
+      data: form,
+      timeout: 60_000,
+    });
+  }
+
   return apiRequest({
     method: 'POST',
     url: '/auth/bootstrap-admin',
     data: payload,
+    timeout: 60_000,
   });
 }
 

@@ -4,6 +4,8 @@ const { authenticate } = require('../middleware/auth.middleware');
 const { isHROrAdmin } = require('../middleware/role.middleware');
 const { validate } = require('../middleware/validation.middleware');
 const { authLimiter, bootstrapLimiter, onboardingOtpLimiter } = require('../middleware/rateLimiter.middleware');
+const { optionalLogoUpload } = require('../middleware/upload.middleware');
+const { BadRequestError } = require('../utils/errors');
 const {
   registerRules, loginRules, changePasswordRules,
   forgotPasswordRules, resetPasswordRules, bootstrapRules,
@@ -34,9 +36,22 @@ router.get(
   onboardingOtpLimiter,
   authController.peekOnboardingInvite
 );
+const parseBootstrapFields = (req, res, next) => {
+  if (typeof req.body?.company_profile === 'string') {
+    try {
+      req.body.company_profile = JSON.parse(req.body.company_profile);
+    } catch {
+      return next(new BadRequestError('Invalid company_profile payload'));
+    }
+  }
+  next();
+};
+
 router.post(
   '/bootstrap-admin',
   bootstrapLimiter,
+  optionalLogoUpload,
+  parseBootstrapFields,
   bootstrapRules,
   validate,
   authController.bootstrapAdmin

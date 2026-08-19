@@ -33,9 +33,10 @@ export function FileUpload({
   maxSizeMB = 5,
   hint = 'PDF, JPG or PNG · up to 5MB each',
   onChange,
+  value = null,
 }) {
   const inputRef = useRef();
-  const [files, setFiles] = useState([]);
+  const [files, setFiles] = useState(() => (value ? [value] : []));
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState('');
 

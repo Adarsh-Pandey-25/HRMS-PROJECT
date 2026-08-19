@@ -136,6 +136,7 @@ const bootstrapAdmin = async (req, res, next) => {
       company_profile: body.company_profile || body.companyProfile || null,
       verificationToken: body.verificationToken || body.verification_token,
       inviteToken: body.inviteToken || body.invite_token,
+      logoFile: req.file || null,
     });
     successResponse(res, 'Admin account ready', employee, null, 201);
   } catch (err) { next(err); }

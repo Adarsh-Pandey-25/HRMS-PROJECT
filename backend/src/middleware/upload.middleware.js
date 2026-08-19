@@ -37,6 +37,13 @@ const upload = multer({
   fileFilter,
 });
 
+/** Parse multipart only when a logo is attached; leave JSON bodies alone. */
+const optionalLogoUpload = (req, res, next) => {
+  const contentType = String(req.headers['content-type'] || '');
+  if (!contentType.includes('multipart/form-data')) return next();
+  return upload.single('logo')(req, res, next);
+};
+
 const handleMulterError = (err, req, res, next) => {
   if (err instanceof multer.MulterError) {
     if (err.code === 'LIMIT_FILE_SIZE') {
@@ -47,4 +54,4 @@ const handleMulterError = (err, req, res, next) => {
   next(err);
 };
 
-module.exports = { upload, handleMulterError };
+module.exports = { upload, handleMulterError, optionalLogoUpload };

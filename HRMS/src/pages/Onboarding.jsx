@@ -152,7 +152,7 @@ export default function Onboarding() {
   const [inviteStatus, setInviteStatus] = useState(inviteToken ? 'loading' : 'missing');
   const [inviteMeta, setInviteMeta] = useState(null);
   const [step, setStep] = useState(0);
-  const [logoName, setLogoName] = useState(null);
+  const [logoFile, setLogoFile] = useState(null);
   const [otp, setOtp] = useState('');
   const [otpSending, setOtpSending] = useState(false);
   const [otpVerifying, setOtpVerifying] = useState(false);
@@ -340,13 +340,13 @@ export default function Onboarding() {
           adminName: data.adminName,
           adminEmail: data.adminEmail,
         },
-      });
+      }, logoFile);
 
       completeOnboarding({
         ...rest,
         name: companyName,
         size: companySize,
-        logoName,
+        logoName: logoFile?.name || null,
         adminName: data.adminName,
         adminEmail: data.adminEmail,
         companyId: admin?.companyId || admin?.company_id || null,
@@ -528,7 +528,8 @@ export default function Onboarding() {
                       multiple={false}
                       maxSizeMB={2}
                       hint="PNG or JPG · up to 2MB"
-                      onChange={(files) => setLogoName(files[0]?.name ?? null)}
+                      value={logoFile}
+                      onChange={(files) => setLogoFile(files[0] || null)}
                     />
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -624,7 +625,7 @@ export default function Onboarding() {
                       ['Emergency', [values.emergencyName, values.emergencyPhone, values.emergencyRelation].filter(Boolean).join(' · ') || '—'],
                     ]],
                     ['Brand', [
-                      ['Logo', logoName || 'Not uploaded'], ['Brand color', values.brandColor], ['Tagline', values.tagline || '—'],
+                      ['Logo', logoFile?.name || 'Not uploaded'], ['Brand color', values.brandColor], ['Tagline', values.tagline || '—'],
                     ]],
                     ['Admin account', [
                       ['Name', values.adminName],

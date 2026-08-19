@@ -48,6 +48,14 @@ export function registerLogoutHandler(fn) {
 api.interceptors.request.use((config) => {
   // Cookie session only — do not attach Bearer from localStorage.
   localStorage.removeItem(TOKEN_KEY);
+  if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
+    if (config.headers && typeof config.headers.delete === 'function') {
+      config.headers.delete('Content-Type');
+    } else if (config.headers) {
+      delete config.headers['Content-Type'];
+      delete config.headers['content-type'];
+    }
+  }
   return config;
 });
 
@@ -109,11 +117,14 @@ export async function apiRequestPaginated(config) {
   return { items: toCamelCase(body) || [], meta: null };
 }
 
-/** Multipart form upload (receipts, documents). */
+/** Multipart form upload (receipts, documents, logos). */
 export async function apiUpload(config) {
   const res = await api({
     ...config,
-    headers: { ...config.headers, 'Content-Type': 'multipart/form-data' },
+    headers: {
+      ...config.headers,
+      'Content-Type': undefined,
+    },
   });
   return unwrapApiData(res);
 }
