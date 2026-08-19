@@ -8,8 +8,8 @@ const MIME_BY_EXTENSION = {
   pdf: ['application/pdf'],
   doc: ['application/msword'],
   docx: ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
-  jpg: ['image/jpeg'],
-  jpeg: ['image/jpeg'],
+  jpg: ['image/jpeg', 'image/jpg'],
+  jpeg: ['image/jpeg', 'image/jpg'],
   png: ['image/png'],
 };
 
@@ -20,7 +20,8 @@ const fileFilter = (req, file, cb) => {
     return cb(new BadRequestError(`File type .${ext} not allowed`), false);
   }
   const allowedMimes = MIME_BY_EXTENSION[ext] || [];
-  if (!allowedMimes.includes(String(file.mimetype || '').toLowerCase())) {
+  const mime = String(file.mimetype || '').toLowerCase();
+  if (allowedMimes.length && mime && mime !== 'application/octet-stream' && !allowedMimes.includes(mime)) {
     return cb(new BadRequestError('File content type does not match its extension'), false);
   }
   cb(null, true);

@@ -19,6 +19,21 @@ import {
 import { useAuthStore } from '../store/authStore';
 import { useSettingsStore } from '../store/settingsStore';
 
+function OnboardingLogoPreview({ file, className = 'h-16 w-16 rounded-xl object-cover border border-border bg-card' }) {
+  const [url, setUrl] = useState(null);
+  useEffect(() => {
+    if (!file) {
+      setUrl(null);
+      return undefined;
+    }
+    const objectUrl = URL.createObjectURL(file);
+    setUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [file]);
+  if (!file || !url) return null;
+  return <img src={url} alt="Company logo preview" className={className} />;
+}
+
 const STEPS = [
   { label: 'Company' },
   { label: 'Contact' },
@@ -354,6 +369,10 @@ export default function Onboarding() {
         companyId: admin?.companyId || admin?.company_id || null,
       });
 
+      if (logoFile && !admin?.logoPath) {
+        toast.error('Workspace is live, but the logo did not save. Upload it again in Settings.');
+      }
+
       // End any previous company session so Launch does not bounce to the old dashboard.
       await useAuthStore.getState().logout({ silent: false });
       try {
@@ -520,50 +539,60 @@ export default function Onboarding() {
                 </div>
               )}
 
-              {/* Step 3 — Brand & Identity */}
-              {step === 2 && (
-                <div className="space-y-5">
-                  <div>
-                    <p className="text-xs font-medium text-fg-muted mb-1.5">Company logo</p>
-                    <FileUpload
-                      accept=".png,.jpg,.jpeg"
-                      multiple={false}
-                      maxSizeMB={2}
-                      hint="PNG or JPG · up to 2MB"
-                      value={logoFile}
-                      onChange={(files) => setLogoFile(files[0] || null)}
-                    />
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div className="flex flex-col gap-1.5">
-                      <label className="text-xs font-medium text-fg-muted">
-                        Primary brand color <span className="text-danger">*</span>
-                      </label>
-                      <div className="flex items-center gap-2.5">
-                        <input
-                          type="color"
-                          className="h-10 w-12 rounded-input border border-border bg-card cursor-pointer"
-                          {...register('brandColor')}
-                        />
-                        <Input
-                          className="flex-1"
-                          placeholder="#6C63FF"
-                          value={values.brandColor}
-                          onChange={(e) => setValue('brandColor', e.target.value, { shouldValidate: true })}
-                          error={errors.brandColor?.message}
-                        />
+              {/* Step 3 — Brand & Identity (kept mounted so the logo file is not lost) */}
+              <div className={step === 2 ? 'space-y-5' : 'hidden'}>
+                <div>
+                  <p className="text-xs font-medium text-fg-muted mb-1.5">Company logo</p>
+                  <p className="text-xs text-fg-subtle mb-2">
+                    This is the logo shown in the HRMS sidebar after you launch. You can also change it later in Settings.
+                  </p>
+                  {logoFile ? (
+                    <div className="mb-3 flex items-center gap-3">
+                      <OnboardingLogoPreview file={logoFile} />
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-fg truncate">{logoFile.name}</p>
+                        <p className="text-xs text-fg-subtle">Ready to save with your workspace</p>
                       </div>
                     </div>
-                    <Input
-                      label="Company tagline"
-                      required
-                      placeholder="e.g. Modern HR, simplified."
-                      {...register('tagline')}
-                      error={errors.tagline?.message}
-                    />
-                  </div>
+                  ) : null}
+                  <FileUpload
+                    accept=".png,.jpg,.jpeg"
+                    multiple={false}
+                    maxSizeMB={2}
+                    hint="PNG or JPG · up to 2MB"
+                    value={logoFile}
+                    onChange={(files) => setLogoFile(files[0] || null)}
+                  />
                 </div>
-              )}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-xs font-medium text-fg-muted">
+                      Primary brand color <span className="text-danger">*</span>
+                    </label>
+                    <div className="flex items-center gap-2.5">
+                      <input
+                        type="color"
+                        className="h-10 w-12 rounded-input border border-border bg-card cursor-pointer"
+                        {...register('brandColor')}
+                      />
+                      <Input
+                        className="flex-1"
+                        placeholder="#6C63FF"
+                        value={values.brandColor}
+                        onChange={(e) => setValue('brandColor', e.target.value, { shouldValidate: true })}
+                        error={errors.brandColor?.message}
+                      />
+                    </div>
+                  </div>
+                  <Input
+                    label="Company tagline"
+                    required
+                    placeholder="e.g. Modern HR, simplified."
+                    {...register('tagline')}
+                    error={errors.tagline?.message}
+                  />
+                </div>
+              </div>
 
               {/* Step 4 — Admin Account Setup */}
               {step === 3 && (
@@ -616,6 +645,16 @@ export default function Onboarding() {
               {/* Step 6 — Review & Confirm */}
               {step === 5 && (
                 <div className="space-y-4">
+                  {logoFile ? (
+                    <div className="rounded-input border border-border p-4 flex items-center gap-3">
+                      <OnboardingLogoPreview file={logoFile} />
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-fg">Company logo</p>
+                        <p className="text-xs text-fg-muted truncate">{logoFile.name}</p>
+                        <p className="text-xs text-fg-subtle mt-0.5">Saved to your workspace when you launch</p>
+                      </div>
+                    </div>
+                  ) : null}
                   {[
                     ['Company', [
                       ['Name', values.companyName], ['Industry', values.industry], ['Size', values.companySize],

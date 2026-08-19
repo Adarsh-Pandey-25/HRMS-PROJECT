@@ -33,12 +33,18 @@ export function FileUpload({
   maxSizeMB = 5,
   hint = 'PDF, JPG or PNG · up to 5MB each',
   onChange,
-  value = null,
+  value,
 }) {
   const inputRef = useRef();
+  const controlled = value !== undefined;
   const [files, setFiles] = useState(() => (value ? [value] : []));
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!controlled) return;
+    setFiles(value ? [value] : []);
+  }, [value, controlled]);
 
   const acceptedExts = accept.split(',').map((e) => e.trim().toLowerCase()).filter(Boolean);
 
