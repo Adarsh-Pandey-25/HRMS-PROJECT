@@ -45,7 +45,14 @@ export const useCompanyStore = create(
         onboarded: true,
       }),
       resetOnboarding: () => set({ onboarded: false, company: { ...EMPTY_COMPANY } }),
-      updateCompany: (patch) => set((s) => ({ company: { ...s.company, ...patch } })),
+      updateCompany: (patch) => set((s) => {
+        const next = { ...s.company, ...patch };
+        // Never let a partial hydrate wipe a logo we already have.
+        if (!next.logoPath && s.company.logoPath) next.logoPath = s.company.logoPath;
+        if (!next.logoUrl && s.company.logoUrl) next.logoUrl = s.company.logoUrl;
+        if (!next.logoName && s.company.logoName) next.logoName = s.company.logoName;
+        return { company: next };
+      }),
     }),
     {
       name: 'zenith-company',

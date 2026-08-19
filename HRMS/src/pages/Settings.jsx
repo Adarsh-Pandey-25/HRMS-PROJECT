@@ -215,9 +215,16 @@ function CompanyProfileSection() {
         };
         setLogoFile(null);
       }
+      const payload = { ...next };
+      delete payload.logoUrl;
+      if (!payload.logoPath) {
+        delete payload.logoPath;
+        delete payload.logoName;
+      }
       updateCompany(next);
-      await updateSettingApi('company_profile', next);
+      await updateSettingApi('company_profile', payload);
       await invalidateAndRefetch(qc, ['settings', 'company-profile']);
+      await invalidateAndRefetch(qc, ['companies']);
       setForm(next);
       toast.success('Company profile saved to server');
     } catch (err) {
@@ -227,6 +234,27 @@ function CompanyProfileSection() {
     }
   };
   useSaveShortcut(save);
+
+  const uploadLogoNow = async (file) => {
+    setLogoFile(file);
+    if (!file) return;
+    try {
+      const uploaded = await uploadCompanyLogoApi(file);
+      const patch = {
+        logoPath: uploaded.logoPath,
+        logoUrl: uploaded.logoUrl,
+        logoName: uploaded.logoName,
+      };
+      setForm((f) => ({ ...f, ...patch }));
+      updateCompany(patch);
+      setLogoFile(null);
+      await invalidateAndRefetch(qc, ['settings', 'company-profile']);
+      await invalidateAndRefetch(qc, ['companies']);
+      toast.success('Company logo updated');
+    } catch (err) {
+      toast.error(err.message || 'Could not upload logo');
+    }
+  };
 
   const displayLogoUrl = logoPreview || form.logoUrl;
 
@@ -262,7 +290,7 @@ function CompanyProfileSection() {
             />
             <div className="min-w-0">
               <p className="text-sm font-medium text-fg truncate">{logoFile?.name || form.logoName || 'Current logo'}</p>
-              <p className="text-xs text-fg-subtle">Shown in the sidebar after you save</p>
+              <p className="text-xs text-fg-subtle">Updates the sidebar as soon as the file is selected</p>
             </div>
           </div>
         ) : null}
@@ -271,7 +299,7 @@ function CompanyProfileSection() {
           multiple={false}
           maxSizeMB={2}
           hint="PNG or JPG · up to 2MB"
-          onChange={(files) => setLogoFile(files[0] || null)}
+          onChange={(files) => uploadLogoNow(files[0] || null)}
         />
       </div>
 

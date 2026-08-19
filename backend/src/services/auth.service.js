@@ -13,7 +13,7 @@ const settingsService = require('./settings.service');
 const logger = require('../utils/logger');
 const { getCompanyId, withCompanyId, newCompanyId, companyIdFields } = require('../utils/tenant');
 const tenantService = require('./tenant.service');
-const { uploadCompanyLogo } = require('./storage.service');
+const { uploadCompanyLogo, getSignedUrl, STORAGE_BUCKETS } = require('./storage.service');
 
 const SALT_ROUNDS = 10;
 
@@ -677,6 +677,15 @@ const bootstrapAdmin = async ({
 
   welcomeEmail(data, resolvedPassword).catch((e) => logger.warn('Welcome email failed', e.message));
 
+  let logoUrl = null;
+  if (profile.logoPath) {
+    try {
+      logoUrl = await getSignedUrl(STORAGE_BUCKETS.documents, profile.logoPath, 86400);
+    } catch (err) {
+      logger.warn('Onboarding logo URL failed', err.message);
+    }
+  }
+
   logger.info('Onboarding company + admin created', {
     id: data.id, email: data.email, companyId, inviteId: invite.inviteId,
   });
@@ -684,6 +693,9 @@ const bootstrapAdmin = async ({
   return {
     ...omitSensitive(data, ['password_hash']),
     company_id: companyId,
+    logoPath: profile.logoPath || null,
+    logoName: profile.logoName || null,
+    logoUrl,
     // Credentials are emailed — never include plaintext password in the API response.
   };
 };

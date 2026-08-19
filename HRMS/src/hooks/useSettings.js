@@ -4,6 +4,7 @@ import { useAuthStore } from '../store/authStore';
 import { useSettingsStore } from '../store/settingsStore';
 import { useCompanyStore } from '../store/companyStore';
 import { fetchAllSettingsApi, fetchLeavePolicyApi, fetchRolePermissionsApi, fetchCompanyProfileApi } from '../api/settings.api';
+import { fetchMyCompanyApi } from '../api/companies.api';
 
 export { updateSettingApi } from '../api/settings.api';
 
@@ -76,7 +77,14 @@ export function useSettingsBootstrap() {
     queryKey: ['settings', 'company-profile'],
     queryFn: fetchCompanyProfileApi,
     enabled: isAuthenticated,
-    staleTime: 300_000,
+    staleTime: 15_000,
+  });
+
+  const myCompanyQuery = useQuery({
+    queryKey: ['companies', 'me'],
+    queryFn: fetchMyCompanyApi,
+    enabled: isAuthenticated && canLoadAllSettings,
+    staleTime: 15_000,
   });
 
   useEffect(() => {
@@ -84,6 +92,17 @@ export function useSettingsBootstrap() {
       updateCompany(companyProfileQuery.data);
     }
   }, [companyProfileQuery.data, updateCompany]);
+
+  useEffect(() => {
+    const row = myCompanyQuery.data;
+    if (!row || typeof row !== 'object') return;
+    const patch = {};
+    if (row.name) patch.name = row.name;
+    if (row.id) patch.companyId = row.id;
+    if (row.logoUrl) patch.logoUrl = row.logoUrl;
+    if (row.logoPath) patch.logoPath = row.logoPath;
+    if (Object.keys(patch).length) updateCompany(patch);
+  }, [myCompanyQuery.data, updateCompany]);
 
   useEffect(() => {
     if (rolePermissionsQuery.data != null) {

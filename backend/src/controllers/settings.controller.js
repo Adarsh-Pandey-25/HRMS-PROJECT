@@ -4,6 +4,7 @@ const { uploadCompanyLogo, getSignedUrl, STORAGE_BUCKETS } = require('../service
 const { successResponse } = require('../utils/helpers');
 const { BadRequestError, NotFoundError } = require('../utils/errors');
 const { LEAVE_TYPES } = require('../utils/constants');
+const logger = require('../utils/logger');
 
 const enrichCompanyProfileValue = async (value) => {
   if (!value || typeof value !== 'object') return value;
@@ -12,8 +13,9 @@ const enrichCompanyProfileValue = async (value) => {
   try {
     const logoUrl = await getSignedUrl(STORAGE_BUCKETS.documents, logoPath, 86400);
     return { ...value, logoPath, logoUrl };
-  } catch {
-    return value;
+  } catch (err) {
+    logger.warn('Company logo signed URL failed', { logoPath, error: err.message });
+    return { ...value, logoPath };
   }
 };
 
@@ -91,8 +93,14 @@ const updateKey = async (req, res, next) => {
 
     let value = req.body.value;
     if (key === 'company_profile' && value && typeof value === 'object') {
-      const existing = await settingsService.getSetting('company_profile', {}, req.user.company_id);
+      const existing = await settingsService.getSetting('company_profile', {}, req.user.company_id) || {};
       value = { ...(existing || {}), ...value };
+      if (!value.logoPath && (existing.logoPath || existing.logo_path)) {
+        value.logoPath = existing.logoPath || existing.logo_path;
+        value.logoName = value.logoName || existing.logoName || existing.logo_name;
+      }
+      delete value.logoUrl;
+      delete value.logo_url;
     }
     if (key === 'asset_config' && value && typeof value === 'object') {
       const names = Array.isArray(value.categories) ? value.categories : [];
