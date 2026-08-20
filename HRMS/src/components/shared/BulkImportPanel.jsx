@@ -9,7 +9,7 @@ import { cn } from '../../lib/utils';
 const TEMPLATE_HEADERS = [
   'First Name',
   'Last Name',
-  'Date of Birth (YYYY-MM-DD)',
+  'Date of Birth (DD-MM-YYYY)',
   'Gender',
   'Personal Email',
   'Phone',
@@ -28,7 +28,7 @@ const TEMPLATE_HEADERS = [
   'Designation',
   'Department',
   'Employment Type',
-  'Join Date (YYYY-MM-DD)',
+  'Join Date (DD-MM-YYYY)',
   'Reporting Manager Email',
   'Work Location',
   'Attendance Type',
@@ -51,24 +51,88 @@ const TEMPLATE_HEADERS = [
 
 const SAMPLE_ROWS = [
   [
-    'Esther', 'Howard', '1997-04-12', 'female', 'esther.personal@company.com', '9876543210',
+    'Esther', 'Howard', '12-04-1997', 'female', 'esther.personal@company.com', '9876543210',
     '12 Residency Road', 'MG Road', 'Bengaluru', 'Karnataka', '560001', 'India',
     'John Howard', '9876501234', 'Father',
     'HDFC Bank', '123456789012', 'HDFC0001234',
-    'Software Engineer', 'Engineering', 'full_time', '2026-07-15', 'vikram.singh@company.com',
+    'Software Engineer', 'Engineering', 'full_time', '15-07-2026', 'vikram.singh@company.com',
     'Bengaluru HQ', 'office', 'General', 'monthly', '25000', '10000', '2500', '8000', '0', '0',
     'true', 'true', '', 'company', '0', 'esther.howard@company.com', 'employee',
   ],
   [
-    'Rahul', 'Verma', '1994-09-08', 'male', 'rahul.personal@company.com', '9876500002',
+    'Rahul', 'Verma', '08-09-1994', 'male', 'rahul.personal@company.com', '9876500002',
     '44 Civil Lines', '', 'Delhi', 'Delhi', '110054', 'India',
     'Sneha Verma', '9876502222', 'Spouse',
     'ICICI Bank', '987654321098', 'ICIC0001234',
-    'Accountant', 'Finance', 'full_time', '2026-08-01', 'meera.shah@company.com',
+    'Accountant', 'Finance', 'full_time', '01-08-2026', 'meera.shah@company.com',
     'Delhi NCR', 'hybrid', 'Morning', 'annual', '480000', '192000', '48000', '60000', '24000', '12000',
     'true', 'true', '', 'fixed', '12000', 'rahul.verma@company.com', 'employee',
   ],
 ];
+
+/** Read DOB / join date from either new DD-MM-YYYY or older YYYY-MM-DD column names. */
+function readImportDateCell(row, kind) {
+  if (kind === 'dob') {
+    return row['Date of Birth (DD-MM-YYYY)']
+      ?? row['Date of Birth (YYYY-MM-DD)']
+      ?? row['Date of Birth']
+      ?? '';
+  }
+  return row['Join Date (DD-MM-YYYY)']
+    ?? row['Join Date (YYYY-MM-DD)']
+    ?? row['Join Date']
+    ?? '';
+}
+
+/**
+ * Accept DD-MM-YYYY (preferred), YYYY-MM-DD, or Excel serial dates.
+ * Returns ISO YYYY-MM-DD for the API, or null if empty/invalid.
+ */
+function parseImportDate(value) {
+  if (value == null || value === '') return null;
+
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const year = value.getFullYear();
+    const month = value.getMonth() + 1;
+    const day = value.getDate();
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const parsed = XLSX.SSF?.parse_date_code?.(value);
+    if (parsed?.y && parsed?.m && parsed?.d) {
+      return `${parsed.y}-${String(parsed.m).padStart(2, '0')}-${String(parsed.d).padStart(2, '0')}`;
+    }
+    return null;
+  }
+
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  const dmy = raw.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
+  if (dmy) {
+    const day = Number(dmy[1]);
+    const month = Number(dmy[2]);
+    const year = Number(dmy[3]);
+    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+    const dt = new Date(Date.UTC(year, month - 1, day));
+    if (dt.getUTCFullYear() !== year || dt.getUTCMonth() !== month - 1 || dt.getUTCDate() !== day) return null;
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+
+  const ymd = raw.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$/);
+  if (ymd) {
+    const year = Number(ymd[1]);
+    const month = Number(ymd[2]);
+    const day = Number(ymd[3]);
+    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+    const dt = new Date(Date.UTC(year, month - 1, day));
+    if (dt.getUTCFullYear() !== year || dt.getUTCMonth() !== month - 1 || dt.getUTCDate() !== day) return null;
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+
+  return null;
+}
 
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
@@ -169,8 +233,10 @@ function validateRows(rows, existingEmails, managerDirectory) {
     const managerEmail = String(row['Reporting Manager Email'] || '').trim().toLowerCase();
     const personalEmail = String(row['Personal Email'] || '').trim().toLowerCase();
     const phone = String(row.Phone || row.phone || '').trim();
-    const dob = String(row['Date of Birth (YYYY-MM-DD)'] || '').trim();
-    const joinDate = String(row['Join Date (YYYY-MM-DD)'] || '').trim();
+    const dobRaw = readImportDateCell(row, 'dob');
+    const joinRaw = readImportDateCell(row, 'join');
+    const dobIso = dobRaw === '' || dobRaw == null ? null : parseImportDate(dobRaw);
+    const joinIso = joinRaw === '' || joinRaw == null ? null : parseImportDate(joinRaw);
 
     if (!first) errors.push('First name missing');
     if (!last) errors.push('Last name missing');
@@ -180,8 +246,8 @@ function validateRows(rows, existingEmails, managerDirectory) {
     else seen.add(email);
     if (personalEmail && !personalEmail.includes('@')) errors.push('Personal email is invalid');
     if (phone && !/^\d{10}$/.test(phone.replace(/\D/g, ''))) errors.push('Phone must be 10 digits');
-    if (dob && Number.isNaN(Date.parse(dob))) errors.push('Date of birth must be YYYY-MM-DD');
-    if (joinDate && Number.isNaN(Date.parse(joinDate))) errors.push('Join date must be YYYY-MM-DD');
+    if (dobRaw !== '' && dobRaw != null && !dobIso) errors.push('Date of birth must be DD-MM-YYYY');
+    if (joinRaw !== '' && joinRaw != null && !joinIso) errors.push('Join date must be DD-MM-YYYY');
     if (!designation) errors.push('Designation missing');
     if (!department) errors.push('Department missing');
     if (managerEmail && !managerDirectory.has(managerEmail)) errors.push('Reporting manager email not found');
@@ -192,6 +258,8 @@ function validateRows(rows, existingEmails, managerDirectory) {
       _last: last,
       _email: email,
       _managerId: managerEmail ? managerDirectory.get(managerEmail) : '',
+      _dateOfBirth: dobIso || undefined,
+      _dateOfJoining: joinIso || undefined,
       _errors: errors,
     };
   });
@@ -256,8 +324,8 @@ export function BulkImportPanel({ onSkip, onImported }) {
           department: row.Department || row.department,
           gender: row.Gender || undefined,
           phone: String(row.Phone || row.phone || '').replace(/\D/g, '') || undefined,
-          dateOfBirth: row['Date of Birth (YYYY-MM-DD)'] || undefined,
-          dateOfJoining: row['Join Date (YYYY-MM-DD)'] || undefined,
+          dateOfBirth: row._dateOfBirth,
+          dateOfJoining: row._dateOfJoining,
           employmentType: normalizeEmploymentType(row['Employment Type']),
           role: row['System Role'] || row.Role || 'employee',
           managerId: row._managerId || undefined,
