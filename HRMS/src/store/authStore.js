@@ -34,6 +34,8 @@ export const useAuthStore = create((set, get) => ({
   sessionChecked: false,
   isLoading: false,
   authError: null,
+  /** Temp password from login — used once for forced password change, never persisted. */
+  pendingLoginPassword: null,
 
   can: (allowedRoles) => {
     if (!allowedRoles || allowedRoles.length === 0) return true;
@@ -53,6 +55,7 @@ export const useAuthStore = create((set, get) => ({
         sessionChecked: true,
         isLoading: false,
         authError: null,
+        pendingLoginPassword: user?.mustChangePassword ? password : null,
       });
       primeAuthenticatedCaches(role);
       return { user };
@@ -78,7 +81,15 @@ export const useAuthStore = create((set, get) => ({
       role: 'employee',
       authError: null,
       sessionChecked: true,
+      pendingLoginPassword: null,
     });
+  },
+
+  clearPasswordChangeRequirement: () => {
+    set((state) => ({
+      pendingLoginPassword: null,
+      user: state.user ? { ...state.user, mustChangePassword: false } : null,
+    }));
   },
 
   /** Restore session from the HttpOnly access cookie on app boot. */

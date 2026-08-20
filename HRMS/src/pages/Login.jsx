@@ -74,8 +74,12 @@ export default function Login() {
 
   const onSubmit = async ({ email, password }) => {
     try {
-      await login({ email, password });
-      toast.success('Welcome back');
+      const { user } = await login({ email, password });
+      if (user?.mustChangePassword) {
+        toast('Set a new password to continue', { icon: '🔐' });
+      } else {
+        toast.success('Welcome back');
+      }
       navigate('/dashboard', { replace: true });
     } catch (err) {
       toast.error(err.message || 'Login failed');

@@ -46,6 +46,15 @@ export async function resetPasswordApi({ email, otp, newPassword }) {
   });
 }
 
+/** Change password while logged in (current + new). */
+export async function changePasswordApi({ currentPassword, newPassword }) {
+  return apiRequest({
+    method: 'PUT',
+    url: '/auth/change-password',
+    data: { currentPassword, newPassword },
+  });
+}
+
 /** Request OTP to verify admin email during company onboarding. */
 export async function sendOnboardingOtpApi(email, adminName, inviteToken) {
   return apiRequest({

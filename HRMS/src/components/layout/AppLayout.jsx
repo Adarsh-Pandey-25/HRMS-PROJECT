@@ -6,6 +6,7 @@ import { Topbar } from './Topbar';
 import { NotificationDrawer } from './NotificationDrawer';
 import { MobileNav } from './MobileNav';
 import { ShortcutHelpModal } from './ShortcutHelpModal';
+import { ForcePasswordChangeModal } from '../auth/ForcePasswordChangeModal';
 import { ErrorBoundary } from './ErrorBoundary';
 import { PageLoader } from './PageLoader';
 import { useUIStore } from '../../store/uiStore';
@@ -61,6 +62,7 @@ export function AppLayout() {
       <NotificationDrawer />
       <MobileNav />
       <ShortcutHelpModal />
+      <ForcePasswordChangeModal />
     </div>
   );
 }

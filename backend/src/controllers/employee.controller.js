@@ -132,6 +132,7 @@ const create = async (req, res, next) => {
         email: req.body.email,
         employee_code: employeeCode,
         password_hash: passwordHash,
+        must_change_password: true,
         ...companyIdFields(companyId, fields.address),
       })
       .select()

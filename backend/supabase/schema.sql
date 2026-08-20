@@ -48,6 +48,7 @@ CREATE TABLE employees (
   emergency_contact JSONB DEFAULT '{}',
   profile_picture VARCHAR(500),
   is_active BOOLEAN DEFAULT true,
+  must_change_password BOOLEAN NOT NULL DEFAULT false,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );

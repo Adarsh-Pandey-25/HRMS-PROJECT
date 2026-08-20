@@ -27,19 +27,46 @@ const sendEmail = async ({ to, subject, html, text }) => {
   }
 };
 
-const welcomeEmail = (employee, tempPassword) =>
-  sendEmail({
+const escapeHtml = (value) =>
+  String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+
+const welcomeEmail = (employee, tempPassword) => {
+  const firstName = escapeHtml(employee.first_name || 'there');
+  const code = escapeHtml(employee.employee_code || '');
+  const email = escapeHtml(employee.email || '');
+  const tempPass = tempPassword ? escapeHtml(tempPassword) : '';
+
+  return sendEmail({
     to: employee.email,
     subject: 'Welcome to HRMS',
     html: `
-      <h2>Welcome ${employee.first_name}!</h2>
-      <p>Your HRMS account has been created.</p>
-      <p><strong>Employee Code:</strong> ${employee.employee_code}</p>
-      <p><strong>Email:</strong> ${employee.email}</p>
-      ${tempPassword ? `<p><strong>Temporary Password:</strong> ${tempPassword}</p>` : ''}
-      <p>Please login and change your password immediately.</p>
+      <div style="font-family: Arial, Helvetica, sans-serif; color: #222; line-height: 1.6; max-width: 560px;">
+        <h2 style="margin: 0 0 12px;">Welcome ${firstName} 🎉</h2>
+        <p>We’re happy to have you on board.</p>
+        <p>
+          Your HRMS account has been successfully created. You can now use the platform to access and manage your
+          employee information, attendance, leave requests, and other HR-related services.
+        </p>
+        <p style="margin: 20px 0 8px;">
+          <strong>Employee code-</strong> ${code}<br/>
+          <strong>Email -</strong> ${email}<br/>
+          ${tempPass ? `<strong>Temp pass -</strong> ${tempPass}` : ''}
+        </p>
+        <p>Please login and change your password</p>
+        <p>If you need any assistance while using HRMS, please reach out to the HR team.</p>
+        <p>Welcome once again, and we hope you have a great experience with HRMS!</p>
+        <p style="margin-top: 24px;">
+          Best regards,<br/>
+          HR Team
+        </p>
+      </div>
     `,
   });
+};
 
 const leaveStatusEmail = (employee, leave, status, reason) =>
   sendEmail({
@@ -102,13 +129,6 @@ const autoCheckoutEmail = (employee, attendance) =>
       <p>Total hours: ${attendance.total_hours}</p>
     `,
   });
-
-const escapeHtml = (value) =>
-  String(value || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 
 const announcementEmail = (employee, announcement, options = {}) => {
   const priority = String(announcement.priority || 'medium').toUpperCase();

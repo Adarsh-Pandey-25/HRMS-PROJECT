@@ -173,6 +173,7 @@ const register = async (adminUser, data) => {
       date_of_joining: rest.date_of_joining || null,
       employment_type: rest.employment_type || 'full_time',
       address: withCompanyId(rest.address, companyId),
+      must_change_password: true,
     })
     .select()
     .single();
@@ -214,7 +215,11 @@ const login = async (email, password, options = {}) => {
   await storeRefreshToken(employee.id, refreshToken);
 
   return {
-    employee: { ...omitSensitive(employee, ['password_hash']), company_id: companyId },
+    employee: {
+      ...omitSensitive(employee, ['password_hash']),
+      company_id: companyId,
+      must_change_password: Boolean(employee.must_change_password),
+    },
     accessToken,
     refreshToken,
   };
@@ -277,19 +282,27 @@ const logout = async (employeeId, refreshToken) => {
 const changePassword = async (employeeId, currentPassword, newPassword) => {
   const { data: employee } = await supabaseAdmin
     .from('employees')
-    .select('password_hash')
+    .select('password_hash, must_change_password')
     .eq('id', employeeId)
     .single();
 
-  const valid = await comparePassword(currentPassword, employee.password_hash);
-  if (!valid) throw new UnauthorizedError('Current password is incorrect');
+  if (!employee) throw new NotFoundError('Employee not found');
+
+  const mustChange = Boolean(employee.must_change_password);
+  if (!mustChange) {
+    const valid = await comparePassword(currentPassword, employee.password_hash);
+    if (!valid) throw new UnauthorizedError('Current password is incorrect');
+  } else if (currentPassword) {
+    const valid = await comparePassword(currentPassword, employee.password_hash);
+    if (!valid) throw new UnauthorizedError('Current password is incorrect');
+  }
 
   await assertPasswordPolicy(newPassword);
 
   const passwordHash = await hashPassword(newPassword);
   await supabaseAdmin
     .from('employees')
-    .update({ password_hash: passwordHash })
+    .update({ password_hash: passwordHash, must_change_password: false })
     .eq('id', employeeId);
 };
 
@@ -422,7 +435,7 @@ const resetPassword = async (email, otp, newPassword) => {
   const passwordHash = await hashPassword(newPassword);
   await supabaseAdmin
     .from('employees')
-    .update({ password_hash: passwordHash })
+    .update({ password_hash: passwordHash, must_change_password: false })
     .eq('id', resetRecord.employee_id);
 
   await supabaseAdmin
@@ -660,6 +673,7 @@ const bootstrapAdmin = async ({
       date_of_joining: new Date().toISOString().split('T')[0],
       employment_type: 'full_time',
       is_active: true,
+      must_change_password: !password,
       ...companyIdFields(companyId, {}),
     })
     .select()

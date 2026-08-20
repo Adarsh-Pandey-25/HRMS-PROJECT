@@ -50,7 +50,7 @@ const onboardingVerifyOtpRules = [
 ];
 
 const changePasswordRules = [
-  body('currentPassword').notEmpty(),
+  body('currentPassword').optional(),
   body('newPassword').isLength({ min: 1 }).withMessage('Password is required'),
 ];
 

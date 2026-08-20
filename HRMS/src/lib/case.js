@@ -66,6 +66,7 @@ export function mapEmployeeFromApi(emp) {
     status: c.isActive === false ? 'resigned' : (c.status || 'active'),
     employmentType: (c.employmentType || 'full_time').replace(/_/g, '-'),
     role: c.role || 'employee',
+    mustChangePassword: Boolean(c.mustChangePassword),
     department: c.department || '',
     designation: c.designation || '',
     companyId: c.companyId || c.company?.id || null,
