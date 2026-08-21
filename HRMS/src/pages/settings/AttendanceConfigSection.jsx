@@ -234,7 +234,7 @@ export function AttendanceConfigSection() {
         </Card>
       )}
 
-      {form.methods.biometric && <DeviceMappingSection />}
+      <DeviceMappingSection />
 
       <Card>
         <CardHeader title="Shift Timings" action={<Button size="sm" icon={Plus} onClick={() => setShiftModal(true)}>Add Shift</Button>} />
