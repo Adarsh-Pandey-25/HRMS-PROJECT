@@ -31,6 +31,7 @@ const companyRoutes = require('./routes/company.routes');
 const apiKeyRoutes = require('./routes/apiKey.routes');
 const integrationRoutes = require('./routes/integration.routes');
 const superAdminRoutes = require('./routes/superAdmin.routes');
+const admsRoutes = require('./routes/adms.routes');
 
 const app = express();
 
@@ -45,6 +46,11 @@ app.use(helmet({
 app.use(compression());
 app.use(cors(config.cors));
 app.use(morgan(config.env === 'production' ? 'combined' : 'dev'));
+
+// eSSL ADMS device endpoints: no auth, raw text body — must sit before the
+// JSON/urlencoded parsers below or the device's tab-separated body gets mangled.
+app.use('/iclock', admsRoutes);
+
 app.use(express.json({ limit: '1mb', strict: true }));
 app.use(express.urlencoded({ extended: false, limit: '100kb' }));
 app.use(cookieParser());

@@ -5,7 +5,11 @@
       "destination": "https://hrms-project-l021.onrender.com/api/:path*"
     },
     {
-      "source": "/((?!api/).*)",
+      "source": "/iclock/:path*",
+      "destination": "https://hrms-project-l021.onrender.com/iclock/:path*"
+    },
+    {
+      "source": "/((?!api/|iclock/).*)",
       "destination": "/index.html"
     }
   ]

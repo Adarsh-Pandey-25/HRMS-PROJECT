@@ -1,5 +1,6 @@
 const express = require('express');
 const attendanceController = require('../controllers/attendance.controller');
+const admsController = require('../controllers/adms.controller');
 const { authenticate } = require('../middleware/auth.middleware');
 const { isHROrAdmin, isManagerOrAbove, isEmployee } = require('../middleware/role.middleware');
 const { requireApiScope } = require('../middleware/apiKey.middleware');
@@ -26,6 +27,10 @@ router.get('/all-attendance', isHROrAdmin, paginationQuery, validate, attendance
 router.get('/report/:employeeId', uuidParam('employeeId'), validate, attendanceController.employeeReport);
 router.put('/manual-entry', isHROrAdmin, attendanceController.manualEntry);
 router.get('/monthly-summary', isEmployee, attendanceController.monthlySummary);
+
+// ADMS biometric device (raw punch log — see backend/src/routes/adms.routes.js for the device push endpoints)
+router.get('/adms/test', isHROrAdmin, admsController.testStatus);
+router.get('/device-punches/today', isEmployee, admsController.todayPunches);
 
 const wfhRequestController = require('../controllers/wfhRequest.controller');
 router.post('/wfh-requests', isEmployee, wfhRequestController.request);

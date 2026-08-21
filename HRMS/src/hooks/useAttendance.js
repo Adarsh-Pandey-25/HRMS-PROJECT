@@ -5,7 +5,7 @@ import {
   fetchMyAttendanceApi, fetchTeamAttendanceApi, fetchAllAttendanceApi,
   fetchMonthlySummaryApi, fetchEmployeeAttendanceReportApi,
   requestWfhDayApi, cancelWfhDayApi, fetchPendingWfhRequestsApi, reviewWfhRequestApi,
-  manualAttendanceEntryApi,
+  manualAttendanceEntryApi, fetchDevicePunchesTodayApi,
 } from '../api/attendance.api';
 import { fetchTeamEmployeesApi } from '../api/employees.api';
 import { invalidateAndRefetch } from '../lib/queryCache';
@@ -75,6 +75,23 @@ export function useEmployeeAttendanceReport(employeeId, params = {}) {
     queryKey: ['attendance', 'report', employeeId, params],
     queryFn: () => fetchEmployeeAttendanceReportApi(employeeId, params),
     enabled: isAuthenticated && Boolean(employeeId),
+  });
+}
+
+/**
+ * Raw biometric punches for today, live-ish via polling (no direct Supabase
+ * connection from the browser — see the ADMS integration notes).
+ * Pass an employeeId to view another employee's punches (HR/manager only,
+ * enforced server-side); omit it to view your own.
+ */
+export function useDevicePunchesToday(employeeId) {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  return useQuery({
+    queryKey: ['attendance', 'device-punches', 'today', employeeId || 'self'],
+    queryFn: () => fetchDevicePunchesTodayApi(employeeId),
+    enabled: isAuthenticated,
+    refetchInterval: 7_000,
+    staleTime: 5_000,
   });
 }
 

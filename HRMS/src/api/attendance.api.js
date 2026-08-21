@@ -133,6 +133,14 @@ export async function fetchEmployeeDashboardAttendance() {
   };
 }
 
+export async function fetchDevicePunchesTodayApi(employeeId) {
+  return apiRequest({
+    method: 'GET',
+    url: '/attendance/device-punches/today',
+    params: employeeId ? { employee_id: employeeId } : {},
+  });
+}
+
 export async function manualAttendanceEntryApi(payload) {
   const data = await apiRequest({
     method: 'PUT',
