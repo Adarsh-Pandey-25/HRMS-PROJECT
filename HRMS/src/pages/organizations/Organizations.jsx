@@ -34,12 +34,27 @@ function typeBadge(type) {
 }
 
 function CompanyLogo({ company, size = 'md' }) {
+  const iconUrl = company?.brandIconUrl || null;
+  const sizeClass = size === 'lg' ? 'h-14 w-14' : size === 'sm' ? 'h-8 w-8' : 'h-10 w-10';
+
+  if (iconUrl) {
+    return (
+      <div className={cn(sizeClass, 'shrink-0 rounded-xl border border-border/60 bg-card p-1 overflow-hidden')}>
+        <img
+          src={iconUrl}
+          alt={company?.name || 'Company'}
+          className="h-full w-full object-contain"
+          loading="lazy"
+        />
+      </div>
+    );
+  }
+
   return (
     <Avatar
       name={company?.name}
-      src={company?.logoUrl || undefined}
       size={size}
-      className={cn(!company?.logoUrl && 'rounded-xl')}
+      className="rounded-xl"
     />
   );
 }

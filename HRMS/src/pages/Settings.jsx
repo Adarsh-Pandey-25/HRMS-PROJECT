@@ -8,7 +8,7 @@ import {
 import toast from 'react-hot-toast';
 import { PageHeader, Card, CardHeader, Button, Input, Select, Badge, StatusBadge, Avatar, DataTable, FileUpload } from '../components/ui';
 import { useCompanyStore } from '../store/companyStore';
-import { updateSettingApi, uploadCompanyLogoApi } from '../api/settings.api';
+import { updateSettingApi, uploadCompanyLogoApi, uploadCompanyBrandIconApi } from '../api/settings.api';
 import { useEmployees } from '../hooks/useEmployees';
 import { useSettingsStore } from '../store/settingsStore';
 import { useSaveShortcut } from '../hooks/useSaveShortcut';
@@ -186,6 +186,8 @@ function CompanyProfileSection() {
   const [form, setForm] = useState(company);
   const [logoFile, setLogoFile] = useState(null);
   const [logoPreview, setLogoPreview] = useState(null);
+  const [iconFile, setIconFile] = useState(null);
+  const [iconPreview, setIconPreview] = useState(null);
   const [saving, setSaving] = useState(false);
 
   // Rehydrate after bootstrap loads company_profile from server
@@ -203,6 +205,16 @@ function CompanyProfileSection() {
     return () => URL.revokeObjectURL(objectUrl);
   }, [logoFile]);
 
+  useEffect(() => {
+    if (!iconFile) {
+      setIconPreview(null);
+      return undefined;
+    }
+    const objectUrl = URL.createObjectURL(iconFile);
+    setIconPreview(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [iconFile]);
+
   const save = async () => {
     setSaving(true);
     try {
@@ -217,11 +229,26 @@ function CompanyProfileSection() {
         };
         setLogoFile(null);
       }
+      if (iconFile) {
+        const uploaded = await uploadCompanyBrandIconApi(iconFile);
+        next = {
+          ...next,
+          brandIconPath: uploaded.brandIconPath,
+          brandIconUrl: uploaded.brandIconUrl,
+          brandIconName: uploaded.brandIconName,
+        };
+        setIconFile(null);
+      }
       const payload = { ...next };
       delete payload.logoUrl;
+      delete payload.brandIconUrl;
       if (!payload.logoPath) {
         delete payload.logoPath;
         delete payload.logoName;
+      }
+      if (!payload.brandIconPath) {
+        delete payload.brandIconPath;
+        delete payload.brandIconName;
       }
       updateCompany(next);
       await updateSettingApi('company_profile', payload);
@@ -258,7 +285,29 @@ function CompanyProfileSection() {
     }
   };
 
+  const uploadBrandIconNow = async (file) => {
+    setIconFile(file);
+    if (!file) return;
+    try {
+      const uploaded = await uploadCompanyBrandIconApi(file);
+      const patch = {
+        brandIconPath: uploaded.brandIconPath,
+        brandIconUrl: uploaded.brandIconUrl,
+        brandIconName: uploaded.brandIconName,
+      };
+      setForm((f) => ({ ...f, ...patch }));
+      updateCompany(patch);
+      setIconFile(null);
+      await invalidateAndRefetch(qc, ['settings', 'company-profile']);
+      await invalidateAndRefetch(qc, ['companies']);
+      toast.success('Brand icon updated');
+    } catch (err) {
+      toast.error(err.message || 'Could not upload brand icon');
+    }
+  };
+
   const displayLogoUrl = logoPreview || form.logoUrl;
+  const displayIconUrl = iconPreview || form.brandIconUrl;
 
   return (
     <div className="space-y-5">
@@ -288,6 +337,35 @@ function CompanyProfileSection() {
           maxSizeMB={2}
           hint="PNG or JPG · up to 2MB · full wordmark recommended"
           onChange={(files) => uploadLogoNow(files[0] || null)}
+        />
+      </div>
+
+      <div className="rounded-xl border border-border/70 bg-muted/30 p-4">
+        <p className="text-sm font-semibold text-fg">Brand icon</p>
+        <p className="text-xs text-fg-muted mt-1 mb-3">
+          Compact square mark for the collapsed sidebar, Organizations company cards, and the browser tab favicon. Use a simple icon (not the full wordmark).
+        </p>
+        {displayIconUrl ? (
+          <div className="mb-3 flex flex-col sm:flex-row sm:items-center gap-3">
+            <div className="flex h-16 w-16 items-center justify-center rounded-xl border border-border bg-card p-2">
+              <img
+                src={displayIconUrl}
+                alt="Brand icon preview"
+                className="h-12 w-12 object-contain"
+              />
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-fg truncate">{iconFile?.name || form.brandIconName || 'Current icon'}</p>
+              <p className="text-xs text-fg-subtle">Used wherever the large wordmark does not fit</p>
+            </div>
+          </div>
+        ) : null}
+        <FileUpload
+          accept=".png,.jpg,.jpeg"
+          multiple={false}
+          maxSizeMB={2}
+          hint="PNG or JPG · up to 2MB · square icon recommended"
+          onChange={(files) => uploadBrandIconNow(files[0] || null)}
         />
       </div>
 
@@ -489,7 +567,7 @@ export default function Settings() {
 
           {active.id === 'company' && (
             <Card>
-              <CardHeader title="Company Profile" subtitle="Branding, company details, and contact. Admin and HR can change the sidebar logo here." />
+              <CardHeader title="Company Profile" subtitle="Branding, company details, and contact. Admin and HR can change the sidebar logo and brand icon here." />
               <div className="p-5 pt-3"><CompanyProfileSection /></div>
             </Card>
           )}

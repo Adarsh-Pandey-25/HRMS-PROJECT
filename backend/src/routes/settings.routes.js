@@ -15,6 +15,7 @@ router.get('/company-profile', settingsController.getCompanyProfile);
 router.use(isHROrAdmin);
 
 router.post('/company-logo', upload.single('logo'), settingsController.uploadCompanyLogo);
+router.post('/company-brand-icon', upload.single('icon'), settingsController.uploadCompanyBrandIcon);
 router.get('/', settingsController.getAll);
 router.get('/payroll-components', settingsController.getPayrollComponents);
 router.post('/payroll-components', settingsController.createPayrollComponent);

@@ -1,6 +1,6 @@
 const settingsService = require('../services/settings.service');
 const { supabaseAdmin } = require('../config/supabase');
-const { uploadCompanyLogo, getSignedUrl, STORAGE_BUCKETS } = require('../services/storage.service');
+const { uploadCompanyLogo, uploadCompanyBrandIcon, getSignedUrl, STORAGE_BUCKETS } = require('../services/storage.service');
 const { successResponse } = require('../utils/helpers');
 const { BadRequestError, NotFoundError } = require('../utils/errors');
 const { LEAVE_TYPES } = require('../utils/constants');
@@ -8,15 +8,26 @@ const logger = require('../utils/logger');
 
 const enrichCompanyProfileValue = async (value) => {
   if (!value || typeof value !== 'object') return value;
-  const logoPath = value.logoPath || value.logo_path;
-  if (!logoPath) return value;
-  try {
-    const logoUrl = await getSignedUrl(STORAGE_BUCKETS.documents, logoPath, 86400);
-    return { ...value, logoPath, logoUrl };
-  } catch (err) {
-    logger.warn('Company logo signed URL failed', { logoPath, error: err.message });
-    return { ...value, logoPath };
+  const logoPath = value.logoPath || value.logo_path || null;
+  const brandIconPath = value.brandIconPath || value.brand_icon_path || null;
+  const next = { ...value };
+  if (logoPath) {
+    next.logoPath = logoPath;
+    try {
+      next.logoUrl = await getSignedUrl(STORAGE_BUCKETS.documents, logoPath, 86400);
+    } catch (err) {
+      logger.warn('Company logo signed URL failed', { logoPath, error: err.message });
+    }
   }
+  if (brandIconPath) {
+    next.brandIconPath = brandIconPath;
+    try {
+      next.brandIconUrl = await getSignedUrl(STORAGE_BUCKETS.documents, brandIconPath, 86400);
+    } catch (err) {
+      logger.warn('Company brand icon signed URL failed', { brandIconPath, error: err.message });
+    }
+  }
+  return next;
 };
 
 const normalizeLeavePolicy = (policy) => {
@@ -99,8 +110,14 @@ const updateKey = async (req, res, next) => {
         value.logoPath = existing.logoPath || existing.logo_path;
         value.logoName = value.logoName || existing.logoName || existing.logo_name;
       }
+      if (!value.brandIconPath && (existing.brandIconPath || existing.brand_icon_path)) {
+        value.brandIconPath = existing.brandIconPath || existing.brand_icon_path;
+        value.brandIconName = value.brandIconName || existing.brandIconName || existing.brand_icon_name;
+      }
       delete value.logoUrl;
       delete value.logo_url;
+      delete value.brandIconUrl;
+      delete value.brand_icon_url;
     }
     if (key === 'asset_config' && value && typeof value === 'object') {
       const names = Array.isArray(value.categories) ? value.categories : [];
@@ -166,6 +183,39 @@ const uploadCompanyLogoHandler = async (req, res, next) => {
       logoPath: path,
       logoUrl,
       logoName: req.file.originalname,
+      companyProfile: enriched,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+const uploadCompanyBrandIconHandler = async (req, res, next) => {
+  try {
+    if (!req.file) throw new BadRequestError('Brand icon file is required');
+    const ext = String(req.file.originalname || '').split('.').pop().toLowerCase();
+    if (!['png', 'jpg', 'jpeg'].includes(ext)) {
+      throw new BadRequestError('Brand icon must be PNG or JPG');
+    }
+    if (req.file.size > 2 * 1024 * 1024) {
+      throw new BadRequestError('Brand icon must be 2MB or smaller');
+    }
+
+    const companyId = req.user.company_id;
+    const { path } = await uploadCompanyBrandIcon(req.file, companyId);
+    const existing = await settingsService.getSetting('company_profile', {}, companyId) || {};
+    const profile = {
+      ...existing,
+      brandIconPath: path,
+      brandIconName: req.file.originalname,
+    };
+    await settingsService.setSetting('company_profile', profile, req.user.id, companyId);
+    const brandIconUrl = await getSignedUrl(STORAGE_BUCKETS.documents, path, 86400);
+    const enriched = await enrichCompanyProfileValue(profile);
+    successResponse(res, 'Brand icon uploaded', {
+      brandIconPath: path,
+      brandIconUrl,
+      brandIconName: req.file.originalname,
       companyProfile: enriched,
     });
   } catch (err) {
@@ -388,6 +438,7 @@ module.exports = {
   getByKey,
   updateKey,
   uploadCompanyLogo: uploadCompanyLogoHandler,
+  uploadCompanyBrandIcon: uploadCompanyBrandIconHandler,
   getCompanyProfile,
   getRolePermissions,
   getPayrollComponents,

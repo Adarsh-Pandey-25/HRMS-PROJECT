@@ -23,6 +23,9 @@ const EMPTY_COMPANY = {
   logoName: null,
   logoPath: null,
   logoUrl: null,
+  brandIconName: null,
+  brandIconPath: null,
+  brandIconUrl: null,
   brandColor: '#6C63FF',
   tagline: '',
   fyStart: 'April',
@@ -60,6 +63,9 @@ export const useCompanyStore = create(
         if (!next.logoPath && s.company.logoPath) next.logoPath = s.company.logoPath;
         if (!next.logoUrl && s.company.logoUrl) next.logoUrl = s.company.logoUrl;
         if (!next.logoName && s.company.logoName) next.logoName = s.company.logoName;
+        if (!next.brandIconPath && s.company.brandIconPath) next.brandIconPath = s.company.brandIconPath;
+        if (!next.brandIconUrl && s.company.brandIconUrl) next.brandIconUrl = s.company.brandIconUrl;
+        if (!next.brandIconName && s.company.brandIconName) next.brandIconName = s.company.brandIconName;
         return { company: next };
       }),
     }),

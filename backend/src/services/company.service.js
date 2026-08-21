@@ -93,22 +93,40 @@ const loadProfileBits = async (companyId) => {
   try {
     const profile = await settingsService.getSetting('company_profile', {}, companyId) || {};
     const logoPath = profile.logoPath || profile.logo_path || null;
+    const brandIconPath = profile.brandIconPath || profile.brand_icon_path || null;
     let logoUrl = null;
+    let brandIconUrl = null;
     if (logoPath) {
       try {
         logoUrl = await getSignedUrl(STORAGE_BUCKETS.documents, logoPath, 86400);
       } catch { /* ignore */ }
     }
+    if (brandIconPath) {
+      try {
+        brandIconUrl = await getSignedUrl(STORAGE_BUCKETS.documents, brandIconPath, 86400);
+      } catch { /* ignore */ }
+    }
     return {
       logoPath,
       logoUrl,
+      brandIconPath,
+      brandIconUrl,
       gstin: profile.gstin || '',
       city: profile.city || '',
       state: profile.state || '',
       profile: publicLegalProfile(profile),
     };
   } catch {
-    return { logoPath: null, logoUrl: null, gstin: '', city: '', state: '', profile: publicLegalProfile({}) };
+    return {
+      logoPath: null,
+      logoUrl: null,
+      brandIconPath: null,
+      brandIconUrl: null,
+      gstin: '',
+      city: '',
+      state: '',
+      profile: publicLegalProfile({}),
+    };
   }
 };
 
@@ -130,6 +148,8 @@ const enrichCompany = async (row, { isHome = false, withProfile = false } = {}) 
     employeeCount,
     logoPath: bits.logoPath,
     logoUrl: bits.logoUrl,
+    brandIconPath: bits.brandIconPath,
+    brandIconUrl: bits.brandIconUrl,
     gstin: bits.gstin,
     city: bits.city,
     state: bits.state,

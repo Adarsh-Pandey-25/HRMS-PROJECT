@@ -109,6 +109,10 @@ const uploadProfilePicture = (file, employeeId) =>
 const uploadCompanyLogo = (file, companyId) =>
   uploadFile(STORAGE_BUCKETS.documents, file, `company-logos/${companyId}`);
 
+/** Compact square mark for cards, collapsed sidebar, and favicon. */
+const uploadCompanyBrandIcon = (file, companyId) =>
+  uploadFile(STORAGE_BUCKETS.documents, file, `company-brand-icons/${companyId}`);
+
 const uploadPayslip = (buffer, employeeId, month, year) => {
   const fileName = `${employeeId}/${year}-${String(month).padStart(2, '0')}.pdf`;
   return supabaseAdmin.storage
@@ -131,6 +135,7 @@ module.exports = {
   uploadCourseVideo,
   uploadProfilePicture,
   uploadCompanyLogo,
+  uploadCompanyBrandIcon,
   uploadPayslip,
   resolveCourseVideoBucket,
   STORAGE_BUCKETS,

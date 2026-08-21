@@ -9,6 +9,7 @@ import { PageLoader } from './components/layout/PageLoader';
 import { useAuthStore } from './store/authStore';
 import { useApplyBrandColor } from './hooks/useApplyBrandColor';
 import { useSyncDocumentTitle } from './hooks/useSyncDocumentTitle';
+import { useBrandFavicon } from './hooks/useBrandFavicon';
 import { loaders } from './lib/routePrefetch';
 
 const Welcome = lazy(() => import('./pages/Welcome'));
@@ -101,6 +102,7 @@ export default function App() {
   const isAdmin = role === 'admin';
   useApplyBrandColor();
   useSyncDocumentTitle();
+  useBrandFavicon();
 
   return (
     <Routes>

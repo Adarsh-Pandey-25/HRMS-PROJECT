@@ -33,17 +33,25 @@ export function CompanyBrandMark({ name, logoUrl, className, textClassName }) {
   );
 }
 
-/** Sidebar lockup like the finance dashboard: full wordmark when expanded. */
+/** Sidebar lockup: full wordmark when expanded; compact brand icon when collapsed. */
 export function SidebarBrand({ collapsed = false, to = '/dashboard', onClick }) {
   const companyName = useCompanyStore((s) => s.company.name);
   const logoUrl = useCompanyStore((s) => s.company.logoUrl);
-  const [broken, setBroken] = useState(false);
+  const brandIconUrl = useCompanyStore((s) => s.company.brandIconUrl);
+  const [wordmarkBroken, setWordmarkBroken] = useState(false);
+  const [iconBroken, setIconBroken] = useState(false);
 
   useEffect(() => {
-    setBroken(false);
+    setWordmarkBroken(false);
   }, [logoUrl]);
 
-  const showWordmark = Boolean(logoUrl) && !broken && !collapsed;
+  useEffect(() => {
+    setIconBroken(false);
+  }, [brandIconUrl]);
+
+  const compactUrl = brandIconUrl || null;
+  const showWordmark = Boolean(logoUrl) && !wordmarkBroken && !collapsed;
+  const showCompactIcon = collapsed && Boolean(compactUrl) && !iconBroken;
 
   return (
     <Link
@@ -60,12 +68,19 @@ export function SidebarBrand({ collapsed = false, to = '/dashboard', onClick }) 
         <img
           src={logoUrl}
           alt={companyName || 'Company'}
-          onError={() => setBroken(true)}
+          onError={() => setWordmarkBroken(true)}
           className="h-8 w-auto max-w-[200px] object-contain object-left"
+        />
+      ) : showCompactIcon ? (
+        <img
+          src={compactUrl}
+          alt={companyName || 'Company'}
+          onError={() => setIconBroken(true)}
+          className="h-9 w-9 rounded-xl object-contain bg-card"
         />
       ) : (
         <>
-          <CompanyBrandMark name={companyName} logoUrl={collapsed ? logoUrl : null} />
+          <CompanyBrandMark name={companyName} logoUrl={null} />
           {!collapsed && (
             <div className="min-w-0 flex-1">
               <p className="text-sm font-semibold text-fg leading-snug break-words">{companyName}</p>

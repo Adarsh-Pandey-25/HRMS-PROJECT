@@ -101,6 +101,8 @@ export function useSettingsBootstrap() {
     if (row.id) patch.companyId = row.id;
     if (row.logoUrl) patch.logoUrl = row.logoUrl;
     if (row.logoPath) patch.logoPath = row.logoPath;
+    if (row.brandIconUrl) patch.brandIconUrl = row.brandIconUrl;
+    if (row.brandIconPath) patch.brandIconPath = row.brandIconPath;
     if (Object.keys(patch).length) updateCompany(patch);
   }, [myCompanyQuery.data, updateCompany]);
 

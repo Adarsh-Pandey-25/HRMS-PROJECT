@@ -32,6 +32,13 @@ export async function uploadCompanyLogoApi(file) {
   return apiUpload({ method: 'POST', url: '/settings/company-logo', data: form });
 }
 
+/** Compact square mark — company cards, collapsed sidebar, favicon. */
+export async function uploadCompanyBrandIconApi(file) {
+  const form = new FormData();
+  form.append('icon', file);
+  return apiUpload({ method: 'POST', url: '/settings/company-brand-icon', data: form });
+}
+
 export async function fetchPayrollComponentsApi() {
   const rows = await apiRequest({ method: 'GET', url: '/settings/payroll-components' });
   return Array.isArray(rows) ? rows.map((r) => toCamelCase(r)) : [];
