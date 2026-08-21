@@ -98,9 +98,11 @@ export default function AdminDashboard({ user }) {
   const activityFeed = (api?.recentActivity || activity).map((a) => ({
     id: a.id,
     type: a.type,
-    actor: a.initials || a.actor || '?',
+    actor: a.name || a.actor || a.initials || '?',
+    initials: a.initials || a.actor || '?',
     text: a.message || a.text,
     at: a.sortAt || a.at,
+    relativeTime: a.relativeTime || null,
   }));
 
   const pendingItems = [
@@ -246,7 +248,9 @@ export default function AdminDashboard({ user }) {
                     <span className="font-medium">{a.actor}</span>{' '}
                     <span className="text-fg-muted">{a.text}</span>
                   </p>
-                  <span className="text-xs text-fg-subtle ml-auto">{timeAgo(a.at)}</span>
+                  <span className="text-xs text-fg-subtle ml-auto">
+                    {a.relativeTime || timeAgo(a.at)}
+                  </span>
                 </div>
               </li>
             ))}

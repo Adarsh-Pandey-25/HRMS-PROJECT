@@ -16,11 +16,45 @@ const priorityLabel = (priority) => {
 };
 
 const relativeTime = (date) => {
+  if (!date) return '';
   const m = moment(date);
-  const days = nowIST().startOf('day').diff(m.startOf('day'), 'days');
-  if (days <= 0) return 'Today';
+  if (!m.isValid()) return '';
+  const now = nowIST();
+  const days = now.clone().startOf('day').diff(m.clone().startOf('day'), 'days');
+  if (days < 0) {
+    const ahead = Math.abs(days);
+    if (ahead === 1) return 'Tomorrow';
+    if (ahead < 30) return `in ${ahead} days`;
+    return m.format('DD MMM YYYY');
+  }
+  if (days === 0) return 'Today';
   if (days === 1) return '1 day ago';
-  return `${days} days ago`;
+  if (days < 30) return `${days} days ago`;
+  if (days < 60) return 'about 1 month ago';
+  const months = Math.floor(days / 30);
+  if (months < 12) return `about ${months} months ago`;
+  const years = Math.floor(days / 365);
+  return years === 1 ? 'about 1 year ago' : `about ${years} years ago`;
+};
+
+/**
+ * Timestamp for a "joined" activity item.
+ * Prefer account creation (when they appeared in HRMS). Only use join date
+ * when it is on/before today — future join dates must not drive "X ago".
+ */
+const joinActivityAt = (employee) => {
+  const created = employee?.created_at ? moment(employee.created_at) : null;
+  const joined = employee?.date_of_joining ? moment(employee.date_of_joining) : null;
+  const today = nowIST().startOf('day');
+
+  if (joined?.isValid() && joined.clone().startOf('day').isSameOrBefore(today)) {
+    // If both exist, use the later of join day / created_at so "added today" still feels recent.
+    if (created?.isValid() && created.isAfter(joined)) return created.toISOString();
+    return joined.toISOString();
+  }
+  if (created?.isValid()) return created.toISOString();
+  if (joined?.isValid()) return joined.toISOString();
+  return null;
 };
 
 const initials = (first, last) =>
@@ -326,64 +360,82 @@ const getTeamMood = (teamSize = 0) => ({
 const getRecentActivity = async (employees) => {
   const activities = [];
   const empMap = new Map(employees.map((e) => [e.id, e]));
+  const employeeIds = employees.map((e) => e.id);
 
-  const [{ data: recentLeaves }, { data: recentReimb }, { data: recentEmployees }] = await Promise.all([
-    supabaseAdmin
-      .from('leaves')
-      .select('id, employee_id, status, updated_at, created_at')
-      .eq('status', 'approved')
-      .order('updated_at', { ascending: false })
-      .limit(5),
-    supabaseAdmin
-      .from('reimbursements')
-      .select('id, employee_id, amount, created_at')
-      .order('created_at', { ascending: false })
-      .limit(5),
-    supabaseAdmin
-      .from('employees')
-      .select('id, first_name, last_name, designation, date_of_joining, created_at')
-      .eq('is_active', true)
-      .order('created_at', { ascending: false })
-      .limit(5),
+  if (!employeeIds.length) return [];
+
+  let leaveQuery = supabaseAdmin
+    .from('leaves')
+    .select('id, employee_id, status, updated_at, created_at')
+    .eq('status', 'approved')
+    .in('employee_id', employeeIds)
+    .order('updated_at', { ascending: false })
+    .limit(5);
+
+  let reimbQuery = supabaseAdmin
+    .from('reimbursements')
+    .select('id, employee_id, amount, created_at')
+    .in('employee_id', employeeIds)
+    .order('created_at', { ascending: false })
+    .limit(5);
+
+  // Prefer in-memory company staff (already scoped) for join events — avoids
+  // leaking other tenants and keeps timestamps consistent with joinActivityAt.
+  const recentJoins = [...employees]
+    .filter((e) => String(e.role || '').toLowerCase() !== 'admin')
+    .map((e) => ({ ...e, _at: joinActivityAt(e) }))
+    .filter((e) => e._at)
+    .sort((a, b) => new Date(b._at) - new Date(a._at))
+    .slice(0, 8);
+
+  const [{ data: recentLeaves }, { data: recentReimb }] = await Promise.all([
+    leaveQuery,
+    reimbQuery,
   ]);
 
-  for (const e of recentEmployees || []) {
+  for (const e of recentJoins) {
+    const at = e._at;
     activities.push({
       id: `join-${e.id}`,
       type: 'join',
       dotColor: '#22c55e',
+      name: `${e.first_name || ''} ${e.last_name || ''}`.trim() || 'Employee',
       initials: initials(e.first_name, e.last_name),
-      message: `${e.first_name} ${e.last_name} joined as ${e.designation || 'Employee'}`,
-      relativeTime: relativeTime(e.date_of_joining || e.created_at),
-      sortAt: e.date_of_joining || e.created_at,
+      message: `joined as ${e.designation || 'Employee'}`,
+      relativeTime: relativeTime(at),
+      sortAt: at,
     });
   }
 
   for (const l of recentLeaves || []) {
     const emp = empMap.get(l.employee_id);
     if (!emp) continue;
+    const at = l.updated_at || l.created_at;
     activities.push({
       id: `leave-${l.id}`,
       type: 'leave',
       dotColor: '#3b82f6',
+      name: `${emp.first_name || ''} ${emp.last_name || ''}`.trim() || 'Employee',
       initials: initials(emp.first_name, emp.last_name),
-      message: `${emp.first_name} ${emp.last_name} leave request approved`,
-      relativeTime: relativeTime(l.updated_at || l.created_at),
-      sortAt: l.updated_at || l.created_at,
+      message: 'leave request approved',
+      relativeTime: relativeTime(at),
+      sortAt: at,
     });
   }
 
   for (const r of recentReimb || []) {
     const emp = empMap.get(r.employee_id);
     if (!emp) continue;
+    const at = r.created_at;
     activities.push({
       id: `reimb-${r.id}`,
       type: 'expense',
       dotColor: '#f97316',
+      name: `${emp.first_name || ''} ${emp.last_name || ''}`.trim() || 'Employee',
       initials: initials(emp.first_name, emp.last_name),
-      message: `${emp.first_name} ${emp.last_name} submitted a ₹${Number(r.amount || 0).toLocaleString('en-IN')} expense claim`,
-      relativeTime: relativeTime(r.created_at),
-      sortAt: r.created_at,
+      message: `submitted a ₹${Number(r.amount || 0).toLocaleString('en-IN')} expense claim`,
+      relativeTime: relativeTime(at),
+      sortAt: at,
     });
   }
 

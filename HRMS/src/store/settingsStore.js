@@ -9,7 +9,7 @@ import { buildDefaultRolePermissions, mergeRolePermissions, PERMISSION_ACTIONS }
 // Work locations / branches — shown wherever a "Branch" or "Location" picker
 // appears (Employee Directory filter, Add/Edit Employee, Job postings), and
 // extensible so an Admin/HR user can add a new city without a code change.
-const DEFAULT_LOCATIONS = ['Bangalore HQ', 'Mumbai', 'Delhi NCR', 'Hyderabad', 'Remote'];
+const DEFAULT_LOCATIONS = ['Bangalore HQ', 'Mumbai', 'Delhi NCR', 'Gurugram', 'Hyderabad', 'Remote'];
 
 const DEFAULT_DOCUMENT_TYPES = [
   { id: 'DOC-TYPE-001', name: 'Aadhaar Card', category: 'identity', isDefault: true, isRequired: false, acceptedFormats: ['pdf', 'jpg', 'png'], maxSizeMB: 5, isActive: true },
@@ -384,7 +384,7 @@ export const useSettingsStore = create(
     }),
     {
       name: 'zenith-settings',
-      version: 4,
+      version: 5,
       migrate: (persisted, fromVersion) => {
         let next = persisted && typeof persisted === 'object' ? { ...persisted } : {};
         // v1 stored experimental matrix toggles that hid most Employee modules.
@@ -421,6 +421,22 @@ export const useSettingsStore = create(
             },
           };
         }
+        // v5: ensure Gurugram is available in work location pickers
+        if (fromVersion < 5) {
+          const existing = Array.isArray(next.locations) ? next.locations : DEFAULT_LOCATIONS;
+          if (!existing.some((l) => String(l).toLowerCase() === 'gurugram')) {
+            const delhiIdx = existing.findIndex((l) => /delhi/i.test(String(l)));
+            const insertAt = delhiIdx >= 0 ? delhiIdx + 1 : existing.length;
+            next = {
+              ...next,
+              locations: [
+                ...existing.slice(0, insertAt),
+                'Gurugram',
+                ...existing.slice(insertAt),
+              ],
+            };
+          }
+        }
         return next;
       },
       merge: (persisted, current) => {
@@ -429,6 +445,14 @@ export const useSettingsStore = create(
           ...(persisted || {}),
           rolePermissions: mergeRolePermissions(persisted?.rolePermissions ?? current.rolePermissions),
         };
+        // Always keep shipped default cities available (even if an older persist list omitted them).
+        const locList = Array.isArray(merged.locations) ? [...merged.locations] : [...DEFAULT_LOCATIONS];
+        for (const loc of DEFAULT_LOCATIONS) {
+          if (!locList.some((l) => String(l).toLowerCase() === loc.toLowerCase())) {
+            locList.push(loc);
+          }
+        }
+        merged.locations = locList;
         if (merged.notificationConfig?.smtp) {
           merged.notificationConfig = {
             ...merged.notificationConfig,
