@@ -69,37 +69,46 @@ const parseAttlogBody = (body, deviceSerial) =>
     .map((line) => parseAttlogLine(line, deviceSerial))
     .filter(Boolean);
 
-/** Look up employee_id + company_id for each distinct device_user_id in one query. */
-const mapPunchesToEmployees = async (punches) => {
+/**
+ * Look up employee_id + company_id for each distinct device_user_id via
+ * device_employee_mapping (scoped to this device's serial), in one query.
+ */
+const mapPunchesToEmployees = async (punches, deviceSerial) => {
   const deviceUserIds = [...new Set(punches.map((p) => p.device_user_id))];
   if (!deviceUserIds.length) return punches;
 
-  const { data: employees, error } = await supabaseAdmin
-    .from('employees')
-    .select('id, company_id, device_user_id')
+  const { data: mappings, error } = await supabaseAdmin
+    .from('device_employee_mapping')
+    .select('device_user_id, employee_id, employees(company_id)')
+    .eq('device_serial', deviceSerial)
     .in('device_user_id', deviceUserIds);
 
   if (error) {
-    logger.error('[ADMS] Employee lookup failed', { error: error.message });
+    logger.error('[ADMS] Mapping lookup failed', { error: error.message });
     return punches;
   }
 
-  const byDeviceUserId = new Map((employees || []).map((e) => [e.device_user_id, e]));
+  const byDeviceUserId = new Map((mappings || []).map((m) => [m.device_user_id, m]));
   return punches.map((p) => {
-    const employee = byDeviceUserId.get(p.device_user_id);
+    const mapping = byDeviceUserId.get(p.device_user_id);
+    if (mapping) {
+      logger.info(`[ADMS] punch mapped: device_user_${p.device_user_id} -> employee ${mapping.employee_id}`);
+    } else {
+      logger.warn(`[ADMS] punch unmapped: device_user_${p.device_user_id} (no mapping found)`);
+    }
     return {
       ...p,
-      employee_id: employee?.id || null,
-      company_id: employee?.company_id || null,
+      employee_id: mapping?.employee_id || null,
+      company_id: mapping?.employees?.company_id || null,
     };
   });
 };
 
 /** Insert punches, silently skipping ones already seen (same device_user_id + punch_time). */
-const savePunches = async (punches) => {
+const savePunches = async (punches, deviceSerial) => {
   if (!punches.length) return { inserted: 0 };
 
-  const enriched = await mapPunchesToEmployees(punches);
+  const enriched = await mapPunchesToEmployees(punches, deviceSerial);
   const { error } = await supabaseAdmin
     .from('device_punches')
     .upsert(enriched, { onConflict: 'device_user_id,punch_time', ignoreDuplicates: true });
@@ -107,13 +116,6 @@ const savePunches = async (punches) => {
   if (error) {
     logger.error('[ADMS] Failed to save punches', { error: error.message, count: enriched.length });
     return { inserted: 0, error };
-  }
-
-  const unmatched = enriched.filter((p) => !p.employee_id);
-  if (unmatched.length) {
-    logger.warn('[ADMS] Punch(es) with no employee mapping', {
-      deviceUserIds: [...new Set(unmatched.map((p) => p.device_user_id))],
-    });
   }
 
   return { inserted: enriched.length };

@@ -34,7 +34,7 @@ const cdata = async (req, res) => {
     const punches = admsService.parseAttlogBody(req.body, deviceSerial);
     logger.info('[ADMS] Punch data received', { deviceSerial, lineCount: punches.length });
 
-    const { inserted } = await admsService.savePunches(punches);
+    const { inserted } = await admsService.savePunches(punches, deviceSerial);
     logger.info('[ADMS] Punches saved', { deviceSerial, inserted });
   } catch (err) {
     logger.error('[ADMS] cdata handler failed', { deviceSerial, error: err.message });

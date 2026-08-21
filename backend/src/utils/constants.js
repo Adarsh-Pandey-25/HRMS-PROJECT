@@ -73,4 +73,5 @@ module.exports = {
   STORAGE_BUCKETS,
   TIMEZONE,
   WORK_HOURS: config.workHours,
+  DEFAULT_DEVICE_SERIAL: process.env.ADMS_DEVICE_SERIAL || 'NFZ8244800715',
 };

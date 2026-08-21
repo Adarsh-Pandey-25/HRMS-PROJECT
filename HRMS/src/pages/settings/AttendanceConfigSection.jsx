@@ -6,6 +6,7 @@ import { Card, CardHeader, Button, Input, Toggle, Badge, Modal } from '../../com
 import { useSettingsStore } from '../../store/settingsStore';
 import { updateSettingApi } from '../../api/settings.api';
 import { invalidateAndRefetch } from '../../lib/queryCache';
+import { DeviceMappingSection } from './DeviceMappingSection';
 
 const METHOD_LABELS = {
   web: ['Web Check-in', 'Browser on desktop or phone'],
@@ -232,6 +233,8 @@ export function AttendanceConfigSection() {
           </div>
         </Card>
       )}
+
+      {form.methods.biometric && <DeviceMappingSection />}
 
       <Card>
         <CardHeader title="Shift Timings" action={<Button size="sm" icon={Plus} onClick={() => setShiftModal(true)}>Add Shift</Button>} />

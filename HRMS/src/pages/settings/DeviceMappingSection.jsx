@@ -1,0 +1,149 @@
+import { useState } from 'react';
+import { Plus, Trash2, Fingerprint } from 'lucide-react';
+import toast from 'react-hot-toast';
+import { Card, CardHeader, Button, Input, Select, Modal, Badge, EmptyState, Skeleton } from '../../components/ui';
+import { useEmployees } from '../../hooks/useEmployees';
+import { useDeviceMappings, useUnmappedPunches, useDeviceMappingMutations } from '../../hooks/useDeviceMapping';
+
+function AddMappingModal({ open, onClose }) {
+  const { employees } = useEmployees();
+  const { create } = useDeviceMappingMutations();
+  const [deviceUserId, setDeviceUserId] = useState('');
+  const [employeeId, setEmployeeId] = useState('');
+
+  const save = async () => {
+    if (!deviceUserId.trim() || !employeeId) return toast.error('Employee and device user ID are required');
+    try {
+      await create.mutateAsync({ deviceUserId: deviceUserId.trim(), employeeId });
+      toast.success('Mapping created');
+      setDeviceUserId('');
+      setEmployeeId('');
+      onClose();
+    } catch (err) {
+      toast.error(err.message || 'Failed to create mapping');
+    }
+  };
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Map Device User ID to Employee"
+      footer={<>
+        <Button variant="outline" onClick={onClose}>Cancel</Button>
+        <Button onClick={save} loading={create.isPending}>Add Mapping</Button>
+      </>}
+    >
+      <div className="space-y-4">
+        <Select
+          label="Employee"
+          value={employeeId}
+          onChange={(e) => setEmployeeId(e.target.value)}
+          options={[{ value: '', label: 'Select employee…' }, ...employees.map((e) => ({ value: e.id, label: `${e.name} (${e.employeeCode})` }))]}
+        />
+        <Input
+          label="Device user ID"
+          type="number"
+          placeholder="e.g. 5"
+          value={deviceUserId}
+          onChange={(e) => setDeviceUserId(e.target.value)}
+        />
+        <p className="text-xs text-fg-subtle">The numeric ID this employee is enrolled under on the fingerprint device.</p>
+      </div>
+    </Modal>
+  );
+}
+
+export function DeviceMappingSection() {
+  const { data: mappings = [], isLoading } = useDeviceMappings();
+  const { data: unmapped = [] } = useUnmappedPunches();
+  const { remove } = useDeviceMappingMutations();
+  const [addOpen, setAddOpen] = useState(false);
+
+  const handleDelete = async (deviceUserId, deviceSerial) => {
+    try {
+      await remove.mutateAsync({ deviceUserId, deviceSerial });
+      toast.success('Mapping removed');
+    } catch (err) {
+      toast.error(err.message || 'Failed to remove mapping');
+    }
+  };
+
+  return (
+    <>
+      <Card>
+        <CardHeader
+          title="Device → Employee Mapping"
+          subtitle="Maps the fingerprint device's numeric user IDs to HRMS employees"
+          action={<Button size="sm" icon={Plus} onClick={() => setAddOpen(true)}>Add Mapping</Button>}
+        />
+        <div className="p-5 pt-3 overflow-x-auto">
+          {isLoading ? (
+            <Skeleton className="h-24 w-full" />
+          ) : mappings.length === 0 ? (
+            <EmptyState icon={Fingerprint} title="No mappings yet" message="Add a mapping so device punches link to the right employee." />
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border text-left">
+                  <th className="py-2 font-semibold text-fg-subtle text-xs uppercase">Device ID</th>
+                  <th className="py-2 font-semibold text-fg-subtle text-xs uppercase">Employee</th>
+                  <th className="py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {mappings.map((m) => (
+                  <tr key={m.id} className="border-b border-border/50">
+                    <td className="py-2.5 font-mono text-xs text-fg">{m.deviceUserId}</td>
+                    <td className="py-2.5 text-fg-muted">{m.employeeName} <span className="text-fg-subtle text-xs">({m.employeeCode})</span></td>
+                    <td className="py-2.5 text-right">
+                      <button
+                        type="button"
+                        onClick={() => handleDelete(m.deviceUserId, m.deviceSerial)}
+                        className="p-1.5 rounded-md text-fg-subtle hover:bg-danger/10 hover:text-danger"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </Card>
+
+      {unmapped.length > 0 && (
+        <Card>
+          <CardHeader
+            title="Unmapped Punches"
+            subtitle="Punches from device IDs with no employee mapping yet"
+            action={<Badge tone="warning">{unmapped.length} pending</Badge>}
+          />
+          <div className="p-5 pt-3 overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border text-left">
+                  <th className="py-2 font-semibold text-fg-subtle text-xs uppercase">Device ID</th>
+                  <th className="py-2 font-semibold text-fg-subtle text-xs uppercase">Punch Time</th>
+                  <th className="py-2 font-semibold text-fg-subtle text-xs uppercase">Type</th>
+                </tr>
+              </thead>
+              <tbody>
+                {unmapped.slice(0, 20).map((p) => (
+                  <tr key={p.id} className="border-b border-border/50">
+                    <td className="py-2.5 font-mono text-xs text-fg">{p.deviceUserId}</td>
+                    <td className="py-2.5 text-fg-muted text-xs">{new Date(p.punchTime).toLocaleString()}</td>
+                    <td className="py-2.5 text-fg-muted text-xs capitalize">{p.punchType?.replace('_', ' ')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      <AddMappingModal open={addOpen} onClose={() => setAddOpen(false)} />
+    </>
+  );
+}
