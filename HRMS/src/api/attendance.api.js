@@ -133,6 +133,14 @@ export async function fetchEmployeeDashboardAttendance() {
   };
 }
 
+export async function fetchAdmsStatusApi() {
+  return apiRequest({ method: 'GET', url: '/attendance/adms/test' });
+}
+
+export async function updateAdmsDeviceApi(serial, { name, location }) {
+  return apiRequest({ method: 'PUT', url: `/attendance/adms/devices/${serial}`, data: { name, location } });
+}
+
 export async function fetchDevicePunchesTodayApi(employeeId) {
   return apiRequest({
     method: 'GET',

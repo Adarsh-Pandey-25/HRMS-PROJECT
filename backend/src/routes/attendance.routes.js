@@ -30,6 +30,7 @@ router.get('/monthly-summary', isEmployee, attendanceController.monthlySummary);
 
 // ADMS biometric device (raw punch log — see backend/src/routes/adms.routes.js for the device push endpoints)
 router.get('/adms/test', isHROrAdmin, admsController.testStatus);
+router.put('/adms/devices/:serial', isHROrAdmin, admsController.updateDeviceLabel);
 router.get('/device-punches/today', isEmployee, admsController.todayPunches);
 
 const wfhRequestController = require('../controllers/wfhRequest.controller');

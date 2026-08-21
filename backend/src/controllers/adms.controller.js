@@ -1,7 +1,7 @@
 const { supabaseAdmin } = require('../config/supabase');
 const logger = require('../utils/logger');
 const { successResponse } = require('../utils/helpers');
-const { ForbiddenError } = require('../utils/errors');
+const { ForbiddenError, BadRequestError } = require('../utils/errors');
 const admsService = require('../services/adms.service');
 
 /** Device sends this every ~30s. No auth — the eSSL protocol can't send any. */
@@ -57,7 +57,7 @@ const testStatus = async (req, res, next) => {
         .limit(5),
       supabaseAdmin
         .from('device_heartbeats')
-        .select('device_serial, last_seen_at')
+        .select('device_serial, last_seen_at, name, location')
         .order('last_seen_at', { ascending: false }),
       (async () => {
         const { start, end } = admsService.todayRangeIso();
@@ -79,8 +79,51 @@ const testStatus = async (req, res, next) => {
       devices: (heartbeats || []).map((h) => ({
         deviceSerial: h.device_serial,
         lastSeenAt: h.last_seen_at,
+        name: h.name,
+        location: h.location,
       })),
     });
+  } catch (err) { next(err); }
+};
+
+/** Authenticated: HR/Admin labels a device (name/location). The row itself is created by the device's own heartbeat. */
+const updateDeviceLabel = async (req, res, next) => {
+  try {
+    const { serial } = req.params;
+    const { name, location } = req.body || {};
+    if (!serial) throw new BadRequestError('Device serial is required');
+
+    const { data: updated, error: updateError } = await supabaseAdmin
+      .from('device_heartbeats')
+      .update({ name: name ?? null, location: location ?? null })
+      .eq('device_serial', serial)
+      .select('device_serial, last_seen_at, name, location')
+      .maybeSingle();
+    if (updateError) throw updateError;
+
+    if (updated) {
+      return successResponse(res, 'Device updated', {
+        deviceSerial: updated.device_serial,
+        lastSeenAt: updated.last_seen_at,
+        name: updated.name,
+        location: updated.location,
+      });
+    }
+
+    // Device hasn't pinged yet — pre-register it so it's labeled once it does.
+    const { data: created, error: insertError } = await supabaseAdmin
+      .from('device_heartbeats')
+      .insert({ device_serial: serial, name: name ?? null, location: location ?? null })
+      .select('device_serial, last_seen_at, name, location')
+      .single();
+    if (insertError) throw insertError;
+
+    successResponse(res, 'Device registered', {
+      deviceSerial: created.device_serial,
+      lastSeenAt: created.last_seen_at,
+      name: created.name,
+      location: created.location,
+    }, null, 201);
   } catch (err) { next(err); }
 };
 
@@ -106,4 +149,4 @@ const todayPunches = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-module.exports = { getrequest, deviceinfo, cdata, testStatus, todayPunches };
+module.exports = { getrequest, deviceinfo, cdata, testStatus, updateDeviceLabel, todayPunches };

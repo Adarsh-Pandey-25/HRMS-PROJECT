@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Plus, Trash2, RefreshCw, Save } from 'lucide-react';
+import { Plus, Trash2, Save } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { Card, CardHeader, Button, Input, Toggle, Badge, Modal } from '../../components/ui';
 import { useSettingsStore } from '../../store/settingsStore';
 import { updateSettingApi } from '../../api/settings.api';
 import { invalidateAndRefetch } from '../../lib/queryCache';
 import { DeviceMappingSection } from './DeviceMappingSection';
+import { AdmsDevicesSection } from './AdmsDevicesSection';
 
 const METHOD_LABELS = {
   web: ['Web Check-in', 'Browser on desktop or phone'],
@@ -40,28 +41,6 @@ function AddIpModal({ open, onClose }) {
           For a whole Wi‑Fi network you can use a /64 prefix, e.g. <code className="text-[11px]">2401:4900:1c52:5456::/64</code>.
         </p>
         <Input label="Label" placeholder="Office Wi‑Fi / Phone" value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} />
-      </div>
-    </Modal>
-  );
-}
-
-function AddDeviceModal({ open, onClose }) {
-  const addBiometricDevice = useSettingsStore((s) => s.addBiometricDevice);
-  const [form, setForm] = useState({ name: '', deviceId: '', location: '' });
-  const save = () => {
-    if (!form.name.trim() || !form.deviceId.trim()) return toast.error('Name and device ID are required');
-    addBiometricDevice(form);
-    toast.success('Device added — create a real API key under Integrations for the device');
-    setForm({ name: '', deviceId: '', location: '' });
-    onClose();
-  };
-  return (
-    <Modal open={open} onClose={onClose} title="Add Biometric Device" footer={<><Button variant="outline" onClick={onClose}>Cancel</Button><Button onClick={save}>Add Device</Button></>}>
-      <div className="space-y-4">
-        <Input label="Device name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-        <Input label="Device ID" value={form.deviceId} onChange={(e) => setForm({ ...form, deviceId: e.target.value })} />
-        <Input label="Location" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} />
-        <p className="text-xs text-fg-subtle">Device secrets belong in Settings → Integrations → API Keys (not stored here).</p>
       </div>
     </Modal>
   );
@@ -108,12 +87,9 @@ export function AttendanceConfigSection() {
   const update = useSettingsStore((s) => s.updateAttendanceConfig);
   const updateTrainingConfig = useSettingsStore((s) => s.updateTrainingConfig);
   const removeIpWhitelist = useSettingsStore((s) => s.removeIpWhitelist);
-  const removeBiometricDevice = useSettingsStore((s) => s.removeBiometricDevice);
-  const syncBiometricDevice = useSettingsStore((s) => s.syncBiometricDevice);
   const removeShift = useSettingsStore((s) => s.removeShift);
   const [form, setForm] = useState(cfg);
   const [ipModal, setIpModal] = useState(false);
-  const [deviceModal, setDeviceModal] = useState(false);
   const [shiftModal, setShiftModal] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -206,33 +182,7 @@ export function AttendanceConfigSection() {
         </Card>
       )}
 
-      {form.methods.biometric && (
-        <Card>
-          <CardHeader title="Biometric Devices" action={<Button size="sm" icon={Plus} onClick={() => setDeviceModal(true)}>Add Device</Button>} />
-          <div className="p-5 pt-3 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead><tr className="border-b border-border text-left"><th className="py-2 font-semibold text-fg-subtle text-xs uppercase">Device</th><th className="py-2 font-semibold text-fg-subtle text-xs uppercase">Location</th><th className="py-2 font-semibold text-fg-subtle text-xs uppercase">Last Sync</th><th className="py-2"></th></tr></thead>
-              <tbody>
-                {cfg.biometricDevices.length === 0 ? (
-                  <tr><td colSpan={4} className="py-6 text-center text-fg-subtle text-sm">No biometric devices configured yet.</td></tr>
-                ) : cfg.biometricDevices.map((d) => (
-                  <tr key={d.id} className="border-b border-border/50">
-                    <td className="py-2.5 text-fg">{d.name} <span className="text-fg-subtle text-xs">({d.deviceId})</span></td>
-                    <td className="py-2.5 text-fg-muted">{d.location}</td>
-                    <td className="py-2.5 text-fg-muted text-xs">{d.lastSync ? new Date(d.lastSync).toLocaleString() : 'Never'}</td>
-                    <td className="py-2.5 text-right">
-                      <div className="flex justify-end gap-1">
-                        <Button size="sm" variant="outline" icon={RefreshCw} onClick={() => { syncBiometricDevice(d.id); toast.success('Test connection succeeded'); }}>Test</Button>
-                        <button type="button" onClick={() => removeBiometricDevice(d.id)} className="p-1.5 rounded-md text-fg-subtle hover:bg-danger/10 hover:text-danger"><Trash2 className="h-3.5 w-3.5" /></button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      )}
+      <AdmsDevicesSection />
 
       <DeviceMappingSection />
 
@@ -275,7 +225,6 @@ export function AttendanceConfigSection() {
       </Card>
 
       <AddIpModal open={ipModal} onClose={() => setIpModal(false)} />
-      <AddDeviceModal open={deviceModal} onClose={() => setDeviceModal(false)} />
       <AddShiftModal open={shiftModal} onClose={() => setShiftModal(false)} />
     </div>
   );

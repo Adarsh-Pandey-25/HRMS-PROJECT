@@ -5,7 +5,7 @@ import {
   fetchMyAttendanceApi, fetchTeamAttendanceApi, fetchAllAttendanceApi,
   fetchMonthlySummaryApi, fetchEmployeeAttendanceReportApi,
   requestWfhDayApi, cancelWfhDayApi, fetchPendingWfhRequestsApi, reviewWfhRequestApi,
-  manualAttendanceEntryApi, fetchDevicePunchesTodayApi,
+  manualAttendanceEntryApi, fetchDevicePunchesTodayApi, fetchAdmsStatusApi, updateAdmsDeviceApi,
 } from '../api/attendance.api';
 import { fetchTeamEmployeesApi } from '../api/employees.api';
 import { invalidateAndRefetch } from '../lib/queryCache';
@@ -92,6 +92,27 @@ export function useDevicePunchesToday(employeeId) {
     enabled: isAuthenticated,
     refetchInterval: 7_000,
     staleTime: 5_000,
+  });
+}
+
+/** HR/Admin-only ADMS pipeline health: known devices, last heartbeat, recent punches, today's count. */
+export function useAdmsStatus() {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const role = useAuthStore((s) => s.role);
+  return useQuery({
+    queryKey: ['attendance', 'adms', 'status'],
+    queryFn: fetchAdmsStatusApi,
+    enabled: isAuthenticated && (role === 'admin' || role === 'hr'),
+    refetchInterval: 20_000,
+    staleTime: 10_000,
+  });
+}
+
+export function useUpdateAdmsDevice() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ serial, name, location }) => updateAdmsDeviceApi(serial, { name, location }),
+    onSuccess: () => invalidateAndRefetch(qc, ['attendance', 'adms']),
   });
 }
 
