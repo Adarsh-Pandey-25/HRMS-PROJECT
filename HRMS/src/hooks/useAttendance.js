@@ -95,16 +95,20 @@ export function useDevicePunchesToday(employeeId) {
   });
 }
 
-/** HR/Admin-only ADMS pipeline health: known devices, last heartbeat, recent punches, today's count. */
-export function useAdmsStatus() {
+/**
+ * HR/Admin-only ADMS pipeline health: known devices, last heartbeat, recent punches, today's count.
+ * Pass fastPoll while actively watching a device connect (e.g. right after registering it)
+ * to poll every few seconds instead of the normal cadence.
+ */
+export function useAdmsStatus(fastPoll = false) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const role = useAuthStore((s) => s.role);
   return useQuery({
     queryKey: ['attendance', 'adms', 'status'],
     queryFn: fetchAdmsStatusApi,
     enabled: isAuthenticated && (role === 'admin' || role === 'hr'),
-    refetchInterval: 20_000,
-    staleTime: 10_000,
+    refetchInterval: fastPoll ? 4_000 : 15_000,
+    staleTime: fastPoll ? 2_000 : 8_000,
   });
 }
 

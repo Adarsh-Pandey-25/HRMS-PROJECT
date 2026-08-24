@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Plus, Pencil, Fingerprint } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Plus, Pencil, Fingerprint, CheckCircle2, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { Card, CardHeader, Button, Input, Modal, Badge, EmptyState, Skeleton } from '../../components/ui';
 import { useAdmsStatus, useUpdateAdmsDevice } from '../../hooks/useAttendance';
@@ -11,6 +11,26 @@ function isOnline(lastSeenAt) {
   return Date.now() - new Date(lastSeenAt).getTime() < ONLINE_WINDOW_MS;
 }
 
+/** Ticks every second so "last seen" labels visibly count up without waiting on a data refetch. */
+function useNow(intervalMs = 1000) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+  return now;
+}
+
+function relativeTime(lastSeenAt, now) {
+  if (!lastSeenAt) return 'Never';
+  const seconds = Math.max(0, Math.round((now - new Date(lastSeenAt).getTime()) / 1000));
+  if (seconds < 5) return 'just now';
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  return new Date(lastSeenAt).toLocaleString();
+}
+
 /** device = null means "add a new device"; otherwise editing an existing one (serial is then read-only). */
 function DeviceModal({ open, device, onClose }) {
   const updateDevice = useUpdateAdmsDevice();
@@ -18,21 +38,69 @@ function DeviceModal({ open, device, onClose }) {
   const [serial, setSerial] = useState(device?.deviceSerial || '');
   const [name, setName] = useState(device?.name || '');
   const [location, setLocation] = useState(device?.location || '');
+  const [watchingSerial, setWatchingSerial] = useState(null); // set after a successful *new* registration
+  const now = useNow();
+
+  // Poll fast only while actively watching a freshly-added device connect.
+  const { data: watchStatus } = useAdmsStatus(Boolean(watchingSerial));
+  const watchedDevice = watchingSerial ? watchStatus?.devices?.find((d) => d.deviceSerial === watchingSerial) : null;
+  const connected = watchedDevice ? isOnline(watchedDevice.lastSeenAt) : false;
 
   const save = async () => {
     const targetSerial = (isNew ? serial : device.deviceSerial).trim();
     if (!targetSerial) return toast.error('Device serial is required');
     try {
       await updateDevice.mutateAsync({ serial: targetSerial, name, location });
-      toast.success(isNew ? 'Device registered' : 'Device updated');
-      setSerial('');
-      setName('');
-      setLocation('');
-      onClose();
+      if (isNew) {
+        toast.success('Device registered — watching for it to connect…');
+        setWatchingSerial(targetSerial);
+      } else {
+        toast.success('Device updated');
+        onClose();
+      }
     } catch (err) {
       toast.error(err.message || 'Failed to save device');
     }
   };
+
+  const finish = () => {
+    setWatchingSerial(null);
+    setSerial('');
+    setName('');
+    setLocation('');
+    onClose();
+  };
+
+  if (watchingSerial) {
+    return (
+      <Modal
+        open={open}
+        onClose={finish}
+        title={`Device ${watchingSerial}`}
+        footer={<Button onClick={finish}>Done</Button>}
+      >
+        <div className="flex flex-col items-center text-center py-6 gap-3">
+          {connected ? (
+            <>
+              <CheckCircle2 className="h-10 w-10 text-success" />
+              <p className="text-sm font-medium text-fg">Connected — device is live</p>
+              <p className="text-xs text-fg-subtle">Last heartbeat {relativeTime(watchedDevice.lastSeenAt, now)}.</p>
+            </>
+          ) : (
+            <>
+              <Loader2 className="h-10 w-10 text-primary animate-spin" />
+              <p className="text-sm font-medium text-fg">Waiting for the device to check in…</p>
+              <p className="text-xs text-fg-subtle max-w-xs">
+                This device pushes a heartbeat roughly every 30 seconds once its server address points here.
+                No action needed — this'll flip to Connected automatically. You can also close this and check
+                the device's status anytime in the table.
+              </p>
+            </>
+          )}
+        </div>
+      </Modal>
+    );
+  }
 
   return (
     <Modal
@@ -63,6 +131,7 @@ export function AdmsDevicesSection() {
   const [editing, setEditing] = useState(null);
   const [adding, setAdding] = useState(false);
   const devices = data?.devices || [];
+  const now = useNow();
 
   return (
     <Card>
@@ -96,20 +165,28 @@ export function AdmsDevicesSection() {
               </tr>
             </thead>
             <tbody>
-              {devices.map((d) => (
-                <tr key={d.deviceSerial} className="border-b border-border/50">
-                  <td className="py-2.5 font-mono text-xs text-fg">{d.deviceSerial}</td>
-                  <td className="py-2.5 text-fg-muted">{d.name || <span className="text-fg-subtle italic">Unlabeled</span>}</td>
-                  <td className="py-2.5 text-fg-muted">{d.location || '—'}</td>
-                  <td className="py-2.5 text-fg-muted text-xs">{d.lastSeenAt ? new Date(d.lastSeenAt).toLocaleString() : 'Never'}</td>
-                  <td className="py-2.5"><Badge tone={isOnline(d.lastSeenAt) ? 'success' : 'neutral'}>{isOnline(d.lastSeenAt) ? 'Online' : 'Offline'}</Badge></td>
-                  <td className="py-2.5 text-right">
-                    <button type="button" onClick={() => setEditing(d)} className="p-1.5 rounded-md text-fg-subtle hover:bg-primary/10 hover:text-primary">
-                      <Pencil className="h-3.5 w-3.5" />
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {devices.map((d) => {
+                const online = isOnline(d.lastSeenAt);
+                return (
+                  <tr key={d.deviceSerial} className="border-b border-border/50">
+                    <td className="py-2.5 font-mono text-xs text-fg">{d.deviceSerial}</td>
+                    <td className="py-2.5 text-fg-muted">{d.name || <span className="text-fg-subtle italic">Unlabeled</span>}</td>
+                    <td className="py-2.5 text-fg-muted">{d.location || '—'}</td>
+                    <td className="py-2.5 text-fg-muted text-xs">{relativeTime(d.lastSeenAt, now)}</td>
+                    <td className="py-2.5">
+                      <Badge tone={online ? 'success' : 'neutral'}>
+                        <span className={`inline-block h-1.5 w-1.5 rounded-full mr-1.5 ${online ? 'bg-success animate-pulse' : 'bg-fg-subtle'}`} />
+                        {online ? 'Connected' : 'Offline'}
+                      </Badge>
+                    </td>
+                    <td className="py-2.5 text-right">
+                      <button type="button" onClick={() => setEditing(d)} className="p-1.5 rounded-md text-fg-subtle hover:bg-primary/10 hover:text-primary">
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
