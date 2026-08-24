@@ -3,18 +3,24 @@ import { Plus, Trash2, Fingerprint } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { Card, CardHeader, Button, Input, Select, Modal, Badge, EmptyState, Skeleton } from '../../components/ui';
 import { useEmployees } from '../../hooks/useEmployees';
+import { useAdmsStatus } from '../../hooks/useAttendance';
 import { useDeviceMappings, useUnmappedPunches, useDeviceMappingMutations } from '../../hooks/useDeviceMapping';
 
 function AddMappingModal({ open, onClose }) {
   const { employees } = useEmployees();
+  const { data: admsStatus } = useAdmsStatus();
+  const devices = admsStatus?.devices || [];
   const { create } = useDeviceMappingMutations();
   const [deviceUserId, setDeviceUserId] = useState('');
   const [employeeId, setEmployeeId] = useState('');
+  const [deviceSerial, setDeviceSerial] = useState(devices.length === 1 ? devices[0].deviceSerial : '');
 
   const save = async () => {
-    if (!deviceUserId.trim() || !employeeId) return toast.error('Employee and device user ID are required');
+    if (!deviceUserId.trim() || !employeeId || !deviceSerial) {
+      return toast.error('Device, employee, and device user ID are all required');
+    }
     try {
-      await create.mutateAsync({ deviceUserId: deviceUserId.trim(), employeeId });
+      await create.mutateAsync({ deviceUserId: deviceUserId.trim(), employeeId, deviceSerial });
       toast.success('Mapping created');
       setDeviceUserId('');
       setEmployeeId('');
@@ -35,6 +41,16 @@ function AddMappingModal({ open, onClose }) {
       </>}
     >
       <div className="space-y-4">
+        {devices.length === 0 ? (
+          <p className="text-sm text-danger">No devices registered yet — add one above first, then come back here to map employees to it.</p>
+        ) : (
+          <Select
+            label="Device"
+            value={deviceSerial}
+            onChange={(e) => setDeviceSerial(e.target.value)}
+            options={[{ value: '', label: 'Select device…' }, ...devices.map((d) => ({ value: d.deviceSerial, label: d.name ? `${d.name} (${d.deviceSerial})` : d.deviceSerial }))]}
+          />
+        )}
         <Select
           label="Employee"
           value={employeeId}
@@ -86,6 +102,7 @@ export function DeviceMappingSection() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border text-left">
+                  <th className="py-2 font-semibold text-fg-subtle text-xs uppercase">Device</th>
                   <th className="py-2 font-semibold text-fg-subtle text-xs uppercase">Device ID</th>
                   <th className="py-2 font-semibold text-fg-subtle text-xs uppercase">Employee</th>
                   <th className="py-2"></th>
@@ -94,6 +111,7 @@ export function DeviceMappingSection() {
               <tbody>
                 {mappings.map((m) => (
                   <tr key={m.id} className="border-b border-border/50">
+                    <td className="py-2.5 font-mono text-xs text-fg-subtle">{m.deviceSerial}</td>
                     <td className="py-2.5 font-mono text-xs text-fg">{m.deviceUserId}</td>
                     <td className="py-2.5 text-fg-muted">{m.employeeName} <span className="text-fg-subtle text-xs">({m.employeeCode})</span></td>
                     <td className="py-2.5 text-right">

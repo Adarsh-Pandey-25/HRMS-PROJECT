@@ -1,7 +1,7 @@
 const { supabaseAdmin } = require('../config/supabase');
 const logger = require('../utils/logger');
 const { successResponse } = require('../utils/helpers');
-const { ForbiddenError, BadRequestError } = require('../utils/errors');
+const { ForbiddenError, BadRequestError, ConflictError } = require('../utils/errors');
 const admsService = require('../services/adms.service');
 
 /** Device sends this every ~30s. No auth — the eSSL protocol can't send any. */
@@ -58,6 +58,7 @@ const testStatus = async (req, res, next) => {
       supabaseAdmin
         .from('device_heartbeats')
         .select('device_serial, last_seen_at, name, location')
+        .eq('company_id', companyId)
         .order('last_seen_at', { ascending: false }),
       (async () => {
         const { start, end } = admsService.todayRangeIso();
@@ -86,22 +87,45 @@ const testStatus = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-/** Authenticated: HR/Admin labels a device (name/location). The row itself is created by the device's own heartbeat. */
-const updateDeviceLabel = async (req, res, next) => {
+/**
+ * Authenticated: HR/Admin registers or relabels a device by serial — this is
+ * the only way a device ever gets associated with a company. Any device
+ * serial works (typed by the admin from whatever's printed on their unit);
+ * nothing in the codebase assumes a specific make/model/serial.
+ *
+ * - Serial never seen before -> claimed for this company now.
+ * - Serial already claimed by this company -> just updates name/location.
+ * - Serial already claimed by a DIFFERENT company -> rejected. The device
+ *   itself is unauthenticated (the ADMS protocol has no way to prove
+ *   ownership), so first-to-register is the only enforceable rule; this at
+ *   least stops one tenant from silently taking over another's device entry.
+ */
+const registerDevice = async (req, res, next) => {
   try {
     const { serial } = req.params;
     const { name, location } = req.body || {};
     if (!serial) throw new BadRequestError('Device serial is required');
+    const companyId = req.user.company_id;
 
-    const { data: updated, error: updateError } = await supabaseAdmin
+    const { data: existing, error: findError } = await supabaseAdmin
       .from('device_heartbeats')
-      .update({ name: name ?? null, location: location ?? null })
+      .select('device_serial, last_seen_at, name, location, company_id')
       .eq('device_serial', serial)
-      .select('device_serial, last_seen_at, name, location')
       .maybeSingle();
-    if (updateError) throw updateError;
+    if (findError) throw findError;
 
-    if (updated) {
+    if (existing?.company_id && existing.company_id !== companyId) {
+      throw new ConflictError('This device is already registered to another company');
+    }
+
+    if (existing) {
+      const { data: updated, error: updateError } = await supabaseAdmin
+        .from('device_heartbeats')
+        .update({ name: name ?? null, location: location ?? null, company_id: companyId })
+        .eq('device_serial', serial)
+        .select('device_serial, last_seen_at, name, location')
+        .single();
+      if (updateError) throw updateError;
       return successResponse(res, 'Device updated', {
         deviceSerial: updated.device_serial,
         lastSeenAt: updated.last_seen_at,
@@ -110,10 +134,10 @@ const updateDeviceLabel = async (req, res, next) => {
       });
     }
 
-    // Device hasn't pinged yet — pre-register it so it's labeled once it does.
+    // Device hasn't pinged yet — pre-register it so it's claimed the moment it does.
     const { data: created, error: insertError } = await supabaseAdmin
       .from('device_heartbeats')
-      .insert({ device_serial: serial, name: name ?? null, location: location ?? null })
+      .insert({ device_serial: serial, name: name ?? null, location: location ?? null, company_id: companyId })
       .select('device_serial, last_seen_at, name, location')
       .single();
     if (insertError) throw insertError;
@@ -149,4 +173,4 @@ const todayPunches = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-module.exports = { getrequest, deviceinfo, cdata, testStatus, updateDeviceLabel, todayPunches };
+module.exports = { getrequest, deviceinfo, cdata, testStatus, registerDevice, todayPunches };

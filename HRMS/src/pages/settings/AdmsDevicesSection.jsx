@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Pencil, Fingerprint } from 'lucide-react';
+import { Plus, Pencil, Fingerprint } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { Card, CardHeader, Button, Input, Modal, Badge, EmptyState, Skeleton } from '../../components/ui';
 import { useAdmsStatus, useUpdateAdmsDevice } from '../../hooks/useAttendance';
@@ -11,35 +11,48 @@ function isOnline(lastSeenAt) {
   return Date.now() - new Date(lastSeenAt).getTime() < ONLINE_WINDOW_MS;
 }
 
-function EditDeviceModal({ device, onClose }) {
+/** device = null means "add a new device"; otherwise editing an existing one (serial is then read-only). */
+function DeviceModal({ open, device, onClose }) {
   const updateDevice = useUpdateAdmsDevice();
+  const isNew = !device;
+  const [serial, setSerial] = useState(device?.deviceSerial || '');
   const [name, setName] = useState(device?.name || '');
   const [location, setLocation] = useState(device?.location || '');
 
   const save = async () => {
+    const targetSerial = (isNew ? serial : device.deviceSerial).trim();
+    if (!targetSerial) return toast.error('Device serial is required');
     try {
-      await updateDevice.mutateAsync({ serial: device.deviceSerial, name, location });
-      toast.success('Device updated');
+      await updateDevice.mutateAsync({ serial: targetSerial, name, location });
+      toast.success(isNew ? 'Device registered' : 'Device updated');
+      setSerial('');
+      setName('');
+      setLocation('');
       onClose();
     } catch (err) {
-      toast.error(err.message || 'Failed to update device');
+      toast.error(err.message || 'Failed to save device');
     }
   };
 
   return (
     <Modal
-      open={Boolean(device)}
+      open={open}
       onClose={onClose}
-      title={`Label Device ${device?.deviceSerial || ''}`}
+      title={isNew ? 'Add Biometric Device' : `Edit Device ${device?.deviceSerial || ''}`}
       footer={<>
         <Button variant="outline" onClick={onClose}>Cancel</Button>
-        <Button onClick={save} loading={updateDevice.isPending}>Save</Button>
+        <Button onClick={save} loading={updateDevice.isPending}>{isNew ? 'Add Device' : 'Save'}</Button>
       </>}
     >
       <div className="space-y-4">
+        {isNew ? (
+          <>
+            <Input label="Device serial" placeholder="e.g. NFZ8244800715" value={serial} onChange={(e) => setSerial(e.target.value)} />
+            <p className="text-xs text-fg-subtle">The serial number printed on the device (any make/model works — point the device's server address at this domain and it'll start reporting under this serial).</p>
+          </>
+        ) : null}
         <Input label="Name" placeholder="e.g. Main Gate" value={name} onChange={(e) => setName(e.target.value)} />
         <Input label="Location" placeholder="e.g. Ground Floor Reception" value={location} onChange={(e) => setLocation(e.target.value)} />
-        <p className="text-xs text-fg-subtle">Device serial is fixed — it's read from the device's own heartbeat, not set here.</p>
       </div>
     </Modal>
   );
@@ -48,14 +61,18 @@ function EditDeviceModal({ device, onClose }) {
 export function AdmsDevicesSection() {
   const { data, isLoading } = useAdmsStatus();
   const [editing, setEditing] = useState(null);
+  const [adding, setAdding] = useState(false);
   const devices = data?.devices || [];
 
   return (
     <Card>
       <CardHeader
         title="Biometric Devices"
-        subtitle="Auto-discovered from live ADMS heartbeats — nothing to add manually"
-        action={data ? <Badge tone="neutral">{data.todayPunchCount} punch{data.todayPunchCount === 1 ? '' : 'es'} today</Badge> : null}
+        subtitle="Register your own device by serial — works for any make/model, nothing to configure in code"
+        action={<div className="flex items-center gap-2">
+          {data ? <Badge tone="neutral">{data.todayPunchCount} punch{data.todayPunchCount === 1 ? '' : 'es'} today</Badge> : null}
+          <Button size="sm" icon={Plus} onClick={() => setAdding(true)}>Add Device</Button>
+        </div>}
       />
       <div className="p-5 pt-3 overflow-x-auto">
         {isLoading ? (
@@ -63,8 +80,8 @@ export function AdmsDevicesSection() {
         ) : devices.length === 0 ? (
           <EmptyState
             icon={Fingerprint}
-            title="No device has connected yet"
-            message="Once your eSSL device pings /iclock/getrequest, it'll show up here automatically — nothing to configure by hand."
+            title="No devices registered yet"
+            message="Add a device by its serial number — once you point that device's server address at this domain, its heartbeats and punches will show up here automatically."
           />
         ) : (
           <table className="w-full text-sm">
@@ -97,7 +114,8 @@ export function AdmsDevicesSection() {
           </table>
         )}
       </div>
-      <EditDeviceModal device={editing} onClose={() => setEditing(null)} />
+      <DeviceModal key={editing?.deviceSerial || 'edit-none'} open={Boolean(editing)} device={editing} onClose={() => setEditing(null)} />
+      <DeviceModal key={adding ? 'add-open' : 'add-closed'} open={adding} device={null} onClose={() => setAdding(false)} />
     </Card>
   );
 }

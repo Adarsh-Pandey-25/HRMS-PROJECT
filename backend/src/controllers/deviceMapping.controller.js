@@ -1,7 +1,18 @@
 const { supabaseAdmin } = require('../config/supabase');
 const { successResponse } = require('../utils/helpers');
 const { BadRequestError, NotFoundError, ConflictError } = require('../utils/errors');
-const { DEFAULT_DEVICE_SERIAL } = require('../utils/constants');
+
+/** Confirm this device serial is registered to the requesting company (any make/model — nothing hardcoded). */
+const assertOwnsDevice = async (deviceSerial, companyId) => {
+  const { data, error } = await supabaseAdmin
+    .from('device_heartbeats')
+    .select('device_serial')
+    .eq('device_serial', deviceSerial)
+    .eq('company_id', companyId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) throw new NotFoundError('Device not found — register it under Settings > Attendance first');
+};
 
 const withEmployeeName = (row) => {
   const emp = row.employees;
@@ -20,10 +31,11 @@ const withEmployeeName = (row) => {
 const create = async (req, res, next) => {
   try {
     const { device_user_id: deviceUserId, employee_id: employeeId, device_serial: deviceSerial } = req.body || {};
-    if (!deviceUserId || !employeeId) {
-      throw new BadRequestError('device_user_id and employee_id are required');
+    if (!deviceUserId || !employeeId || !deviceSerial) {
+      throw new BadRequestError('device_user_id, employee_id and device_serial are required');
     }
-    const serial = deviceSerial || DEFAULT_DEVICE_SERIAL;
+    const serial = deviceSerial;
+    await assertOwnsDevice(serial, req.user.company_id);
 
     const { data: employee, error: employeeError } = await supabaseAdmin
       .from('employees')
@@ -65,7 +77,8 @@ const list = async (req, res, next) => {
 const remove = async (req, res, next) => {
   try {
     const deviceUserId = req.params.deviceUserId;
-    const deviceSerial = req.query.device_serial || DEFAULT_DEVICE_SERIAL;
+    const deviceSerial = req.query.device_serial;
+    if (!deviceSerial) throw new BadRequestError('device_serial query param is required');
 
     const { data: existing, error: findError } = await supabaseAdmin
       .from('device_employee_mapping')
@@ -85,16 +98,16 @@ const remove = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-/** Recent punches that arrived with no matching mapping, for devices this company has already mapped at least once. */
+/** Recent punches that arrived with no matching mapping, for this company's registered devices. */
 const unmapped = async (req, res, next) => {
   try {
-    const { data: mapped, error: mappedError } = await supabaseAdmin
-      .from('device_employee_mapping')
-      .select('device_serial, employees!inner(company_id)')
-      .eq('employees.company_id', req.user.company_id);
-    if (mappedError) throw mappedError;
+    const { data: devices, error: devicesError } = await supabaseAdmin
+      .from('device_heartbeats')
+      .select('device_serial')
+      .eq('company_id', req.user.company_id);
+    if (devicesError) throw devicesError;
 
-    const serials = [...new Set((mapped || []).map((m) => m.device_serial))];
+    const serials = [...new Set((devices || []).map((d) => d.device_serial))];
     if (!serials.length) return successResponse(res, 'Unmapped punches', []);
 
     const { data, error } = await supabaseAdmin
