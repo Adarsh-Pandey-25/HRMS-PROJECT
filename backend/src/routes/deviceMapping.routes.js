@@ -8,6 +8,7 @@ const router = express.Router();
 router.use(authenticate, isHROrAdmin);
 
 router.get('/unmapped', deviceMappingController.unmapped);
+router.get('/device-users', deviceMappingController.deviceUsers);
 router.get('/', deviceMappingController.list);
 router.post('/', deviceMappingController.create);
 router.delete('/:deviceUserId', deviceMappingController.remove);

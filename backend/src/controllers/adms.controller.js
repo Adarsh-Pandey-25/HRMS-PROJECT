@@ -4,12 +4,16 @@ const { successResponse } = require('../utils/helpers');
 const { ForbiddenError, BadRequestError, ConflictError } = require('../utils/errors');
 const admsService = require('../services/adms.service');
 
-/** Device sends this every ~30s. No auth — the eSSL protocol can't send any. */
+/**
+ * Device sends this every ~30s. No auth — the eSSL protocol can't send any.
+ * Responding with an ATTLOG command nudges the device to push any punches
+ * it's holding on the very next request instead of waiting on its own timer.
+ */
 const getrequest = async (req, res) => {
   const deviceSerial = req.query.SN || null;
   logger.info('[ADMS] Heartbeat', { deviceSerial });
   await admsService.touchHeartbeat(deviceSerial);
-  res.status(200).type('text/plain').send('OK');
+  res.status(200).type('text/plain').send('OK\nGetRequest:ATTLOG');
 };
 
 /** Device sends this once on first connect. No auth. */
@@ -48,7 +52,11 @@ const testStatus = async (req, res, next) => {
   try {
     const companyId = req.user.company_id;
 
-    const [{ data: recentPunches, error: recentError }, { data: heartbeats }, { count: todayCount }] = await Promise.all([
+    const [
+      { data: recentPunches, error: recentError },
+      { data: heartbeats, error: heartbeatsError },
+      { count: todayCount, error: todayError },
+    ] = await Promise.all([
       supabaseAdmin
         .from('device_punches')
         .select('id, device_user_id, employee_id, punch_time, punch_type, verify_mode, device_serial')
@@ -72,9 +80,11 @@ const testStatus = async (req, res, next) => {
     ]);
 
     if (recentError) throw recentError;
+    if (heartbeatsError) throw heartbeatsError;
+    if (todayError) throw todayError;
 
     successResponse(res, 'ADMS status', {
-      supabaseConnected: !recentError,
+      supabaseConnected: true,
       recentPunches: recentPunches || [],
       todayPunchCount: todayCount || 0,
       devices: (heartbeats || []).map((h) => ({

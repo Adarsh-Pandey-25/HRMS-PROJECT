@@ -14,6 +14,16 @@ const assertOwnsDevice = async (deviceSerial, companyId) => {
   if (!data) throw new NotFoundError('Device not found — register it under Settings > Attendance first');
 };
 
+/** This company's registered device serials — the scoping boundary for every punch-derived query below. */
+const companyDeviceSerials = async (companyId) => {
+  const { data, error } = await supabaseAdmin
+    .from('device_heartbeats')
+    .select('device_serial')
+    .eq('company_id', companyId);
+  if (error) throw error;
+  return [...new Set((data || []).map((d) => d.device_serial))];
+};
+
 const withEmployeeName = (row) => {
   const emp = row.employees;
   return {
@@ -101,13 +111,7 @@ const remove = async (req, res, next) => {
 /** Recent punches that arrived with no matching mapping, for this company's registered devices. */
 const unmapped = async (req, res, next) => {
   try {
-    const { data: devices, error: devicesError } = await supabaseAdmin
-      .from('device_heartbeats')
-      .select('device_serial')
-      .eq('company_id', req.user.company_id);
-    if (devicesError) throw devicesError;
-
-    const serials = [...new Set((devices || []).map((d) => d.device_serial))];
+    const serials = await companyDeviceSerials(req.user.company_id);
     if (!serials.length) return successResponse(res, 'Unmapped punches', []);
 
     const { data, error } = await supabaseAdmin
@@ -123,4 +127,50 @@ const unmapped = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-module.exports = { create, list, remove, unmapped };
+/**
+ * Every distinct device_user_id seen from this company's devices, with punch
+ * count / last-seen / mapped status — so an admin knows exactly which IDs
+ * (e.g. "5") still need mapping to an employee, without touching Supabase.
+ */
+const deviceUsers = async (req, res, next) => {
+  try {
+    const serials = await companyDeviceSerials(req.user.company_id);
+    if (!serials.length) return successResponse(res, 'Device users', { device_users: [] });
+
+    const [{ data: punches, error: punchesError }, { data: mappings, error: mappingsError }] = await Promise.all([
+      supabaseAdmin
+        .from('device_punches')
+        .select('device_user_id, punch_time')
+        .in('device_serial', serials)
+        .order('punch_time', { ascending: false })
+        .limit(5000),
+      supabaseAdmin
+        .from('device_employee_mapping')
+        .select('device_user_id')
+        .in('device_serial', serials),
+    ]);
+    if (punchesError) throw punchesError;
+    if (mappingsError) throw mappingsError;
+
+    const mappedIds = new Set((mappings || []).map((m) => m.device_user_id));
+    const byDeviceUserId = new Map();
+    for (const p of punches || []) {
+      const entry = byDeviceUserId.get(p.device_user_id);
+      if (entry) {
+        entry.punch_count += 1;
+      } else {
+        byDeviceUserId.set(p.device_user_id, {
+          device_user_id: p.device_user_id,
+          punch_count: 1,
+          last_seen: p.punch_time,
+          mapped: mappedIds.has(p.device_user_id),
+        });
+      }
+    }
+
+    const deviceUserList = [...byDeviceUserId.values()].sort((a, b) => new Date(b.last_seen) - new Date(a.last_seen));
+    successResponse(res, 'Device users', { device_users: deviceUserList });
+  } catch (err) { next(err); }
+};
+
+module.exports = { create, list, remove, unmapped, deviceUsers };
