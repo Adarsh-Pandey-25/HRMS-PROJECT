@@ -9,8 +9,10 @@ const router = express.Router();
 
 const rawText = express.text({ type: () => true, limit: '256kb' });
 
-router.get('/getrequest', admsController.getrequest);
-router.post('/deviceinfo', rawText, admsController.deviceinfo);
-router.post('/cdata', rawText, admsController.cdata);
+// Some firmware/relay clients (e.g. "iClock Proxy") use .aspx-suffixed paths
+// instead of the plain ones — same protocol, just a different URL convention.
+router.get(['/getrequest', '/getrequest.aspx'], admsController.getrequest);
+router.post(['/deviceinfo', '/deviceinfo.aspx'], rawText, admsController.deviceinfo);
+router.post(['/cdata', '/cdata.aspx'], rawText, admsController.cdata);
 
 module.exports = router;
