@@ -4,25 +4,35 @@ import toast from 'react-hot-toast';
 import { Card, CardHeader, Button, Input, Select, Modal, Badge, EmptyState, Skeleton } from '../../components/ui';
 import { useEmployees } from '../../hooks/useEmployees';
 import { useAdmsStatus } from '../../hooks/useAttendance';
-import { useDeviceMappings, useUnmappedPunches, useDeviceMappingMutations } from '../../hooks/useDeviceMapping';
+import {
+  useDeviceMappings, useUnmappedPunches, useDeviceUsers, useDeviceMappingMutations,
+} from '../../hooks/useDeviceMapping';
+
+const MANUAL_ENTRY = '__manual__';
 
 function AddMappingModal({ open, onClose }) {
   const { employees } = useEmployees();
   const { data: admsStatus } = useAdmsStatus();
+  const { data: deviceUsers = [] } = useDeviceUsers();
   const devices = admsStatus?.devices || [];
+  const unmappedDeviceUsers = deviceUsers.filter((d) => !d.mapped);
   const { create } = useDeviceMappingMutations();
   const [deviceUserId, setDeviceUserId] = useState('');
+  const [manualId, setManualId] = useState('');
   const [employeeId, setEmployeeId] = useState('');
   const [deviceSerial, setDeviceSerial] = useState(devices.length === 1 ? devices[0].deviceSerial : '');
 
+  const resolvedDeviceUserId = deviceUserId === MANUAL_ENTRY ? manualId.trim() : deviceUserId;
+
   const save = async () => {
-    if (!deviceUserId.trim() || !employeeId || !deviceSerial) {
+    if (!resolvedDeviceUserId || !employeeId || !deviceSerial) {
       return toast.error('Device, employee, and device user ID are all required');
     }
     try {
-      await create.mutateAsync({ deviceUserId: deviceUserId.trim(), employeeId, deviceSerial });
+      await create.mutateAsync({ deviceUserId: resolvedDeviceUserId, employeeId, deviceSerial });
       toast.success('Mapping created');
       setDeviceUserId('');
+      setManualId('');
       setEmployeeId('');
       onClose();
     } catch (err) {
@@ -57,14 +67,31 @@ function AddMappingModal({ open, onClose }) {
           onChange={(e) => setEmployeeId(e.target.value)}
           options={[{ value: '', label: 'Select employee…' }, ...employees.map((e) => ({ value: e.id, label: `${e.name} (${e.employeeCode})` }))]}
         />
-        <Input
+        <Select
           label="Device user ID"
-          type="number"
-          placeholder="e.g. 5"
           value={deviceUserId}
           onChange={(e) => setDeviceUserId(e.target.value)}
+          options={[
+            { value: '', label: 'Select device user ID…' },
+            ...unmappedDeviceUsers.map((d) => ({
+              value: d.deviceUserId,
+              label: `${d.deviceUserId} — ${d.punchCount} punch${d.punchCount === 1 ? '' : 'es'}, last seen ${new Date(d.lastSeen).toLocaleDateString()}`,
+            })),
+            { value: MANUAL_ENTRY, label: "Other (hasn't punched yet — type manually)" },
+          ]}
         />
-        <p className="text-xs text-fg-subtle">The numeric ID this employee is enrolled under on the fingerprint device.</p>
+        {deviceUserId === MANUAL_ENTRY && (
+          <Input
+            label="Device user ID"
+            type="number"
+            placeholder="e.g. 5"
+            value={manualId}
+            onChange={(e) => setManualId(e.target.value)}
+          />
+        )}
+        {unmappedDeviceUsers.length === 0 && deviceUserId !== MANUAL_ENTRY && (
+          <p className="text-xs text-fg-subtle">No unmapped device IDs have punched in yet — pick "Other" to map one by hand before its first scan.</p>
+        )}
       </div>
     </Modal>
   );

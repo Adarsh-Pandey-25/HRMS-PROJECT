@@ -152,6 +152,32 @@ const getLeaves = async (filters, query) => {
   return { data, meta: buildMeta(page, limit, count) };
 };
 
+/** Increment (or decrement, for cancellations) leave_balances.used — creates the row if it doesn't exist yet. */
+const adjustLeaveBalanceUsed = async (employeeId, leaveDate, leaveType, deltaDays) => {
+  const year = moment(leaveDate).year();
+  const { data: balance } = await supabaseAdmin
+    .from('leave_balances')
+    .select('id, used')
+    .eq('employee_id', employeeId)
+    .eq('year', year)
+    .eq('leave_type', leaveType)
+    .maybeSingle();
+
+  if (balance) {
+    const nextUsed = Math.max(0, Number(balance.used || 0) + deltaDays);
+    await supabaseAdmin.from('leave_balances').update({ used: nextUsed }).eq('id', balance.id);
+  } else if (deltaDays > 0) {
+    await supabaseAdmin.from('leave_balances').insert({
+      employee_id: employeeId,
+      year,
+      leave_type: leaveType,
+      total_allocated: 0,
+      used: deltaDays,
+      encashed: 0,
+    });
+  }
+};
+
 const notifyLeaveApproved = async (leave) => {
   await notificationService.createNotification({
     user_id: leave.employee_id,
@@ -219,6 +245,7 @@ const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
         .select()
         .single();
       if (error) throw new BadRequestError(error.message);
+      await adjustLeaveBalanceUsed(leave.employee_id, leave.from_date, leave.leave_type, leave.total_days);
       await notifyLeaveApproved({ ...leave, id: leaveId });
       return updated;
     }
@@ -269,6 +296,7 @@ const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
 
   if (error) throw new BadRequestError(error.message);
 
+  await adjustLeaveBalanceUsed(leave.employee_id, leave.from_date, leave.leave_type, leave.total_days);
   await notifyLeaveApproved({ ...leave, id: leaveId });
 
   return updated;
@@ -328,6 +356,12 @@ const cancelLeave = async (employeeId, leaveId) => {
     .single();
 
   if (error) throw new BadRequestError(error.message);
+
+  // Only an approved leave ever had its balance deducted — restore it on cancellation.
+  if (leave.status === 'approved') {
+    await adjustLeaveBalanceUsed(leave.employee_id, leave.from_date, leave.leave_type, -leave.total_days);
+  }
+
   return updated;
 };
 

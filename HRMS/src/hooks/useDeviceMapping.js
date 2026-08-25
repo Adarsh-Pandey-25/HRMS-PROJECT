@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../store/authStore';
 import {
-  fetchDeviceMappingsApi, createDeviceMappingApi, deleteDeviceMappingApi, fetchUnmappedPunchesApi,
+  fetchDeviceMappingsApi, createDeviceMappingApi, deleteDeviceMappingApi, fetchUnmappedPunchesApi, fetchDeviceUsersApi,
 } from '../api/deviceMapping.api';
 import { invalidateAndRefetch } from '../lib/queryCache';
 
@@ -27,6 +27,19 @@ export function useUnmappedPunches() {
     enabled,
     refetchInterval: 15_000,
     staleTime: 10_000,
+  });
+}
+
+/** Every distinct device_user_id seen from this company's devices, with punch count/last-seen/mapped status. */
+export function useDeviceUsers() {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const role = useAuthStore((s) => s.role);
+  const enabled = isAuthenticated && (role === 'admin' || role === 'hr');
+  return useQuery({
+    queryKey: ['device-mapping', 'device-users'],
+    queryFn: fetchDeviceUsersApi,
+    enabled,
+    staleTime: 15_000,
   });
 }
 

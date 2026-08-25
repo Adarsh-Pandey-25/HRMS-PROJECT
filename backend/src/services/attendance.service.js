@@ -6,7 +6,7 @@ const {
   BadRequestError, NotFoundError, ConflictError, ForbiddenError,
 } = require('../utils/errors');
 const {
-  calculateWorkingHours, determineAttendanceStatus, nowIST, paginate, buildMeta, ipInCidr,
+  calculateWorkingHours, determineAttendanceStatus, getShiftDayWindow, nowIST, paginate, buildMeta, ipInCidr,
 } = require('../utils/helpers');
 const { autoCheckoutEmail } = require('./email.service');
 const logger = require('../utils/logger');
@@ -15,12 +15,7 @@ const settingsService = require('./settings.service');
 /** office = office IP required; wfh = any network; hybrid = any network */
 const resolveAttendanceMode = (employee) => {
   const addr = (employee?.address && typeof employee.address === 'object') ? employee.address : {};
-  const raw = String(
-    employee?.attendance_mode
-    || addr.attendance_mode
-    || addr.attendanceMode
-    || 'office'
-  ).toLowerCase();
+  const raw = String(addr.attendance_mode || addr.attendanceMode || 'office').toLowerCase();
   if (raw === 'wfh' || raw === 'remote' || raw === 'work_from_home') return 'wfh';
   if (raw === 'hybrid') return 'hybrid';
   return 'office';
@@ -54,17 +49,16 @@ const getActiveCheckIn = async (employeeId) => {
   return data;
 };
 
-/** Any attendance record for the current IST calendar day */
-const getTodayAttendance = async (employeeId) => {
-  const startOfDay = nowIST().startOf('day').toISOString();
-  const endOfDay = nowIST().endOf('day').toISOString();
+/** Any attendance record for the employee's current shift-day window (anchored to their assigned shift start, not midnight). */
+const getTodayAttendance = async (employeeId, shiftStart = '09:30') => {
+  const { windowStart, windowEnd } = getShiftDayWindow(nowIST(), shiftStart);
 
   const { data } = await supabaseAdmin
     .from('attendance')
     .select('*')
     .eq('employee_id', employeeId)
-    .gte('check_in_time', startOfDay)
-    .lte('check_in_time', endOfDay)
+    .gte('check_in_time', windowStart.toISOString())
+    .lte('check_in_time', windowEnd.toISOString())
     .order('check_in_time', { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -94,7 +88,19 @@ const getAttendanceConfig = async (companyId = null) => {
     methods,
     selfieRequired: Boolean(cfg.selfieRequired ?? cfg.selfie_required),
     gracePeriodMinutes: Number(cfg.gracePeriodMinutes ?? cfg.grace_period_minutes ?? 15),
+    overtimeAfterHours: Number(cfg.overtimeAfterHours ?? cfg.overtime_after_hours ?? WORK_HOURS),
+    shifts: Array.isArray(cfg.shifts) ? cfg.shifts : [],
   };
+};
+
+/** The employee's assigned shift start time ("HH:mm"), or the default 09:30 if none is assigned/found. */
+const resolveShiftStart = (employeeAddress, shifts) => {
+  const addr = (employeeAddress && typeof employeeAddress === 'object') ? employeeAddress : {};
+  const shiftId = addr.shift_id || addr.shiftId;
+  const shiftName = addr.shift;
+  if (!shiftId && !shiftName) return '09:30';
+  const matched = (shifts || []).find((s) => (shiftId && s.id === shiftId) || (shiftName && s.name === shiftName));
+  return matched?.start || '09:30';
 };
 
 /** Map client method names → DB check_in_method values.
@@ -129,6 +135,7 @@ const checkIn = async (employeeId, { method, device_id, location, clientIp, clie
 
   const companyId = require('../utils/tenant').getCompanyId(emp);
   const attendanceConfig = await getAttendanceConfig(companyId);
+  const shiftStart = resolveShiftStart(emp?.address, attendanceConfig.shifts);
   const normalizedMethod = normalizeCheckInMethod(method);
   assertMethodAllowed(normalizedMethod, attendanceConfig.methods);
 
@@ -153,7 +160,7 @@ const checkIn = async (employeeId, { method, device_id, location, clientIp, clie
     await assertOfficeIpAllowed(clientIp, companyId, clientIps);
   }
 
-  const todayRecord = await getTodayAttendance(employeeId);
+  const todayRecord = await getTodayAttendance(employeeId, shiftStart);
   if (todayRecord) {
     throw new ConflictError(
       todayRecord.check_out_time
@@ -206,7 +213,14 @@ const checkIn = async (employeeId, { method, device_id, location, clientIp, clie
 };
 
 const checkOut = async (employeeId, { method, clientIp, break_minutes = 0 }) => {
-  const todayRecord = await getTodayAttendance(employeeId);
+  // Payroll rule (admin toggle): if checkout before goal hours, treat as half-day (not early_departure)
+  const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
+  const { data: empRow } = await supabaseAdmin.from('employees').select('address').eq('id', employeeId).maybeSingle();
+  const companyId = empRow ? getCompanyId(empRow) : DEFAULT_COMPANY_ID;
+  const attendanceConfig = await getAttendanceConfig(companyId);
+  const shiftStart = resolveShiftStart(empRow?.address, attendanceConfig.shifts);
+
+  const todayRecord = await getTodayAttendance(employeeId, shiftStart);
   if (todayRecord?.check_out_time) {
     throw new ConflictError('You have already checked out today. Only one check-out per day is allowed.');
   }
@@ -216,14 +230,10 @@ const checkOut = async (employeeId, { method, clientIp, break_minutes = 0 }) => 
 
   const checkOutTime = nowIST().toISOString();
   const totalHours = calculateWorkingHours(active.check_in_time, checkOutTime) - (break_minutes / 60);
-  const overtimeHours = Math.max(0, totalHours - WORK_HOURS);
   const wasWfh = active.status === 'wfh' || isWfhLocation(active.location);
-  let status = determineAttendanceStatus(active.check_in_time, totalHours);
 
-  // Payroll rule (admin toggle): if checkout before goal hours, treat as half-day (not early_departure)
-  const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
-  const { data: empRow } = await supabaseAdmin.from('employees').select('address').eq('id', employeeId).maybeSingle();
-  const companyId = empRow ? getCompanyId(empRow) : DEFAULT_COMPANY_ID;
+  const overtimeHours = Math.max(0, totalHours - attendanceConfig.overtimeAfterHours);
+  let status = determineAttendanceStatus(active.check_in_time, totalHours, attendanceConfig.gracePeriodMinutes, shiftStart);
   const halfDayBeforeGoal = await settingsService.getBoolean('payroll_halfday_before_goal_enabled', false, companyId);
   if (!wasWfh && halfDayBeforeGoal && totalHours < WORK_HOURS && totalHours > 0) {
     status = 'half_day';
@@ -277,43 +287,55 @@ const biometricWebhook = async (payload) => {
   throw new BadRequestError('Invalid biometric action');
 };
 
+/** Create the day's attendance record, or correct it if one already exists (regularization). */
 const manualEntry = async (hrUserId, data) => {
   const { employee_id, check_in_time, check_out_time, remarks, break_minutes = 0 } = data;
 
-  const dayStart = moment(check_in_time).tz(TIMEZONE).startOf('day').toISOString();
-  const dayEnd = moment(check_in_time).tz(TIMEZONE).endOf('day').toISOString();
+  const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
+  const { data: empRow } = await supabaseAdmin.from('employees').select('address').eq('id', employee_id).maybeSingle();
+  const companyId = empRow ? getCompanyId(empRow) : DEFAULT_COMPANY_ID;
+  const attendanceConfig = await getAttendanceConfig(companyId);
+  const shiftStart = resolveShiftStart(empRow?.address, attendanceConfig.shifts);
+
+  const { windowStart, windowEnd } = getShiftDayWindow(moment(check_in_time).tz(TIMEZONE), shiftStart);
   const { data: existing } = await supabaseAdmin
     .from('attendance')
     .select('id')
     .eq('employee_id', employee_id)
-    .gte('check_in_time', dayStart)
-    .lte('check_in_time', dayEnd)
+    .gte('check_in_time', windowStart.toISOString())
+    .lte('check_in_time', windowEnd.toISOString())
     .limit(1)
     .maybeSingle();
-
-  if (existing) {
-    throw new ConflictError('Attendance already exists for this employee on this date');
-  }
 
   const totalHours = check_out_time
     ? calculateWorkingHours(check_in_time, check_out_time) - (break_minutes / 60)
     : null;
 
-  const { data: record, error } = await supabaseAdmin
-    .from('attendance')
-    .insert({
-      employee_id,
-      check_in_time,
-      check_out_time,
-      check_in_method: 'web',
-      check_out_method: check_out_time ? 'web' : null,
-      break_minutes,
-      total_hours: totalHours ? Math.round(totalHours * 100) / 100 : null,
-      status: totalHours ? determineAttendanceStatus(check_in_time, totalHours) : 'present',
-      remarks: remarks || `Manual entry by HR (${hrUserId})`,
-    })
-    .select()
-    .single();
+  const payload = {
+    employee_id,
+    check_in_time,
+    check_out_time,
+    check_in_method: 'web',
+    check_out_method: check_out_time ? 'web' : null,
+    break_minutes,
+    total_hours: totalHours ? Math.round(totalHours * 100) / 100 : null,
+    overtime_hours: totalHours ? Math.max(0, Math.round((totalHours - attendanceConfig.overtimeAfterHours) * 100) / 100) : 0,
+    status: totalHours ? determineAttendanceStatus(check_in_time, totalHours, attendanceConfig.gracePeriodMinutes, shiftStart) : 'present',
+    remarks: remarks || `Manual entry by HR (${hrUserId})`,
+  };
+
+  const { data: record, error } = existing
+    ? await supabaseAdmin
+      .from('attendance')
+      .update({ ...payload, updated_at: new Date().toISOString() })
+      .eq('id', existing.id)
+      .select()
+      .single()
+    : await supabaseAdmin
+      .from('attendance')
+      .insert(payload)
+      .select()
+      .single();
 
   if (error) throw new BadRequestError(error.message);
   return record;
@@ -462,6 +484,7 @@ const processAutoCheckout = async () => {
   }
 
   const halfDayBeforeGoalByCompany = new Map();
+  const attendanceConfigByCompany = new Map();
   const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
 
   let processed = 0;
@@ -478,11 +501,17 @@ const processAutoCheckout = async () => {
         await settingsService.getBoolean('payroll_halfday_before_goal_enabled', false, companyId)
       );
     }
+    if (!attendanceConfigByCompany.has(companyId)) {
+      // eslint-disable-next-line no-await-in-loop
+      attendanceConfigByCompany.set(companyId, await getAttendanceConfig(companyId));
+    }
     const halfDayBeforeGoal = halfDayBeforeGoalByCompany.get(companyId);
+    const attendanceConfig = attendanceConfigByCompany.get(companyId);
+    const shiftStart = resolveShiftStart(record.employee?.address, attendanceConfig.shifts);
 
     const checkoutIso = deadline.toISOString();
     const totalHours = calculateWorkingHours(record.check_in_time, checkoutIso);
-    let status = determineAttendanceStatus(record.check_in_time, totalHours);
+    let status = determineAttendanceStatus(record.check_in_time, totalHours, attendanceConfig.gracePeriodMinutes, shiftStart);
 
     if (halfDayBeforeGoal && totalHours < WORK_HOURS && totalHours > 0) {
       status = 'half_day';
@@ -494,7 +523,7 @@ const processAutoCheckout = async () => {
         check_out_time: checkoutIso,
         check_out_method: record.check_in_method,
         total_hours: Math.round(totalHours * 100) / 100,
-        overtime_hours: Math.max(0, Math.round((totalHours - WORK_HOURS) * 100) / 100),
+        overtime_hours: Math.max(0, Math.round((totalHours - attendanceConfig.overtimeAfterHours) * 100) / 100),
         status,
         is_auto_checkout: true,
         remarks: 'auto_checkout',
@@ -513,6 +542,79 @@ const processAutoCheckout = async () => {
 
   logger.info('Auto checkout completed', { processed });
   return { processed };
+};
+
+/** The employee's assigned shift start ("HH:mm"), resolved from their address + company config. */
+const getEmployeeShiftStart = async (employeeId) => {
+  const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
+  const { data: empRow } = await supabaseAdmin.from('employees').select('address').eq('id', employeeId).maybeSingle();
+  const companyId = empRow ? getCompanyId(empRow) : DEFAULT_COMPANY_ID;
+  const attendanceConfig = await getAttendanceConfig(companyId);
+  return resolveShiftStart(empRow?.address, attendanceConfig.shifts);
+};
+
+/**
+ * Recompute one employee's attendance record from their biometric device punches
+ * for the shift-day window starting at `windowStartIso` — first punch of the
+ * window = check-in, last punch = check-out (per the office's "many scans,
+ * first/last wins" policy). The window is anchored to the employee's own
+ * assigned shift start, not midnight, so overnight shifts bucket correctly.
+ * Never overwrites a record already created by a different check-in method
+ * (web/office_ip/manual) — an employee only ever has one attendance path per day.
+ */
+const syncAttendanceFromDevicePunches = async (employeeId, windowStartIso) => {
+  const windowStart = moment(windowStartIso).tz(TIMEZONE);
+  const windowEnd = windowStart.clone().add(1, 'day');
+
+  const { data: punches, error: punchesError } = await supabaseAdmin
+    .from('device_punches')
+    .select('punch_time')
+    .eq('employee_id', employeeId)
+    .gte('punch_time', windowStart.toISOString())
+    .lte('punch_time', windowEnd.toISOString())
+    .order('punch_time', { ascending: true });
+
+  if (punchesError || !punches?.length) return;
+
+  const checkInTime = punches[0].punch_time;
+  const checkOutTime = punches.length > 1 ? punches[punches.length - 1].punch_time : null;
+
+  const { data: existing } = await supabaseAdmin
+    .from('attendance')
+    .select('id, check_in_method')
+    .eq('employee_id', employeeId)
+    .gte('check_in_time', windowStart.toISOString())
+    .lte('check_in_time', windowEnd.toISOString())
+    .limit(1)
+    .maybeSingle();
+
+  if (existing && existing.check_in_method !== 'biometric') return;
+
+  const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
+  const { data: empRow } = await supabaseAdmin.from('employees').select('address').eq('id', employeeId).maybeSingle();
+  const companyId = empRow ? getCompanyId(empRow) : DEFAULT_COMPANY_ID;
+  const attendanceConfig = await getAttendanceConfig(companyId);
+  const shiftStart = resolveShiftStart(empRow?.address, attendanceConfig.shifts);
+
+  const totalHours = checkOutTime ? calculateWorkingHours(checkInTime, checkOutTime) : null;
+  const payload = {
+    employee_id: employeeId,
+    check_in_time: checkInTime,
+    check_out_time: checkOutTime,
+    check_in_method: 'biometric',
+    check_out_method: checkOutTime ? 'biometric' : null,
+    total_hours: totalHours != null ? Math.round(totalHours * 100) / 100 : null,
+    overtime_hours: totalHours != null ? Math.max(0, Math.round((totalHours - attendanceConfig.overtimeAfterHours) * 100) / 100) : 0,
+    status: totalHours != null ? determineAttendanceStatus(checkInTime, totalHours, attendanceConfig.gracePeriodMinutes, shiftStart) : 'present',
+  };
+
+  const { error } = existing
+    ? await supabaseAdmin.from('attendance').update({ ...payload, updated_at: new Date().toISOString() }).eq('id', existing.id)
+    : await supabaseAdmin.from('attendance').insert(payload);
+
+  if (error) {
+    logger.error('[ADMS] Failed to sync attendance from device punches', { employeeId, windowStartIso, error: error.message });
+  }
 };
 
 const getTeamEmployeeIds = async (managerId) => {
@@ -537,4 +639,6 @@ module.exports = {
   getTodayAttendance,
   getAttendanceConfig,
   normalizeCheckInMethod,
+  syncAttendanceFromDevicePunches,
+  getEmployeeShiftStart,
 };

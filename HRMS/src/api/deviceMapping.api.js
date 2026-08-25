@@ -23,3 +23,8 @@ export async function deleteDeviceMappingApi(deviceUserId, deviceSerial) {
 export async function fetchUnmappedPunchesApi() {
   return apiRequest({ method: 'GET', url: '/device-mapping/unmapped' });
 }
+
+export async function fetchDeviceUsersApi() {
+  const data = await apiRequest({ method: 'GET', url: '/device-mapping/device-users' });
+  return data?.deviceUsers || [];
+}

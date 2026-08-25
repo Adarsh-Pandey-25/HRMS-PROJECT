@@ -2,6 +2,7 @@ const moment = require('moment-timezone');
 const { supabaseAdmin } = require('../config/supabase');
 const logger = require('../utils/logger');
 const { TIMEZONE } = require('../utils/constants');
+const { getShiftDayWindow } = require('../utils/helpers');
 
 /** eSSL ADMS ATTLOG status codes -> our punch_type. */
 const STATUS_TO_PUNCH_TYPE = {
@@ -118,7 +119,42 @@ const savePunches = async (punches, deviceSerial) => {
     return { inserted: 0, error };
   }
 
+  await syncAffectedAttendanceDays(enriched);
+
   return { inserted: enriched.length };
+};
+
+/**
+ * Turn today's (and any backlogged) mapped punches into real attendance records —
+ * first/last punch per shift-day window, anchored to each employee's own assigned
+ * shift start (not midnight), so overnight shifts bucket into the right day.
+ */
+const syncAffectedAttendanceDays = async (punches) => {
+  const attendanceService = require('./attendance.service');
+
+  const punchesByEmployee = new Map();
+  for (const p of punches) {
+    if (!p.employee_id) continue;
+    if (!punchesByEmployee.has(p.employee_id)) punchesByEmployee.set(p.employee_id, []);
+    punchesByEmployee.get(p.employee_id).push(p);
+  }
+
+  await Promise.all(
+    [...punchesByEmployee.entries()].map(async ([employeeId, empPunches]) => {
+      const shiftStart = await attendanceService.getEmployeeShiftStart(employeeId).catch(() => '09:30');
+      const windowStartIsos = new Set(
+        empPunches.map((p) => getShiftDayWindow(moment.tz(p.punch_time, TIMEZONE), shiftStart).windowStart.toISOString())
+      );
+
+      await Promise.all(
+        [...windowStartIsos].map((windowStartIso) =>
+          attendanceService.syncAttendanceFromDevicePunches(employeeId, windowStartIso).catch((err) => {
+            logger.error('[ADMS] Attendance sync failed', { employeeId, windowStartIso, error: err.message });
+          })
+        )
+      );
+    })
+  );
 };
 
 const todayRangeIso = () => {

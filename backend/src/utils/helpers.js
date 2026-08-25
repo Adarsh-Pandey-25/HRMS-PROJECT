@@ -183,10 +183,33 @@ const calculateWorkingHours = (checkIn, checkOut) => {
   return Math.round((diffMs / (1000 * 60 * 60)) * 100) / 100;
 };
 
-const determineAttendanceStatus = (checkIn, totalHours, isLateThreshold = 30) => {
+/**
+ * standardStartTime is "HH:mm" — the employee's assigned shift start, or the default 09:30.
+ * Returns the 24h window — starting at the shift's OWN start time, not midnight — that
+ * contains `referenceMoment`. This handles every shift timing the same way, including ones
+ * that cross midnight: a 22:00-07:00 shift's window starts *today* for a 22:15 reference
+ * time, but *yesterday* for a 00:10 reference time (the tail end of the same overnight
+ * shift), instead of wrongly comparing against a "22:00 today" that hasn't happened yet.
+ * Every place that decides "which day does this check-in/check-out/punch belong to" should
+ * use this instead of midnight-to-midnight, so attendance always anchors to the employee's
+ * actual assigned time slot.
+ */
+const getShiftDayWindow = (referenceMoment, standardStartTime = '09:30') => {
+  const ref = moment(referenceMoment).tz(TIMEZONE);
+  const [startHour, startMinute] = String(standardStartTime).split(':').map(Number);
+  const hour = Number.isFinite(startHour) ? startHour : 9;
+  const minute = Number.isFinite(startMinute) ? startMinute : 30;
+
+  const startToday = ref.clone().hour(hour).minute(minute).second(0).millisecond(0);
+  const windowStart = ref.isBefore(startToday) ? startToday.clone().subtract(1, 'day') : startToday;
+  const windowEnd = windowStart.clone().add(1, 'day');
+  return { windowStart, windowEnd };
+};
+
+const determineAttendanceStatus = (checkIn, totalHours, isLateThreshold = 30, standardStartTime = '09:30') => {
   const checkInMoment = moment(checkIn).tz(TIMEZONE);
-  const standardStart = checkInMoment.clone().hour(9).minute(30).second(0);
-  const isLate = checkInMoment.isAfter(standardStart.add(isLateThreshold, 'minutes'));
+  const { windowStart } = getShiftDayWindow(checkInMoment, standardStartTime);
+  const isLate = checkInMoment.isAfter(windowStart.clone().add(isLateThreshold, 'minutes'));
 
   if (totalHours < WORK_HOURS / 2) return 'half_day';
   if (totalHours < WORK_HOURS) return 'early_departure';
@@ -280,6 +303,7 @@ module.exports = {
   nowIST,
   toIST,
   calculateWorkingHours,
+  getShiftDayWindow,
   determineAttendanceStatus,
   calculateLeaveDays,
   paginate,

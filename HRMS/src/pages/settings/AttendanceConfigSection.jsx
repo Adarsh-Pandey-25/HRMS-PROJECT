@@ -70,13 +70,11 @@ function AddShiftModal({ open, onClose }) {
 }
 
 function buildPayload(form, cfg) {
-  const devices = (cfg.biometricDevices || []).map(({ apiKey, ...rest }) => rest);
   return {
     ...cfg,
     ...form,
     // Always take live list rows from store (add/remove updates store, not local form)
     ipWhitelist: cfg.ipWhitelist,
-    biometricDevices: devices,
     shifts: cfg.shifts,
   };
 }

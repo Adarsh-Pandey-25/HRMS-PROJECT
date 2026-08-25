@@ -76,7 +76,8 @@ const list = async (req, res, next) => {
     const { data, error } = await supabaseAdmin
       .from('device_employee_mapping')
       .select('id, device_user_id, device_serial, employee_id, created_at, employees(first_name, last_name, employee_code, company_id)')
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .limit(2000);
     if (error) throw error;
 
     const scoped = (data || []).filter((row) => row.employees?.company_id === req.user.company_id);
