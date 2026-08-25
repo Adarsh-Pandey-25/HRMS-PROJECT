@@ -2,8 +2,10 @@ import { useRef, useState } from 'react';
 import { UploadCloud, File, X, Download, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import * as XLSX from 'xlsx';
-import { Button, Badge } from '../ui';
+import { Button, Badge, Select } from '../ui';
 import { createEmployeeApi, fetchAllEmployeesApi } from '../../api/employees.api';
+import { createDeviceMappingApi } from '../../api/deviceMapping.api';
+import { useAdmsStatus } from '../../hooks/useAttendance';
 import { cn } from '../../lib/utils';
 
 const TEMPLATE_HEADERS = [
@@ -47,6 +49,7 @@ const TEMPLATE_HEADERS = [
   'TDS Fixed Amount',
   'Work Email',
   'System Role',
+  'Biometric Device ID',
 ];
 
 const SAMPLE_ROWS = [
@@ -57,7 +60,7 @@ const SAMPLE_ROWS = [
     'HDFC Bank', '123456789012', 'HDFC0001234',
     'Software Engineer', 'Engineering', 'full_time', '15-07-2026', 'vikram.singh@company.com',
     'Bengaluru HQ', 'office', 'General', 'monthly', '25000', '10000', '2500', '8000', '0', '0',
-    'true', 'true', '', 'company', '0', 'esther.howard@company.com', 'employee',
+    'true', 'true', '', 'company', '0', 'esther.howard@company.com', 'employee', '5',
   ],
   [
     'Rahul', 'Verma', '08-09-1994', 'male', 'rahul.personal@company.com', '9876500002',
@@ -66,7 +69,7 @@ const SAMPLE_ROWS = [
     'ICICI Bank', '987654321098', 'ICIC0001234',
     'Accountant', 'Finance', 'full_time', '01-08-2026', 'meera.shah@company.com',
     'Delhi NCR', 'hybrid', 'Morning', 'annual', '480000', '192000', '48000', '60000', '24000', '12000',
-    'true', 'true', '', 'fixed', '12000', 'rahul.verma@company.com', 'employee',
+    'true', 'true', '', 'fixed', '12000', 'rahul.verma@company.com', 'employee', '',
   ],
 ];
 
@@ -223,6 +226,7 @@ function rowDisplayName(row) {
 
 function validateRows(rows, existingEmails, managerDirectory) {
   const seen = new Set();
+  const seenDeviceIds = new Set();
   return rows.map((row) => {
     const errors = [];
     const first = String(row['First Name'] || row['Full Name']?.split(' ')[0] || '').trim();
@@ -233,6 +237,7 @@ function validateRows(rows, existingEmails, managerDirectory) {
     const managerEmail = String(row['Reporting Manager Email'] || '').trim().toLowerCase();
     const personalEmail = String(row['Personal Email'] || '').trim().toLowerCase();
     const phone = String(row.Phone || row.phone || '').trim();
+    const deviceUserId = String(row['Biometric Device ID'] || '').trim();
     const dobRaw = readImportDateCell(row, 'dob');
     const joinRaw = readImportDateCell(row, 'join');
     const dobIso = dobRaw === '' || dobRaw == null ? null : parseImportDate(dobRaw);
@@ -251,6 +256,8 @@ function validateRows(rows, existingEmails, managerDirectory) {
     if (!designation) errors.push('Designation missing');
     if (!department) errors.push('Department missing');
     if (managerEmail && !managerDirectory.has(managerEmail)) errors.push('Reporting manager email not found');
+    if (deviceUserId && seenDeviceIds.has(deviceUserId)) errors.push('Duplicate biometric device ID in file');
+    else if (deviceUserId) seenDeviceIds.add(deviceUserId);
 
     return {
       ...row,
@@ -260,6 +267,7 @@ function validateRows(rows, existingEmails, managerDirectory) {
       _managerId: managerEmail ? managerDirectory.get(managerEmail) : '',
       _dateOfBirth: dobIso || undefined,
       _dateOfJoining: joinIso || undefined,
+      _deviceUserId: deviceUserId || undefined,
       _errors: errors,
     };
   });
@@ -271,6 +279,10 @@ export function BulkImportPanel({ onSkip, onImported }) {
   const [parsed, setParsed] = useState(null);
   const [dragging, setDragging] = useState(false);
   const [importing, setImporting] = useState(false);
+  const { data: admsStatus } = useAdmsStatus();
+  const devices = admsStatus?.devices || [];
+  const [deviceSerial, setDeviceSerial] = useState('');
+  const effectiveDeviceSerial = devices.length === 1 ? devices[0].deviceSerial : deviceSerial;
 
   const handleFile = async (file) => {
     if (!file) return;
@@ -312,11 +324,13 @@ export function BulkImportPanel({ onSkip, onImported }) {
     if (!validRows.length) return toast.error('No valid rows to import');
     setImporting(true);
     let ok = 0;
+    let mapped = 0;
     const failures = [];
+    const mappingFailures = [];
     for (const row of validRows) {
       try {
         const salaryPeriod = normalizeSalaryPeriod(row['Salary Entered As']);
-        await createEmployeeApi({
+        const { employee } = await createEmployeeApi({
           firstName: row._first,
           lastName: row._last,
           email: row._email,
@@ -366,13 +380,27 @@ export function BulkImportPanel({ onSkip, onImported }) {
           },
         });
         ok += 1;
+
+        if (row._deviceUserId) {
+          if (!effectiveDeviceSerial) {
+            mappingFailures.push(`${row._email}: no biometric device selected to map against`);
+          } else {
+            try {
+              await createDeviceMappingApi({ deviceUserId: row._deviceUserId, employeeId: employee.id, deviceSerial: effectiveDeviceSerial });
+              mapped += 1;
+            } catch (err) {
+              mappingFailures.push(`${row._email} (device ID ${row._deviceUserId}): ${err.message}`);
+            }
+          }
+        }
       } catch (err) {
         failures.push(`${row._email}: ${err.message}`);
       }
     }
     setImporting(false);
-    if (ok) toast.success(`Imported ${ok} employee${ok === 1 ? '' : 's'}`);
+    if (ok) toast.success(`Imported ${ok} employee${ok === 1 ? '' : 's'}${mapped ? `, ${mapped} mapped to device` : ''}`);
     if (failures.length) toast.error(`${failures.length} failed — ${failures[0]}`);
+    if (mappingFailures.length) toast.error(`${mappingFailures.length} device mapping${mappingFailures.length === 1 ? '' : 's'} failed — ${mappingFailures[0]}`);
     onImported?.(ok);
     reset();
   };
@@ -419,6 +447,21 @@ export function BulkImportPanel({ onSkip, onImported }) {
         </div>
         <button type="button" onClick={reset} className="p-1.5 text-fg-subtle hover:text-danger"><X className="h-4 w-4" /></button>
       </div>
+
+      {parsed.some((r) => r._deviceUserId) && (
+        devices.length === 0 ? (
+          <p className="text-xs text-danger rounded-lg bg-danger/5 border border-danger/20 px-3 py-2">
+            This file has Biometric Device IDs, but no device is registered yet — those employees will be created without a device mapping. Register a device under Settings &gt; Attendance Config first if you want mapping applied during import.
+          </p>
+        ) : devices.length > 1 ? (
+          <Select
+            label="Map these Biometric Device IDs to which device?"
+            value={deviceSerial}
+            onChange={(e) => setDeviceSerial(e.target.value)}
+            options={[{ value: '', label: 'Select device…' }, ...devices.map((d) => ({ value: d.deviceSerial, label: d.name ? `${d.name} (${d.deviceSerial})` : d.deviceSerial }))]}
+          />
+        ) : null
+      )}
 
       <div className="max-h-64 overflow-auto rounded-xl border border-border divide-y divide-border/60">
         {parsed.map((row, i) => (
