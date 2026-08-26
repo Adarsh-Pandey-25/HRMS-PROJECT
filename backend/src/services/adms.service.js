@@ -109,6 +109,36 @@ const mapPunchesToEmployees = async (punches, deviceSerial) => {
   });
 };
 
+/**
+ * A genuine DB-level save failure here is silent to the device — the ADMS
+ * response to the device always says "OK" regardless (deliberately, to avoid
+ * a retry-storm on routine cases like an unmapped user), so nothing tells
+ * anyone this class of failure is happening except server logs. Alert by
+ * email the moment it starts, rate-limited so a sustained outage sends one
+ * notice per window instead of one per punch.
+ */
+let lastSaveFailureAlertAt = 0;
+const SAVE_FAILURE_ALERT_COOLDOWN_MS = 15 * 60 * 1000;
+
+const alertOnSaveFailure = (deviceSerial, errorMessage, count) => {
+  const now = Date.now();
+  if (now - lastSaveFailureAlertAt < SAVE_FAILURE_ALERT_COOLDOWN_MS) return;
+  lastSaveFailureAlertAt = now;
+
+  const to = process.env.SUPER_ADMIN_EMAIL;
+  if (!to) return;
+
+  const { sendEmail } = require('./email.service');
+  sendEmail({
+    to,
+    subject: `[ADMS ALERT] Biometric punches are failing to save (${deviceSerial || 'unknown device'})`,
+    html: `<p>Device <strong>${deviceSerial || 'unknown'}</strong> is pushing punches successfully, but they are failing to save to the database.</p>
+<p>Error: <code>${errorMessage}</code></p>
+<p>Punches are being lost silently until this is fixed — check the ADMS logs and the <code>device_punches</code> table/constraints immediately.</p>
+<p>(This alert is rate-limited to once every 15 minutes while the failure continues.)</p>`,
+  }).catch((e) => logger.error('[ADMS] Failed to send save-failure alert email', { error: e.message }));
+};
+
 /** Insert punches, silently skipping ones already seen (same device_user_id + punch_time). */
 const savePunches = async (punches, deviceSerial) => {
   if (!punches.length) return { inserted: 0 };
@@ -120,6 +150,7 @@ const savePunches = async (punches, deviceSerial) => {
 
   if (error) {
     logger.error('[ADMS] Failed to save punches', { error: error.message, count: enriched.length });
+    alertOnSaveFailure(deviceSerial, error.message, enriched.length);
     return { inserted: 0, error };
   }
 
