@@ -43,6 +43,10 @@ const STEPS = [
   { label: 'Review' },
 ];
 
+// Placeholder shown alongside the locked-in subdomain — real wildcard DNS/TLS for
+// subdomains isn't live on this deployment yet, this is just display text.
+const WORKSPACE_DOMAIN = 'spaxads.net';
+
 const nameRegex = /^[A-Za-z][A-Za-z\s.'-]*$/;
 const phoneRegex = /^\d{10}$/;
 const pincodeRegex = /^\d{6}$/;
@@ -187,6 +191,9 @@ export default function Onboarding() {
 
   const values = watch();
   const adminEmail = values.adminEmail;
+  // The subdomain locked in by the super admin when this invite was created —
+  // informational only, never editable at this step.
+  const companySlug = inviteMeta?.companySlug || inviteMeta?.company_slug || '';
 
   useEffect(() => {
     if (!inviteToken) {
@@ -440,6 +447,11 @@ export default function Onboarding() {
               Invite for {inviteMeta.companyNameHint || inviteMeta.company_name_hint}
             </p>
           )}
+          {companySlug && (
+            <p className="mt-1 text-xs text-fg-subtle">
+              Your workspace: <span className="font-mono font-medium text-fg-muted">{companySlug}</span>.{WORKSPACE_DOMAIN}
+            </p>
+          )}
         </div>
 
         <Card className="p-6">
@@ -463,6 +475,12 @@ export default function Onboarding() {
                     error={errors.companyName?.message}
                     hint="Locked to the company name on your invitation"
                   />
+                  {companySlug && (
+                    <p className="sm:col-span-2 -mt-2 text-xs text-fg-subtle">
+                      Your workspace subdomain (set by your platform administrator, not editable here):{' '}
+                      <span className="font-mono font-medium text-fg-muted">{companySlug}</span>.{WORKSPACE_DOMAIN}
+                    </p>
+                  )}
                   <Select label="Industry" required placeholder="Select industry" options={INDUSTRIES} {...register('industry')} error={errors.industry?.message} />
                   <Select label="Company size" required placeholder="Select size" options={COMPANY_SIZES} {...register('companySize')} error={errors.companySize?.message} />
                   <Input
@@ -659,6 +677,7 @@ export default function Onboarding() {
                     ['Company', [
                       ['Name', values.companyName], ['Industry', values.industry], ['Size', values.companySize],
                       ['Founded', values.foundedYear || '—'], ['Website', values.website || '—'],
+                      ...(companySlug ? [['Workspace', `${companySlug}.${WORKSPACE_DOMAIN}`]] : []),
                     ]],
                     ['Contact & Location', [
                       ['Address', [values.addressLine1, values.addressLine2, values.city, values.state, values.pincode, values.country].filter(Boolean).join(', ')],

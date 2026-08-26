@@ -8,6 +8,7 @@ const {
 } = require('../utils/errors');
 const { omitSensitive } = require('../utils/helpers');
 const logger = require('../utils/logger');
+const { slugify, isValidSlugFormat, isSlugTaken, suggestUniqueSlug } = require('../utils/slug');
 
 const SALT_ROUNDS = 10;
 const hashToken = (token) => crypto.createHash('sha256').update(String(token)).digest('hex');
@@ -24,6 +25,17 @@ const generateTokens = (admin) => {
     expiresIn: config.jwt.refreshExpire,
   });
   return { accessToken, refreshToken };
+};
+
+/** Same discipline as employee auth: only a hash is stored, rows expire in 7 days. */
+const storeRefreshToken = async (superAdminId, refreshToken) => {
+  const tokenHash = hashToken(refreshToken);
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  await supabaseAdmin.from('super_admin_refresh_tokens').insert({
+    super_admin_id: superAdminId,
+    token_hash: tokenHash,
+    expires_at: expiresAt.toISOString(),
+  });
 };
 
 const ensureSeedSuperAdmin = async () => {
@@ -83,10 +95,70 @@ const login = async (email, password) => {
     .eq('id', admin.id);
 
   const tokens = generateTokens(admin);
+  await storeRefreshToken(admin.id, tokens.refreshToken);
   return {
     admin: omitSensitive(admin, ['password_hash']),
     ...tokens,
   };
+};
+
+/** Rotates the refresh token: old row deleted the instant the new one is issued. */
+const refreshAccessToken = async (refreshToken) => {
+  if (!refreshToken) throw new UnauthorizedError('Refresh token required');
+
+  let decoded;
+  try {
+    decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+  } catch {
+    throw new UnauthorizedError('Invalid refresh token');
+  }
+
+  if (decoded.typ !== 'super_admin' || decoded.role !== 'super_admin') {
+    throw new ForbiddenError('Not a super admin session');
+  }
+
+  const tokenHash = hashToken(refreshToken);
+  const { data: stored } = await supabaseAdmin
+    .from('super_admin_refresh_tokens')
+    .select('*')
+    .eq('super_admin_id', decoded.id)
+    .eq('token_hash', tokenHash)
+    .gt('expires_at', new Date().toISOString())
+    .single();
+
+  if (!stored) throw new UnauthorizedError('Refresh token expired or revoked');
+
+  const { data: admin, error } = await supabaseAdmin
+    .from('super_admins')
+    .select('*')
+    .eq('id', decoded.id)
+    .eq('is_active', true)
+    .single();
+
+  if (error || !admin) throw new UnauthorizedError('Super admin not found');
+
+  const tokens = generateTokens(admin);
+  await supabaseAdmin.from('super_admin_refresh_tokens').delete().eq('id', stored.id);
+  await storeRefreshToken(admin.id, tokens.refreshToken);
+
+  return {
+    ...tokens,
+    admin: omitSensitive(admin, ['password_hash']),
+  };
+};
+
+/** Deletes the stored refresh token on logout (falls back to all-of-admin if none given). */
+const logoutSuperAdmin = async (superAdminId, refreshToken) => {
+  if (refreshToken) {
+    const tokenHash = hashToken(refreshToken);
+    await supabaseAdmin
+      .from('super_admin_refresh_tokens')
+      .delete()
+      .eq('super_admin_id', superAdminId)
+      .eq('token_hash', tokenHash);
+  } else {
+    await supabaseAdmin.from('super_admin_refresh_tokens').delete().eq('super_admin_id', superAdminId);
+  }
 };
 
 const getMe = async (adminId) => {
@@ -140,12 +212,35 @@ const setCompanyActive = async (companyId, isActive) => {
   return data;
 };
 
+/** Live suggestion for the super-admin UI as they type a company name — editable before submit. */
+const suggestSlug = async (companyNameHint) => {
+  const name = String(companyNameHint || '').trim();
+  if (!name) throw new BadRequestError('Company name is required');
+  return { slug: await suggestUniqueSlug(name) };
+};
+
 /** Create a one-time onboarding invite. Returns plaintext token once. */
-const createInvite = async (superAdminId, { email, companyNameHint, expiresInDays = 7 } = {}) => {
+const createInvite = async (superAdminId, {
+  email, companyNameHint, expiresInDays = 7, slug = null,
+} = {}) => {
   const lockedEmail = String(email || '').trim().toLowerCase();
   const lockedCompanyName = String(companyNameHint || '').trim();
   if (!lockedEmail) throw new BadRequestError('Admin email is required');
   if (!lockedCompanyName) throw new BadRequestError('Company name is required');
+
+  // The super admin may have edited the auto-suggested slug — validate whatever
+  // was submitted; if nothing was submitted, suggest and use one automatically.
+  let companySlug = slugify(slug || '');
+  if (companySlug) {
+    if (!isValidSlugFormat(companySlug)) {
+      throw new BadRequestError('That subdomain is not available — use lowercase letters, numbers, and hyphens only.');
+    }
+    if (await isSlugTaken(companySlug)) {
+      throw new ConflictError('That subdomain is already taken. Try another.');
+    }
+  } else {
+    companySlug = await suggestUniqueSlug(lockedCompanyName);
+  }
 
   const days = Math.min(30, Math.max(1, Number(expiresInDays) || 7));
   const plaintext = crypto.randomBytes(32).toString('hex');
@@ -158,10 +253,11 @@ const createInvite = async (superAdminId, { email, companyNameHint, expiresInDay
       token_hash: tokenHash,
       email: lockedEmail,
       company_name_hint: lockedCompanyName,
+      company_slug: companySlug,
       created_by: superAdminId,
       expires_at: expiresAt,
     })
-    .select('id, email, company_name_hint, expires_at, created_at')
+    .select('id, email, company_name_hint, company_slug, expires_at, created_at')
     .single();
 
   if (error) throw new BadRequestError(error.message);
@@ -174,13 +270,14 @@ const createInvite = async (superAdminId, { email, companyNameHint, expiresInDay
     token: plaintext,
     inviteUrl,
     expiresAt,
+    companySlug,
   };
 };
 
 const listInvites = async () => {
   const { data, error } = await supabaseAdmin
     .from('onboarding_invites')
-    .select('id, email, company_name_hint, expires_at, used_at, used_by_company_id, revoked_at, created_at, created_by')
+    .select('id, email, company_name_hint, company_slug, expires_at, used_at, used_by_company_id, revoked_at, created_at, created_by')
     .order('created_at', { ascending: false })
     .limit(100);
   if (error) throw new BadRequestError(error.message);
@@ -236,10 +333,15 @@ const assertInviteValid = async (plaintextToken) => {
     throw new ForbiddenError('This invite is incomplete. Ask the platform administrator for a new link');
   }
 
+  // Invites created before subdomains existed have no slug locked in yet —
+  // suggest one now rather than blocking onboarding for a pre-existing link.
+  const companySlug = data.company_slug || await suggestUniqueSlug(data.company_name_hint);
+
   return {
     inviteId: data.id,
     email: data.email,
     companyNameHint: data.company_name_hint,
+    companySlug,
     expiresAt: data.expires_at,
   };
 };
@@ -251,6 +353,7 @@ const peekInvite = async (plaintextToken) => {
     valid: true,
     email: invite.email,
     companyNameHint: invite.companyNameHint,
+    companySlug: invite.companySlug,
     expiresAt: invite.expiresAt,
   };
 };
@@ -277,9 +380,12 @@ const consumeInvite = async (plaintextToken, companyId) => {
 module.exports = {
   ensureSeedSuperAdmin,
   login,
+  refreshAccessToken,
+  logoutSuperAdmin,
   getMe,
   listCompanies,
   setCompanyActive,
+  suggestSlug,
   createInvite,
   listInvites,
   revokeInvite,

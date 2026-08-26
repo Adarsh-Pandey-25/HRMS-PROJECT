@@ -431,6 +431,34 @@ const getMonthlySummary = async (employeeId, month, year) => {
   const attendedDays = new Set(
     rows.map((a) => moment(a.check_in_time).tz(TIMEZONE).format('YYYY-MM-DD'))
   );
+
+  // Days covered by HR-approved leave must not be counted as absent (they
+  // already feed loss-of-pay through the LOP calc, not the AWOL "absent" bucket).
+  // UNPAID leave is excluded from this carve-out: by definition it should still
+  // dock pay, so those days stay counted as absent for the LOP calc downstream.
+  const { data: approvedLeaves, error: leavesError } = await supabaseAdmin
+    .from('leaves')
+    .select('from_date, to_date, leave_type')
+    .eq('employee_id', employeeId)
+    .eq('status', 'approved')
+    .lte('from_date', end.format('YYYY-MM-DD'))
+    .gte('to_date', start.format('YYYY-MM-DD'));
+  if (leavesError) throw new BadRequestError(leavesError.message);
+
+  const approvedLeaveDays = new Set();
+  for (const lv of approvedLeaves || []) {
+    if (lv.leave_type === 'UNPAID') continue;
+    const leaveFrom = moment.tz(lv.from_date, TIMEZONE).startOf('day');
+    const leaveTo = moment.tz(lv.to_date, TIMEZONE).startOf('day');
+    const rangeStart = moment.max(leaveFrom, start);
+    const rangeEnd = moment.min(leaveTo, end);
+    const leaveCursor = rangeStart.clone();
+    while (leaveCursor.isSameOrBefore(rangeEnd, 'day')) {
+      approvedLeaveDays.add(leaveCursor.format('YYYY-MM-DD'));
+      leaveCursor.add(1, 'day');
+    }
+  }
+
   const today = nowIST();
   const cutoff = today.isBefore(end) ? today.clone().startOf('day') : end.clone();
   let absent = 0;
@@ -438,7 +466,7 @@ const getMonthlySummary = async (employeeId, month, year) => {
   while (absCursor.isSameOrBefore(cutoff, 'day')) {
     const dow = absCursor.day();
     const key = absCursor.format('YYYY-MM-DD');
-    if (dow !== 0 && dow !== 6 && !attendedDays.has(key)) absent += 1;
+    if (dow !== 0 && dow !== 6 && !attendedDays.has(key) && !approvedLeaveDays.has(key)) absent += 1;
     absCursor.add(1, 'day');
   }
 
@@ -451,6 +479,7 @@ const getMonthlySummary = async (employeeId, month, year) => {
     halfDay,
     earlyDeparture,
     absent,
+    onApprovedLeave: approvedLeaveDays.size,
     totalHours: Math.round(totalHours * 100) / 100,
     overtimeHours: Math.round(overtimeHours * 100) / 100,
     avgHours: daysWithHours ? Math.round((totalHours / daysWithHours) * 10) / 10 : 0,
@@ -458,6 +487,97 @@ const getMonthlySummary = async (employeeId, month, year) => {
   };
 
   return { records: rows, summary };
+};
+
+/**
+ * Same aggregation as getMonthlySummary (present/absent/late/half-day/leave-days,
+ * total + overtime hours, incl. the approved-leave-excludes-absent carve-out) but
+ * over an arbitrary [from, to] date range instead of a calendar month — used by
+ * the Attendance Summary report, which takes a free date range rather than month/year.
+ */
+const getRangeSummary = async (employeeId, fromDate, toDate) => {
+  const start = moment.tz(fromDate, TIMEZONE).startOf('day');
+  const end = moment.tz(toDate, TIMEZONE).endOf('day');
+
+  const { data, error } = await supabaseAdmin
+    .from('attendance')
+    .select('*')
+    .eq('employee_id', employeeId)
+    .gte('check_in_time', start.toISOString())
+    .lte('check_in_time', end.toISOString());
+
+  if (error) throw new BadRequestError(error.message);
+
+  const rows = data || [];
+  const rowIsWfh = (a) => a.status === 'wfh' || isWfhLocation(a.location);
+  const present = rows.filter((a) =>
+    !rowIsWfh(a) && (['present', 'late', 'early_departure'].includes(a.status) || !a.check_out_time)
+  ).length;
+  const late = rows.filter((a) => a.status === 'late' && !rowIsWfh(a)).length;
+  const halfDay = rows.filter((a) => a.status === 'half_day').length;
+  const earlyDeparture = rows.filter((a) => a.status === 'early_departure').length;
+  const totalHours = rows.reduce((sum, a) => sum + (parseFloat(a.total_hours) || 0), 0);
+  const overtimeHours = rows.reduce((sum, a) => sum + (parseFloat(a.overtime_hours) || 0), 0);
+
+  let workingDays = 0;
+  const cursor = start.clone();
+  while (cursor.isSameOrBefore(end, 'day')) {
+    const dow = cursor.day();
+    if (dow !== 0 && dow !== 6) workingDays += 1;
+    cursor.add(1, 'day');
+  }
+  const attendedDays = new Set(
+    rows.map((a) => moment(a.check_in_time).tz(TIMEZONE).format('YYYY-MM-DD'))
+  );
+
+  // Same carve-out as getMonthlySummary: HR-approved (non-UNPAID) leave days are
+  // "on leave", not "absent" — UNPAID stays counted as absent for LOP purposes.
+  const { data: approvedLeaves, error: leavesError } = await supabaseAdmin
+    .from('leaves')
+    .select('from_date, to_date, leave_type')
+    .eq('employee_id', employeeId)
+    .eq('status', 'approved')
+    .lte('from_date', end.format('YYYY-MM-DD'))
+    .gte('to_date', start.format('YYYY-MM-DD'));
+  if (leavesError) throw new BadRequestError(leavesError.message);
+
+  const approvedLeaveDays = new Set();
+  for (const lv of approvedLeaves || []) {
+    if (lv.leave_type === 'UNPAID') continue;
+    const leaveFrom = moment.tz(lv.from_date, TIMEZONE).startOf('day');
+    const leaveTo = moment.tz(lv.to_date, TIMEZONE).startOf('day');
+    const rangeStart = moment.max(leaveFrom, start);
+    const rangeEnd = moment.min(leaveTo, end);
+    const leaveCursor = rangeStart.clone();
+    while (leaveCursor.isSameOrBefore(rangeEnd, 'day')) {
+      approvedLeaveDays.add(leaveCursor.format('YYYY-MM-DD'));
+      leaveCursor.add(1, 'day');
+    }
+  }
+
+  const today = nowIST();
+  const cutoff = today.isBefore(end) ? today.clone().startOf('day') : end.clone();
+  let absent = 0;
+  const absCursor = start.clone();
+  while (absCursor.isSameOrBefore(cutoff, 'day')) {
+    const dow = absCursor.day();
+    const key = absCursor.format('YYYY-MM-DD');
+    if (dow !== 0 && dow !== 6 && !attendedDays.has(key) && !approvedLeaveDays.has(key)) absent += 1;
+    absCursor.add(1, 'day');
+  }
+
+  return {
+    workingDays,
+    present,
+    wfh: rows.filter((a) => rowIsWfh(a)).length,
+    late,
+    halfDay,
+    earlyDeparture,
+    absent,
+    leaveDays: approvedLeaveDays.size,
+    totalHours: Math.round(totalHours * 100) / 100,
+    overtimeHours: Math.round(overtimeHours * 100) / 100,
+  };
 };
 
 /** Next 4:00 AM IST boundary after check-in (daily auto-checkout cutoff). */
@@ -633,6 +753,7 @@ module.exports = {
   manualEntry,
   getAttendance,
   getMonthlySummary,
+  getRangeSummary,
   processAutoCheckout,
   getTeamEmployeeIds,
   getActiveCheckIn,

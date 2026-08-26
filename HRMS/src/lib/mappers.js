@@ -259,6 +259,7 @@ export function mapReimbursementFromApi(row) {
 export function mapAnnouncementFromApi(row) {
   if (!row) return null;
   const c = toCamelCase(row);
+  const attachmentUrl = c.attachmentUrl || null;
   return {
     id: c.id,
     title: c.title,
@@ -269,6 +270,11 @@ export function mapAnnouncementFromApi(row) {
     publishedAt: c.publishedAt || c.createdAt,
     audience: c.targetAudience || c.audience || 'all',
     createdBy: c.publishedBy || c.createdBy || c.authorId,
+    attachmentUrl,
+    attachments: attachmentUrl
+      ? [{ name: String(attachmentUrl).split('/').pop(), url: attachmentUrl }]
+      : [],
+    isAcknowledged: Boolean(c.isAcknowledged),
   };
 }
 
@@ -366,6 +372,9 @@ export function mapCandidateFromApi(row) {
     jobId: c.jobId,
     name: c.name,
     email: c.email,
+    phone: c.phone || '',
+    source: c.source || '',
+    resumeUrl: c.resumeUrl || '',
     stage: c.stage,
     daysInStage: Number(c.daysInStage || 0),
     appliedOn: c.appliedOn,

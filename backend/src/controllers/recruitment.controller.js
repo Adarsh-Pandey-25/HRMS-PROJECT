@@ -25,6 +25,20 @@ const candidates = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+const createCandidate = async (req, res, next) => {
+  try {
+    const data = await recruitmentService.createCandidate(req.body, req.file, companyIdOf(req));
+    successResponse(res, 'Candidate created', data, null, 201);
+  } catch (err) { next(err); }
+};
+
+const candidateResume = async (req, res, next) => {
+  try {
+    const url = await recruitmentService.getCandidateResumeUrl(req.params.id, companyIdOf(req));
+    successResponse(res, 'Resume URL generated', { url });
+  } catch (err) { next(err); }
+};
+
 const moveCandidate = async (req, res, next) => {
   try {
     const data = await recruitmentService.moveCandidate(req.params.id, req.body.stage, companyIdOf(req));
@@ -40,6 +54,20 @@ const interviews = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+const createInterview = async (req, res, next) => {
+  try {
+    const data = await recruitmentService.createInterview(req.body, companyIdOf(req));
+    successResponse(res, 'Interview scheduled', data, null, 201);
+  } catch (err) { next(err); }
+};
+
+const updateInterviewOutcome = async (req, res, next) => {
+  try {
+    const data = await recruitmentService.updateInterviewOutcome(req.params.id, req.body, companyIdOf(req));
+    successResponse(res, 'Interview updated', data);
+  } catch (err) { next(err); }
+};
+
 const offers = async (req, res, next) => {
   try {
     const data = await recruitmentService.listOffers(companyIdOf(req));
@@ -47,4 +75,46 @@ const offers = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-module.exports = { jobs, createJob, candidates, moveCandidate, interviews, offers };
+const createOffer = async (req, res, next) => {
+  try {
+    const data = await recruitmentService.createOffer(req.body, companyIdOf(req));
+    successResponse(res, 'Offer created', data, null, 201);
+  } catch (err) { next(err); }
+};
+
+const getChecklist = async (req, res, next) => {
+  try {
+    const data = await recruitmentService.getCandidateChecklist(req.params.id, companyIdOf(req));
+    successResponse(res, 'Checklist fetched', data);
+  } catch (err) { next(err); }
+};
+
+const updateChecklistItem = async (req, res, next) => {
+  try {
+    const isChecked = Boolean(req.body?.is_checked ?? req.body?.isChecked);
+    const data = await recruitmentService.setCandidateChecklistItem(
+      req.params.id,
+      req.params.templateId,
+      isChecked,
+      companyIdOf(req),
+      req.user.id
+    );
+    successResponse(res, 'Checklist updated', data);
+  } catch (err) { next(err); }
+};
+
+module.exports = {
+  jobs,
+  createJob,
+  candidates,
+  createCandidate,
+  candidateResume,
+  moveCandidate,
+  interviews,
+  createInterview,
+  updateInterviewOutcome,
+  offers,
+  createOffer,
+  getChecklist,
+  updateChecklistItem,
+};

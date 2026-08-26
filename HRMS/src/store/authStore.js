@@ -42,11 +42,13 @@ export const useAuthStore = create((set, get) => ({
     return allowedRoles.includes(get().role);
   },
 
-  login: async ({ email, password }) => {
+  /** `portal` scopes the login to /auth/{portal}/login ('admin' | 'hr' | 'employee');
+   *  omitted, it hits the original unscoped /auth/login (legacy /login page). */
+  login: async ({ email, password, portal }) => {
     set({ isLoading: true, authError: null });
     try {
       clearSessionCache();
-      const { user } = await loginApi(email, password);
+      const { user } = await loginApi(email, password, portal);
       const role = user?.role || 'employee';
       set({
         user,

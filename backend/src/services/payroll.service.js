@@ -18,6 +18,32 @@ const PAYSLIP_EMPLOYEE_SELECT = 'id, first_name, last_name, employee_code, email
 
 const round2 = (n) => Math.round(Number(n) * 100) / 100;
 
+// Approximate monthly Professional Tax slabs by state (₹, based on monthly gross).
+// Covers the states offered in Settings → Payroll → PT State. Not exhaustive —
+// states not listed here fall back to the flat configured payroll_professional_tax amount.
+const PT_SLABS_BY_STATE = {
+  Karnataka: [{ upTo: 24999, amount: 0 }, { upTo: Infinity, amount: 200 }],
+  Maharashtra: [{ upTo: 7500, amount: 0 }, { upTo: 10000, amount: 175 }, { upTo: Infinity, amount: 200 }],
+  'Tamil Nadu': [
+    { upTo: 21000, amount: 0 },
+    { upTo: 30000, amount: 135 },
+    { upTo: 45000, amount: 315 },
+    { upTo: 60000, amount: 690 },
+    { upTo: 75000, amount: 1025 },
+    { upTo: Infinity, amount: 1250 },
+  ],
+  Delhi: [{ upTo: Infinity, amount: 0 }], // No professional tax levied in Delhi
+  Telangana: [{ upTo: 15000, amount: 0 }, { upTo: 20000, amount: 150 }, { upTo: Infinity, amount: 200 }],
+};
+
+/** Slab-based PT for a state, or null when the state isn't in the table (caller should fall back). */
+const getProfessionalTaxForState = (state, gross) => {
+  const slabs = PT_SLABS_BY_STATE[String(state || '').trim()];
+  if (!slabs) return null;
+  const slab = slabs.find((s) => gross <= s.upTo);
+  return slab ? slab.amount : slabs[slabs.length - 1].amount;
+};
+
 /**
  * Perfect contract payroll calculation.
  *
@@ -36,8 +62,9 @@ const calculateContractPayslip = async (employee, attendanceSummary) => {
 
   const workingDaysSetting = Math.max(1, await settingsService.getNumber('payroll_working_days', WORKING_DAYS_PER_MONTH, companyId));
   const pfRate = Math.max(0, await settingsService.getNumber('payroll_pf_rate', 0.12, companyId));
-  const ptAmount = Math.max(0, await settingsService.getNumber('payroll_professional_tax', 200, companyId));
   const tdsPercent = Math.max(0, await settingsService.getNumber('payroll_tds_percent', 8, companyId));
+  const esiEmployeePercent = Math.max(0, await settingsService.getNumber('payroll_esi_employee_percent', 0.75, companyId));
+  const esiThreshold = Math.max(0, await settingsService.getNumber('payroll_esi_threshold', 21000, companyId));
 
   const payrollConfig = (await settingsService.getSetting('payroll_config', null, companyId)) || {};
   const pfWageCeiling = payrollConfig.pf_wage_ceiling != null
@@ -123,7 +150,17 @@ const calculateContractPayslip = async (employee, attendanceSummary) => {
     ? Math.min(basic, pfWageCeiling)
     : basic;
   const pf_deduction = pfApplicable ? round2(pfBase * empPfRate) : 0;
+
+  // Professional Tax — state-specific slab on gross when the configured PT state
+  // has a known slab table; otherwise fall back to the flat configured amount.
+  const ptState = String(payrollConfig.pt_state ?? payrollConfig.ptState ?? '').trim();
+  const ptByState = getProfessionalTaxForState(ptState, gross);
+  const ptFlatAmount = Math.max(0, await settingsService.getNumber('payroll_professional_tax', 200, companyId));
+  const ptAmount = ptByState != null ? ptByState : ptFlatAmount;
   const professional_tax = ptApplicable ? round2(ptAmount) : 0;
+
+  // ESI: employee-side percentage of gross, only when gross is at/below the configured threshold.
+  const esi_deduction = gross <= esiThreshold ? round2(gross * (esiEmployeePercent / 100)) : 0;
 
   // TDS: per-employee mode overrides company when set to fixed/none
   let tds_deduction = 0;
@@ -150,13 +187,14 @@ const calculateContractPayslip = async (employee, attendanceSummary) => {
     pf_deduction,
     professional_tax,
     tds_deduction,
-    esi_deduction: 0,
+    esi_deduction,
   };
 
   const deductions = [];
   if (lop_deduction > 0) deductions.push({ name: 'LOP', amount: lop_deduction });
   if (pf_deduction > 0) deductions.push({ name: 'PF', amount: pf_deduction });
   if (professional_tax > 0) deductions.push({ name: 'Professional Tax', amount: professional_tax });
+  if (esi_deduction > 0) deductions.push({ name: 'ESI', amount: esi_deduction });
   if (tds_deduction > 0) deductions.push({ name: 'TDS', amount: tds_deduction });
   for (const d of pendingCustomDeductions) deductions.push(d);
 
@@ -205,6 +243,9 @@ const calculateContractPayslip = async (employee, attendanceSummary) => {
       pf_rate: empPfRate,
       company_pf_rate: pfRate,
       professional_tax: professional_tax,
+      pt_state: ptState || null,
+      esi_deduction,
+      esi_threshold: esiThreshold,
       tds_percent: tdsPercent,
       unpaid_leave_days,
       absent,
@@ -223,6 +264,7 @@ const calculateContractPayslip = async (employee, attendanceSummary) => {
     lop_deduction,
     pf_deduction,
     professional_tax,
+    esi_deduction,
     net_salary: net_pay,
     breakdown_json,
   };
@@ -307,6 +349,8 @@ const enrichPayslipBreakdown = async (employee, calc, month, year) => {
  * - Generated breakdown is persisted in payroll.breakdown_json for frontend + PDF rendering
  */
 const calculateDynamicPayslip = async (employee, attendanceSummary) => {
+  const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
+  const companyId = getCompanyId(employee) || DEFAULT_COMPANY_ID;
   const salary = employee.salary_details || {};
 
   const presentDays = (attendanceSummary?.present || 0) + (attendanceSummary?.halfDay || 0) * 0.5;
@@ -320,10 +364,13 @@ const calculateDynamicPayslip = async (employee, attendanceSummary) => {
     working_days: WORKING_DAYS_PER_MONTH,
   };
 
+  // Defensive company filter — this path has no live caller today, but without
+  // it a future caller would leak every tenant's salary-structure components.
   const { data: components, error } = await supabaseAdmin
     .from('payroll_components')
     .select('*')
     .eq('is_active', true)
+    .eq('company_id', companyId)
     .order('display_order', { ascending: true });
   if (error) throw new BadRequestError(error.message);
 
@@ -580,7 +627,8 @@ const maybeCloseMonth = async (payrollMonthId) => {
   const { count: employeeCount } = await supabaseAdmin
     .from('employees')
     .select('id', { count: 'exact', head: true })
-    .eq('is_active', true);
+    .eq('is_active', true)
+    .eq('company_id', payrollMonth.company_id);
 
   const { count: publishedCount } = await supabaseAdmin
     .from('payroll')
@@ -627,6 +675,7 @@ const publishPayslip = async (payslipId, publisher) => {
       .select('*')
       .eq('month', payslip.month)
       .eq('year', payslip.year)
+      .eq('company_id', publisher.company_id)
       .maybeSingle();
     payrollMonth = data;
   }
@@ -639,6 +688,7 @@ const publishPayslip = async (payslipId, publisher) => {
         year: payslip.year,
         status: MONTH_STATUS.PENDING,
         created_by: publisher.id,
+        company_id: publisher.company_id,
       })
       .select('*')
       .single();

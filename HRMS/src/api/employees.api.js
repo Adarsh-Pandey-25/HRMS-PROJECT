@@ -1,4 +1,4 @@
-import { apiRequest } from './client';
+import { apiRequest, apiUpload } from './client';
 import { mapEmployeeFromApi, toSnakeCase } from '../lib/case';
 
 export async function fetchAllEmployeesApi(params = {}) {
@@ -33,4 +33,11 @@ export async function deleteEmployeeApi(id) {
 
 export async function deactivateEmployeeApi(id) {
   return apiRequest({ method: 'PUT', url: `/employees/${id}/deactivate` });
+}
+
+export async function uploadEmployeePhotoApi(id, file) {
+  const form = new FormData();
+  form.append('photo', file);
+  const data = await apiUpload({ method: 'POST', url: `/employees/${id}/photo`, data: form });
+  return mapEmployeeFromApi(data);
 }

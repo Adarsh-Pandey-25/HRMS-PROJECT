@@ -4,19 +4,20 @@ import toast from 'react-hot-toast';
 import {
   ArrowLeft, Mail, Phone, MapPin, Calendar, Pencil, User, Briefcase, Clock,
   CalendarOff, DollarSign, Monitor, FileText, GitBranch, Download, Building2,
-  CreditCard, Shield, Phone as PhoneIcon, Upload, CheckCircle2, Trash2, Eye,
+  CreditCard, Shield, Phone as PhoneIcon, Upload, CheckCircle2, Trash2, Eye, Plus,
 } from 'lucide-react';
 import {
   Card, CardHeader, Button, Avatar, StatusBadge, Tabs, EmptyState, Skeleton,
-  Modal, Select, Input,
+  Modal, Select, Input, Textarea,
 } from '../../components/ui';
 import { AttendanceCalendar } from '../../components/shared/AttendanceCalendar';
 import { useEmployee, useEmployeeMap } from '../../hooks/useEmployees';
 import { useAccessibleCompanies } from '../../hooks/useCompanies';
 import { useEmployeeAttendanceReport } from '../../hooks/useAttendance';
-import { useAllLeaves } from '../../hooks/useLeaves';
-import { useAssets } from '../../hooks/useModules';
+import { useAllLeaves, useMyLeaves, useTeamLeaves } from '../../hooks/useLeaves';
+import { useAssets, useMyAssets } from '../../hooks/useModules';
 import { useEmployeeDocuments, useDocumentMutations } from '../../hooks/useDocuments';
+import { useCareerEvents, useCareerEventMutations } from '../../hooks/useCareerEvents';
 import { DOCUMENT_TYPE_OPTIONS, openDocumentApi } from '../../api/documents.api';
 import { useAllPayslipsForYear, downloadPayslipApi } from '../../hooks/usePayroll';
 import { PayslipPreviewModal } from '../../components/payroll/PayslipPreviewModal';
@@ -36,6 +37,43 @@ const TABS = [
   { id: 'documents', label: 'Documents', icon: FileText },
   { id: 'timeline', label: 'Timeline', icon: GitBranch },
 ];
+
+const CAREER_EVENT_ICONS = {
+  joined: User,
+  designation_change: Briefcase,
+  department_change: Building2,
+  manager_change: User,
+  salary_change: DollarSign,
+  note: FileText,
+};
+
+/** Resolve a manager_change from/to value (an employee id) to a display name. */
+function resolveCareerValue(type, value, employeeMap) {
+  if (value == null || value === '') return null;
+  if (type === 'manager_change') return employeeMap[value]?.name || value;
+  return value;
+}
+
+function careerEventText(ev, employeeMap) {
+  const from = resolveCareerValue(ev.type, ev.fromValue, employeeMap);
+  const to = resolveCareerValue(ev.type, ev.toValue, employeeMap);
+  switch (ev.type) {
+    case 'joined':
+      return `Joined as ${to || 'team member'}`;
+    case 'designation_change':
+      return from ? `Designation changed from ${from} to ${to || '—'}` : `Designation set to ${to || '—'}`;
+    case 'department_change':
+      return from ? `Department changed from ${from} to ${to || '—'}` : `Department set to ${to || '—'}`;
+    case 'manager_change':
+      return from ? `Reporting manager changed from ${from} to ${to || '—'}` : `Reporting manager set to ${to || '—'}`;
+    case 'salary_change':
+      return 'Salary details updated';
+    case 'note':
+      return ev.note || 'Career note';
+    default:
+      return ev.typeLabel || 'Career event';
+  }
+}
 
 function InfoRow({ icon: Icon, label, value }) {
   return (
@@ -87,16 +125,26 @@ export default function EmployeeProfile() {
   });
   const attendanceRows = attendanceReport?.records ?? [];
   const attendanceSummary = attendanceReport?.summary;
-  const { data: allLeaves = [] } = useAllLeaves();
+  // Leave/asset data is scoped to what the viewer is actually allowed to see:
+  // HR/Admin can see the whole org, a manager can see their reports' data via the
+  // team-scoped endpoint, and everyone else can only ever see their own record.
+  const { data: allLeavesAdmin = [] } = useAllLeaves({ enabled: isHrAdmin });
+  const { data: myLeavesData = [] } = useMyLeaves({ enabled: !isHrAdmin && isOwnProfile });
+  const { data: teamLeavesData = [] } = useTeamLeaves({ enabled: !isHrAdmin && !isOwnProfile });
   const { data: allAssets = [] } = useAssets();
+  const { data: myAssetsData = [] } = useMyAssets({ enabled: !isHrAdmin && isOwnProfile });
   const { data: documents = [], isLoading: docsLoading } = useEmployeeDocuments(id);
   const { upload, verify, remove } = useDocumentMutations();
   const { data: payslips = [] } = useAllPayslipsForYear(now.getFullYear());
+  const { data: careerEvents = [], isLoading: careerLoading } = useCareerEvents(id);
+  const { addNote } = useCareerEventMutations(id);
   const companyName = brandedHomeName;
   const [viewingPayslip, setViewingPayslip] = useState(null);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadForm, setUploadForm] = useState({ documentType: 'aadhar', documentName: '', file: null });
   const [openingId, setOpeningId] = useState(null);
+  const [noteModalOpen, setNoteModalOpen] = useState(false);
+  const [noteForm, setNoteForm] = useState({ note: '', effectiveDate: new Date().toISOString().slice(0, 10) });
 
   useEffect(() => {
     if (tabFromUrl && TABS.some((t) => t.id === tabFromUrl)) {
@@ -134,8 +182,14 @@ export default function EmployeeProfile() {
     };
   }, [attendanceRows.length, attendanceSummary]);
 
-  const empLeaves = useMemo(() => allLeaves.filter((l) => l.employeeId === id), [allLeaves, id]);
-  const empAssets = useMemo(() => allAssets.filter((a) => a.assignedTo === id), [allAssets, id]);
+  const empLeaves = useMemo(() => {
+    const source = isHrAdmin ? allLeavesAdmin : (isOwnProfile ? myLeavesData : teamLeavesData);
+    return source.filter((l) => l.employeeId === id);
+  }, [isHrAdmin, isOwnProfile, allLeavesAdmin, myLeavesData, teamLeavesData, id]);
+  const empAssets = useMemo(() => {
+    const source = isHrAdmin ? allAssets : (isOwnProfile ? myAssetsData : []);
+    return source.filter((a) => a.assignedTo === id);
+  }, [isHrAdmin, isOwnProfile, allAssets, myAssetsData, id]);
   const empPayslips = useMemo(() => payslips.filter((p) => p.employeeId === id), [payslips, id]);
 
   if (isLoading) {
@@ -185,7 +239,7 @@ export default function EmployeeProfile() {
       {/* Header */}
       <Card className="p-6">
         <div className="flex flex-col sm:flex-row sm:items-center gap-5">
-          <Avatar name={emp.name} size="xl" />
+          <Avatar name={emp.name} src={emp.avatar} size="xl" />
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-3 flex-wrap">
               <h1 className="text-page-title text-fg">{emp.name}</h1>
@@ -600,29 +654,101 @@ export default function EmployeeProfile() {
       {/* Timeline */}
       {tab === 'timeline' && (
         <Card>
-          <CardHeader title="Career Timeline" subtitle="Promotions, transfers & notes" />
+          <CardHeader
+            title="Career Timeline"
+            subtitle="Promotions, transfers & notes"
+            action={isHrAdmin ? (
+              <Button
+                size="sm"
+                icon={Plus}
+                onClick={() => {
+                  setNoteForm({ note: '', effectiveDate: new Date().toISOString().slice(0, 10) });
+                  setNoteModalOpen(true);
+                }}
+              >
+                Add Career Note
+              </Button>
+            ) : null}
+          />
           <div className="p-5 pt-3">
-            {emp.joinDate ? (
-              <ol className="relative border-l border-border ml-2 space-y-6">
-                <li className="ml-5">
-                  <span className="absolute -left-[7px] h-3.5 w-3.5 rounded-full ring-4 ring-card bg-success" />
-                  <p className="text-xs text-fg-subtle">{formatDate(emp.joinDate)}</p>
-                  <p className="text-sm font-medium text-fg mt-0.5">
-                    Joined as {emp.designation || 'team member'}
-                  </p>
-                  <p className="text-xs text-fg-muted">
-                    {[emp.department, emp.workLocation].filter(Boolean).join(' · ') || '—'}
-                  </p>
-                </li>
-              </ol>
-            ) : (
+            {careerLoading ? (
+              <Skeleton className="h-32 rounded-xl" />
+            ) : careerEvents.length === 0 ? (
               <EmptyState
                 icon={GitBranch}
                 title="No timeline events yet"
                 message="Join date and career events will appear here when available."
               />
+            ) : (
+              <ol className="relative border-l border-border ml-2 space-y-6">
+                {careerEvents.map((ev) => {
+                  const Icon = CAREER_EVENT_ICONS[ev.type] || GitBranch;
+                  return (
+                    <li key={ev.id} className="ml-5">
+                      <span className="absolute -left-[7px] h-3.5 w-3.5 rounded-full ring-4 ring-card bg-primary" />
+                      <p className="text-xs text-fg-subtle">{formatDate(ev.effectiveDate)}</p>
+                      <p className="text-sm font-medium text-fg mt-0.5 flex items-center gap-1.5">
+                        <Icon className="h-3.5 w-3.5 text-primary shrink-0" />
+                        {careerEventText(ev, employeeMap)}
+                      </p>
+                      {ev.type !== 'note' && ev.note && (
+                        <p className="text-xs text-fg-muted mt-0.5">{ev.note}</p>
+                      )}
+                    </li>
+                  );
+                })}
+              </ol>
             )}
           </div>
+
+          <Modal
+            open={noteModalOpen}
+            onClose={() => setNoteModalOpen(false)}
+            title="Add Career Note"
+            subtitle={emp?.name ? `For ${emp.name}` : undefined}
+            footer={(
+              <>
+                <Button variant="outline" onClick={() => setNoteModalOpen(false)}>Cancel</Button>
+                <Button
+                  icon={Plus}
+                  disabled={addNote.isPending}
+                  onClick={async () => {
+                    if (!noteForm.note.trim()) return toast.error('Enter a note');
+                    try {
+                      await addNote.mutateAsync({
+                        note: noteForm.note.trim(),
+                        effectiveDate: noteForm.effectiveDate,
+                      });
+                      toast.success('Career note added');
+                      setNoteModalOpen(false);
+                    } catch (err) {
+                      toast.error(err.message || 'Could not add note');
+                    }
+                  }}
+                >
+                  {addNote.isPending ? 'Saving…' : 'Add note'}
+                </Button>
+              </>
+            )}
+          >
+            <div className="space-y-4">
+              <Textarea
+                label="Note"
+                required
+                rows={4}
+                placeholder="e.g. Completed leadership training, recognized as employee of the quarter…"
+                value={noteForm.note}
+                onChange={(e) => setNoteForm((f) => ({ ...f, note: e.target.value }))}
+              />
+              <Input
+                label="Effective date"
+                type="date"
+                required
+                value={noteForm.effectiveDate}
+                onChange={(e) => setNoteForm((f) => ({ ...f, effectiveDate: e.target.value }))}
+              />
+            </div>
+          </Modal>
         </Card>
       )}
     </div>

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Plus, Pencil, Ban, CheckCircle2, Trash2, Save } from 'lucide-react';
+import { Plus, Pencil, Ban, CheckCircle2, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { Card, CardHeader, Button, Badge, Input, Select, Modal } from '../../components/ui';
 import { useSettingsStore } from '../../store/settingsStore';
@@ -15,10 +15,25 @@ const EMPTY_DOC = { name: '', category: 'custom', isRequired: false, acceptedFor
 
 const CATEGORY_TONE = { identity: 'primary', education: 'teal', employment: 'info', custom: 'warning' };
 
+/**
+ * Persist the current in-memory document types to the server. Every action
+ * below mutates the local zustand store first (synchronously) then calls
+ * this with the fresh state, so each Add/Edit/Toggle/Delete is saved
+ * immediately instead of relying on a separate "Save to server" step.
+ */
+async function persistDocumentTypes(qc) {
+  const next = useSettingsStore.getState().documentTypes;
+  await updateSettingApi('document_types', next);
+  await invalidateAndRefetch(qc, ['settings']);
+}
+
 function DocTypeModal({ open, onClose, editing }) {
+  const qc = useQueryClient();
   const addDocumentType = useSettingsStore((s) => s.addDocumentType);
   const updateDocumentType = useSettingsStore((s) => s.updateDocumentType);
+  const removeDocumentType = useSettingsStore((s) => s.removeDocumentType);
   const [form, setForm] = useState(EMPTY_DOC);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -35,21 +50,39 @@ function DocTypeModal({ open, onClose, editing }) {
       acceptedFormats: s.acceptedFormats.includes(f) ? s.acceptedFormats.filter((x) => x !== f) : [...s.acceptedFormats, f],
     }));
 
-  const save = () => {
+  const save = async () => {
     if (!form.name.trim()) return toast.error('Document name is required');
     if (form.acceptedFormats.length === 0) return toast.error('Select at least one accepted format');
-    if (editing) {
-      updateDocumentType(editing.id, form);
-      toast.success('Document type updated');
-    } else {
-      addDocumentType(form);
-      toast.success('Document type added');
+
+    setSaving(true);
+    try {
+      if (editing) {
+        updateDocumentType(editing.id, form);
+        await persistDocumentTypes(qc);
+        toast.success('Document type updated');
+      } else {
+        addDocumentType(form);
+        await persistDocumentTypes(qc);
+        toast.success('Document type added');
+      }
+      onClose();
+    } catch (err) {
+      // Roll back the optimistic local change so the UI doesn't claim a
+      // save that never reached the server.
+      if (editing) {
+        updateDocumentType(editing.id, editing);
+      } else {
+        const added = useSettingsStore.getState().documentTypes.slice(-1)[0];
+        if (added) removeDocumentType(added.id);
+      }
+      toast.error(err.message || 'Failed to save document type');
+    } finally {
+      setSaving(false);
     }
-    onClose();
   };
 
   return (
-    <Modal open={open} onClose={onClose} title={editing ? 'Edit Document Type' : 'Add Document Type'} footer={<><Button variant="outline" onClick={onClose}>Cancel</Button><Button onClick={save}>{editing ? 'Save' : 'Add Document Type'}</Button></>}>
+    <Modal open={open} onClose={onClose} title={editing ? 'Edit Document Type' : 'Add Document Type'} footer={<><Button variant="outline" onClick={onClose} disabled={saving}>Cancel</Button><Button onClick={save} disabled={saving}>{saving ? 'Saving…' : (editing ? 'Save' : 'Add Document Type')}</Button></>}>
       <div className="space-y-4">
         <Input label="Document name" required placeholder='e.g. "Police Verification"' value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
         <Select label="Category" options={CATEGORIES.map((c) => ({ value: c, label: humanize(c) }))} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} />
@@ -82,23 +115,41 @@ export function DocumentConfigSection() {
   const documentTypes = useSettingsStore((s) => s.documentTypes);
   const toggleActive = useSettingsStore((s) => s.toggleDocumentTypeActive);
   const removeDocumentType = useSettingsStore((s) => s.removeDocumentType);
+  const setDocumentTypes = useSettingsStore((s) => s.setDocumentTypes);
   const [modal, setModal] = useState(false);
   const [editing, setEditing] = useState(null);
-  const [saving, setSaving] = useState(false);
+  const [busyId, setBusyId] = useState(null);
 
   const openAdd = () => { setEditing(null); setModal(true); };
   const openEdit = (d) => { setEditing(d); setModal(true); };
 
-  const saveToServer = async () => {
-    setSaving(true);
+  const handleToggleActive = async (d) => {
+    setBusyId(d.id);
+    const prev = documentTypes;
+    toggleActive(d.id);
     try {
-      await updateSettingApi('document_types', documentTypes);
-      await invalidateAndRefetch(qc, ['settings']);
-      toast.success('Document types saved to server');
+      await persistDocumentTypes(qc);
+      toast.success(d.isActive ? 'Document type disabled' : 'Document type enabled');
     } catch (err) {
-      toast.error(err.message || 'Failed to save document types');
+      setDocumentTypes(prev);
+      toast.error(err.message || 'Failed to update document type');
     } finally {
-      setSaving(false);
+      setBusyId(null);
+    }
+  };
+
+  const handleRemove = async (d) => {
+    setBusyId(d.id);
+    const prev = documentTypes;
+    removeDocumentType(d.id);
+    try {
+      await persistDocumentTypes(qc);
+      toast.success('Document type removed');
+    } catch (err) {
+      setDocumentTypes(prev);
+      toast.error(err.message || 'Failed to remove document type');
+    } finally {
+      setBusyId(null);
     }
   };
 
@@ -107,14 +158,7 @@ export function DocumentConfigSection() {
       <CardHeader
         title="Employee Document Config"
         subtitle="Manage which document types appear in the Add Employee form"
-        action={(
-          <div className="flex items-center gap-2">
-            <Button size="sm" variant="outline" icon={Save} onClick={saveToServer} disabled={saving}>
-              {saving ? 'Saving…' : 'Save to server'}
-            </Button>
-            <Button size="sm" icon={Plus} onClick={openAdd}>Add Document Type</Button>
-          </div>
-        )}
+        action={<Button size="sm" icon={Plus} onClick={openAdd}>Add Document Type</Button>}
       />
       <div className="p-5 pt-3 overflow-x-auto">
         <table className="w-full text-sm">
@@ -137,14 +181,14 @@ export function DocumentConfigSection() {
                 </td>
                 <td className="py-2.5 px-2">
                   <div className="flex items-center gap-1">
-                    <button onClick={() => openEdit(d)} className="p-1.5 rounded-md text-fg-subtle hover:bg-muted hover:text-fg" title="Edit">
+                    <button onClick={() => openEdit(d)} disabled={busyId === d.id} className="p-1.5 rounded-md text-fg-subtle hover:bg-muted hover:text-fg disabled:opacity-50" title="Edit">
                       <Pencil className="h-3.5 w-3.5" />
                     </button>
-                    <button onClick={() => toggleActive(d.id)} className="p-1.5 rounded-md text-fg-subtle hover:bg-muted hover:text-fg" title={d.isActive ? 'Disable' : 'Enable'}>
+                    <button onClick={() => handleToggleActive(d)} disabled={busyId === d.id} className="p-1.5 rounded-md text-fg-subtle hover:bg-muted hover:text-fg disabled:opacity-50" title={d.isActive ? 'Disable' : 'Enable'}>
                       {d.isActive ? <Ban className="h-3.5 w-3.5" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
                     </button>
                     {!d.isDefault && (
-                      <button onClick={() => { removeDocumentType(d.id); toast.success('Document type removed'); }} className="p-1.5 rounded-md text-fg-subtle hover:bg-danger/10 hover:text-danger" title="Delete">
+                      <button onClick={() => handleRemove(d)} disabled={busyId === d.id} className="p-1.5 rounded-md text-fg-subtle hover:bg-danger/10 hover:text-danger disabled:opacity-50" title="Delete">
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
                     )}

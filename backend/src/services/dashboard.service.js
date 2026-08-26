@@ -274,30 +274,29 @@ const getPendingApprovals = async (employeeIds = []) => {
 };
 
 const getRecentAnnouncements = async (limit = 3, companyId = null) => {
+  const { DEFAULT_COMPANY_ID } = require('../utils/tenant');
+  const cid = companyId || DEFAULT_COMPANY_ID;
+
+  // Filter by company_id in the query itself (announcements.company_id exists directly
+  // on the row) instead of fetching cross-tenant rows and filtering in JS afterward —
+  // that used to let a company's own recent announcements get crowded out of the
+  // fetch window as the total number of tenants grew.
   const { data, error } = await supabaseAdmin
     .from('announcements')
-    .select('id, title, priority, published_at, created_at, publisher:published_by(id, address)')
+    .select('id, title, priority, published_at, created_at')
     .eq('is_active', true)
+    .eq('company_id', cid)
     .order('published_at', { ascending: false })
-    .limit(Math.max(limit * 5, 20));
+    .limit(limit);
 
   if (error) throw new BadRequestError(error.message);
 
-  const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
-  const cid = companyId || DEFAULT_COMPANY_ID;
-
-  return (data || [])
-    .filter((a) => {
-      if (!a.publisher) return cid === DEFAULT_COMPANY_ID;
-      return getCompanyId(a.publisher) === cid;
-    })
-    .slice(0, limit)
-    .map((a) => ({
-      id: a.id,
-      title: a.title,
-      relativeTime: relativeTime(a.published_at || a.created_at),
-      priority: priorityLabel(a.priority),
-    }));
+  return (data || []).map((a) => ({
+    id: a.id,
+    title: a.title,
+    relativeTime: relativeTime(a.published_at || a.created_at),
+    priority: priorityLabel(a.priority),
+  }));
 };
 
 const getUpcomingEvents = (employees) => {
@@ -345,16 +344,16 @@ const getUpcomingEvents = (employees) => {
   return events.sort((a, b) => new Date(a.sortDate) - new Date(b.sortDate)).slice(0, 8);
 };
 
-const getTeamMood = (teamSize = 0) => ({
-  totalCheckIns: teamSize || 26,
+// There is no real mood/wellness backend yet (employee check-ins live only in the
+// browser's localStorage — see HRMS/src/store/wellnessStore.js). Rather than
+// fabricating counts that look real, report an honest "not enough data" state.
+// TODO(future work): a real team-mood feature needs a backend table + API so
+// employee check-ins actually reach the server and can be aggregated per company.
+const getTeamMood = () => ({
   placeholder: true,
-  items: [
-    { mood: 'Great', emoji: '😁', count: 3, color: '#22c55e' },
-    { mood: 'Good', emoji: '🙂', count: 4, color: '#14b8a6' },
-    { mood: 'Okay', emoji: '😐', count: 6, color: '#3b82f6' },
-    { mood: 'Low', emoji: '🙁', count: 5, color: '#f97316' },
-    { mood: 'Stressed', emoji: '😫', count: 8, color: '#ef4444' },
-  ],
+  insufficientData: true,
+  totalCheckIns: 0,
+  items: [],
 });
 
 const getRecentActivity = async (employees) => {
@@ -527,6 +526,7 @@ const reimbTypeLabel = (type) => {
     internet_phone: 'Internet/Phone',
     office_supplies: 'Office Supplies',
     client_entertainment: 'Client Entertainment',
+    accommodation: 'Accommodation',
     other: 'Other',
   };
   return map[type] || type;
@@ -647,32 +647,39 @@ const getRecentHiresLastMonth = (employees, limit = 5) => {
     .slice(0, limit);
 };
 
-const getUpcomingInterviewsPlaceholder = () => ({
-  placeholder: true,
-  items: [
-    {
-      id: 'int-1',
-      candidateName: 'Karan Singh',
-      role: 'Senior React Developer',
-      interviewer: 'Diya Nair',
-      scheduledAt: nowIST().format('DD MMM') + ' 11:00',
-    },
-    {
-      id: 'int-2',
-      candidateName: 'Sneha Patil',
-      role: 'Product Designer',
-      interviewer: 'Rohan Gupta',
-      scheduledAt: nowIST().format('DD MMM') + ' 15:30',
-    },
-    {
-      id: 'int-3',
-      candidateName: 'Rohit Verma',
-      role: 'Senior React Developer',
-      interviewer: 'Kabir Rao',
-      scheduledAt: nowIST().add(1, 'day').format('DD MMM') + ' 10:00',
-    },
-  ],
-});
+/**
+ * Real upcoming interviews from the recruitment module's `interviews` table
+ * (candidate_id -> candidates, job_id -> job_openings), scoped to this company.
+ * There is no create-interview UI yet, so this will often be empty — that's an
+ * honest empty state, not a fabricated one.
+ */
+const getUpcomingInterviews = async (companyId, limit = 5) => {
+  const { DEFAULT_COMPANY_ID } = require('../utils/tenant');
+  const cid = companyId || DEFAULT_COMPANY_ID;
+  const nowIso = nowIST().toISOString();
+
+  const { data, error } = await supabaseAdmin
+    .from('interviews')
+    .select('id, scheduled_at, interviewer, status, candidate:candidate_id(name), job:job_id(title)')
+    .eq('company_id', cid)
+    .eq('status', 'scheduled')
+    .gte('scheduled_at', nowIso)
+    .order('scheduled_at', { ascending: true })
+    .limit(limit);
+
+  if (error) throw new BadRequestError(error.message);
+
+  return {
+    placeholder: false,
+    items: (data || []).map((i) => ({
+      id: i.id,
+      candidateName: i.candidate?.name || 'Candidate',
+      role: i.job?.title || '',
+      interviewer: i.interviewer || '',
+      scheduledAt: moment(i.scheduled_at).tz(TIMEZONE).format('DD MMM HH:mm'),
+    })),
+  };
+};
 
 const getAdminDashboard = async (companyId = null) => {
   const employees = await getActiveEmployees(companyId);
@@ -732,7 +739,7 @@ const getAdminDashboard = async (companyId = null) => {
     attendanceToday,
     pendingApprovals,
     upcoming: getUpcomingEvents(employees),
-    teamMood: getTeamMood(attendanceToday.teamSize),
+    teamMood: getTeamMood(),
     recentActivity,
   };
 };
@@ -754,6 +761,7 @@ const getHrDashboard = async (companyId = null) => {
     pendingExpenses,
     recentAnnouncements,
     pendingCounts,
+    upcomingInterviews,
   ] = await Promise.all([
     getTodayAttendanceSummary(teamIds),
     getOnLeaveTodayCount(companyEmployeeIds),
@@ -761,6 +769,7 @@ const getHrDashboard = async (companyId = null) => {
     getPendingExpenseList(5, companyEmployeeIds),
     getRecentAnnouncements(3, companyId),
     getPendingApprovals(companyEmployeeIds),
+    getUpcomingInterviews(companyId, 5),
   ]);
 
   return {
@@ -780,7 +789,7 @@ const getHrDashboard = async (companyId = null) => {
       ...attendanceSummary,
       subtitle: `${attendanceSummary.teamSize} team members · org-wide`,
     },
-    upcomingInterviews: getUpcomingInterviewsPlaceholder(),
+    upcomingInterviews,
     pendingLeaveApprovals: {
       count: pendingCounts.leaves,
       items: pendingLeaves,
@@ -792,7 +801,7 @@ const getHrDashboard = async (companyId = null) => {
     recentHires: {
       items: getRecentHiresLastMonth(employees, 5),
     },
-    teamMood: getTeamMood(attendanceSummary.teamSize),
+    teamMood: getTeamMood(),
     recentAnnouncements,
   };
 };
@@ -1025,6 +1034,7 @@ const getEmployeeDashboard = async (employeeId) => {
     openExpenses,
     recentAnnouncements,
     pendingExpenseResult,
+    openTicketsResult,
   ] = await Promise.all([
     getEmployeeTodayStatus(employeeId),
     getLast7DaysAttendance(employeeId),
@@ -1038,6 +1048,13 @@ const getEmployeeDashboard = async (employeeId) => {
       .select('id', { count: 'exact', head: true })
       .eq('employee_id', employeeId)
       .eq('status', 'pending'),
+    // Helpdesk backend is real and company-scoped — count this employee's own
+    // tickets that are not yet resolved/closed instead of a hardcoded 0.
+    supabaseAdmin
+      .from('helpdesk_tickets')
+      .select('id', { count: 'exact', head: true })
+      .eq('raised_by', employeeId)
+      .in('status', ['open', 'in_progress']),
   ]);
 
   const leaveBalanceTotal = leaveBalances.reduce((sum, b) => sum + b.available, 0);
@@ -1048,8 +1065,7 @@ const getEmployeeDashboard = async (employeeId) => {
       attendanceThisMonth,
       leaveBalanceTotal,
       pendingExpenses: pendingExpenseResult.count || 0,
-      openTickets: 0,
-      openTicketsPlaceholder: true,
+      openTickets: openTicketsResult.count || 0,
     },
     todayStatus,
     last7Days,
@@ -1061,30 +1077,15 @@ const getEmployeeDashboard = async (employeeId) => {
   };
 };
 
-const getTeamMoodForManager = (teamSize = 0) => {
-  const moods = [
-    { mood: 'Great', emoji: '😁', color: '#22c55e' },
-    { mood: 'Good', emoji: '🙂', color: '#14b8a6' },
-    { mood: 'Okay', emoji: '😐', color: '#3b82f6' },
-    { mood: 'Low', emoji: '🙁', color: '#f97316' },
-    { mood: 'Stressed', emoji: '😫', color: '#ef4444' },
-  ];
-  const base = [1, 1, 3, 1, 2];
-  let counts = base.map(() => 0);
-
-  if (teamSize > 0) {
-    const sum = base.reduce((a, b) => a + b, 0);
-    counts = base.map((c) => Math.max(0, Math.round((c / sum) * teamSize)));
-    const diff = teamSize - counts.reduce((a, b) => a + b, 0);
-    if (diff !== 0) counts[2] += diff;
-  }
-
-  return {
-    totalCheckIns: teamSize,
-    placeholder: true,
-    items: moods.map((m, idx) => ({ ...m, count: counts[idx] })),
-  };
-};
+// Same story as getTeamMood() above — no real backend for mood check-ins exists,
+// so the manager-facing widget gets an honest "not enough data" state instead of
+// a distribution fabricated from team size. See TODO there for the real fix.
+const getTeamMoodForManager = () => ({
+  totalCheckIns: 0,
+  placeholder: true,
+  insufficientData: true,
+  items: [],
+});
 
 const getOnLeaveTodayForTeam = async (employeeIds) => {
   if (!employeeIds.length) return 0;
@@ -1180,18 +1181,50 @@ const getPendingExpenseListForTeam = async (teamIds, limit = 5) => {
   return { count: count || 0, items };
 };
 
-const getTeamPerformancePlaceholder = (teamMembers) => ({
-  placeholder: true,
-  items: teamMembers.slice(0, 4).map((e, idx) => ({
-    id: e.id,
-    firstName: e.first_name,
-    lastName: e.last_name,
-    initials: initials(e.first_name, e.last_name),
-    status: 'Pending',
-    score: Math.round((3.9 - idx * 0.15) * 10) / 10,
-    progress: Math.max(20, 75 - idx * 12),
-  })),
-});
+/**
+ * Real team performance snapshot from `performance_reviews` for the manager's
+ * active review cycle (mirrors performance.service.js's cycle-selection logic).
+ * No active cycle or no review rows yet -> honest empty state, not a fabricated
+ * identical-looking chart.
+ */
+const getTeamPerformance = async (managerId, companyId, limit = 4) => {
+  const { data: cycle } = await supabaseAdmin
+    .from('review_cycles')
+    .select('id')
+    .eq('company_id', companyId)
+    .eq('status', 'active')
+    .order('start_date', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (!cycle) return { placeholder: false, items: [] };
+
+  const { data, error } = await supabaseAdmin
+    .from('performance_reviews')
+    .select('id, score, status, progress, employee:employee_id(first_name, last_name)')
+    .eq('manager_id', managerId)
+    .eq('cycle_id', cycle.id)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  if (error) throw new BadRequestError(error.message);
+
+  return {
+    placeholder: false,
+    items: (data || []).map((r) => {
+      const emp = r.employee || {};
+      return {
+        id: r.id,
+        firstName: emp.first_name,
+        lastName: emp.last_name,
+        initials: initials(emp.first_name, emp.last_name),
+        status: r.status || 'pending',
+        score: r.score != null ? Number(r.score) : null,
+        progress: Number(r.progress || 0),
+      };
+    }),
+  };
+};
 
 const getManagerDashboard = async (managerId) => {
   const teamIds = await getTeamEmployeeIds(managerId);
@@ -1217,12 +1250,14 @@ const getManagerDashboard = async (managerId) => {
     pendingLeaves,
     pendingExpenses,
     recentAnnouncements,
+    teamPerformance,
   ] = await Promise.all([
     getTodayAttendanceSummary(teamIds),
     getOnLeaveTodayForTeam(teamIds),
     getPendingLeaveListForTeam(teamIds, 5),
     getPendingExpenseListForTeam(teamIds, 5),
     getRecentAnnouncements(3, companyId),
+    getTeamPerformance(managerId, companyId, 4),
   ]);
 
   const pendingTotal = pendingLeaves.count + pendingExpenses.count;
@@ -1246,7 +1281,7 @@ const getManagerDashboard = async (managerId) => {
     },
     pendingLeaveApprovals: pendingLeaves,
     pendingExpenseApprovals: pendingExpenses,
-    teamPerformance: getTeamPerformancePlaceholder(team),
+    teamPerformance,
     myTeam: {
       count: team.length,
       items: team.map((e) => ({
@@ -1258,7 +1293,7 @@ const getManagerDashboard = async (managerId) => {
         department: e.department || 'Unassigned',
       })),
     },
-    teamMood: getTeamMoodForManager(team.length),
+    teamMood: getTeamMoodForManager(),
     recentAnnouncements,
   };
 };

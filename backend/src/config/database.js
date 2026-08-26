@@ -61,6 +61,7 @@ module.exports = {
     authMax: parseInt(process.env.AUTH_RATE_LIMIT_MAX, 10) || 10,
     bootstrapMax: parseInt(process.env.BOOTSTRAP_RATE_LIMIT_MAX, 10) || 10,
     onboardingOtpMax: parseInt(process.env.ONBOARDING_OTP_RATE_LIMIT_MAX, 10) || 30,
+    admsMax: parseInt(process.env.ADMS_RATE_LIMIT_MAX, 10) || 120,
   },
   cookieSecure: process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production',
   leaveBalances: {

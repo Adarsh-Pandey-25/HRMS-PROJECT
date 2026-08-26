@@ -10,8 +10,57 @@ const {
   getCompanyById,
 } = require('../services/tenant.service');
 const { allocateNextEmployeeCode } = require('../services/employeeCode.service');
+const { uploadProfilePicture, getSignedUrl, STORAGE_BUCKETS } = require('../services/storage.service');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/** Employee fields that auto-log a career event when HR/Admin changes them via update(). */
+const CAREER_TRACKED_FIELDS = {
+  designation: 'designation_change',
+  department: 'department_change',
+  manager_id: 'manager_change',
+  salary_details: 'salary_change',
+};
+
+const stringifyCareerValue = (val) => {
+  if (val === null || val === undefined || val === '') return null;
+  return typeof val === 'object' ? JSON.stringify(val) : String(val);
+};
+
+/**
+ * Compare `before` (row prior to update) against `after` (fields actually sent in this
+ * update) for exactly the four tracked fields, and insert one employee_career_events row
+ * per field that actually changed. Best-effort — a logging failure must never fail the
+ * employee update itself.
+ */
+async function logCareerEvents({ employeeId, companyId, before, after, actorId }) {
+  const events = [];
+  for (const [field, eventType] of Object.entries(CAREER_TRACKED_FIELDS)) {
+    if (!(field in after)) continue; // field wasn't part of this update payload
+    const fromVal = before ? before[field] : undefined;
+    const toVal = after[field];
+    const changed = field === 'salary_details'
+      ? JSON.stringify(fromVal || {}) !== JSON.stringify(toVal || {})
+      : String(fromVal ?? '') !== String(toVal ?? '');
+    if (!changed) continue;
+    events.push({
+      employee_id: employeeId,
+      company_id: companyId,
+      event_type: eventType,
+      from_value: stringifyCareerValue(fromVal),
+      to_value: stringifyCareerValue(toVal),
+      effective_date: new Date().toISOString().slice(0, 10),
+      created_by: actorId || null,
+    });
+  }
+  if (!events.length) return;
+  const { error } = await supabaseAdmin.from('employee_career_events').insert(events);
+  if (error) {
+    // Non-fatal: the employee record already updated successfully.
+    // eslint-disable-next-line no-console
+    console.error('Failed to log career events:', error.message);
+  }
+}
 
 const EMPLOYEE_WRITE_FIELDS = [
   'first_name', 'last_name', 'phone', 'role', 'department', 'designation',
@@ -114,13 +163,16 @@ const create = async (req, res, next) => {
     await authService.assertPasswordPolicy(tempPassword, companyId);
     const passwordHash = await authService.hashPassword(tempPassword);
 
+    // Scoped to the company being hired into — the same email legitimately
+    // existing at a different, unrelated company must not block this hire.
     const { data: existing } = await supabaseAdmin
       .from('employees')
       .select('id')
       .eq('email', req.body.email)
+      .eq('company_id', companyId)
       .maybeSingle();
 
-    if (existing) throw new ConflictError('Email already exists');
+    if (existing) throw new ConflictError('An employee with this email already exists at this company');
 
     const fields = pickEmployeeFields(req.body);
     fields.role = resolveAssignableRole(req.user.role, fields.role || req.body.role, 'employee');
@@ -209,7 +261,19 @@ const getById = async (req, res, next) => {
       throw new ForbiddenError('Not authorized to view this employee');
     }
 
-    successResponse(res, 'Employee fetched', omitSensitive(data, ['password_hash']));
+    let profilePictureUrl = null;
+    if (data.profile_picture) {
+      try {
+        profilePictureUrl = await getSignedUrl(STORAGE_BUCKETS.profilePictures, data.profile_picture, 86400);
+      } catch {
+        /* stale/missing file — fall back to initials on the frontend */
+      }
+    }
+
+    successResponse(res, 'Employee fetched', {
+      ...omitSensitive(data, ['password_hash']),
+      profile_picture_url: profilePictureUrl,
+    });
   } catch (err) { next(err); }
 };
 
@@ -218,7 +282,7 @@ const update = async (req, res, next) => {
     const scopeIds = await resolveScopeCompanyIds(req);
     const { data: existing } = await supabaseAdmin
       .from('employees')
-      .select('id, address, company_id')
+      .select('id, address, company_id, designation, department, manager_id, salary_details')
       .eq('id', req.params.id)
       .maybeSingle();
     if (!existing || !scopeIds.map(String).includes(String(getCompanyId(existing)))) {
@@ -277,7 +341,59 @@ const update = async (req, res, next) => {
       .single();
 
     if (error) throw new BadRequestError(error.message);
+
+    if (isPrivileged) {
+      await logCareerEvents({
+        employeeId: req.params.id,
+        companyId: stampCompanyId,
+        before: existing,
+        after: allowedFields,
+        actorId: req.user.id,
+      });
+    }
+
     successResponse(res, 'Employee updated', omitSensitive(data, ['password_hash']));
+  } catch (err) { next(err); }
+};
+
+const uploadPhoto = async (req, res, next) => {
+  try {
+    if (!req.file) throw new BadRequestError('Photo is required');
+    if (!String(req.file.mimetype || '').startsWith('image/')) {
+      throw new BadRequestError('Photo must be an image file');
+    }
+
+    const scopeIds = await resolveScopeCompanyIds(req);
+    const { data: existing } = await supabaseAdmin
+      .from('employees')
+      .select('id, company_id')
+      .eq('id', req.params.id)
+      .maybeSingle();
+    if (!existing || !scopeIds.map(String).includes(String(getCompanyId(existing)))) {
+      throw new NotFoundError('Employee not found');
+    }
+
+    const isSelf = req.user.id === req.params.id;
+    const isPrivileged = ['hr', 'admin'].includes(req.user.role);
+    if (!isSelf && !isPrivileged) {
+      throw new ForbiddenError('Not authorized to update this employee\'s photo');
+    }
+
+    const { path } = await uploadProfilePicture(req.file, req.params.id);
+
+    const { data, error } = await supabaseAdmin
+      .from('employees')
+      .update({ profile_picture: path })
+      .eq('id', req.params.id)
+      .select()
+      .single();
+    if (error) throw new BadRequestError(error.message);
+
+    const profilePictureUrl = await getSignedUrl(STORAGE_BUCKETS.profilePictures, path, 86400);
+    successResponse(res, 'Photo updated', {
+      ...omitSensitive(data, ['password_hash']),
+      profile_picture_url: profilePictureUrl,
+    });
   } catch (err) { next(err); }
 };
 
@@ -345,6 +461,97 @@ const deactivate = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+/** Same self/manager/HR-Admin visibility check `getById` already applies to this profile. */
+async function assertCanViewCareerEvents(req, employee) {
+  const isSelf = req.user.id === employee.id;
+  const isPrivileged = ['hr', 'admin'].includes(req.user.role);
+  const isManager = req.user.role === 'manager' && employee.manager_id === req.user.id;
+  if (!isSelf && !isPrivileged && !isManager) {
+    throw new ForbiddenError('Not authorized to view this employee');
+  }
+}
+
+const listCareerEvents = async (req, res, next) => {
+  try {
+    const scopeIds = await resolveScopeCompanyIds(req);
+    const employee = await findEmployeeByRef(
+      req.params.id,
+      scopeIds,
+      'id, company_id, manager_id, designation, date_of_joining, created_at',
+    );
+    if (!employee) throw new NotFoundError('Employee not found');
+
+    await assertCanViewCareerEvents(req, employee);
+
+    const { data, error } = await supabaseAdmin
+      .from('employee_career_events')
+      .select('*')
+      .eq('employee_id', employee.id)
+      .order('effective_date', { ascending: false })
+      .order('created_at', { ascending: false });
+    if (error) throw new BadRequestError(error.message);
+
+    // Existing employees have no real "joined" row — synthesize it from the employee
+    // record itself and merge chronologically with real (tracked) events. We never
+    // attempt to backfill historical changes that predate this table.
+    const joinedEvent = {
+      id: `joined-${employee.id}`,
+      employee_id: employee.id,
+      company_id: employee.company_id,
+      event_type: 'joined',
+      from_value: null,
+      to_value: employee.designation || null,
+      effective_date: (employee.date_of_joining || employee.created_at || '').slice(0, 10) || null,
+      note: null,
+      created_by: null,
+      created_at: employee.created_at || employee.date_of_joining || null,
+      synthetic: true,
+    };
+
+    const merged = [...(data || []), joinedEvent].sort((a, b) => {
+      const dateDiff = new Date(b.effective_date || 0) - new Date(a.effective_date || 0);
+      if (dateDiff !== 0) return dateDiff;
+      return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+    });
+
+    successResponse(res, 'Career events fetched', merged);
+  } catch (err) { next(err); }
+};
+
+const addCareerNote = async (req, res, next) => {
+  try {
+    const scopeIds = await resolveScopeCompanyIds(req);
+    const employee = await findEmployeeByRef(req.params.id, scopeIds, 'id, company_id');
+    if (!employee) throw new NotFoundError('Employee not found');
+
+    // HR/Admin only — matches how other free-form additions to an employee's
+    // record (create, deactivate, remove) are gated in this controller.
+    if (!['hr', 'admin'].includes(req.user.role)) {
+      throw new ForbiddenError('Only HR or Admin can add a career note');
+    }
+
+    const note = String(req.body.note || '').trim();
+    if (!note) throw new BadRequestError('Note text is required');
+
+    const { data, error } = await supabaseAdmin
+      .from('employee_career_events')
+      .insert({
+        employee_id: employee.id,
+        company_id: getCompanyId(employee),
+        event_type: 'note',
+        note,
+        effective_date: req.body.effective_date || new Date().toISOString().slice(0, 10),
+        created_by: req.user.id,
+      })
+      .select()
+      .single();
+    if (error) throw new BadRequestError(error.message);
+
+    successResponse(res, 'Career note added', data, null, 201);
+  } catch (err) { next(err); }
+};
+
 module.exports = {
-  create, getAll, getById, update, remove, getTeam, deactivate,
+  create, getAll, getById, update, uploadPhoto, remove, getTeam, deactivate,
+  listCareerEvents, addCareerNote,
 };

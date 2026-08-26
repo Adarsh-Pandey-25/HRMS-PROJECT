@@ -12,7 +12,7 @@ function audienceLabel(audience) {
   return humanize(audience.type);
 }
 
-export function AnnouncementCard({ announcement: a, author, isUnread, onOpen }) {
+export function AnnouncementCard({ announcement: a, author, isUnread, onOpen, actions }) {
   const [expanded, setExpanded] = useState(false);
 
   const toggle = () => {
@@ -33,6 +33,7 @@ export function AnnouncementCard({ announcement: a, author, isUnread, onOpen }) 
               <Badge tone="info"><Clock3 className="h-3 w-3" /> Scheduled</Badge>
             )}
             <Badge tone="neutral">{audienceLabel(a.audience)}</Badge>
+            {actions && <div className="ml-auto flex items-center gap-1">{actions}</div>}
           </div>
 
           <button onClick={toggle} className="text-left w-full group">

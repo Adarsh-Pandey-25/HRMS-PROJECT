@@ -10,10 +10,12 @@ export default function AddJob() {
   const navigate = useNavigate();
   const { createJob } = useRecruitmentMutations();
   const [jd, setJd] = useState('');
-  const [form, setForm] = useState({ title: '', department: '', location: '', type: 'full_time' });
+  const [form, setForm] = useState({ title: '', department: '', location: '', type: 'full_time', openings: '1' });
 
   const publish = async () => {
     if (!form.title.trim()) return toast.error('Job title is required');
+    const openings = Number(form.openings);
+    if (!Number.isFinite(openings) || openings < 1) return toast.error('Openings must be at least 1');
     try {
       await createJob.mutateAsync({
         title: form.title,
@@ -22,7 +24,7 @@ export default function AddJob() {
         employmentType: form.type,
         description: jd,
         status: 'open',
-        openings: 1,
+        openings,
       });
       toast.success('Job posted successfully');
       navigate('/recruitment/jobs');
@@ -46,6 +48,7 @@ export default function AddJob() {
             <Select label="Department" options={DEPARTMENTS} placeholder="Select department" value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })} />
             <Input label="Location" placeholder="e.g. Bangalore / Remote" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} />
             <Select label="Type" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} options={[{ value: 'full_time', label: 'Full-time' }, { value: 'part_time', label: 'Part-time' }, { value: 'intern', label: 'Intern' }]} />
+            <Input label="Openings" type="number" min="1" value={form.openings} onChange={(e) => setForm({ ...form, openings: e.target.value })} />
           </div>
           <div>
             <label className="text-xs font-medium text-fg-muted mb-1.5 block">Job description</label>

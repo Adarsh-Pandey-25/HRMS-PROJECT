@@ -113,6 +113,10 @@ const uploadCompanyLogo = (file, companyId) =>
 const uploadCompanyBrandIcon = (file, companyId) =>
   uploadFile(STORAGE_BUCKETS.documents, file, `company-brand-icons/${companyId}`);
 
+/** Candidate resume — reuses the documents bucket (already provisioned), namespaced per tenant. */
+const uploadResume = (file, companyId) =>
+  uploadFile(STORAGE_BUCKETS.documents, file, `resumes/${companyId}`);
+
 const uploadPayslip = (buffer, employeeId, month, year) => {
   const fileName = `${employeeId}/${year}-${String(month).padStart(2, '0')}.pdf`;
   return supabaseAdmin.storage
@@ -136,6 +140,7 @@ module.exports = {
   uploadProfilePicture,
   uploadCompanyLogo,
   uploadCompanyBrandIcon,
+  uploadResume,
   uploadPayslip,
   resolveCourseVideoBucket,
   STORAGE_BUCKETS,

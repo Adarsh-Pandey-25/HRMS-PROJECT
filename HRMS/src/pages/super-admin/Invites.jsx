@@ -1,10 +1,14 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy, Link2, Plus, Ban } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { Card, CardHeader, Button, Badge, Input, Skeleton, Modal, ConfirmDialog } from '../../components/ui';
-import { createInviteApi, listInvitesApi, revokeInviteApi } from '../../api/superAdmin.api';
+import { createInviteApi, listInvitesApi, revokeInviteApi, suggestSlugApi } from '../../api/superAdmin.api';
 import { formatDateTime } from '../../lib/utils';
+
+// Placeholder shown in the "Workspace URL" preview — real wildcard DNS/TLS for
+// subdomains isn't live on this deployment yet, this is just display text.
+const WORKSPACE_DOMAIN = 'spaxads.net';
 
 const STATUS_TONE = {
   active: 'success',
@@ -23,10 +27,51 @@ export default function SuperAdminInvites() {
   const [email, setEmail] = useState('');
   const [hint, setHint] = useState('');
   const [days, setDays] = useState(7);
+  const [slug, setSlug] = useState('');
+  const [slugTouched, setSlugTouched] = useState(false);
+  const [slugSuggesting, setSlugSuggesting] = useState(false);
   const [creating, setCreating] = useState(false);
   const [lastLink, setLastLink] = useState(null);
   const [revoking, setRevoking] = useState(null);
   const [revokeTarget, setRevokeTarget] = useState(null);
+
+  // Debounced auto-suggest: as the company name is typed, populate the slug field —
+  // but only until the super admin edits it manually, then stop overwriting it.
+  useEffect(() => {
+    if (slugTouched) return undefined;
+    const trimmedHint = hint.trim();
+    if (!trimmedHint) {
+      setSlug('');
+      return undefined;
+    }
+    let cancelled = false;
+    setSlugSuggesting(true);
+    const id = setTimeout(async () => {
+      try {
+        const suggestion = await suggestSlugApi(trimmedHint);
+        if (!cancelled && !slugTouched) setSlug(suggestion);
+      } catch {
+        /* suggestion is a convenience — the field stays editable regardless */
+      } finally {
+        if (!cancelled) setSlugSuggesting(false);
+      }
+    }, 400);
+    return () => { cancelled = true; clearTimeout(id); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hint, slugTouched]);
+
+  const resetInviteForm = () => {
+    setEmail('');
+    setHint('');
+    setDays(7);
+    setSlug('');
+    setSlugTouched(false);
+  };
+
+  const handleSlugChange = (e) => {
+    setSlugTouched(true);
+    setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''));
+  };
 
   const confirmRevoke = async () => {
     const id = revokeTarget;
@@ -59,10 +104,10 @@ export default function SuperAdminInvites() {
         email: lockedEmail,
         companyNameHint: lockedCompanyName,
         expiresInDays: Number(days) || 7,
+        slug: slug.trim() || undefined,
       });
       setLastLink(result.inviteUrl || result.invite_url);
-      setEmail('');
-      setHint('');
+      resetInviteForm();
       toast.success('Invite link created — copy it now');
       await qc.invalidateQueries({ queryKey: ['super-admin', 'invites'] });
       setModal(false);
@@ -122,7 +167,7 @@ export default function SuperAdminInvites() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border text-left">
-                  {['Status', 'Admin email', 'Company name', 'Expires', 'Created', ''].map((h) => (
+                  {['Status', 'Admin email', 'Company name', 'Subdomain', 'Expires', 'Created', ''].map((h) => (
                     <th key={h} className="py-2.5 pr-3 font-semibold text-fg-subtle text-xs uppercase tracking-wide">{h}</th>
                   ))}
                 </tr>
@@ -135,6 +180,7 @@ export default function SuperAdminInvites() {
                     </td>
                     <td className="py-3 pr-3 text-fg-muted">{inv.email || '— any —'}</td>
                     <td className="py-3 pr-3 text-fg">{inv.companyNameHint || inv.company_name_hint || '—'}</td>
+                    <td className="py-3 pr-3 text-xs font-mono text-fg-muted">{inv.companySlug || inv.company_slug || '—'}</td>
                     <td className="py-3 pr-3 text-xs text-fg-subtle">{formatDateTime(inv.expiresAt || inv.expires_at)}</td>
                     <td className="py-3 pr-3 text-xs text-fg-subtle">{formatDateTime(inv.createdAt || inv.created_at)}</td>
                     <td className="py-3 text-right">
@@ -161,11 +207,11 @@ export default function SuperAdminInvites() {
 
       <Modal
         open={modal}
-        onClose={() => setModal(false)}
+        onClose={() => { setModal(false); resetInviteForm(); }}
         title="Generate onboarding link"
         footer={(
           <>
-            <Button variant="outline" onClick={() => setModal(false)}>Cancel</Button>
+            <Button variant="outline" onClick={() => { setModal(false); resetInviteForm(); }}>Cancel</Button>
             <Button
               onClick={create}
               loading={creating}
@@ -194,6 +240,17 @@ export default function SuperAdminInvites() {
             onChange={(e) => setHint(e.target.value)}
             hint="Locked during onboarding and cannot be changed"
           />
+          <Input
+            label="Company subdomain"
+            required
+            placeholder="acme-corp"
+            value={slug}
+            onChange={handleSlugChange}
+            hint={slugSuggesting ? 'Suggesting…' : 'Auto-suggested from the company name — you can edit it'}
+          />
+          <p className="text-xs text-fg-subtle -mt-2">
+            Workspace URL: <span className="font-mono font-medium text-fg">{slug || '—'}</span>.{WORKSPACE_DOMAIN}
+          </p>
           <Input
             label="Expires in (days)"
             type="number"

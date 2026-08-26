@@ -11,14 +11,24 @@ const {
   STORAGE_BUCKETS,
 } = require('./storage.service');
 const { BadRequestError, NotFoundError, ForbiddenError } = require('../utils/errors');
-const { DEFAULT_COMPANY_ID, getCompanyId } = require('../utils/tenant');
+const { getCompanyId } = require('../utils/tenant');
+const { escapePostgrestFilter } = require('../utils/helpers');
 const logger = require('../utils/logger');
 const settingsService = require('./settings.service');
 
 const COMPLETION_GRACE_SECONDS = 5;
 const PROGRESS_JUMP_TOLERANCE = 12;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const resolveCompanyId = (companyId) => companyId || DEFAULT_COMPANY_ID;
+/**
+ * Resolve a tenant id or fail loudly. Silently falling back to a shared
+ * default tenant is a cross-tenant leak waiting to happen — every caller
+ * MUST supply a real company_id resolved from the authenticated user.
+ */
+const resolveCompanyId = (companyId) => {
+  if (!companyId) throw new BadRequestError('Unable to resolve company for this request');
+  return companyId;
+};
 
 const shouldEnforceWatchOrder = async (companyId) => {
   const cid = resolveCompanyId(companyId);
@@ -40,10 +50,13 @@ const departmentMatches = (employeeDept, targetDepartments = []) => {
   return targets.some((d) => normalizeDept(d) === emp);
 };
 
-const enrollmentUserFilter = (employeeId) => (
-  // Dual-column: prefer matching either user_id or employee_id
-  `user_id.eq.${employeeId},employee_id.eq.${employeeId}`
-);
+const enrollmentUserFilter = (employeeId) => {
+  // Dual-column: prefer matching either user_id or employee_id.
+  // Escape untrusted input the same way dashboard.service.js's globalSearch
+  // does before it is spliced into a raw PostgREST .or() filter string.
+  const safe = escapePostgrestFilter(employeeId);
+  return `user_id.eq.${safe},employee_id.eq.${safe}`;
+};
 
 const listDepartments = async (companyId = null) => {
   let query = supabaseAdmin
@@ -159,7 +172,16 @@ const createCourse = async (payload, userId, thumbnailFile, companyId) => {
   return attachSignedUrls(data);
 };
 
-const updateCourse = async (courseId, payload, thumbnailFile) => {
+const updateCourse = async (courseId, payload, thumbnailFile, companyId) => {
+  const cid = resolveCompanyId(companyId);
+  const { data: existingCourse, error: findErr } = await supabaseAdmin
+    .from('courses')
+    .select('id, company_id')
+    .eq('id', courseId)
+    .maybeSingle();
+  if (findErr) throw new BadRequestError(findErr.message);
+  if (!existingCourse || existingCourse.company_id !== cid) throw new NotFoundError('Course not found');
+
   const updates = {};
   if (payload.title !== undefined) updates.title = payload.title;
   if (payload.description !== undefined) updates.description = payload.description;
@@ -279,6 +301,9 @@ const getCourseForEmployee = async (courseId, employee) => {
     .single();
 
   if (error || !course) throw new NotFoundError('Course not found');
+  // Company scoping must hold regardless of department config — a course
+  // with no target_departments would otherwise be visible cross-tenant.
+  if (course.company_id !== getCompanyId(employee)) throw new NotFoundError('Course not found');
   const active = course.status === 'ACTIVE' || course.is_active !== false;
   if (!active) throw new NotFoundError('Course not found');
 
@@ -335,14 +360,16 @@ const getCourseForEmployee = async (courseId, employee) => {
   };
 };
 
-const getManageCourse = async (courseId) => {
+const getManageCourse = async (courseId, companyId) => {
+  const cid = resolveCompanyId(companyId);
   const { data: course, error } = await supabaseAdmin
     .from('courses')
     .select('*')
     .eq('id', courseId)
-    .single();
+    .maybeSingle();
 
-  if (error || !course) throw new NotFoundError('Course not found');
+  if (error) throw new BadRequestError(error.message);
+  if (!course || course.company_id !== cid) throw new NotFoundError('Course not found');
 
   const withThumb = await attachSignedUrls(course);
   const lessons = await listLessonsForCourse(courseId, { withUrls: true });
@@ -353,13 +380,15 @@ const getManageCourse = async (courseId) => {
   };
 };
 
-const addLessonToCourse = async (courseId, payload, videoFile) => {
+const addLessonToCourse = async (courseId, payload, videoFile, companyId) => {
+  const cid = resolveCompanyId(companyId);
   const { data: course, error: cErr } = await supabaseAdmin
     .from('courses')
-    .select('id')
+    .select('id, company_id')
     .eq('id', courseId)
-    .single();
-  if (cErr || !course) throw new NotFoundError('Course not found');
+    .maybeSingle();
+  if (cErr) throw new BadRequestError(cErr.message);
+  if (!course || course.company_id !== cid) throw new NotFoundError('Course not found');
 
   const type = payload.type;
   if (!['VIDEO_UPLOAD', 'EXTERNAL_LINK'].includes(type)) {
@@ -425,7 +454,7 @@ const addChapter = async (courseId, { title, order }) => ({
   lessons: [],
 });
 
-const addLesson = async (chapterId, payload, videoFile) => {
+const addLesson = async (chapterId, payload, videoFile, companyId) => {
   // If chapterId is actually a course id (new API), or look up chapter→course
   const { data: asCourse } = await supabaseAdmin
     .from('courses')
@@ -433,7 +462,7 @@ const addLesson = async (chapterId, payload, videoFile) => {
     .eq('id', chapterId)
     .maybeSingle();
 
-  if (asCourse) return addLessonToCourse(chapterId, payload, videoFile);
+  if (asCourse) return addLessonToCourse(chapterId, payload, videoFile, companyId);
 
   const { data: chapter } = await supabaseAdmin
     .from('course_chapters')
@@ -442,20 +471,70 @@ const addLesson = async (chapterId, payload, videoFile) => {
     .maybeSingle();
 
   if (chapter?.course_id) {
-    return addLessonToCourse(chapter.course_id, { ...payload, order: payload.order }, videoFile);
+    return addLessonToCourse(chapter.course_id, { ...payload, order: payload.order }, videoFile, companyId);
   }
 
   throw new NotFoundError('Course not found');
 };
 
+/** True if the employee joined within `windowDays` of today (mirrors HRMS/src/lib/training.js). */
+const isNewJoinerEmployee = (employee, windowDays = 90) => {
+  const joinDate = employee?.date_of_joining || employee?.dateOfJoining || employee?.join_date;
+  if (!joinDate) return false;
+  const diffDays = (Date.now() - new Date(joinDate).getTime()) / 86400000;
+  return Number.isFinite(diffDays) && diffDays <= windowDays;
+};
+
+/**
+ * Server-side mirror of the "locked until previous course complete" rule the
+ * New Joiner Training page enforces only in the UI. Recomputes the same
+ * catalog ordering the page renders and requires the previous course in that
+ * sequence to be COMPLETED before allowing enrollment in the next one — so
+ * calling the enroll API directly can no longer bypass the lock.
+ */
+const assertPriorCourseComplete = async (courseId, employee, companyId) => {
+  if (!(await shouldEnforceWatchOrder(companyId))) return;
+  const tc = await settingsService.getSetting('training_config', null, companyId);
+  const windowDays = Number(tc?.newJoinerWindowDays ?? 90);
+  if (!isNewJoinerEmployee(employee, windowDays)) return;
+
+  const { data: courses, error } = await supabaseAdmin
+    .from('courses')
+    .select('id, target_departments, status, is_active, created_at')
+    .eq('company_id', companyId)
+    .order('created_at', { ascending: false });
+  if (error) throw new BadRequestError(error.message);
+
+  const eligible = (courses || []).filter((c) => {
+    const active = c.status === 'ACTIVE' || c.is_active !== false;
+    return active && departmentMatches(employee.department, c.target_departments);
+  });
+
+  const idx = eligible.findIndex((c) => c.id === courseId);
+  if (idx <= 0) return; // first course in the sequence (or not part of it) — nothing to gate on
+
+  const prevCourseId = eligible[idx - 1].id;
+  const { data: prevEnrollment } = await supabaseAdmin
+    .from('course_enrollments')
+    .select('status')
+    .eq('course_id', prevCourseId)
+    .or(enrollmentUserFilter(employee.id))
+    .maybeSingle();
+
+  if (!prevEnrollment || prevEnrollment.status !== 'COMPLETED') {
+    throw new ForbiddenError('Complete the previous course before starting this one');
+  }
+};
+
 const enrollCourse = async (courseId, employee) => {
+  const cid = getCompanyId(employee);
   const { data: course } = await supabaseAdmin
     .from('courses')
-    .select('id, target_departments, status, is_active')
+    .select('id, target_departments, status, is_active, company_id')
     .eq('id', courseId)
     .single();
 
-  if (!course) throw new NotFoundError('Course not found');
+  if (!course || course.company_id !== cid) throw new NotFoundError('Course not found');
   const active = course.status === 'ACTIVE' || course.is_active !== false;
   if (!active) throw new NotFoundError('Course not found');
   if (!departmentMatches(employee.department, course.target_departments)) {
@@ -471,6 +550,8 @@ const enrollCourse = async (courseId, employee) => {
     .maybeSingle();
 
   if (existing) return existing;
+
+  await assertPriorCourseComplete(courseId, employee, cid);
 
   const { data, error } = await supabaseAdmin
     .from('course_enrollments')
@@ -497,13 +578,29 @@ const enrollCourse = async (courseId, employee) => {
   return data;
 };
 
-const createEnrollmentsBulk = async ({ courseId, employeeIds }) => {
-  if (!courseId) throw new BadRequestError('courseId is required');
-  const ids = Array.isArray(employeeIds) ? employeeIds.filter(Boolean) : [];
-  if (!ids.length) throw new BadRequestError('employeeIds is required');
+const createEnrollmentsBulk = async ({ courseId, employeeIds, deadline }, companyId) => {
+  const cid = resolveCompanyId(companyId);
+  if (!courseId || !UUID_RE.test(String(courseId))) throw new BadRequestError('A valid courseId is required');
+  const rawIds = Array.isArray(employeeIds) ? employeeIds.filter(Boolean) : [];
+  if (!rawIds.length) throw new BadRequestError('employeeIds is required');
+  const malformed = rawIds.filter((empId) => !UUID_RE.test(String(empId)));
+  if (malformed.length) throw new BadRequestError('employeeIds must all be valid UUIDs');
+  const enrollmentDeadline = deadline && /^\d{4}-\d{2}-\d{2}$/.test(String(deadline)) ? deadline : null;
 
-  const { data: course } = await supabaseAdmin.from('courses').select('id').eq('id', courseId).single();
-  if (!course) throw new NotFoundError('Course not found');
+  const { data: course } = await supabaseAdmin.from('courses').select('id, company_id').eq('id', courseId).maybeSingle();
+  if (!course || course.company_id !== cid) throw new NotFoundError('Course not found');
+
+  // Only enroll employees who actually belong to this tenant — a well-formed
+  // UUID from another company must never be usable to create a cross-tenant
+  // enrollment record.
+  const { data: scopedEmployees, error: empErr } = await supabaseAdmin
+    .from('employees')
+    .select('id')
+    .in('id', rawIds)
+    .eq('company_id', cid);
+  if (empErr) throw new BadRequestError(empErr.message);
+  const ids = (scopedEmployees || []).map((e) => e.id);
+  if (!ids.length) throw new BadRequestError('No matching employees found for this company');
 
   const results = [];
   for (const empId of ids) {
@@ -525,6 +622,7 @@ const createEnrollmentsBulk = async ({ courseId, employeeIds }) => {
         user_id: empId,
         employee_id: empId,
         status: 'IN_PROGRESS',
+        deadline: enrollmentDeadline,
       })
       .select()
       .single();
@@ -534,10 +632,15 @@ const createEnrollmentsBulk = async ({ courseId, employeeIds }) => {
   return results;
 };
 
-const listEnrollments = async ({ includeArchived = false, archivedOnly = false } = {}) => {
+const listEnrollments = async ({ includeArchived = false, archivedOnly = false } = {}, companyId) => {
+  const cid = resolveCompanyId(companyId);
+  // course_enrollments has no company_id column of its own (it predates the
+  // multi-tenant migration). Force an inner join through to courses — which
+  // DOES have company_id — so filtering on the embedded relation actually
+  // restricts the top-level rows instead of just nulling out the relation.
   const baseSelect = `
-      id, status, enrolled_at, completed_at, course_id, user_id, employee_id,
-      course:course_id(id, title),
+      id, status, enrolled_at, completed_at, deadline, course_id, user_id, employee_id,
+      course:course_id!inner(id, title, company_id),
       employee:employee_id(id, first_name, last_name, department, email),
       user:user_id(id, first_name, last_name, department, email),
       course_progress(lesson_id, is_completed)
@@ -547,6 +650,7 @@ const listEnrollments = async ({ includeArchived = false, archivedOnly = false }
     let query = supabaseAdmin
       .from('course_enrollments')
       .select(withArchiveCol ? `is_archived, ${baseSelect}` : baseSelect)
+      .eq('course.company_id', cid)
       .order('enrolled_at', { ascending: false });
     if (withArchiveCol) {
       if (archivedOnly) query = query.eq('is_archived', true);
@@ -582,6 +686,7 @@ const listEnrollments = async ({ includeArchived = false, archivedOnly = false }
       status: row.status,
       enrolled_at: row.enrolled_at,
       completed_at: row.completed_at,
+      deadline: row.deadline,
       course_id: row.course_id,
       course_title: row.course?.title,
       user_id: row.user_id || row.employee_id,
@@ -735,7 +840,16 @@ const updateLessonProgress = async (lessonId, employee, watchedSecondsInput, { f
   };
 };
 
-const archiveCourse = async (courseId) => {
+const archiveCourse = async (courseId, companyId) => {
+  const cid = resolveCompanyId(companyId);
+  const { data: existing, error: findErr } = await supabaseAdmin
+    .from('courses')
+    .select('id, company_id')
+    .eq('id', courseId)
+    .maybeSingle();
+  if (findErr) throw new BadRequestError(findErr.message);
+  if (!existing || existing.company_id !== cid) throw new NotFoundError('Course not found');
+
   const { data, error } = await supabaseAdmin
     .from('courses')
     .update({ status: 'ARCHIVED', is_active: false })
@@ -748,14 +862,15 @@ const archiveCourse = async (courseId) => {
 };
 
 /** Permanently remove a course and related LMS rows. */
-const deleteCourse = async (courseId) => {
+const deleteCourse = async (courseId, companyId) => {
+  const cid = resolveCompanyId(companyId);
   const { data: existing, error: findErr } = await supabaseAdmin
     .from('courses')
-    .select('id')
+    .select('id, company_id')
     .eq('id', courseId)
     .maybeSingle();
   if (findErr) throw new BadRequestError(findErr.message);
-  if (!existing) throw new NotFoundError('Course not found');
+  if (!existing || existing.company_id !== cid) throw new NotFoundError('Course not found');
 
   // Remove dependents first in case DB FKs are not cascading in this environment.
   const { data: lessons } = await supabaseAdmin
@@ -813,11 +928,12 @@ const getLessonVideoUrl = async (lessonId, employee) => {
 
   const { data: course } = await supabaseAdmin
     .from('courses')
-    .select('target_departments, status, is_active')
+    .select('target_departments, status, is_active, company_id')
     .eq('id', lesson.course_id)
     .single();
 
-  if (!course || (course.status === 'ARCHIVED' && course.is_active === false)) {
+  if (!course || course.company_id !== getCompanyId(employee)) throw new NotFoundError('Course not found');
+  if (course.status === 'ARCHIVED' && course.is_active === false) {
     throw new NotFoundError('Course not found');
   }
   if (!departmentMatches(employee.department, course.target_departments)) {
@@ -839,21 +955,30 @@ const getLessonVideoUrl = async (lessonId, employee) => {
   return { videoUrl: resolved.playback_url };
 };
 
-const listTrainingProgressReport = async () => {
-  const [{ data: courses, error: cErr }, { data: employees, error: eErr }, { data: enrollments, error: enErr }] = await Promise.all([
-    supabaseAdmin.from('courses').select('id, title, target_departments, status, is_active'),
+const listTrainingProgressReport = async (companyId) => {
+  const cid = resolveCompanyId(companyId);
+  const [{ data: courses, error: cErr }, { data: employees, error: eErr }] = await Promise.all([
+    supabaseAdmin.from('courses').select('id, title, target_departments, status, is_active').eq('company_id', cid),
     supabaseAdmin
       .from('employees')
       .select('id, first_name, last_name, email, department, employee_code, role, date_of_joining')
       .eq('is_active', true)
+      .eq('company_id', cid)
       .order('first_name'),
-    supabaseAdmin
-      .from('course_enrollments')
-      .select('id, employee_id, user_id, course_id, status, enrolled_at, completed_at, course_progress(lesson_id, is_completed)'),
   ]);
 
   if (cErr) throw new BadRequestError(cErr.message);
   if (eErr) throw new BadRequestError(eErr.message);
+
+  const courseIds = (courses || []).map((c) => c.id);
+  // course_enrollments has no company_id column — scope it by the
+  // already-tenant-filtered course id list instead (see listEnrollments).
+  const { data: enrollments, error: enErr } = courseIds.length
+    ? await supabaseAdmin
+      .from('course_enrollments')
+      .select('id, employee_id, user_id, course_id, status, enrolled_at, completed_at, course_progress(lesson_id, is_completed)')
+      .in('course_id', courseIds)
+    : { data: [], error: null };
   if (enErr) throw new BadRequestError(enErr.message);
 
   const activeCourses = (courses || []).filter((c) => c.status === 'ACTIVE' || c.is_active !== false);
@@ -925,6 +1050,35 @@ const listTrainingProgressReport = async () => {
   };
 };
 
+/**
+ * Send a real overdue-training reminder to a new joiner: an in-app
+ * notification plus an email, reusing notification.service's existing
+ * createNotification (which already sends notificationEmail under the
+ * hood) rather than standing up new email infrastructure.
+ */
+const sendTrainingReminder = async (employeeId, companyId) => {
+  const cid = resolveCompanyId(companyId);
+  const { data: employee, error } = await supabaseAdmin
+    .from('employees')
+    .select('id, first_name, last_name, email, company_id, is_active')
+    .eq('id', employeeId)
+    .maybeSingle();
+  if (error) throw new BadRequestError(error.message);
+  if (!employee || employee.company_id !== cid) throw new NotFoundError('Employee not found');
+  if (employee.is_active === false) throw new BadRequestError('Employee is not active');
+
+  const notificationService = require('./notification.service');
+  await notificationService.createNotification({
+    user_id: employee.id,
+    type: 'TRAINING',
+    title: 'Reminder: complete your onboarding training',
+    message: 'You have overdue onboarding training. Please complete your assigned courses as soon as possible.',
+    link: '/training/me',
+  });
+
+  return { sent: true, employeeId: employee.id };
+};
+
 module.exports = {
   listDepartments,
   createCourse,
@@ -946,4 +1100,5 @@ module.exports = {
   deleteCourse,
   listTrainingProgressReport,
   getLessonVideoUrl,
+  sendTrainingReminder,
 };

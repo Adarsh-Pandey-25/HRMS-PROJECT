@@ -13,6 +13,7 @@
   Megaphone,
   Settings,
   Building2,
+  BarChart3,
 } from 'lucide-react';
 import { canRole, isPrivilegedRole } from './permissions';
 
@@ -137,6 +138,12 @@ export const NAV_ITEMS = [
       { label: 'All Tickets', path: '/helpdesk/all', permission: { module: 'helpdesk', action: 'manage' } },
       { label: 'Knowledge Base', path: '/helpdesk/kb', permission: { module: 'helpdesk', action: 'view' } },
     ],
+  },
+  {
+    icon: BarChart3,
+    label: 'Reports',
+    path: '/reports',
+    permission: { module: 'reports', action: 'view' },
   },
 ];
 

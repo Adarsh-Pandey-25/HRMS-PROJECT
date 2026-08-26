@@ -15,6 +15,9 @@ import { loaders } from './lib/routePrefetch';
 const Welcome = lazy(() => import('./pages/Welcome'));
 const Onboarding = lazy(() => import('./pages/Onboarding'));
 const Login = lazy(() => import('./pages/Login'));
+const AdminLogin = lazy(() => import('./pages/AdminLogin'));
+const HrLogin = lazy(() => import('./pages/HrLogin'));
+const EmployeeLogin = lazy(() => import('./pages/EmployeeLogin'));
 const ForgotPassword = lazy(() => import('./pages/ForgotPassword'));
 const SuperAdminLogin = lazy(() => import('./pages/super-admin/Login'));
 const SuperAdminCompanies = lazy(() => import('./pages/super-admin/Companies'));
@@ -73,6 +76,7 @@ const AllTickets = lazy(loaders['/helpdesk/all']);
 const KnowledgeBase = lazy(loaders['/helpdesk/kb']);
 
 const Announcements = lazy(loaders['/announcements']);
+const Reports = lazy(loaders['/reports']);
 const Settings = lazy(loaders['/settings']);
 const Organizations = lazy(loaders['/organizations']);
 const SearchResults = lazy(loaders['/search']);
@@ -109,6 +113,10 @@ export default function App() {
       <Route path="/welcome" element={<Suspense fallback={<PageLoader />}><Welcome /></Suspense>} />
       <Route path="/onboarding" element={<Suspense fallback={<PageLoader />}><Onboarding /></Suspense>} />
       <Route path="/login" element={<Suspense fallback={<PageLoader />}><Login /></Suspense>} />
+      {/* Subdomain-per-tenant portal logins — same public tier as /login. */}
+      <Route path="/admin" element={<Suspense fallback={<PageLoader />}><AdminLogin /></Suspense>} />
+      <Route path="/hr" element={<Suspense fallback={<PageLoader />}><HrLogin /></Suspense>} />
+      <Route path="/employee" element={<Suspense fallback={<PageLoader />}><EmployeeLogin /></Suspense>} />
       <Route path="/forgot-password" element={<Suspense fallback={<PageLoader />}><ForgotPassword /></Suspense>} />
 
       {/* Platform Super Admin — must stay outside company RequireAuth + AppLayout */}
@@ -205,6 +213,7 @@ export default function App() {
             <Route path="/helpdesk/kb" element={page(KnowledgeBase, { module: 'helpdesk', action: 'view' })} />
 
             <Route path="/announcements" element={page(Announcements, { module: 'announcements', action: 'view' })} />
+            <Route path="/reports" element={page(Reports, { module: 'reports', action: 'view' })} />
             <Route path="/organizations" element={page(Organizations, ['admin', 'hr'])} />
             <Route path="/settings" element={page(Settings, { module: 'settings', action: 'manage' })} />
             <Route path="/search" element={page(SearchResults)} />

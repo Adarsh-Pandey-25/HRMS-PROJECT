@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { PartyPopper, AlertTriangle, CheckCircle2, Lock, PlayCircle, Bell } from 'lucide-react';
 import { PageHeader, Card, CardHeader, Button, Badge, Select, ProgressBar, DataTable, Skeleton } from '../../components/ui';
-import { useCourseCatalog, useTrainingProgressReport } from '../../hooks/useTraining';
+import { useCourseCatalog, useTrainingProgressReport, useTrainingMutations } from '../../hooks/useTraining';
 import { useSettingsStore } from '../../store/settingsStore';
 import { useAuthStore, useCurrentUser } from '../../store/authStore';
 import { isNewJoiner, newJoinerDeadline, daysUntil } from '../../lib/training';
@@ -23,6 +23,16 @@ export default function NewJoinerTraining() {
 
   const { data: report, isLoading: reportLoading } = useTrainingProgressReport();
   const { data: catalog = [], isLoading: catalogLoading } = useCourseCatalog();
+  const { sendReminder } = useTrainingMutations();
+
+  const handleRemind = async (emp) => {
+    try {
+      await sendReminder.mutateAsync(emp.id);
+      toast.success(`Reminder sent to ${emp.name}`);
+    } catch (err) {
+      toast.error(err.message || 'Failed to send reminder');
+    }
+  };
 
   const joinUser = useMemo(() => ({
     ...user,
@@ -82,7 +92,13 @@ export default function NewJoinerTraining() {
         id: 'actions',
         header: '',
         cell: ({ row }) => row.original.pending > 0 && (
-          <Button size="sm" variant="outline" icon={Bell} onClick={() => toast.success(`Reminder queued for ${row.original.emp.name}`)}>
+          <Button
+            size="sm"
+            variant="outline"
+            icon={Bell}
+            loading={sendReminder.isPending && sendReminder.variables === row.original.emp.id}
+            onClick={() => handleRemind(row.original.emp)}
+          >
             Remind
           </Button>
         ),

@@ -41,6 +41,16 @@ export async function listInvitesApi() {
   return Array.isArray(rows) ? rows : [];
 }
 
+/** Live auto-suggested, guaranteed-currently-available subdomain slug for a company name. */
+export async function suggestSlugApi(companyNameHint) {
+  const data = await apiRequest({
+    method: 'GET',
+    url: '/super-admin/invites/suggest-slug',
+    params: { company_name_hint: companyNameHint },
+  });
+  return data?.slug || '';
+}
+
 export async function createInviteApi(payload) {
   return apiRequest({
     method: 'POST',

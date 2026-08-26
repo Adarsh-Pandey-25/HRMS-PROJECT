@@ -23,7 +23,7 @@ function AddIpModal({ open, onClose }) {
   const save = () => {
     if (!form.ip.trim() || !form.label.trim()) return toast.error('IP/CIDR and label are required');
     addIpWhitelist(form);
-    toast.success('IP added to whitelist');
+    toast.success('IP added to whitelist — click Save Changes to sync');
     setForm({ ip: '', label: '' });
     onClose();
   };
@@ -52,7 +52,7 @@ function AddShiftModal({ open, onClose }) {
   const save = () => {
     if (!form.name.trim()) return toast.error('Shift name is required');
     addShift(form);
-    toast.success('Shift added');
+    toast.success('Shift added — click Save Changes to sync');
     setForm({ name: '', start: '09:00', end: '18:00' });
     onClose();
   };

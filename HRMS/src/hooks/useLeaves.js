@@ -6,12 +6,13 @@ import {
 } from '../api/leaves.api';
 import { invalidateAndRefetch } from '../lib/queryCache';
 
-export function useMyLeaves() {
+export function useMyLeaves(options = {}) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const enabled = options.enabled !== false;
   return useQuery({
     queryKey: ['leaves', 'my'],
     queryFn: fetchMyLeavesApi,
-    enabled: isAuthenticated,
+    enabled: isAuthenticated && enabled,
   });
 }
 

@@ -17,6 +17,7 @@ router.post(
 );
 
 router.post('/logout', authenticateSuperAdmin, superAdminController.logout);
+router.post('/refresh-token', authLimiter, superAdminController.refreshToken);
 router.get('/me', authenticateSuperAdmin, superAdminController.me);
 
 router.get('/companies', authenticateSuperAdmin, superAdminController.listCompanies);
@@ -31,6 +32,7 @@ router.patch(
 );
 
 router.get('/invites', authenticateSuperAdmin, superAdminController.listInvites);
+router.get('/invites/suggest-slug', authenticateSuperAdmin, superAdminController.suggestSlug);
 router.post(
   '/invites',
   authenticateSuperAdmin,
@@ -47,6 +49,8 @@ router.post(
   }),
   body('expires_in_days').optional().isInt({ min: 1, max: 30 }),
   body('expiresInDays').optional().isInt({ min: 1, max: 30 }),
+  body('slug').optional().isString().isLength({ max: 63 }),
+  body('company_slug').optional().isString().isLength({ max: 63 }),
   validate,
   superAdminController.createInvite,
 );

@@ -61,12 +61,16 @@ const parseAttlogLine = (line, deviceSerial) => {
   };
 };
 
+/** A real device batches at most a few hundred punches per push; cap well above that. */
+const MAX_ATTLOG_LINES_PER_REQUEST = 2000;
+
 /** Parse a full ADMS cdata body (one or more \n-separated ATTLOG lines). */
 const parseAttlogBody = (body, deviceSerial) =>
   String(body || '')
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
+    .slice(0, MAX_ATTLOG_LINES_PER_REQUEST)
     .map((line) => parseAttlogLine(line, deviceSerial))
     .filter(Boolean);
 
@@ -112,7 +116,7 @@ const savePunches = async (punches, deviceSerial) => {
   const enriched = await mapPunchesToEmployees(punches, deviceSerial);
   const { error } = await supabaseAdmin
     .from('device_punches')
-    .upsert(enriched, { onConflict: 'device_user_id,punch_time', ignoreDuplicates: true });
+    .upsert(enriched, { onConflict: 'device_serial,device_user_id,punch_time', ignoreDuplicates: true });
 
   if (error) {
     logger.error('[ADMS] Failed to save punches', { error: error.message, count: enriched.length });

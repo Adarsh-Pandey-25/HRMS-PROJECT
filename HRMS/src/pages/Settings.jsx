@@ -4,6 +4,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import {
   Building2, Users, FileText, Clock, CalendarOff, DollarSign, Bell, Briefcase, Megaphone,
   Monitor, Receipt, GraduationCap, LifeBuoy, Plug, ShieldCheck, Database, Lock, Save, ChevronsLeft,
+  ListChecks,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { PageHeader, Card, CardHeader, Button, Input, Select, Badge, StatusBadge, Avatar, DataTable, FileUpload } from '../components/ui';
@@ -20,6 +21,7 @@ import { invalidateAndRefetch } from '../lib/queryCache';
 import { CompanyLegalFields } from '../components/shared/CompanyLegalFields';
 import { mergeLegalProfile } from '../lib/companyLegal';
 import { DocumentConfigSection } from './settings/DocumentConfigSection';
+import { OnboardingChecklistSection } from './settings/OnboardingChecklistSection';
 import { AttendanceConfigSection } from './settings/AttendanceConfigSection';
 import { LeavePolicySection } from './settings/LeavePolicySection';
 import { PayrollSettingsSection } from './settings/PayrollSettingsSection';
@@ -34,6 +36,7 @@ const SECTIONS = [
   { id: 'company', label: 'Company Profile', icon: Building2 },
   { id: 'users', label: 'User & Role Management', icon: Users },
   { id: 'documents', label: 'Employee Document Config', icon: FileText },
+  { id: 'onboarding-checklist', label: 'Onboarding Checklist', icon: ListChecks },
   { id: 'attendance', label: 'Attendance Config', icon: Clock },
   { id: 'leave', label: 'Leave Policy', icon: CalendarOff },
   { id: 'payroll', label: 'Payroll Settings', icon: DollarSign },
@@ -473,6 +476,7 @@ function UserRoleSection() {
 
 const SECTION_BODY = {
   documents: DocumentConfigSection,
+  'onboarding-checklist': OnboardingChecklistSection,
   attendance: AttendanceConfigSection,
   leave: LeavePolicySection,
   payroll: PayrollSettingsSection,

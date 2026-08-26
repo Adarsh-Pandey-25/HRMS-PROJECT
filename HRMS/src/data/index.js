@@ -2,7 +2,6 @@ export * from './employees';
 export * from './hr';
 export * from './talent';
 export * from './ops';
-export * from './dashboard';
 export * from './announcements';
 export * from './wellness';
 

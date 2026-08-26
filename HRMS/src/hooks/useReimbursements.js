@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../store/authStore';
 import {
   fetchMyReimbursementsApi, fetchTeamReimbursementsApi, fetchAllReimbursementsApi,
-  submitReimbursementApi, approveReimbursementApi, rejectReimbursementApi,
+  submitReimbursementApi, approveReimbursementApi, rejectReimbursementApi, deleteReimbursementApi,
 } from '../api/reimbursements.api';
 
 import { invalidateAndRefetch } from '../lib/queryCache';
@@ -32,5 +32,6 @@ export function useReimbursementMutations() {
     submit: useMutation({ mutationFn: submitReimbursementApi, onSuccess: invalidate }),
     approve: useMutation({ mutationFn: approveReimbursementApi, onSuccess: invalidate }),
     reject: useMutation({ mutationFn: ({ id, reason }) => rejectReimbursementApi(id, reason), onSuccess: invalidate }),
+    withdraw: useMutation({ mutationFn: deleteReimbursementApi, onSuccess: invalidate }),
   };
 }

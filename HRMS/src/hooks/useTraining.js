@@ -1,26 +1,14 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../store/authStore';
 import {
-  fetchMyTrainingsApi, fetchAllTrainingsApi,
   fetchEmployeeCoursesApi, fetchManageCoursesApi, fetchManageCourseApi,
   fetchCourseDetailApi, enrollCourseApi,
   createCourseApi, updateCourseApi, deleteCourseApi, archiveCourseApi, addCourseLessonApi,
   fetchEnrollmentsApi, createEnrollmentsApi, archiveEnrollmentApi,
   updateLessonProgressApi, fetchLessonVideoUrlApi,
-  fetchTrainingProgressReportApi,
-  assignTrainingApi, fetchTrainingParticipantsApi,
+  fetchTrainingProgressReportApi, sendTrainingReminderApi,
 } from '../api/training.api';
 import { invalidateAndRefetch } from '../lib/queryCache';
-
-export function useMyTrainings() {
-  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
-  return useQuery({ queryKey: ['training', 'my'], queryFn: fetchMyTrainingsApi, enabled: isAuthenticated });
-}
-
-export function useAllTrainings() {
-  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
-  return useQuery({ queryKey: ['training', 'all'], queryFn: fetchAllTrainingsApi, enabled: isAuthenticated });
-}
 
 export function useCourseCatalog() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
@@ -116,7 +104,7 @@ export function useTrainingMutations() {
       onSuccess: invalidate,
     }),
     createEnrollments: useMutation({
-      mutationFn: ({ courseId, employeeIds }) => createEnrollmentsApi(courseId, employeeIds),
+      mutationFn: ({ courseId, employeeIds, deadline }) => createEnrollmentsApi(courseId, employeeIds, deadline),
       onSuccess: invalidate,
     }),
     archiveEnrollment: useMutation({
@@ -127,7 +115,7 @@ export function useTrainingMutations() {
       mutationFn: ({ lessonId, watchedSeconds, forceComplete }) => updateLessonProgressApi(lessonId, watchedSeconds, { forceComplete }),
       onSuccess: invalidate,
     }),
-    assign: useMutation({ mutationFn: ({ trainingId, employeeIds }) => assignTrainingApi(trainingId, employeeIds), onSuccess: invalidate }),
+    sendReminder: useMutation({ mutationFn: sendTrainingReminderApi }),
   };
 }
 
@@ -137,14 +125,5 @@ export function useLessonVideoUrl(lessonId) {
     queryKey: ['training', 'video', lessonId],
     queryFn: () => fetchLessonVideoUrlApi(lessonId),
     enabled: isAuthenticated && Boolean(lessonId),
-  });
-}
-
-export function useTrainingParticipants(trainingId) {
-  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
-  return useQuery({
-    queryKey: ['training', 'participants', trainingId],
-    queryFn: () => fetchTrainingParticipantsApi(trainingId),
-    enabled: isAuthenticated && Boolean(trainingId),
   });
 }

@@ -197,6 +197,22 @@ const courseLessonRules = [
   body('video_duration').optional().isFloat({ min: 0.1 }),
 ];
 
+const createEnrollmentsRules = [
+  body('course_id').optional().isUUID(),
+  body('courseId').optional().isUUID(),
+  body('employee_ids').optional().isArray({ min: 1 }),
+  body('employee_ids.*').optional().isUUID(),
+  body('employeeIds').optional().isArray({ min: 1 }),
+  body('employeeIds.*').optional().isUUID(),
+  body('user_ids').optional().isArray({ min: 1 }),
+  body('user_ids.*').optional().isUUID(),
+  body().custom((_, { req }) => {
+    const courseId = req.body?.course_id || req.body?.courseId;
+    if (!courseId) throw new Error('courseId is required');
+    return true;
+  }),
+];
+
 const lessonProgressRules = [
   body('watchedSeconds').optional({ nullable: true }).isFloat({ min: 0 }),
   body('watched_seconds').optional({ nullable: true }).isFloat({ min: 0 }),
@@ -207,6 +223,11 @@ const lessonProgressRules = [
     }
     return true;
   }),
+];
+
+const careerNoteRules = [
+  body('note').trim().notEmpty().isLength({ max: 2000 }).withMessage('Note text is required'),
+  body('effective_date').optional().isISO8601(),
 ];
 
 const uuidParam = (name = 'id') => [param(name).isUUID()];
@@ -237,10 +258,12 @@ module.exports = {
   courseCreateRules,
   courseChapterRules,
   courseLessonRules,
+  createEnrollmentsRules,
   lessonProgressRules,
   announcementRules,
   holidayRules,
   documentUploadRules,
+  careerNoteRules,
   payrollMonthRules,
   payrollMonthQueryRules,
   payrollGeneratePayslipRules,

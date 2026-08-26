@@ -23,7 +23,7 @@ const CHECK_IN_METHODS = ['office_ip', 'web', 'mobile', 'biometric'];
 
 const REIMBURSEMENT_TYPES = [
   'travel', 'food', 'medical', 'internet_phone',
-  'office_supplies', 'client_entertainment', 'other',
+  'office_supplies', 'client_entertainment', 'accommodation', 'other',
 ];
 
 const DOCUMENT_TYPES = [

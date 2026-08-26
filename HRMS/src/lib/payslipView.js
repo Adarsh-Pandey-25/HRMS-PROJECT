@@ -89,7 +89,9 @@ export function buildPayslipView(payslip, { company = {}, employee = {} } = {}) 
       label: d.name || 'Deduction',
       amount: Number(d.amount) > 0 ? fmt(d.amount) : '',
     }));
-  if (!deductionLines.some((d) => String(d.label).toLowerCase() === 'tds')) {
+  const tdsMode = String(payslip.breakdown?.config?.tds_mode || '').toLowerCase();
+  const tdsApplies = tdsMode !== 'none' && tdsMode !== 'exempt';
+  if (tdsApplies && !deductionLines.some((d) => String(d.label).toLowerCase() === 'tds')) {
     deductionLines = [{ label: 'TDS', amount: '' }, ...deductionLines];
   }
   if (deductionLines.length < 2) deductionLines.push({ label: 'Deduction 2', amount: '' });

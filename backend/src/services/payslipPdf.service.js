@@ -241,7 +241,9 @@ async function buildPayslipPdfBuffer(employee, payslip, payrollMonth, { companyI
     label: d.name || 'Deduction',
     amount: Number(d.amount) > 0 ? fmt(d.amount) : '',
   }));
-  if (!deductionRows.some((d) => String(d.label).toLowerCase() === 'tds')) {
+  const tdsMode = String(breakdown.config?.tds_mode || '').toLowerCase();
+  const tdsApplies = tdsMode !== 'none' && tdsMode !== 'exempt';
+  if (tdsApplies && !deductionRows.some((d) => String(d.label).toLowerCase() === 'tds')) {
     deductionRows.unshift({ label: 'TDS', amount: '' });
   }
   if (deductionRows.length < 2) deductionRows.push({ label: 'Deduction 2', amount: '' });

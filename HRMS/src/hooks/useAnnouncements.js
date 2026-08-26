@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../store/authStore';
 import {
   fetchActiveAnnouncementsApi, fetchAllAnnouncementsApi,
-  createAnnouncementApi, acknowledgeAnnouncementApi,
+  createAnnouncementApi, updateAnnouncementApi, deleteAnnouncementApi, acknowledgeAnnouncementApi,
 } from '../api/announcements.api';
 import { fetchUpcomingHolidaysApi } from '../api/holidays.api';
 import { invalidateAndRefetch } from '../lib/queryCache';
@@ -35,6 +35,8 @@ export function useAnnouncementMutations() {
   };
   return {
     create: useMutation({ mutationFn: createAnnouncementApi, onSuccess: invalidate }),
+    update: useMutation({ mutationFn: ({ id, data }) => updateAnnouncementApi(id, data), onSuccess: invalidate }),
+    remove: useMutation({ mutationFn: deleteAnnouncementApi, onSuccess: invalidate }),
     acknowledge: useMutation({ mutationFn: acknowledgeAnnouncementApi, onSuccess: invalidate }),
   };
 }

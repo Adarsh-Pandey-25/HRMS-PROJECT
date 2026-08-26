@@ -51,6 +51,7 @@ function classifyEnrollment(e) {
     progressLabel: totalLessons ? `${completedLessons}/${totalLessons} lessons` : '—',
     progress: progressPercent,
     completedOn: e.completedAt || e.completed_at,
+    deadline: e.deadline,
     status: displayStatus,
     statusTone: enrollmentStatusTone(displayStatus),
     bucket,
@@ -99,6 +100,7 @@ export default function Enrollments() {
       await createEnrollments.mutateAsync({
         courseId: form.courseId,
         employeeIds: targets.map((e) => e.id),
+        deadline: form.deadline || null,
       });
       toast.success(`Assigned to ${targets.length} employee(s)`);
       setModal(false);
@@ -171,6 +173,11 @@ export default function Enrollments() {
     {
       accessorKey: 'completedOn',
       header: 'Completed',
+      cell: ({ getValue }) => (getValue() ? formatDate(getValue()) : '—'),
+    },
+    {
+      accessorKey: 'deadline',
+      header: 'Deadline',
       cell: ({ getValue }) => (getValue() ? formatDate(getValue()) : '—'),
     },
     {

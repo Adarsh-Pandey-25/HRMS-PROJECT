@@ -66,4 +66,18 @@ const onboardingOtpLimiter = rateLimit({
   },
 });
 
-module.exports = { generalLimiter, authLimiter, bootstrapLimiter, onboardingOtpLimiter };
+/** Device push endpoints are unauthenticated by protocol — gate by IP since there's no other identity to key on. */
+const admsLimiter = rateLimit({
+  ...limiterOptions,
+  max: config.rateLimit.admsMax,
+  keyGenerator: ipKeyGenerator,
+  message: {
+    success: false,
+    error: { code: 'RATE_LIMIT', message: 'Too many requests, please try again later' },
+    timestamp: new Date().toISOString(),
+  },
+});
+
+module.exports = {
+  generalLimiter, authLimiter, bootstrapLimiter, onboardingOtpLimiter, admsLimiter,
+};

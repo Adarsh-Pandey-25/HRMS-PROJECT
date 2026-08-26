@@ -40,10 +40,17 @@ const upload = async (req, res, next) => {
 
     const { path } = await uploadDocument(req.file, employeeId);
 
+    const { data: targetEmployee } = await supabaseAdmin
+      .from('employees')
+      .select('company_id')
+      .eq('id', employeeId)
+      .maybeSingle();
+
     const { data, error } = await supabaseAdmin
       .from('documents')
       .insert({
         employee_id: employeeId,
+        company_id: targetEmployee?.company_id || req.user.company_id,
         document_type: req.body.document_type,
         document_name: req.body.document_name,
         document_url: path,
@@ -96,25 +103,25 @@ const myDocuments = async (req, res, next) => {
 const allDocuments = async (req, res, next) => {
   try {
     const { page, limit, offset } = paginate(req.query);
+    const tenant = require('../services/tenant.service');
+    const home = req.user.company_id;
+    const companyIds = ['admin', 'hr'].includes(req.user.role)
+      ? await tenant.getOrgCompanyIds(home)
+      : [home];
+
     let query = supabaseAdmin
       .from('documents')
-      .select('*, employee:employee_id(id, first_name, last_name, employee_code, email)')
+      .select('*, employee:employee_id(id, first_name, last_name, employee_code, email)', { count: 'exact' })
+      .in('company_id', companyIds)
       .order('uploaded_at', { ascending: false })
-      .limit(5000);
+      .range(offset, offset + limit - 1);
 
     if (req.query.status === 'pending') query = query.eq('is_verified', false);
     if (req.query.status === 'verified') query = query.eq('is_verified', true);
 
-    const { data, error } = await query;
+    const { data, error, count } = await query;
     if (error) throw new BadRequestError(error.message);
-    const ids = await companyEmployeeIds(req);
-    const scoped = (data || []).filter((doc) => ids.includes(doc.employee_id));
-    successResponse(
-      res,
-      'All documents fetched',
-      scoped.slice(offset, offset + limit),
-      buildMeta(page, limit, scoped.length)
-    );
+    successResponse(res, 'All documents fetched', data || [], buildMeta(page, limit, count || 0));
   } catch (err) { next(err); }
 };
 

@@ -1,7 +1,33 @@
 const authService = require('../services/auth.service');
 const { successResponse } = require('../utils/helpers');
 
+/**
+ * SameSite is a deliberate security decision, not something to infer from request
+ * headers. Primary source of truth: an explicit env var. `COOKIE_SAMESITE` wins if
+ * set to a valid value ('strict' | 'lax' | 'none'); otherwise `COOKIE_CROSS_SITE`
+ * ('true'/'false') maps to 'none'/'lax'. Only when NEITHER is configured do we fall
+ * back to the legacy same-host heuristic below, so behavior is unchanged for any
+ * deployment that hasn't set the new vars yet.
+ *
+ * The old heuristic compared req.get('host') (as Express sees it) to FRONTEND_URL's
+ * hostname to guess cross-site-ness. That's fragile behind any reverse proxy —
+ * depending on how the proxy forwards the Host header, the backend can see a host
+ * that never matches the frontend's origin even when the request is same-site from
+ * the browser's point of view, which silently forces SameSite=None (no CSRF
+ * protection) in cases where 'lax' would have been correct.
+ */
 const cookieOptions = (req, maxAge, path = '/') => {
+  const explicitSameSite = String(process.env.COOKIE_SAMESITE || '').trim().toLowerCase();
+  if (['strict', 'lax', 'none'].includes(explicitSameSite)) {
+    return { httpOnly: true, secure: true, sameSite: explicitSameSite, path, maxAge };
+  }
+
+  const explicitCrossSite = String(process.env.COOKIE_CROSS_SITE || '').trim().toLowerCase();
+  if (explicitCrossSite === 'true' || explicitCrossSite === 'false') {
+    return { httpOnly: true, secure: true, sameSite: explicitCrossSite === 'true' ? 'none' : 'lax', path, maxAge };
+  }
+
+  // Legacy fallback heuristic — preserved as-is when no explicit config is present.
   const frontend = String(process.env.FRONTEND_URL || '').replace(/\/$/, '');
   const apiHost = String(req.get('host') || '').split(':')[0];
   let frontendHost = '';
@@ -20,24 +46,52 @@ const cookieOptions = (req, maxAge, path = '/') => {
   };
 };
 
-const register = async (req, res, next) => {
-  try {
-    const employee = await authService.register(req.user, req.body);
-    successResponse(res, 'User registered successfully', employee, null, 201);
-  } catch (err) { next(err); }
+/** Sets both session cookies the exact same way every login path issues a session. */
+const issueSessionCookies = (req, res, accessToken, refreshToken) => {
+  res.cookie('accessToken', accessToken, cookieOptions(req, 24 * 60 * 60 * 1000));
+  res.cookie(
+    'refreshToken',
+    refreshToken,
+    cookieOptions(req, 7 * 24 * 60 * 60 * 1000, '/api/auth')
+  );
 };
 
 const login = async (req, res, next) => {
   try {
     const { employee, accessToken, refreshToken } = await authService.login(req.body.email, req.body.password);
-    res.cookie('accessToken', accessToken, cookieOptions(req, 24 * 60 * 60 * 1000));
-    res.cookie(
-      'refreshToken',
-      refreshToken,
-      cookieOptions(req, 7 * 24 * 60 * 60 * 1000, '/api/auth')
-    );
+    issueSessionCookies(req, res, accessToken, refreshToken);
     // Tokens stay in HttpOnly cookies and are never exposed to frontend JavaScript.
     successResponse(res, 'Login successful', { employee });
+  } catch (err) { next(err); }
+};
+
+/** One handler for all three portal-scoped logins — `portal` is fixed per route, never client-supplied. */
+const loginToPortal = (portal) => async (req, res, next) => {
+  try {
+    const { employee, accessToken, refreshToken } = await authService.loginToPortal(
+      portal, req.body.email, req.body.password, req.tenantCompany?.id || null
+    );
+    issueSessionCookies(req, res, accessToken, refreshToken);
+    successResponse(res, 'Login successful', { employee });
+  } catch (err) { next(err); }
+};
+
+const loginAdmin = loginToPortal('admin');
+const loginHr = loginToPortal('hr');
+const loginEmployee = loginToPortal('employee');
+
+/** Public — safe fields only, used to brand a tenant's login pages before anyone signs in. */
+const workspaceInfo = async (req, res, next) => {
+  try {
+    if (!req.tenantCompany) {
+      return successResponse(res, 'No workspace resolved for this host', { resolved: false });
+    }
+    successResponse(res, 'Workspace resolved', {
+      resolved: true,
+      name: req.tenantCompany.name,
+      slug: req.tenantCompany.slug,
+      isActive: req.tenantCompany.is_active,
+    });
   } catch (err) { next(err); }
 };
 
@@ -80,7 +134,7 @@ const changePassword = async (req, res, next) => {
 
 const forgotPassword = async (req, res, next) => {
   try {
-    const result = await authService.forgotPassword(req.body.email);
+    const result = await authService.forgotPassword(req.body.email, req.tenantCompany?.id || null);
     successResponse(res, result.message, {
       nextResendAt: result.nextResendAt || null,
       retryAfterSeconds: result.retryAfterSeconds ?? null,
@@ -91,7 +145,7 @@ const forgotPassword = async (req, res, next) => {
 
 const resetPassword = async (req, res, next) => {
   try {
-    await authService.resetPassword(req.body.email, req.body.otp, req.body.newPassword);
+    await authService.resetPassword(req.body.email, req.body.otp, req.body.newPassword, req.tenantCompany?.id || null);
     successResponse(res, 'Password reset successful');
   } catch (err) { next(err); }
 };
@@ -152,6 +206,7 @@ const peekOnboardingInvite = async (req, res, next) => {
 };
 
 module.exports = {
-  register, login, logout, refreshToken, getMe, changePassword, forgotPassword, resetPassword,
+  login, loginAdmin, loginHr, loginEmployee, workspaceInfo,
+  logout, refreshToken, getMe, changePassword, forgotPassword, resetPassword,
   sendOnboardingOtp, verifyOnboardingOtp, bootstrapAdmin, peekOnboardingInvite,
 };

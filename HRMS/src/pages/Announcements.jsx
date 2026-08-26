@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Plus, Megaphone } from 'lucide-react';
+import { Plus, Megaphone, Pencil, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import {
   PageHeader, Card, Button, Input, Select, RichTextEditor, Modal, FileUpload,
@@ -69,10 +69,11 @@ export default function Announcements() {
 
   const allQuery = useAllAnnouncements({}, { enabled: canCreate });
   const activeQuery = useActiveAnnouncements();
-  const { create, acknowledge } = useAnnouncementMutations();
+  const { create, update, remove, acknowledge } = useAnnouncementMutations();
   const [search, setSearch] = useState('');
   const [priority, setPriority] = useState('');
   const [modal, setModal] = useState(false);
+  const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(() => buildEmptyForm(announcementConfig));
 
   const employeeMap = useEmployeeMap();
@@ -90,11 +91,34 @@ export default function Announcements() {
     [announcements, priority, search, canCreate]
   );
 
-  const resetForm = () => setForm(buildEmptyForm(announcementConfig));
+  const resetForm = () => { setForm(buildEmptyForm(announcementConfig)); setEditingId(null); };
 
   const openCreateModal = () => {
+    setEditingId(null);
     setForm(buildEmptyForm(announcementConfig));
     setModal(true);
+  };
+
+  const openEditModal = (a) => {
+    setEditingId(a.id);
+    setForm({
+      ...buildEmptyForm(announcementConfig),
+      title: a.title || '',
+      body: a.body || '',
+      audienceType: ['all', 'employees', 'managers', 'hr'].includes(a.audience) ? a.audience : 'all',
+      priority: ['low', 'medium', 'high', 'urgent'].includes(a.priority) ? a.priority : 'medium',
+    });
+    setModal(true);
+  };
+
+  const handleDelete = async (a) => {
+    if (!window.confirm(`Delete "${a.title}"? This cannot be undone.`)) return;
+    try {
+      await remove.mutateAsync(a.id);
+      toast.success('Announcement deleted');
+    } catch (err) {
+      toast.error(err.message || 'Failed to delete announcement');
+    }
   };
 
   const submit = async (status) => {
@@ -111,6 +135,25 @@ export default function Announcements() {
     };
 
     try {
+      if (editingId) {
+        await update.mutateAsync({
+          id: editingId,
+          data: {
+            title: form.title.trim(),
+            content: form.body,
+            priority: priorityMap[form.priority] || 'medium',
+            targetAudience: mapAudienceForApi(form),
+            department: form.audienceType === 'department' && form.audienceValue?.[0]
+              ? form.audienceValue[0]
+              : undefined,
+          },
+        });
+        setModal(false);
+        resetForm();
+        toast.success('Announcement updated');
+        return;
+      }
+
       const created = await create.mutateAsync({
         title: form.title.trim(),
         content: form.body,
@@ -124,6 +167,7 @@ export default function Announcements() {
           ? form.audienceValue[0]
           : undefined,
         channels: form.channels,
+        attachments: form.attachments,
       });
       setModal(false);
       resetForm();
@@ -167,28 +211,56 @@ export default function Announcements() {
               key={a.id}
               announcement={a}
               author={employeeMap[a.createdBy] || { name: 'HR Team' }}
-              isUnread={false}
+              isUnread={!a.isAcknowledged}
               onOpen={(id) => acknowledge.mutate(id)}
+              actions={canCreate && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => openEditModal(a)}
+                    className="p-1.5 rounded-md text-fg-subtle hover:bg-muted hover:text-fg"
+                    title="Edit"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDelete(a)}
+                    disabled={remove.isPending}
+                    className="p-1.5 rounded-md text-fg-subtle hover:bg-danger/10 hover:text-danger"
+                    title="Delete"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </>
+              )}
             />
           ))}
         </div>
       )}
 
-      {/* Create Announcement */}
+      {/* Create / Edit Announcement */}
       <Modal
         open={modal}
         onClose={() => { setModal(false); resetForm(); }}
-        title="New Announcement"
+        title={editingId ? 'Edit Announcement' : 'New Announcement'}
         size="xl"
         footer={
-          <>
-            <Button variant="outline" onClick={() => submit('draft')}>Save Draft</Button>
-            {form.isScheduled ? (
-              <Button onClick={() => submit('scheduled')}>Schedule</Button>
-            ) : (
-              <Button onClick={() => submit('published')}>Publish Now</Button>
-            )}
-          </>
+          editingId ? (
+            <>
+              <Button variant="outline" onClick={() => { setModal(false); resetForm(); }}>Cancel</Button>
+              <Button onClick={() => submit('published')}>Save Changes</Button>
+            </>
+          ) : (
+            <>
+              <Button variant="outline" onClick={() => submit('draft')}>Save Draft</Button>
+              {form.isScheduled ? (
+                <Button onClick={() => submit('scheduled')}>Schedule</Button>
+              ) : (
+                <Button onClick={() => submit('published')}>Publish Now</Button>
+              )}
+            </>
+          )
         }
       >
         <div className="space-y-4">
@@ -230,36 +302,44 @@ export default function Announcements() {
             <input type="checkbox" checked={form.isPinned} onChange={(e) => setForm({ ...form, isPinned: e.target.checked })} className="h-5 w-5 accent-[#6C63FF]" />
           </div>
 
-          <div className="rounded-input border border-border p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-fg">Schedule for later</p>
-                <p className="text-xs text-fg-subtle">Pick a future date & time to auto-publish</p>
+          {/* Scheduling, delivery channels & attachments only apply when
+              creating a new announcement — the update endpoint doesn't
+              accept a file and re-scheduling/redelivering an edit isn't
+              supported here. */}
+          {!editingId && (
+            <>
+              <div className="rounded-input border border-border p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-medium text-fg">Schedule for later</p>
+                    <p className="text-xs text-fg-subtle">Pick a future date & time to auto-publish</p>
+                  </div>
+                  <input type="checkbox" checked={form.isScheduled} onChange={(e) => setForm({ ...form, isScheduled: e.target.checked })} className="h-5 w-5 accent-[#6C63FF]" />
+                </div>
+                {form.isScheduled && (
+                  <Input type="datetime-local" placeholder="DD-MM-YYYY --:--" value={form.scheduledAt} onChange={(e) => setForm({ ...form, scheduledAt: e.target.value })} />
+                )}
               </div>
-              <input type="checkbox" checked={form.isScheduled} onChange={(e) => setForm({ ...form, isScheduled: e.target.checked })} className="h-5 w-5 accent-[#6C63FF]" />
-            </div>
-            {form.isScheduled && (
-              <Input type="datetime-local" placeholder="DD-MM-YYYY --:--" value={form.scheduledAt} onChange={(e) => setForm({ ...form, scheduledAt: e.target.value })} />
-            )}
-          </div>
 
-          <div className="rounded-input border border-border p-4 space-y-2.5">
-            <p className="text-sm font-medium text-fg">Channels</p>
-            <label className="flex items-center gap-2.5 text-sm text-fg-muted">
-              <input type="checkbox" checked disabled className="h-4 w-4 accent-[#6C63FF]" /> In-app (web) — always on
-            </label>
-            <label className="flex items-center gap-2.5 text-sm text-fg-muted">
-              <input type="checkbox" checked={form.channels.mobilePush} onChange={(e) => setForm({ ...form, channels: { ...form.channels, mobilePush: e.target.checked } })} className="h-4 w-4 accent-[#6C63FF]" /> Mobile app (push)
-            </label>
-            <label className="flex items-center gap-2.5 text-sm text-fg-muted">
-              <input type="checkbox" checked={form.channels.email} onChange={(e) => setForm({ ...form, channels: { ...form.channels, email: e.target.checked } })} className="h-4 w-4 accent-[#6C63FF]" /> Email
-            </label>
-          </div>
+              <div className="rounded-input border border-border p-4 space-y-2.5">
+                <p className="text-sm font-medium text-fg">Channels</p>
+                <label className="flex items-center gap-2.5 text-sm text-fg-muted">
+                  <input type="checkbox" checked disabled className="h-4 w-4 accent-[#6C63FF]" /> In-app (web) — always on
+                </label>
+                <label className="flex items-center gap-2.5 text-sm text-fg-muted">
+                  <input type="checkbox" checked={form.channels.mobilePush} onChange={(e) => setForm({ ...form, channels: { ...form.channels, mobilePush: e.target.checked } })} className="h-4 w-4 accent-[#6C63FF]" /> Mobile app (push)
+                </label>
+                <label className="flex items-center gap-2.5 text-sm text-fg-muted">
+                  <input type="checkbox" checked={form.channels.email} onChange={(e) => setForm({ ...form, channels: { ...form.channels, email: e.target.checked } })} className="h-4 w-4 accent-[#6C63FF]" /> Email
+                </label>
+              </div>
 
-          <div>
-            <p className="text-xs font-medium text-fg-muted mb-1.5">Attachments (optional)</p>
-            <FileUpload accept=".pdf,.jpg,.jpeg,.png" onChange={(files) => setForm({ ...form, attachments: files })} />
-          </div>
+              <div>
+                <p className="text-xs font-medium text-fg-muted mb-1.5">Attachments (optional)</p>
+                <FileUpload accept=".pdf,.jpg,.jpeg,.png" onChange={(files) => setForm({ ...form, attachments: files })} />
+              </div>
+            </>
+          )}
         </div>
       </Modal>
     </div>

@@ -9,12 +9,14 @@ import { DEPARTMENTS, EMPLOYMENT_TYPES, ROLES } from '../../lib/constants';
 import { useSettingsStore } from '../../store/settingsStore';
 import { useEmployees, useEmployeeMutations, useEmployee, useEmployeeMap } from '../../hooks/useEmployees';
 import { useAccessibleCompanies } from '../../hooks/useCompanies';
-import { companyOptionLabel } from '../../lib/companyLabels';
+import { companyOptionLabel, companyEmailDomain } from '../../lib/companyLabels';
 import { useAuthStore } from '../../store/authStore';
+import { useCompanyStore } from '../../store/companyStore';
 import { useSaveShortcut } from '../../hooks/useSaveShortcut';
 import { formatCurrency, humanize } from '../../lib/utils';
 import { recalculatePayslipsFromSettingsApi } from '../../api/payroll.api';
 import { uploadDocumentApi } from '../../api/documents.api';
+import { uploadEmployeePhotoApi } from '../../api/employees.api';
 import { StepDocuments } from './wizard/StepDocuments';
 import { StepEducation } from './wizard/StepEducation';
 import { StepAdditionalDocuments } from './wizard/StepAdditionalDocuments';
@@ -141,15 +143,6 @@ function buildSalaryDetails(data, payrollConfig) {
     tds_mode: overrides.tdsMode,
     tds_fixed: overrides.tdsFixed,
   };
-}
-
-function fileToDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
 }
 
 const STEPS = [
@@ -296,6 +289,21 @@ const STEP_FIELDS = [
   [],
 ];
 
+/**
+ * Education records carry live `File` objects (picked in StepEducation) while the wizard is
+ * open. Those files are uploaded separately through the real document-upload endpoint — a
+ * browser File cannot survive JSON.stringify (it serializes to `{}`), so only lightweight
+ * metadata about the record is persisted on the employee's address blob.
+ */
+function sanitizeEducationRecords(records = []) {
+  if (!Array.isArray(records)) return [];
+  return records.map(({ certificateFile, marksheetFile, ...rest }) => ({
+    ...rest,
+    hasCertificate: Boolean(certificateFile),
+    hasMarksheet: Boolean(marksheetFile),
+  }));
+}
+
 function buildEmployeeAddress(data, existingRaw = {}, educationRecords = [], shifts = []) {
   const prev = (existingRaw && typeof existingRaw === 'object') ? existingRaw : {};
   const line1 = data.addressLine1?.trim() || data.address?.trim() || prev.line1 || '';
@@ -313,7 +321,7 @@ function buildEmployeeAddress(data, existingRaw = {}, educationRecords = [], shi
     attendance_mode: data.attendanceMode || prev.attendance_mode || 'office',
     shift: shiftName,
     shift_id: matchedShift?.id || prev.shift_id || '',
-    education: Array.isArray(educationRecords) ? educationRecords : (prev.education || []),
+    education: Array.isArray(educationRecords) ? sanitizeEducationRecords(educationRecords) : (prev.education || []),
     personal_email: data.personalEmail || prev.personal_email || '',
   };
 }
@@ -855,7 +863,7 @@ function SalaryStep({ register, errors, watch, setValue, payrollConfig, isAdd = 
   );
 }
 
-function AccessStep({ register, errors, autoEmail }) {
+function AccessStep({ register, errors, autoEmail, isEdit = false }) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
       <div className="sm:col-span-2 flex items-start gap-2">
@@ -865,12 +873,16 @@ function AccessStep({ register, errors, autoEmail }) {
           type="email"
           containerClass="flex-1 min-w-0"
           placeholder="e.g. john.doe@company.com"
+          disabled={isEdit}
+          hint={isEdit ? "Work email is tied to sign-in and can't be changed here." : undefined}
           {...register('workEmail')}
           error={errors.workEmail?.message}
         />
-        <Button type="button" variant="outline" icon={Sparkles} onClick={autoEmail} className="shrink-0 mt-[1.375rem]">
-          Generate
-        </Button>
+        {!isEdit && (
+          <Button type="button" variant="outline" icon={Sparkles} onClick={autoEmail} className="shrink-0 mt-[1.375rem]">
+            Generate
+          </Button>
+        )}
       </div>
       <Select label="System role" required placeholder="Select role" {...register('role')} options={ROLES.map((r) => ({ value: r, label: humanize(r) }))} error={errors.role?.message} />
     </div>
@@ -901,6 +913,7 @@ function AddEmployeeForm({ navigate }) {
   const attendanceConfig = useSettingsStore((s) => s.attendanceConfig);
   const locations = useSettingsStore((s) => s.locations);
   const payrollConfig = useSettingsStore((s) => s.payrollConfig);
+  const brandedCompany = useCompanyStore((s) => s.company);
 
   const companyOptions = useMemo(() => {
     if (!canAssignCompany) return [];
@@ -992,8 +1005,14 @@ function AddEmployeeForm({ navigate }) {
 
   const firstName = watch('firstName');
   const lastName = watch('lastName');
+  const emailDomain = companyEmailDomain(brandedCompany);
   const autoEmail = () => {
-    if (firstName && lastName) setValue('workEmail', `${firstName}.${lastName}`.toLowerCase() + '@spaxads.com');
+    if (!firstName || !lastName) return;
+    if (!emailDomain) {
+      toast.error('Add this company’s website or contact email in Settings to auto-generate work emails.');
+      return;
+    }
+    setValue('workEmail', `${firstName}.${lastName}`.toLowerCase() + `@${emailDomain}`);
   };
 
   const onSubmit = async (data) => {
@@ -1020,24 +1039,47 @@ function AddEmployeeForm({ navigate }) {
       });
 
       const empId = result?.employee?.id;
+
+      if (empId && photoFile) {
+        try {
+          await uploadEmployeePhotoApi(empId, photoFile);
+        } catch (err) {
+          toast.error(err.message || 'Photo upload failed — you can add it later from the employee profile.');
+        }
+      }
+
       const typesById = Object.fromEntries((documentTypes || []).map((d) => [d.id, d]));
-      const allDocEntries = [
+      const settingsDocJobs = [
         ...Object.entries(docFiles || {}),
         ...Object.entries(additionalFiles || {}),
-      ];
+      ]
+        .filter(([, file]) => Boolean(file))
+        .map(([typeId, file]) => ({
+          file,
+          documentType: mapWizardDocType(typesById[typeId]?.name || file.name),
+          documentName: typesById[typeId]?.name || file.name,
+        }));
+      // Education certificates/mark-sheets are picked as real File objects in StepEducation but
+      // can't be embedded in the JSON employee payload — upload them the same way as any other
+      // employee document once we have a real employeeId to attach them to.
+      const educationDocJobs = (educationRecords || []).flatMap((rec) => {
+        const label = rec.qualification || 'Education';
+        const jobs = [];
+        if (rec.certificateFile) {
+          jobs.push({ file: rec.certificateFile, documentType: 'educational_certificate', documentName: `${label} — Certificate` });
+        }
+        if (rec.marksheetFile) {
+          jobs.push({ file: rec.marksheetFile, documentType: 'educational_certificate', documentName: `${label} — Mark sheet` });
+        }
+        return jobs;
+      });
+      const allDocJobs = [...settingsDocJobs, ...educationDocJobs];
       let docOk = 0;
       let docFail = 0;
       if (empId) {
-        for (const [typeId, file] of allDocEntries) {
-          if (!file) continue;
-          const meta = typesById[typeId];
+        for (const job of allDocJobs) {
           try {
-            await uploadDocumentApi({
-              file,
-              documentType: mapWizardDocType(meta?.name || file.name),
-              documentName: meta?.name || file.name,
-              employeeId: empId,
-            });
+            await uploadDocumentApi({ ...job, employeeId: empId });
             docOk += 1;
           } catch {
             docFail += 1;
@@ -1160,6 +1202,7 @@ function EditEmployeeForm({ navigate, existing }) {
   const locations = useSettingsStore((s) => s.locations);
   const payrollConfig = useSettingsStore((s) => s.payrollConfig);
   const attendanceConfig = useSettingsStore((s) => s.attendanceConfig);
+  const brandedCompany = useCompanyStore((s) => s.company);
 
   const companyOptions = useMemo(() => {
     if (!canAssignCompany) return [];
@@ -1219,8 +1262,14 @@ function EditEmployeeForm({ navigate, existing }) {
 
   const firstName = watch('firstName');
   const lastName = watch('lastName');
+  const emailDomain = companyEmailDomain(brandedCompany);
   const autoEmail = () => {
-    if (firstName && lastName) setValue('workEmail', `${firstName}.${lastName}`.toLowerCase() + '@spaxads.com');
+    if (!firstName || !lastName) return;
+    if (!emailDomain) {
+      toast.error('Add this company’s website or contact email in Settings to auto-generate work emails.');
+      return;
+    }
+    setValue('workEmail', `${firstName}.${lastName}`.toLowerCase() + `@${emailDomain}`);
   };
 
   const next = async () => {
@@ -1312,7 +1361,7 @@ function EditEmployeeForm({ navigate, existing }) {
               payrollConfig={payrollConfig}
             />
           )}
-          {step === 3 && <AccessStep register={register} errors={errors} autoEmail={autoEmail} />}
+          {step === 3 && <AccessStep register={register} errors={errors} autoEmail={autoEmail} isEdit />}
           {step === 4 && (
             <div className="space-y-4">
               <p className="text-sm text-fg-muted">Manage this employee&apos;s documents from their profile&apos;s Documents tab.</p>

@@ -4,7 +4,7 @@ import { ArrowLeft, Send } from 'lucide-react';
 import { PageHeader, Card, Button, Input, Select, RichTextEditor } from '../../components/ui';
 import { useHelpdeskMutations } from '../../hooks/useModules';
 import { useSettingsStore } from '../../store/settingsStore';
-import { stripHtml } from '../../lib/utils';
+import { stripHtml, humanize } from '../../lib/utils';
 import toast from 'react-hot-toast';
 
 const FALLBACK_CATEGORIES = ['it', 'hr', 'admin', 'finance', 'payroll', 'other'];

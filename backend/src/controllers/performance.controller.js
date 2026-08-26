@@ -45,7 +45,7 @@ const openTeamReviews = async (req, res, next) => {
 
 const updateReview = async (req, res, next) => {
   try {
-    const data = await performanceService.updateReview(req.params.id, req.user.id, req.body);
+    const data = await performanceService.updateReview(req.params.id, req.user.id, req.body, companyIdOf(req));
     successResponse(res, 'Review updated', data);
   } catch (err) { next(err); }
 };
@@ -60,7 +60,7 @@ const createGoal = async (req, res, next) => {
 const updateGoal = async (req, res, next) => {
   try {
     const isPrivileged = ['hr', 'admin'].includes(req.user.role);
-    const data = await performanceService.updateGoal(req.params.id, req.user.id, req.body, isPrivileged);
+    const data = await performanceService.updateGoal(req.params.id, req.user.id, req.body, isPrivileged, companyIdOf(req));
     successResponse(res, 'Goal updated', data);
   } catch (err) { next(err); }
 };

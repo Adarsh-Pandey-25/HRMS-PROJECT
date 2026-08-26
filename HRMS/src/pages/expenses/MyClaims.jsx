@@ -1,10 +1,10 @@
 import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { MoreHorizontal, Plus, Paperclip } from 'lucide-react';
+import { MoreHorizontal, Plus, Paperclip, X } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { PageHeader, Card, CardHeader, Button, StatusBadge, DataTable, Skeleton } from '../../components/ui';
 import { useAuthStore } from '../../store/authStore';
-import { useMyReimbursements } from '../../hooks/useReimbursements';
+import { useMyReimbursements, useReimbursementMutations } from '../../hooks/useReimbursements';
 import { openReceiptApi } from '../../api/reimbursements.api';
 import { formatCurrency, formatDate } from '../../lib/utils';
 import { CAT_ICON } from './catIcons';
@@ -12,7 +12,18 @@ import { CAT_ICON } from './catIcons';
 export default function MyClaims() {
   const userId = useAuthStore((s) => s.user?.id);
   const { data: expenses = [], isLoading } = useMyReimbursements();
+  const { withdraw } = useReimbursementMutations();
   const mine = expenses.filter((e) => !userId || e.employeeId === userId);
+
+  const onWithdraw = async (id) => {
+    if (!window.confirm('Withdraw this pending claim? This cannot be undone.')) return;
+    try {
+      await withdraw.mutateAsync(id);
+      toast.success('Claim withdrawn');
+    } catch (err) {
+      toast.error(err.message || 'Could not withdraw claim');
+    }
+  };
 
   const summary = useMemo(() => ({
     pending: mine.filter((e) => e.status === 'pending').reduce((s, e) => s + e.amount, 0),
@@ -52,6 +63,24 @@ export default function MyClaims() {
             View
           </Button>
         ) : <span className="text-xs text-fg-subtle">—</span>
+      ),
+    },
+    {
+      id: 'actions',
+      header: '',
+      cell: ({ row }) => (
+        row.original.status === 'pending' ? (
+          <Button
+            size="sm"
+            variant="danger-ghost"
+            icon={X}
+            loading={withdraw.isPending}
+            disabled={withdraw.isPending}
+            onClick={() => onWithdraw(row.original.id)}
+          >
+            Withdraw
+          </Button>
+        ) : null
       ),
     },
   ];

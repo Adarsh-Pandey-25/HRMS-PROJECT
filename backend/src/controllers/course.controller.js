@@ -38,6 +38,7 @@ const updateCourse = async (req, res, next) => {
       req.params.id,
       { ...req.body, targetDepartments },
       req.file,
+      companyIdOf(req),
     );
     successResponse(res, 'Course updated', data);
   } catch (err) { next(err); }
@@ -68,7 +69,7 @@ const getCourse = async (req, res, next) => {
 
 const getManageCourse = async (req, res, next) => {
   try {
-    const data = await courseService.getManageCourse(req.params.id);
+    const data = await courseService.getManageCourse(req.params.id, companyIdOf(req));
     successResponse(res, 'Course fetched', data);
   } catch (err) { next(err); }
 };
@@ -87,7 +88,7 @@ const addLessonToCourse = async (req, res, next) => {
       order: req.body.order || req.body.lesson_order || req.body.lessonOrder,
       externalLink: req.body.externalLink || req.body.external_link,
       videoDuration: req.body.videoDuration || req.body.video_duration,
-    }, req.file);
+    }, req.file, companyIdOf(req));
     successResponse(res, 'Lesson added', data, null, 201);
   } catch (err) { next(err); }
 };
@@ -98,7 +99,7 @@ const addLesson = async (req, res, next) => {
       ...req.body,
       externalLink: req.body.externalLink || req.body.external_link,
       videoDuration: req.body.videoDuration || req.body.video_duration,
-    }, req.file);
+    }, req.file, companyIdOf(req));
     successResponse(res, 'Lesson added', data, null, 201);
   } catch (err) { next(err); }
 };
@@ -114,7 +115,8 @@ const createEnrollments = async (req, res, next) => {
   try {
     const courseId = req.body.course_id || req.body.courseId;
     const employeeIds = req.body.employee_ids || req.body.employeeIds || req.body.user_ids || [];
-    const data = await courseService.createEnrollmentsBulk({ courseId, employeeIds });
+    const deadline = req.body.deadline || null;
+    const data = await courseService.createEnrollmentsBulk({ courseId, employeeIds, deadline }, companyIdOf(req));
     successResponse(res, 'Enrollments created', data, null, 201);
   } catch (err) { next(err); }
 };
@@ -123,7 +125,7 @@ const listEnrollments = async (req, res, next) => {
   try {
     const includeArchived = req.query.includeArchived === 'true';
     const archivedOnly = req.query.archivedOnly === 'true';
-    const data = await courseService.listEnrollments({ includeArchived, archivedOnly });
+    const data = await courseService.listEnrollments({ includeArchived, archivedOnly }, companyIdOf(req));
     successResponse(res, 'Enrollments fetched', data);
   } catch (err) { next(err); }
 };
@@ -151,22 +153,29 @@ const updateProgress = async (req, res, next) => {
 
 const deleteCourse = async (req, res, next) => {
   try {
-    await courseService.deleteCourse(req.params.id);
+    await courseService.deleteCourse(req.params.id, companyIdOf(req));
     successResponse(res, 'Course deleted');
   } catch (err) { next(err); }
 };
 
 const archiveCourse = async (req, res, next) => {
   try {
-    const data = await courseService.archiveCourse(req.params.id);
+    const data = await courseService.archiveCourse(req.params.id, companyIdOf(req));
     successResponse(res, 'Course archived', data);
   } catch (err) { next(err); }
 };
 
 const trainingProgressReport = async (req, res, next) => {
   try {
-    const data = await courseService.listTrainingProgressReport();
+    const data = await courseService.listTrainingProgressReport(companyIdOf(req));
     successResponse(res, 'Training progress fetched', data);
+  } catch (err) { next(err); }
+};
+
+const sendTrainingReminder = async (req, res, next) => {
+  try {
+    const data = await courseService.sendTrainingReminder(req.params.employeeId, companyIdOf(req));
+    successResponse(res, 'Reminder sent', data);
   } catch (err) { next(err); }
 };
 
@@ -198,4 +207,5 @@ module.exports = {
   archiveCourse,
   trainingProgressReport,
   getLessonVideoUrl,
+  sendTrainingReminder,
 };

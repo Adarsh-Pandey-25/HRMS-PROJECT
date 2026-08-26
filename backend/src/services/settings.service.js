@@ -142,27 +142,40 @@ const setSetting = async (key, value, updatedBy = null, companyId = null) => {
 /** List settings for one company as { key, value, ... } with logical (unprefixed) keys. */
 const listSettingsForCompany = async (companyId) => {
   await ensureCache(true);
-  const { data, error } = await supabaseAdmin
-    .from('system_settings')
-    .select('key,value,updated_at,updated_by')
-    .order('key', { ascending: true });
-
-  if (error) return { data: null, error };
-
   const prefix = `t:${companyId}:`;
   const byLogical = new Map();
 
-  for (const row of data || []) {
+  // Only this tenant's prefixed rows — filtered at the DB level, not fetched-then-filtered.
+  const { data: prefixed, error: prefixedError } = await supabaseAdmin
+    .from('system_settings')
+    .select('key,value,updated_at,updated_by')
+    .like('key', `${prefix}%`)
+    .order('key', { ascending: true });
+
+  if (prefixedError) return { data: null, error: prefixedError };
+
+  for (const row of prefixed || []) {
     const parsed = parseSettingsKey(row.key);
     if (parsed.companyId === companyId) {
       byLogical.set(parsed.key, { ...row, key: parsed.key });
-    } else if (!parsed.companyId && companyId === DEFAULT_COMPANY_ID && !byLogical.has(row.key)) {
-      // Legacy unprefixed rows for default company
-      byLogical.set(row.key, row);
     }
   }
 
-  // Ignore other tenants' prefixed keys and bare keys when not default company
+  if (companyId === DEFAULT_COMPANY_ID) {
+    // Legacy unprefixed rows only apply to the default company.
+    const { data: legacy, error: legacyError } = await supabaseAdmin
+      .from('system_settings')
+      .select('key,value,updated_at,updated_by')
+      .not('key', 'like', 't:%')
+      .order('key', { ascending: true });
+
+    if (legacyError) return { data: null, error: legacyError };
+
+    for (const row of legacy || []) {
+      if (!byLogical.has(row.key)) byLogical.set(row.key, row);
+    }
+  }
+
   return { data: Array.from(byLogical.values()), error: null };
 };
 

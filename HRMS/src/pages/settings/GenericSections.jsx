@@ -6,6 +6,8 @@ import { Card, CardHeader, Input, Select, Toggle, Button, Badge, ConfirmDialog }
 import { ExportButton } from '../../components/shared/ExportButton';
 import { useSettingsStore } from '../../store/settingsStore';
 import { useCompanyStore } from '../../store/companyStore';
+import { useAuthStore } from '../../store/authStore';
+import { isPrivilegedRole } from '../../lib/permissions';
 import { updateSettingApi } from '../../api/settings.api';
 import { fetchApiKeysApi, createApiKeyApi, revokeApiKeyApi } from '../../api/apiKeys.api';
 import { exportAllCompanyData } from '../../lib/exportAllData';
@@ -386,6 +388,12 @@ export function IntegrationsSection() {
   const update = useSettingsStore((s) => s.updateIntegrationsConfig);
   const { form, setForm, saving, save } = usePersistedSettingsForm(cfg, update);
 
+  // API Keys are admin-only on the backend (apiKey.routes.js enforces isAdmin on every
+  // action, including list). HR has full "settings" module access in the default role
+  // matrix, so gate this specific card here rather than 403ing on every action.
+  const role = useAuthStore((s) => s.role);
+  const canManageApiKeys = isPrivilegedRole(role);
+
   const [keys, setKeys] = useState([]);
   const [keysLoading, setKeysLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -415,8 +423,13 @@ export function IntegrationsSection() {
   };
 
   useEffect(() => {
+    if (!canManageApiKeys) {
+      setKeysLoading(false);
+      return;
+    }
     loadKeys();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canManageApiKeys]);
 
   const toggleScope = (id) => {
     setSelectedScopes((prev) =>
@@ -476,6 +489,18 @@ export function IntegrationsSection() {
 
   return (
     <div className="space-y-5">
+      {!canManageApiKeys && (
+        <Card>
+          <CardHeader
+            title="API Keys"
+            subtitle="Give partners and devices a key instead of a user password. Keys are company-scoped; only a hash is stored."
+          />
+          <div className="p-5 pt-3">
+            <p className="text-sm text-fg-subtle">API keys are managed by your Admin.</p>
+          </div>
+        </Card>
+      )}
+      {canManageApiKeys && (
       <Card>
         <CardHeader
           title="API Keys"
@@ -591,6 +616,7 @@ export function IntegrationsSection() {
           </div>
         </div>
       </Card>
+      )}
 
       {[
         { key: 'slack', label: 'Slack', hint: 'Post announcements and approvals to a Slack channel' },
@@ -610,7 +636,7 @@ export function IntegrationsSection() {
         </Card>
       ))}
       <Card>
-        <CardHeader title="Webhooks" subtitle="Outbound webhook endpoints for custom integrations" />
+        <CardHeader title="Webhooks" subtitle="Outbound webhook endpoints for custom integrations. Endpoints are saved here but no events are dispatched to them yet." />
         <div className="p-5 pt-3 space-y-3">
           <Input
             label="Add webhook URL"
@@ -701,23 +727,7 @@ export function DataBackupSection() {
   const update = useSettingsStore((s) => s.updateBackupConfig);
   const companyName = useCompanyStore((s) => s.company.name);
   const { form, setForm, saving, save } = usePersistedSettingsForm(cfg, update);
-  const [running, setRunning] = useState(false);
   const [exporting, setExporting] = useState(false);
-
-  const runBackupNow = async () => {
-    setRunning(true);
-    try {
-      const payload = { ...form, lastBackupAt: new Date().toISOString() };
-      await updateSettingApi('backup_config', payload);
-      update(payload);
-      setForm(payload);
-      toast.success('Backup timestamp recorded');
-    } catch (err) {
-      toast.error(err.message || 'Failed to record backup');
-    } finally {
-      setRunning(false);
-    }
-  };
 
   const handleExportAll = async (format) => {
     setExporting(true);
@@ -733,16 +743,16 @@ export function DataBackupSection() {
       <Card>
         <CardHeader
           title="Automatic Backups"
+          subtitle="Not yet implemented — no scheduled or on-demand backups run today. These controls are disabled until real backup infrastructure is wired up."
           action={(
-            <Button size="sm" variant="outline" icon={RefreshCw} onClick={runBackupNow} loading={running} disabled={running}>
+            <Button size="sm" variant="outline" icon={RefreshCw} disabled title="Not yet implemented">
               Run Backup Now
             </Button>
           )}
         />
         <div className="p-5 pt-3 space-y-4">
-          <Toggle label="Auto-backup enabled" checked={form.autoBackupEnabled} onChange={(v) => setForm({ ...form, autoBackupEnabled: v })} />
-          <Select label="Frequency" options={[{ value: 'daily', label: 'Daily' }, { value: 'weekly', label: 'Weekly' }, { value: 'monthly', label: 'Monthly' }]} value={form.autoBackupFrequency} onChange={(e) => setForm({ ...form, autoBackupFrequency: e.target.value })} />
-          <p className="text-xs text-fg-subtle">Last backup: {form.lastBackupAt ? formatDateTime(form.lastBackupAt) : 'Never'}</p>
+          <Toggle label="Auto-backup enabled" checked={form.autoBackupEnabled} disabled onChange={() => {}} />
+          <Select label="Frequency" disabled options={[{ value: 'daily', label: 'Daily' }, { value: 'weekly', label: 'Weekly' }, { value: 'monthly', label: 'Monthly' }]} value={form.autoBackupFrequency} onChange={() => {}} />
         </div>
       </Card>
       <Card>

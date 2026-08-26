@@ -10,7 +10,7 @@ import toast from 'react-hot-toast';
 const CATEGORIES = [
   { type: 'travel', name: 'Travel' },
   { type: 'food', name: 'Meals' },
-  { type: 'other', name: 'Accommodation' },
+  { type: 'accommodation', name: 'Accommodation' },
   { type: 'office_supplies', name: 'Office Supplies' },
   { type: 'client_entertainment', name: 'Client Entertainment' },
   { type: 'medical', name: 'Medical' },

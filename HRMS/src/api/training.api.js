@@ -1,16 +1,6 @@
 import { apiRequest, apiUpload } from './client';
 import { toCamelCase } from '../lib/case';
 
-export async function fetchMyTrainingsApi() {
-  const rows = await apiRequest({ method: 'GET', url: '/training/my-trainings' });
-  return Array.isArray(rows) ? rows.map((r) => toCamelCase(r)) : [];
-}
-
-export async function fetchAllTrainingsApi(params = {}) {
-  const rows = await apiRequest({ method: 'GET', url: '/training/all-trainings', params });
-  return Array.isArray(rows) ? rows.map((r) => toCamelCase(r)) : [];
-}
-
 export async function fetchEmployeeCoursesApi() {
   const rows = await apiRequest({ method: 'GET', url: '/training/catalog' });
   return Array.isArray(rows) ? rows.map((r) => toCamelCase(r)) : [];
@@ -109,11 +99,11 @@ export async function fetchEnrollmentsApi({ archivedOnly = false, includeArchive
   return Array.isArray(rows) ? rows.map((r) => toCamelCase(r)) : [];
 }
 
-export async function createEnrollmentsApi(courseId, employeeIds) {
+export async function createEnrollmentsApi(courseId, employeeIds, deadline) {
   const data = await apiRequest({
     method: 'POST',
     url: '/training/enrollments',
-    data: { course_id: courseId, employee_ids: employeeIds },
+    data: { course_id: courseId, employee_ids: employeeIds, deadline: deadline || null },
   });
   return toCamelCase(data);
 }
@@ -142,15 +132,7 @@ export async function fetchTrainingProgressReportApi() {
   return toCamelCase(data);
 }
 
-export async function assignTrainingApi(trainingId, employeeIds) {
-  return apiRequest({
-    method: 'POST',
-    url: '/training/assign',
-    data: { training_id: trainingId, employee_ids: employeeIds },
-  });
-}
-
-export async function fetchTrainingParticipantsApi(trainingId) {
-  const rows = await apiRequest({ method: 'GET', url: `/training/${trainingId}/participants` });
-  return Array.isArray(rows) ? rows.map((r) => toCamelCase(r)) : [];
+export async function sendTrainingReminderApi(employeeId) {
+  const data = await apiRequest({ method: 'POST', url: `/training/remind/${employeeId}` });
+  return toCamelCase(data);
 }

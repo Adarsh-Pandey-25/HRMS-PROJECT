@@ -1,8 +1,15 @@
 const { supabaseAdmin } = require('../config/supabase');
 const { BadRequestError, NotFoundError, ForbiddenError } = require('../utils/errors');
-const { DEFAULT_COMPANY_ID } = require('../utils/tenant');
 
-const resolveCompanyId = (companyId) => companyId || DEFAULT_COMPANY_ID;
+/**
+ * Resolve a tenant id or fail loudly. Silently falling back to a shared
+ * default tenant is a cross-tenant leak waiting to happen — every caller
+ * MUST supply a real company_id resolved from the authenticated user.
+ */
+const resolveCompanyId = (companyId) => {
+  if (!companyId) throw new BadRequestError('Unable to resolve company for this request');
+  return companyId;
+};
 
 const myGoals = async (employeeId) => {
   const { data, error } = await supabaseAdmin
@@ -114,7 +121,7 @@ const openTeamReviews = async (managerId, cycleId, companyId) => {
   return teamReviewsForManager(managerId);
 };
 
-const updateReview = async (reviewId, managerId, patch) => {
+const updateReview = async (reviewId, managerId, patch, companyId) => {
   const { data: review } = await supabaseAdmin
     .from('performance_reviews')
     .select('*')
@@ -122,6 +129,19 @@ const updateReview = async (reviewId, managerId, patch) => {
     .maybeSingle();
   if (!review) throw new NotFoundError('Review not found');
   if (review.manager_id !== managerId) throw new ForbiddenError('Not your review');
+
+  // Defense in depth: performance_reviews has no company_id column of its own
+  // (predates the multi-tenant migration), so cross-check the employee's
+  // company via a join. Not reachable today since manager_id already scopes
+  // this correctly, but it keeps a future manager_id mixup from crossing tenants.
+  if (companyId) {
+    const { data: emp } = await supabaseAdmin
+      .from('employees')
+      .select('company_id')
+      .eq('id', review.employee_id)
+      .maybeSingle();
+    if (!emp || emp.company_id !== companyId) throw new ForbiddenError('Not your review');
+  }
 
   const updates = { };
   if (patch.score != null) updates.score = Number(patch.score);
@@ -159,7 +179,7 @@ const createGoal = async (employeeId, body) => {
   return data;
 };
 
-const updateGoal = async (id, employeeId, patch, isPrivileged) => {
+const updateGoal = async (id, employeeId, patch, isPrivileged, companyId) => {
   const { data: existing } = await supabaseAdmin
     .from('performance_goals')
     .select('*')
@@ -168,6 +188,17 @@ const updateGoal = async (id, employeeId, patch, isPrivileged) => {
   if (!existing) throw new NotFoundError('Goal not found');
   if (!isPrivileged && existing.employee_id !== employeeId) {
     throw new ForbiddenError('Not authorized');
+  }
+
+  // Defense in depth: performance_goals has no company_id column of its own,
+  // so cross-check the goal owner's company via a join.
+  if (companyId) {
+    const { data: emp } = await supabaseAdmin
+      .from('employees')
+      .select('company_id')
+      .eq('id', existing.employee_id)
+      .maybeSingle();
+    if (!emp || emp.company_id !== companyId) throw new ForbiddenError('Not authorized');
   }
 
   const updates = { updated_at: new Date().toISOString() };

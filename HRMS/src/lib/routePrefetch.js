@@ -46,6 +46,7 @@ const loaders = {
   '/helpdesk/all': () => import('../pages/helpdesk/AllTickets'),
   '/helpdesk/kb': () => import('../pages/helpdesk/KnowledgeBase'),
   '/announcements': () => import('../pages/Announcements'),
+  '/reports': () => import('../pages/reports/Reports'),
   '/organizations': () => import('../pages/organizations/Organizations'),
   '/settings': () => import('../pages/Settings'),
   '/search': () => import('../pages/SearchResults'),

@@ -1,18 +1,36 @@
 import { apiRequest, apiUpload, setStoredToken } from './client';
 import { mapEmployeeFromApi } from '../lib/case';
 
-export async function loginApi(email, password) {
+/** Portal-scoped logins for the subdomain-per-tenant Admin/HR/Employee pages hit their
+ *  own endpoint; the original generic login (no portal) keeps hitting `/auth/login`. */
+const PORTAL_LOGIN_PATHS = {
+  admin: '/auth/admin/login',
+  hr: '/auth/hr/login',
+  employee: '/auth/employee/login',
+};
+
+export async function loginApi(email, password, portal) {
   // Remove any token left by older versions; auth now uses HttpOnly cookies.
   setStoredToken(null);
+  const url = PORTAL_LOGIN_PATHS[portal] || '/auth/login';
   const data = await apiRequest({
     method: 'POST',
-    url: '/auth/login',
+    url,
     data: { email, password },
   });
 
   return {
     user: mapEmployeeFromApi(data.employee),
   };
+}
+
+/** Public — resolves the current Host header to a tenant company, if any (subdomain
+ *  routing is not live yet, so `resolved` is false on every deployment today). */
+export async function fetchWorkspaceApi() {
+  return apiRequest({
+    method: 'GET',
+    url: '/auth/workspace',
+  });
 }
 
 export async function logoutApi() {

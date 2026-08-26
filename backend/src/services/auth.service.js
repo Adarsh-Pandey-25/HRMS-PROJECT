@@ -4,14 +4,14 @@ const crypto = require('crypto');
 const { supabaseAdmin } = require('../config/supabase');
 const config = require('../config/database');
 const {
-  BadRequestError, UnauthorizedError, NotFoundError, ConflictError, ForbiddenError, TooManyRequestsError,
+  BadRequestError, UnauthorizedError, NotFoundError, ForbiddenError, TooManyRequestsError,
 } = require('../utils/errors');
 const { omitSensitive, generateDefaultPassword } = require('../utils/helpers');
 const { allocateNextEmployeeCode } = require('./employeeCode.service');
 const { welcomeEmail, passwordResetEmail, onboardingOtpEmail } = require('./email.service');
 const settingsService = require('./settings.service');
 const logger = require('../utils/logger');
-const { getCompanyId, withCompanyId, newCompanyId, companyIdFields } = require('../utils/tenant');
+const { getCompanyId, newCompanyId, companyIdFields } = require('../utils/tenant');
 const tenantService = require('./tenant.service');
 const { uploadCompanyLogo, getSignedUrl, STORAGE_BUCKETS } = require('./storage.service');
 
@@ -123,75 +123,27 @@ const storeRefreshToken = async (employeeId, refreshToken) => {
   });
 };
 
-const register = async (adminUser, data) => {
-  const { email, first_name, last_name, role, ...rest } = data;
-
-  const { data: existing } = await supabaseAdmin
-    .from('employees')
-    .select('id')
-    .eq('email', email)
-    .single();
-
-  if (existing) throw new ConflictError('Email already registered');
-
-  const companyId = getCompanyId(adminUser);
-  const password = generateDefaultPassword();
-  await assertPasswordPolicy(password, companyId);
-  const passwordHash = await hashPassword(password);
-  const employeeCode = await allocateNextEmployeeCode(companyId);
-
-  const allowedRoles = adminUser.role === 'admin'
-    ? ['admin', 'hr', 'manager', 'employee']
-    : ['hr', 'manager', 'employee'];
-  const resolvedRole = allowedRoles.includes(role) ? role : 'employee';
-
-  const {
-    address: _addr,
-    employee_code: _code,
-    password: _pw,
-    password_hash: _ph,
-    role: _role,
-    company_id: _cid,
-    id: _id,
-    ..._rest
-  } = rest;
-
-  const { data: employee, error } = await supabaseAdmin
-    .from('employees')
-    .insert({
-      email,
-      password_hash: passwordHash,
-      first_name,
-      last_name,
-      role: resolvedRole,
-      employee_code: employeeCode,
-      company_id: companyId,
-      department: rest.department || null,
-      designation: rest.designation || null,
-      manager_id: rest.manager_id || null,
-      phone: rest.phone || null,
-      date_of_joining: rest.date_of_joining || null,
-      employment_type: rest.employment_type || 'full_time',
-      address: withCompanyId(rest.address, companyId),
-      must_change_password: true,
-    })
-    .select()
-    .single();
-
-  if (error) throw new BadRequestError(error.message);
-
-  welcomeEmail(employee, password).catch((e) => logger.warn('Welcome email failed', e.message));
-  logger.info('Employee registered', { id: employee.id, by: adminUser.id });
-
-  return omitSensitive(employee, ['password_hash']);
+/** Roles allowed to sign in through each subdomain portal path. Manager rides on the employee portal — it isn't a separate administrative surface. */
+const PORTAL_ALLOWED_ROLES = {
+  admin: ['admin'],
+  hr: ['hr'],
+  employee: ['employee', 'manager'],
 };
 
-const login = async (email, password, options = {}) => {
-  const { data: employee, error } = await supabaseAdmin
-    .from('employees')
-    .select('*')
-    .eq('email', email)
-    .single();
+/**
+ * Shared login core. `tenantCompanyId` scopes the email lookup to one
+ * tenant when the request arrived on a resolved subdomain — this is also
+ * what lets the same email exist at two different companies, since the
+ * lookup is no longer necessarily global. `allowedRoles`, when given,
+ * enforces that this account's role matches the portal path it logged in
+ * through (checked only AFTER the password itself is verified, so a wrong
+ * password never leaks whether the portal/role mismatch is the "real"
+ * reason — both cases are wrong until credentials are proven correct).
+ */
+const authenticateEmployee = async (email, password, { tenantCompanyId = null, allowedRoles = null } = {}) => {
+  let query = supabaseAdmin.from('employees').select('*').eq('email', email);
+  if (tenantCompanyId) query = query.eq('company_id', tenantCompanyId);
+  const { data: employee, error } = await query.maybeSingle();
 
   if (error || !employee) throw new UnauthorizedError('Invalid email or password');
   if (!employee.is_active) throw new ForbiddenError('Account is deactivated');
@@ -211,6 +163,12 @@ const login = async (email, password, options = {}) => {
   const valid = await comparePassword(password, employee.password_hash);
   if (!valid) throw new UnauthorizedError('Invalid email or password');
 
+  // Authorization is checked only now — after identity is proven, before any
+  // session is issued. A correct password for the wrong portal gets nothing.
+  if (allowedRoles && !allowedRoles.includes(employee.role)) {
+    throw new ForbiddenError('This account is not authorized to sign in through this portal.');
+  }
+
   const { accessToken, refreshToken } = generateTokens(employee);
   await storeRefreshToken(employee.id, refreshToken);
 
@@ -223,6 +181,16 @@ const login = async (email, password, options = {}) => {
     accessToken,
     refreshToken,
   };
+};
+
+/** Legacy unscoped login — any role, no tenant scoping. Kept for any existing caller. */
+const login = async (email, password) => authenticateEmployee(email, password);
+
+/** Portal-specific logins: role is enforced server-side, company is scoped from the resolved subdomain when present. */
+const loginToPortal = async (portal, email, password, tenantCompanyId = null) => {
+  const allowedRoles = PORTAL_ALLOWED_ROLES[portal];
+  if (!allowedRoles) throw new BadRequestError('Unknown login portal');
+  return authenticateEmployee(email, password, { tenantCompanyId, allowedRoles });
 };
 
 const refreshAccessToken = async (refreshToken) => {
@@ -282,7 +250,7 @@ const logout = async (employeeId, refreshToken) => {
 const changePassword = async (employeeId, currentPassword, newPassword) => {
   const { data: employee } = await supabaseAdmin
     .from('employees')
-    .select('password_hash, must_change_password')
+    .select('password_hash, must_change_password, company_id, address')
     .eq('id', employeeId)
     .single();
 
@@ -297,7 +265,8 @@ const changePassword = async (employeeId, currentPassword, newPassword) => {
     if (!valid) throw new UnauthorizedError('Current password is incorrect');
   }
 
-  await assertPasswordPolicy(newPassword);
+  const companyId = getCompanyId(employee);
+  await assertPasswordPolicy(newPassword, companyId);
 
   const passwordHash = await hashPassword(newPassword);
   await supabaseAdmin
@@ -306,7 +275,21 @@ const changePassword = async (employeeId, currentPassword, newPassword) => {
     .eq('id', employeeId);
 };
 
-const forgotPassword = async (email) => {
+/**
+ * Same email can now exist at multiple companies, so a bare email alone
+ * doesn't always identify one account. `tenantCompanyId` (from a resolved
+ * subdomain) disambiguates when present; without it, an ambiguous match is
+ * treated the same as "unknown" rather than guessing which company's
+ * account to touch.
+ */
+const findOneEmployeeByEmail = async (email, tenantCompanyId, selectCols = '*') => {
+  let query = supabaseAdmin.from('employees').select(selectCols).eq('email', email);
+  if (tenantCompanyId) query = query.eq('company_id', tenantCompanyId);
+  const { data } = await query;
+  return (data && data.length === 1) ? data[0] : null;
+};
+
+const forgotPassword = async (email, tenantCompanyId = null) => {
   const guard = assertNotOtpLocked(email);
   const now = Date.now();
 
@@ -323,11 +306,7 @@ const forgotPassword = async (email) => {
     );
   }
 
-  const { data: employee } = await supabaseAdmin
-    .from('employees')
-    .select('*')
-    .eq('email', email)
-    .single();
+  const employee = await findOneEmployeeByEmail(email, tenantCompanyId);
 
   // Always apply progressive resend cooldown (even if email unknown) to avoid enumeration timing
   const waitIdx = Math.min(guard.resendCount, OTP_WAIT_SECONDS.length - 1);
@@ -373,16 +352,15 @@ const forgotPassword = async (email) => {
   };
 };
 
-const resetPassword = async (email, otp, newPassword) => {
+const resetPassword = async (email, otp, newPassword, tenantCompanyId = null) => {
   const guard = assertNotOtpLocked(email);
 
-  const { data: employee } = await supabaseAdmin
-    .from('employees')
-    .select('id')
-    .eq('email', email)
-    .single();
+  let candidateQuery = supabaseAdmin.from('employees').select('id, company_id, address').eq('email', email);
+  if (tenantCompanyId) candidateQuery = candidateQuery.eq('company_id', tenantCompanyId);
+  const { data: candidates } = await candidateQuery;
+  const candidateIds = (candidates || []).map((e) => e.id);
 
-  if (!employee) {
+  if (!candidateIds.length) {
     // Count as a failed attempt even for unknown emails (same UX)
     guard.failedAttempts += 1;
     if (guard.failedAttempts >= OTP_MAX_ATTEMPTS) {
@@ -406,10 +384,10 @@ const resetPassword = async (email, otp, newPassword) => {
     .from('password_reset_tokens')
     .select('*')
     .eq('token_hash', tokenHash)
-    .eq('employee_id', employee.id)
+    .in('employee_id', candidateIds)
     .eq('used', false)
     .gt('expires_at', new Date().toISOString())
-    .single();
+    .maybeSingle();
 
   if (!resetRecord) {
     guard.failedAttempts += 1;
@@ -430,7 +408,9 @@ const resetPassword = async (email, otp, newPassword) => {
     );
   }
 
-  await assertPasswordPolicy(newPassword);
+  const employee = candidates.find((e) => e.id === resetRecord.employee_id);
+  const companyId = getCompanyId(employee);
+  await assertPasswordPolicy(newPassword, companyId);
 
   const passwordHash = await hashPassword(newPassword);
   await supabaseAdmin
@@ -473,12 +453,10 @@ const sendOnboardingOtp = async (email, adminName = '', inviteToken = null) => {
     throw new ForbiddenError('This invite is locked to a different email address');
   }
 
-  const { data: existing } = await supabaseAdmin
-    .from('employees')
-    .select('id')
-    .eq('email', key)
-    .maybeSingle();
-  if (existing) throw new ConflictError('An account with this email already exists');
+  // Deliberately no "does this email already exist" check here — this flow
+  // creates a BRAND NEW company, and the same person's email may already be
+  // an account at a different, unrelated company. That's allowed by design;
+  // uniqueness is enforced per-company at the database level, not globally.
 
   const entry = onboardingOtps.get(key) || {
     hash: null,
@@ -622,23 +600,18 @@ const bootstrapAdmin = async ({
   await assertPasswordPolicy(resolvedPassword);
   const passwordHash = await hashPassword(resolvedPassword);
 
-  const { data: existing } = await supabaseAdmin
-    .from('employees')
-    .select('id, email, role, address')
-    .eq('email', normalizedEmail)
-    .maybeSingle();
-
-  if (existing) {
-    // Account recovery must use the verified forgot-password flow.
-    throw new ConflictError('An account with this email already exists');
-  }
+  // No global "does this email exist" check here — this creates a BRAND NEW
+  // company, and the same email legitimately existing at a different,
+  // unrelated company must not block it. The database enforces uniqueness
+  // per company, and this is always a fresh company_id, so no collision is
+  // possible within it regardless of what exists elsewhere on the platform.
 
   const companyId = newCompanyId();
   const companyName = invite.companyNameHint;
   await tenantService.ensureCompanyRow({
     id: companyId,
     name: companyName,
-    slug: `co-${String(companyId).replace(/-/g, '')}`,
+    slug: invite.companySlug,
   });
 
   const profile = {
@@ -715,8 +688,8 @@ const bootstrapAdmin = async ({
 };
 
 module.exports = {
-  register,
   login,
+  loginToPortal,
   refreshAccessToken,
   logout,
   changePassword,

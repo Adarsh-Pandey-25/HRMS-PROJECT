@@ -5,6 +5,7 @@ const settingsService = require('../services/settings.service');
 const { successResponse, paginate, buildMeta } = require('../utils/helpers');
 const { BadRequestError } = require('../utils/errors');
 const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
+const logger = require('../utils/logger');
 
 const companyIdOf = (req) => req.user.company_id || getCompanyId(req.user) || DEFAULT_COMPANY_ID;
 
@@ -29,6 +30,22 @@ const requireTenantAnnouncement = async (id, companyId) => {
     throw new (require('../utils/errors').NotFoundError)('Announcement not found');
   }
   return data;
+};
+
+/** Set of announcement ids the given employee has already acknowledged. */
+const getAcknowledgedIds = async (employeeId, announcementIds) => {
+  if (!employeeId || !announcementIds.length) return new Set();
+  const { data } = await supabaseAdmin
+    .from('announcement_acknowledgements')
+    .select('announcement_id')
+    .eq('employee_id', employeeId)
+    .in('announcement_id', announcementIds);
+  return new Set((data || []).map((r) => r.announcement_id));
+};
+
+const withAcknowledged = async (rows, employeeId) => {
+  const acked = await getAcknowledgedIds(employeeId, rows.map((r) => r.id));
+  return rows.map((r) => ({ ...r, is_acknowledged: acked.has(r.id) }));
 };
 
 const audienceMatches = (emp, announcement) => {
@@ -65,7 +82,12 @@ const getAnnouncementConfig = async (companyId) => {
 
 const resolveDeliveryChannels = (body, config) => {
   const defaults = config.defaultChannels || DEFAULT_ANNOUNCEMENT_CONFIG.defaultChannels;
-  const raw = body?.channels || body?.delivery_channels;
+  let raw = body?.channels || body?.delivery_channels;
+  // multipart/form-data (announcement attachments) can only carry string
+  // fields, so the frontend JSON.stringifies the channels object in that case.
+  if (typeof raw === 'string') {
+    try { raw = JSON.parse(raw); } catch { raw = null; }
+  }
   if (!raw || typeof raw !== 'object') return defaults;
   return {
     inApp: true,
@@ -137,7 +159,9 @@ const notifyAnnouncementAudience = async (announcement, companyId, options = {})
     recipients
       .filter((emp) => emp.email)
       .forEach((emp) => {
-        announcementEmail(emp, announcement, { subject }).catch(() => {});
+        announcementEmail(emp, announcement, { subject }).catch((err) => {
+          logger.error('Announcement email failed', { employeeId: emp.id, error: err.message });
+        });
       });
   }
 };
@@ -218,10 +242,11 @@ const all = async (req, res, next) => {
 
     if (error) throw new BadRequestError(error.message);
     const scoped = data || [];
+    const pageRows = await withAcknowledged(scoped.slice(offset, offset + limit), req.user.id);
     successResponse(
       res,
       'Announcements fetched',
-      scoped.slice(offset, offset + limit),
+      pageRows,
       buildMeta(page, limit, scoped.length)
     );
   } catch (err) { next(err); }
@@ -248,7 +273,8 @@ const active = async (req, res, next) => {
 
     const { data, error } = await query;
     if (error) throw new BadRequestError(error.message);
-    successResponse(res, 'Active announcements fetched', data || []);
+    const withAck = await withAcknowledged(data || [], req.user.id);
+    successResponse(res, 'Active announcements fetched', withAck);
   } catch (err) { next(err); }
 };
 

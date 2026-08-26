@@ -4,7 +4,7 @@
 
 export const PERMISSION_MODULES = [
   'employees', 'attendance', 'leave', 'payroll', 'recruitment', 'performance',
-  'training', 'assets', 'expenses', 'helpdesk', 'announcements', 'settings',
+  'training', 'assets', 'expenses', 'helpdesk', 'announcements', 'settings', 'reports',
 ];
 
 export const MODULE_LABELS = {
@@ -20,6 +20,7 @@ export const MODULE_LABELS = {
   helpdesk: 'Helpdesk Support',
   announcements: 'Announcements',
   settings: 'Settings',
+  reports: 'Reports',
 };
 
 export const PERMISSION_ACTIONS = ['view', 'create', 'edit', 'delete', 'approve', 'import', 'export', 'manage'];
@@ -51,6 +52,7 @@ const DEFAULT_GRANTS = {
     ['helpdesk', 'manage'], ['helpdesk', 'view'],
     ['announcements', 'view'], ['announcements', 'create'], ['announcements', 'manage'],
     ['settings', 'view'], ['settings', 'manage'],
+    ['reports', 'view'],
   ],
   manager: [
     ['employees', 'view'],
@@ -63,6 +65,7 @@ const DEFAULT_GRANTS = {
     ['expenses', 'view'], ['expenses', 'create'], ['expenses', 'approve'],
     ['helpdesk', 'view'], ['helpdesk', 'create'],
     ['announcements', 'view'],
+    ['reports', 'view'],
   ],
   employee: [
     ['attendance', 'view'],

@@ -1,22 +1,27 @@
 const express = require('express');
 const authController = require('../controllers/auth.controller');
 const { authenticate } = require('../middleware/auth.middleware');
-const { isHROrAdmin } = require('../middleware/role.middleware');
 const { validate } = require('../middleware/validation.middleware');
 const { authLimiter, bootstrapLimiter, onboardingOtpLimiter } = require('../middleware/rateLimiter.middleware');
 const { optionalLogoUpload } = require('../middleware/upload.middleware');
 const { BadRequestError } = require('../utils/errors');
 const {
-  registerRules, loginRules, changePasswordRules,
+  loginRules, changePasswordRules,
   forgotPasswordRules, resetPasswordRules, bootstrapRules,
   onboardingSendOtpRules, onboardingVerifyOtpRules,
 } = require('../utils/validators');
 
 const router = express.Router();
 
-router.post('/register', authenticate, isHROrAdmin, registerRules, validate, authController.register);
 // Login is allowed from any IP — office IP is enforced only on attendance check-in
 router.post('/login', authLimiter, loginRules, validate, authController.login);
+// Portal-scoped logins for the subdomain-per-tenant Admin/HR/Employee login pages —
+// role is enforced server-side per portal, company is scoped from the resolved
+// subdomain (req.tenantCompany) when present.
+router.post('/admin/login', authLimiter, loginRules, validate, authController.loginAdmin);
+router.post('/hr/login', authLimiter, loginRules, validate, authController.loginHr);
+router.post('/employee/login', authLimiter, loginRules, validate, authController.loginEmployee);
+router.get('/workspace', authController.workspaceInfo);
 router.post(
   '/onboarding/send-otp',
   onboardingOtpLimiter,

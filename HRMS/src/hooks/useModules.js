@@ -10,9 +10,15 @@ import {
   updateTicketStatusApi, addTicketCommentApi, fetchKbCategoriesApi, fetchKbArticlesApi,
 } from '../api/helpdesk.api';
 import {
-  fetchJobsApi, fetchCandidatesApi, moveCandidateApi, createJobApi,
-  fetchInterviewsApi, fetchOffersApi,
+  fetchJobsApi, fetchCandidatesApi, moveCandidateApi, createJobApi, createCandidateApi,
+  fetchInterviewsApi, createInterviewApi, updateInterviewOutcomeApi,
+  fetchOffersApi, createOfferApi,
+  fetchCandidateChecklistApi, toggleCandidateChecklistItemApi,
 } from '../api/recruitment.api';
+import {
+  fetchChecklistTemplatesApi, createChecklistTemplateApi,
+  updateChecklistTemplateApi, deleteChecklistTemplateApi,
+} from '../api/onboardingChecklist.api';
 import {
   fetchMyGoalsApi, createGoalApi, updateGoalApi,
   fetchReviewCyclesApi, createReviewCycleApi,
@@ -20,9 +26,10 @@ import {
 } from '../api/performance.api';
 import { invalidateAndRefetch } from '../lib/queryCache';
 
-export function useMyAssets() {
+export function useMyAssets(options = {}) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
-  return useQuery({ queryKey: ['assets', 'mine'], queryFn: fetchMyAssetsApi, enabled: isAuthenticated });
+  const enabled = options.enabled !== false;
+  return useQuery({ queryKey: ['assets', 'mine'], queryFn: fetchMyAssetsApi, enabled: isAuthenticated && enabled });
 }
 
 export function useAssets(params) {
@@ -132,8 +139,53 @@ export function useRecruitmentMutations() {
   };
   return {
     createJob: useMutation({ mutationFn: createJobApi, onSuccess: invalidate }),
+    createCandidate: useMutation({ mutationFn: createCandidateApi, onSuccess: invalidate }),
     moveCandidate: useMutation({ mutationFn: ({ id, stage }) => moveCandidateApi(id, stage), onSuccess: invalidate }),
+    createInterview: useMutation({ mutationFn: createInterviewApi, onSuccess: invalidate }),
+    updateInterviewOutcome: useMutation({
+      mutationFn: ({ id, ...payload }) => updateInterviewOutcomeApi(id, payload),
+      onSuccess: invalidate,
+    }),
+    createOffer: useMutation({ mutationFn: createOfferApi, onSuccess: invalidate }),
   };
+}
+
+/** Onboarding checklist templates (admin-configurable, company-wide) — Settings > Onboarding Checklist. */
+export function useChecklistTemplates() {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  return useQuery({
+    queryKey: ['onboarding-checklist-templates'],
+    queryFn: fetchChecklistTemplatesApi,
+    enabled: isAuthenticated,
+  });
+}
+
+export function useChecklistTemplateMutations() {
+  const qc = useQueryClient();
+  const invalidate = () => invalidateAndRefetch(qc, ['onboarding-checklist-templates']);
+  return {
+    createTemplate: useMutation({ mutationFn: createChecklistTemplateApi, onSuccess: invalidate }),
+    updateTemplate: useMutation({ mutationFn: ({ id, patch }) => updateChecklistTemplateApi(id, patch), onSuccess: invalidate }),
+    deleteTemplate: useMutation({ mutationFn: deleteChecklistTemplateApi, onSuccess: invalidate }),
+  };
+}
+
+/** One candidate's onboarding checklist — active templates joined with checked state. */
+export function useCandidateChecklist(candidateId) {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  return useQuery({
+    queryKey: ['recruitment', 'candidate-checklist', candidateId],
+    queryFn: () => fetchCandidateChecklistApi(candidateId),
+    enabled: isAuthenticated && !!candidateId,
+  });
+}
+
+export function useToggleCandidateChecklistItem(candidateId) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ templateId, isChecked }) => toggleCandidateChecklistItemApi(candidateId, templateId, isChecked),
+    onSuccess: () => invalidateAndRefetch(qc, ['recruitment', 'candidate-checklist', candidateId]),
+  });
 }
 
 export function useMyGoals() {
