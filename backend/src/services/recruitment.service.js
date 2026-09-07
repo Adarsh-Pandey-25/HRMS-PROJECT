@@ -2,12 +2,45 @@ const { supabaseAdmin } = require('../config/supabase');
 const { BadRequestError, NotFoundError } = require('../utils/errors');
 const settingsService = require('./settings.service');
 const { uploadResume, getSignedUrl, STORAGE_BUCKETS } = require('./storage.service');
+const emailService = require('./email.service');
+const logger = require('../utils/logger');
+
+const notifyHrAdmins = async (companyId, send) => {
+  const { data: recipients } = await supabaseAdmin
+    .from('employees')
+    .select('id, first_name, last_name, email')
+    .eq('company_id', companyId)
+    .eq('is_active', true)
+    .in('role', ['hr', 'admin']);
+  for (const r of recipients || []) {
+    send(r).catch((e) => logger.warn('Recruitment notification email failed', { error: e.message }));
+  }
+};
 
 /** Fixed, reasonable source list for the Add Candidate dropdown. */
 const CANDIDATE_SOURCES = ['referral', 'job-board', 'linkedin', 'direct', 'other'];
 
 const INTERVIEW_MODES = ['video', 'in-person', 'phone'];
 const INTERVIEW_STATUSES = ['scheduled', 'completed', 'cancelled', 'no-show'];
+const OFFER_STATUSES = ['pending', 'accepted', 'declined', 'withdrawn'];
+
+/** Audit finding N-08: updateOfferStatus previously let any status go to
+ *  any other status — including declined/withdrawn back to accepted,
+ *  which moved the candidate to "hired" for a legitimately rejected/pulled
+ *  offer. declined and withdrawn are terminal; accepted may still be
+ *  withdrawn (e.g. a background check fails after acceptance). */
+const OFFER_STATUS_TRANSITIONS = {
+  pending: ['accepted', 'declined', 'withdrawn'],
+  accepted: ['withdrawn'],
+  declined: [],
+  withdrawn: [],
+};
+
+/** None of these list endpoints paginate — each tenant's own recruitment
+ *  pipeline is naturally small and slow-growing, so a hard cap (rather than
+ *  full page/limit controls) is enough to stop a single request from ever
+ *  returning an unbounded response as one tenant's data grows over years. */
+const RECRUITMENT_LIST_CAP = 500;
 
 /** Stage moveCandidate() already recognizes for "an offer was made" — keep offer creation aligned with it. */
 const OFFER_STAGE = 'offer';
@@ -40,7 +73,8 @@ const listJobs = async (query = {}, companyId) => {
     .from('job_openings')
     .select('*')
     .eq('company_id', cid)
-    .order('created_at', { ascending: false });
+    .order('created_at', { ascending: false })
+    .limit(RECRUITMENT_LIST_CAP);
   if (query.status) db = db.eq('status', query.status);
   const { data, error } = await db;
   if (error) throw new BadRequestError(error.message);
@@ -84,7 +118,8 @@ const listCandidates = async (query = {}, companyId) => {
     .from('candidates')
     .select('*')
     .eq('company_id', cid)
-    .order('applied_on', { ascending: false });
+    .order('applied_on', { ascending: false })
+    .limit(RECRUITMENT_LIST_CAP);
   if (query.job_id) db = db.eq('job_id', query.job_id);
   if (query.stage) db = db.eq('stage', query.stage);
   const { data, error } = await db;
@@ -173,7 +208,8 @@ const listInterviews = async (companyId) => {
     .from('interviews')
     .select('*')
     .eq('company_id', cid)
-    .order('scheduled_at', { ascending: true });
+    .order('scheduled_at', { ascending: true })
+    .limit(RECRUITMENT_LIST_CAP);
   if (error) throw new BadRequestError(error.message);
   return data || [];
 };
@@ -184,7 +220,8 @@ const listOffers = async (companyId) => {
     .from('job_offers')
     .select('*, candidate:candidate_id(id, name, email)')
     .eq('company_id', cid)
-    .order('offered_on', { ascending: false });
+    .order('offered_on', { ascending: false })
+    .limit(RECRUITMENT_LIST_CAP);
   if (error) throw new BadRequestError(error.message);
   // Flatten the joined candidate name — the UI reads offer.candidateName directly.
   return (data || []).map(({ candidate, ...offer }) => ({ ...offer, candidate_name: candidate?.name || null }));
@@ -297,6 +334,78 @@ const createOffer = async (body, companyId) => {
   // Reflect that an offer was made in the candidate's pipeline stage.
   await moveCandidate(candidateId, OFFER_STAGE, cid);
 
+  if (candidate.email) {
+    emailService.offerLetterEmail(candidate, {
+      role: payload.designation || 'the role',
+      ctc: payload.amount,
+      currency: payload.currency,
+      joiningDate: payload.joining_date,
+    }).catch((e) => logger.warn('offerLetterEmail failed', { error: e.message }));
+  }
+
+  return data;
+};
+
+/**
+ * Record a candidate's response to an offer. This is the only place
+ * job_offers.status ever changes after creation — without it, an offer sat
+ * at 'pending' forever and the Onboarding Checklist (which only shows
+ * accepted offers) was unreachable in real usage.
+ */
+const updateOfferStatus = async (id, status, companyId) => {
+  const cid = resolveCompanyId(companyId);
+  const normalized = String(status || '').trim().toLowerCase();
+  if (!OFFER_STATUSES.includes(normalized)) throw new BadRequestError(`Invalid status: ${status}`);
+
+  const { data: existing, error: findErr } = await supabaseAdmin
+    .from('job_offers')
+    .select('id, status, candidate_id')
+    .eq('id', id)
+    .eq('company_id', cid)
+    .maybeSingle();
+  if (findErr) throw new BadRequestError(findErr.message);
+  if (!existing) throw new NotFoundError('Offer not found');
+
+  const currentStatus = existing.status;
+  const allowedNext = OFFER_STATUS_TRANSITIONS[currentStatus] || [];
+  if (currentStatus !== normalized && !allowedNext.includes(normalized)) {
+    throw new BadRequestError(`Cannot change offer status from '${currentStatus}' to '${normalized}'`);
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from('job_offers')
+    .update({ status: normalized })
+    .eq('id', id)
+    .eq('company_id', cid)
+    .select()
+    .single();
+  if (error) throw new BadRequestError(error.message);
+  if (!data) throw new NotFoundError('Offer not found');
+
+  // Keep the candidate's pipeline stage in sync with the outcome of the offer.
+  if (normalized === 'accepted') {
+    await moveCandidate(data.candidate_id, 'hired', cid);
+  } else if (normalized === 'declined') {
+    await moveCandidate(data.candidate_id, 'rejected', cid);
+  }
+
+  if (normalized === 'accepted' || normalized === 'declined') {
+    const { data: candidate } = await supabaseAdmin
+      .from('candidates')
+      .select('id, name, email')
+      .eq('id', data.candidate_id)
+      .maybeSingle();
+    if (candidate) {
+      if (normalized === 'accepted') {
+        notifyHrAdmins(cid, (recipient) =>
+          emailService.offerAcceptedEmail(recipient, candidate, { role: data.designation || 'the role', joiningDate: data.joining_date }));
+      } else {
+        notifyHrAdmins(cid, (recipient) =>
+          emailService.offerRejectedEmail(recipient, candidate, { role: data.designation || 'the role' }));
+      }
+    }
+  }
+
   return data;
 };
 
@@ -395,9 +504,11 @@ module.exports = {
   updateInterviewOutcome,
   listOffers,
   createOffer,
+  updateOfferStatus,
   getCandidateChecklist,
   setCandidateChecklistItem,
   CANDIDATE_SOURCES,
   INTERVIEW_MODES,
   INTERVIEW_STATUSES,
+  OFFER_STATUSES,
 };

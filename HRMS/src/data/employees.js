@@ -70,7 +70,7 @@ export const employees = RAW.map(([firstName, lastName, gender, department, desi
     gender,
     dob: `19${85 + (i % 15)}-${String((i % 12) + 1).padStart(2, '0')}-${String((i % 27) + 1).padStart(2, '0')}`,
     personalEmail: `${handle}@gmail.com`,
-    workEmail: `${handle}@spaxads.com`,
+    workEmail: `${handle}@example.com`,
     phone: `+91-9${String(800000000 + i * 111111).slice(0, 9)}`,
     designation,
     department,

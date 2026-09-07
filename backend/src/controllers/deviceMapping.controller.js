@@ -73,15 +73,26 @@ const create = async (req, res, next) => {
 
 const list = async (req, res, next) => {
   try {
+    const serials = await companyDeviceSerials(req.user.company_id);
+    if (!serials.length) return successResponse(res, 'Mappings fetched', []);
+
+    // Cross-tenant isolation: device_employee_mapping has no company_id of
+    // its own — device_serial ownership alone isn't enough once an employee
+    // can transfer companies (employee.controller.js's update()). !inner +
+    // filtering on the joined employees.company_id excludes mapping rows
+    // whose employee no longer belongs to this company (stale rows from a
+    // completed transfer that predate the purge-on-transfer fix, or any
+    // future gap in that cleanup) instead of leaking their name/code here.
     const { data, error } = await supabaseAdmin
       .from('device_employee_mapping')
-      .select('id, device_user_id, device_serial, employee_id, created_at, employees(first_name, last_name, employee_code, company_id)')
+      .select('id, device_user_id, device_serial, employee_id, created_at, employees!inner(first_name, last_name, employee_code, company_id)')
+      .in('device_serial', serials)
+      .eq('employees.company_id', req.user.company_id)
       .order('created_at', { ascending: false })
       .limit(2000);
     if (error) throw error;
 
-    const scoped = (data || []).filter((row) => row.employees?.company_id === req.user.company_id);
-    successResponse(res, 'Mappings fetched', scoped.map(withEmployeeName));
+    successResponse(res, 'Mappings fetched', (data || []).map(withEmployeeName));
   } catch (err) { next(err); }
 };
 
@@ -147,8 +158,9 @@ const deviceUsers = async (req, res, next) => {
         .limit(5000),
       supabaseAdmin
         .from('device_employee_mapping')
-        .select('device_user_id')
-        .in('device_serial', serials),
+        .select('device_user_id, employees!inner(company_id)')
+        .in('device_serial', serials)
+        .eq('employees.company_id', req.user.company_id),
     ]);
     if (punchesError) throw punchesError;
     if (mappingsError) throw mappingsError;

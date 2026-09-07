@@ -12,9 +12,14 @@ const {
 } = require('./storage.service');
 const { BadRequestError, NotFoundError, ForbiddenError } = require('../utils/errors');
 const { getCompanyId } = require('../utils/tenant');
-const { escapePostgrestFilter } = require('../utils/helpers');
+const { escapePostgrestFilter, isMissingColumnError } = require('../utils/helpers');
 const logger = require('../utils/logger');
 const settingsService = require('./settings.service');
+const { mapWithConcurrency } = require('../utils/concurrency');
+
+/** Audit finding M-16: each signed-URL call is an external Storage network
+ *  request — cap concurrency instead of firing one per course unbounded. */
+const SIGNED_URL_CONCURRENCY = 10;
 
 const COMPLETION_GRACE_SECONDS = 5;
 const PROGRESS_JUMP_TOLERANCE = 12;
@@ -227,19 +232,22 @@ const listManageCourses = async (companyId) => {
   if (error) throw new BadRequestError(error.message);
 
   const lessonCounts = await getLessonCountsByCourse();
-  return Promise.all((data || []).map(async (course) => {
+  return mapWithConcurrency(data || [], SIGNED_URL_CONCURRENCY, async (course) => {
     const withThumb = await attachSignedUrls(course);
     return {
       ...withThumb,
       lesson_count: lessonCounts[course.id] || 0,
       totalLessons: lessonCounts[course.id] || 0,
     };
-  }));
+  });
 };
+
+const ENROLLMENT_SELECT_WITH_ASSIGNED_BY = 'id, course_id, status, enrolled_at, completed_at, user_id, employee_id, assigned_by, course_progress(lesson_id, is_completed, watched_seconds)';
+const ENROLLMENT_SELECT_FALLBACK = 'id, course_id, status, enrolled_at, completed_at, user_id, employee_id, course_progress(lesson_id, is_completed, watched_seconds)';
 
 const listCatalog = async (employee, companyId) => {
   const cid = resolveCompanyId(companyId || getCompanyId(employee));
-  const [{ data: courses, error }, { data: enrollments }, lessonCounts] = await Promise.all([
+  const [{ data: courses, error }, enrollmentsResult, lessonCounts] = await Promise.all([
     supabaseAdmin
       .from('courses')
       .select('id, title, description, thumbnail_key, target_departments, status, is_active, created_at, company_id')
@@ -247,12 +255,35 @@ const listCatalog = async (employee, companyId) => {
       .order('created_at', { ascending: false }),
     supabaseAdmin
       .from('course_enrollments')
-      .select('id, course_id, status, enrolled_at, completed_at, user_id, employee_id, course_progress(lesson_id, is_completed, watched_seconds)')
+      .select(ENROLLMENT_SELECT_WITH_ASSIGNED_BY)
       .or(enrollmentUserFilter(employee.id)),
     getLessonCountsByCourse(),
   ]);
 
   if (error) throw new BadRequestError(error.message);
+
+  let { data: enrollments, error: enrollError } = enrollmentsResult;
+  if (enrollError && isMissingColumnError(enrollError.message, 'assigned_by')) {
+    ({ data: enrollments, error: enrollError } = await supabaseAdmin
+      .from('course_enrollments')
+      .select(ENROLLMENT_SELECT_FALLBACK)
+      .or(enrollmentUserFilter(employee.id)));
+  }
+  if (enrollError) throw new BadRequestError(enrollError.message);
+
+  // Item 1: assigned_by set = HR/Admin-assigned = mandatory; resolve the
+  // assigner's name for the "Assigned by [name] — Required" UI indicator.
+  const assignerIds = [...new Set((enrollments || []).map((e) => e.assigned_by).filter(Boolean))];
+  const assignerMap = new Map();
+  if (assignerIds.length) {
+    const { data: assigners } = await supabaseAdmin
+      .from('employees')
+      .select('id, first_name, last_name')
+      .in('id', assignerIds);
+    for (const a of assigners || []) {
+      assignerMap.set(a.id, `${a.first_name || ''} ${a.last_name || ''}`.trim());
+    }
+  }
 
   const enrollmentMap = new Map((enrollments || []).map((e) => [e.course_id, e]));
   const matched = (courses || []).filter((c) => {
@@ -262,12 +293,13 @@ const listCatalog = async (employee, companyId) => {
     return departmentMatches(employee.department, c.target_departments);
   });
 
-  return Promise.all(matched.map(async (course) => {
+  return mapWithConcurrency(matched, SIGNED_URL_CONCURRENCY, async (course) => {
     const withThumb = await attachSignedUrls(course);
     const enrollment = enrollmentMap.get(course.id);
     const totalLessons = lessonCounts[course.id] || 0;
     const completedLessons = (enrollment?.course_progress || []).filter((p) => p.is_completed).length;
     const progressPercent = totalLessons ? Math.round((completedLessons / totalLessons) * 100) : 0;
+    const isMandatory = Boolean(enrollment?.assigned_by);
 
     return {
       ...withThumb,
@@ -280,14 +312,17 @@ const listCatalog = async (employee, companyId) => {
           progressPercent,
           completed_lessons: completedLessons,
           total_lessons: totalLessons,
+          isMandatory,
+          assignedByName: isMandatory ? (assignerMap.get(enrollment.assigned_by) || 'HR/Admin') : null,
         }
         : null,
       completed_lessons: completedLessons,
       total_lessons: totalLessons,
       totalLessons,
       progressPercent,
+      isMandatory,
     };
-  }));
+  });
 };
 
 /** Alias used by existing controller */
@@ -578,7 +613,7 @@ const enrollCourse = async (courseId, employee) => {
   return data;
 };
 
-const createEnrollmentsBulk = async ({ courseId, employeeIds, deadline }, companyId) => {
+const createEnrollmentsBulk = async ({ courseId, employeeIds, deadline, assignedBy }, companyId) => {
   const cid = resolveCompanyId(companyId);
   if (!courseId || !UUID_RE.test(String(courseId))) throw new BadRequestError('A valid courseId is required');
   const rawIds = Array.isArray(employeeIds) ? employeeIds.filter(Boolean) : [];
@@ -602,33 +637,61 @@ const createEnrollmentsBulk = async ({ courseId, employeeIds, deadline }, compan
   const ids = (scopedEmployees || []).map((e) => e.id);
   if (!ids.length) throw new BadRequestError('No matching employees found for this company');
 
-  const results = [];
-  for (const empId of ids) {
-    const { data: existing } = await supabaseAdmin
-      .from('course_enrollments')
-      .select('*')
-      .eq('course_id', courseId)
-      .or(enrollmentUserFilter(empId))
-      .maybeSingle();
+  // One batched existence check instead of a per-employee round trip —
+  // same dual-column (user_id / employee_id) matching enrollmentUserFilter
+  // already uses, just widened from .eq to .in across the whole id list.
+  const idList = ids.map((id) => escapePostgrestFilter(id)).join(',');
+  const { data: existingRows, error: existingErr } = await supabaseAdmin
+    .from('course_enrollments')
+    .select('*')
+    .eq('course_id', courseId)
+    .or(`user_id.in.(${idList}),employee_id.in.(${idList})`);
+  if (existingErr) throw new BadRequestError(existingErr.message);
 
-    if (existing) {
-      results.push(existing);
-      continue;
-    }
-    const { data, error } = await supabaseAdmin
-      .from('course_enrollments')
-      .insert({
-        course_id: courseId,
-        user_id: empId,
-        employee_id: empId,
-        status: 'IN_PROGRESS',
-        deadline: enrollmentDeadline,
-      })
-      .select()
-      .single();
-    if (error) throw new BadRequestError(error.message);
-    results.push(data);
+  const alreadyEnrolled = new Set();
+  for (const row of existingRows || []) {
+    if (row.user_id) alreadyEnrolled.add(row.user_id);
+    if (row.employee_id) alreadyEnrolled.add(row.employee_id);
   }
+
+  const results = [...(existingRows || [])];
+  const toInsert = ids.filter((empId) => !alreadyEnrolled.has(empId));
+
+  if (toInsert.length) {
+    // Audit finding N-07: the SELECT-then-insert above only narrows the
+    // race window, it doesn't close it — two concurrent bulk-enroll calls
+    // with overlapping employee sets could both pass the existence check
+    // above and both reach here. course_enrollments now has a real
+    // UNIQUE(course_id, employee_id) constraint (see
+    // 20260830_course_enrollments_unique.sql) as the actual guard; upsert
+    // + ignoreDuplicates (same pattern adms.service.js's savePunches
+    // already uses for punch dedup) lets Postgres silently skip whichever
+    // row(s) a racing request already inserted instead of failing the
+    // whole batch on a 23505.
+    const buildRow = (empId, includeAssignedBy) => ({
+      course_id: courseId,
+      user_id: empId,
+      employee_id: empId,
+      status: 'IN_PROGRESS',
+      deadline: enrollmentDeadline,
+      ...(includeAssignedBy ? { assigned_by: assignedBy || null } : {}),
+    });
+
+    let { data: inserted, error: insertErr } = await supabaseAdmin
+      .from('course_enrollments')
+      .upsert(toInsert.map((empId) => buildRow(empId, true)), { onConflict: 'course_id,employee_id', ignoreDuplicates: true })
+      .select();
+
+    if (insertErr && isMissingColumnError(insertErr.message, 'assigned_by')) {
+      ({ data: inserted, error: insertErr } = await supabaseAdmin
+        .from('course_enrollments')
+        .upsert(toInsert.map((empId) => buildRow(empId, false)), { onConflict: 'course_id,employee_id', ignoreDuplicates: true })
+        .select());
+    }
+    if (insertErr) throw new BadRequestError(insertErr.message);
+    results.push(...(inserted || []));
+  }
+
   return results;
 };
 
@@ -638,18 +701,19 @@ const listEnrollments = async ({ includeArchived = false, archivedOnly = false }
   // multi-tenant migration). Force an inner join through to courses — which
   // DOES have company_id — so filtering on the embedded relation actually
   // restricts the top-level rows instead of just nulling out the relation.
-  const baseSelect = `
+  const baseSelect = (withAssignedBy) => `
       id, status, enrolled_at, completed_at, deadline, course_id, user_id, employee_id,
+      ${withAssignedBy ? 'assigned_by,' : ''}
       course:course_id!inner(id, title, company_id),
       employee:employee_id(id, first_name, last_name, department, email),
       user:user_id(id, first_name, last_name, department, email),
       course_progress(lesson_id, is_completed)
     `;
 
-  const runQuery = (withArchiveCol) => {
+  const runQuery = (withArchiveCol, withAssignedBy) => {
     let query = supabaseAdmin
       .from('course_enrollments')
-      .select(withArchiveCol ? `is_archived, ${baseSelect}` : baseSelect)
+      .select(withArchiveCol ? `is_archived, ${baseSelect(withAssignedBy)}` : baseSelect(withAssignedBy))
       .eq('course.company_id', cid)
       .order('enrolled_at', { ascending: false });
     if (withArchiveCol) {
@@ -661,18 +725,34 @@ const listEnrollments = async ({ includeArchived = false, archivedOnly = false }
     return query;
   };
 
-  let query = runQuery(true);
+  let query = runQuery(true, true);
   let result = query ? await query : { data: [], error: null };
   let { data, error } = result;
+  if (error && isMissingColumnError(error.message, 'assigned_by')) {
+    query = runQuery(true, false);
+    ({ data, error } = query ? await query : { data: [], error: null });
+  }
   if (error && String(error.message || '').includes('is_archived')) {
     if (archivedOnly) {
       return [];
     }
-    query = runQuery(false);
+    query = runQuery(false, true);
     ({ data, error } = await query);
+    if (error && isMissingColumnError(error.message, 'assigned_by')) {
+      query = runQuery(false, false);
+      ({ data, error } = await query);
+    }
   }
 
   if (error) throw new BadRequestError(error.message);
+
+  // Item 1: resolve assigner names for the rows that have one.
+  const assignerIds = [...new Set((data || []).map((r) => r.assigned_by).filter(Boolean))];
+  const assignerMap = new Map();
+  if (assignerIds.length) {
+    const { data: assigners } = await supabaseAdmin.from('employees').select('id, first_name, last_name').in('id', assignerIds);
+    for (const a of assigners || []) assignerMap.set(a.id, `${a.first_name || ''} ${a.last_name || ''}`.trim());
+  }
 
   const lessonCounts = await getLessonCountsByCourse();
 
@@ -697,21 +777,29 @@ const listEnrollments = async ({ includeArchived = false, archivedOnly = false }
       total_lessons: totalLessons,
       progress_percent: progressPercent,
       is_archived: Boolean(row.is_archived),
+      is_mandatory: Boolean(row.assigned_by),
+      assigned_by_name: row.assigned_by ? (assignerMap.get(row.assigned_by) || 'HR/Admin') : null,
     };
   });
 };
 
-const archiveEnrollment = async (enrollmentId) => {
+const archiveEnrollment = async (enrollmentId, companyId) => {
+  const cid = resolveCompanyId(companyId);
+  // course_enrollments has no company_id column of its own — same reasoning
+  // as listEnrollments above: force an inner join through to courses (which
+  // DOES have company_id) so the tenant filter actually restricts which
+  // enrollment rows are visible, instead of trusting the raw id alone.
   const { data: existing, error: findErr } = await supabaseAdmin
     .from('course_enrollments')
-    .select('id, status, is_archived')
+    .select('id, status, is_archived, course:course_id!inner(id, company_id)')
     .eq('id', enrollmentId)
+    .eq('course.company_id', cid)
     .maybeSingle();
 
   if (findErr) {
     if (String(findErr.message || '').includes('is_archived')) {
       throw new BadRequestError(
-        'Archive is not enabled yet. Run backend/supabase/migrations/20260720_course_enrollment_archive.sql in Supabase.',
+        'Archive is not enabled yet. Run backend/supabase/COMPLETE_DATABASE_SETUP.sql (section: 20260720_course_enrollment_archive) in Supabase.',
       );
     }
     throw new BadRequestError(findErr.message);

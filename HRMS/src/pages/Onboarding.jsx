@@ -43,9 +43,12 @@ const STEPS = [
   { label: 'Review' },
 ];
 
-// Placeholder shown alongside the locked-in subdomain — real wildcard DNS/TLS for
-// subdomains isn't live on this deployment yet, this is just display text.
-const WORKSPACE_DOMAIN = 'spaxads.net';
+// Shown alongside the locked-in subdomain — must be the ACTUAL configured
+// domain (VITE_BASE_DOMAIN, mirroring the backend's BASE_DOMAIN — see
+// tenantSubdomain.middleware.js), never a literal. Blank/unset means "no
+// domain configured yet."
+const WORKSPACE_DOMAIN = import.meta.env.VITE_BASE_DOMAIN || '';
+const workspaceUrlText = (slug) => (WORKSPACE_DOMAIN ? `${slug}.${WORKSPACE_DOMAIN}` : `${slug} (base domain not configured yet)`);
 
 const nameRegex = /^[A-Za-z][A-Za-z\s.'-]*$/;
 const phoneRegex = /^\d{10}$/;
@@ -311,7 +314,7 @@ export default function Onboarding() {
     if (!otp || otp.length < 4) return toast.error('Enter the 6-digit OTP');
     setOtpVerifying(true);
     try {
-      const data = await verifyOnboardingOtpApi(adminEmail, otp);
+      const data = await verifyOnboardingOtpApi(adminEmail, otp, inviteToken);
       setVerificationToken(data?.verificationToken || '');
       setEmailVerified(true);
       toast.success('Email verified');
@@ -449,7 +452,7 @@ export default function Onboarding() {
           )}
           {companySlug && (
             <p className="mt-1 text-xs text-fg-subtle">
-              Your workspace: <span className="font-mono font-medium text-fg-muted">{companySlug}</span>.{WORKSPACE_DOMAIN}
+              Your workspace: <span className="font-mono font-medium text-fg-muted">{workspaceUrlText(companySlug)}</span>
             </p>
           )}
         </div>
@@ -478,7 +481,7 @@ export default function Onboarding() {
                   {companySlug && (
                     <p className="sm:col-span-2 -mt-2 text-xs text-fg-subtle">
                       Your workspace subdomain (set by your platform administrator, not editable here):{' '}
-                      <span className="font-mono font-medium text-fg-muted">{companySlug}</span>.{WORKSPACE_DOMAIN}
+                      <span className="font-mono font-medium text-fg-muted">{workspaceUrlText(companySlug)}</span>
                     </p>
                   )}
                   <Select label="Industry" required placeholder="Select industry" options={INDUSTRIES} {...register('industry')} error={errors.industry?.message} />
@@ -677,7 +680,7 @@ export default function Onboarding() {
                     ['Company', [
                       ['Name', values.companyName], ['Industry', values.industry], ['Size', values.companySize],
                       ['Founded', values.foundedYear || '—'], ['Website', values.website || '—'],
-                      ...(companySlug ? [['Workspace', `${companySlug}.${WORKSPACE_DOMAIN}`]] : []),
+                      ...(companySlug ? [['Workspace', workspaceUrlText(companySlug)]] : []),
                     ]],
                     ['Contact & Location', [
                       ['Address', [values.addressLine1, values.addressLine2, values.city, values.state, values.pincode, values.country].filter(Boolean).join(', ')],

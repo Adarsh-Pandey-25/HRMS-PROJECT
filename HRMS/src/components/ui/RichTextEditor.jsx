@@ -1,6 +1,6 @@
 import { useRef, useEffect } from 'react';
 import { Bold, Italic, List, ListOrdered, Heading2, Undo, Redo } from 'lucide-react';
-import { cn } from '../../lib/utils';
+import { cn, sanitizeHtml } from '../../lib/utils';
 
 /**
  * Minimal rich-text editor on contentEditable + document.execCommand.
@@ -21,7 +21,7 @@ export function RichTextEditor({ value = '', onChange, placeholder = 'Write some
       lastEmitted.current = value;
       return;
     }
-    el.innerHTML = value || '';
+    el.innerHTML = sanitizeHtml(value || '');
     lastEmitted.current = value;
   }, [value]);
 

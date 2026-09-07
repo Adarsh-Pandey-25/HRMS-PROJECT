@@ -1,15 +1,26 @@
 import { Check, X, MoreHorizontal } from 'lucide-react';
 import { PageHeader, Card, CardHeader, Button, Avatar, StatusBadge, EmptyState, Skeleton } from '../../components/ui';
-import { useTeamReimbursements } from '../../hooks/useReimbursements';
+import { useTeamReimbursements, useAllReimbursements } from '../../hooks/useReimbursements';
 import { useReimbursementMutations } from '../../hooks/useReimbursements';
 import { useCan } from '../../hooks/useCan';
+import { useAuthStore } from '../../store/authStore';
 import { formatCurrency, formatDate } from '../../lib/utils';
 import { CAT_ICON } from './catIcons';
 import toast from 'react-hot-toast';
 
 export default function ExpenseApprovals() {
   const canApprove = useCan('expenses', 'approve');
-  const { data: expenses = [], isLoading } = useTeamReimbursements();
+  const role = useAuthStore((s) => s.role);
+  const isHrOrAdmin = role === 'hr' || role === 'admin';
+
+  // HR/Admin need company-wide pending claims — not just their own direct
+  // reports — otherwise a claim from anyone they don't directly manage can
+  // get stuck in "pending" forever with no way to finalize it.
+  const teamQuery = useTeamReimbursements({ enabled: !isHrOrAdmin, status: 'pending' });
+  const allQuery = useAllReimbursements({ enabled: isHrOrAdmin, status: 'pending' });
+  const expenses = isHrOrAdmin ? (allQuery.data || []) : (teamQuery.data || []);
+  const isLoading = isHrOrAdmin ? allQuery.isLoading : teamQuery.isLoading;
+
   const { approve, reject } = useReimbursementMutations();
   const pending = expenses.filter((e) => e.status === 'pending');
 

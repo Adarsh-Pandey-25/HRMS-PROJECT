@@ -63,7 +63,12 @@ export function mapEmployeeFromApi(emp) {
     personalEmail: c.personalEmail || addr.personalEmail || addr.personal_email || c.email,
     joinDate: c.dateOfJoining || c.joinDate,
     dob: c.dateOfBirth || c.dob,
-    status: c.isActive === false ? 'resigned' : (c.status || 'active'),
+    status: c.employmentStatus === 'offboarded'
+      ? 'offboarded'
+      : (c.isActive === false ? 'resigned' : (c.status || 'active')),
+    employmentStatus: c.employmentStatus || (c.isActive === false ? 'offboarded' : 'active'),
+    offboardedAt: c.offboardedAt,
+    dataRetentionReviewAt: c.dataRetentionReviewAt,
     employmentType: (c.employmentType || 'full_time').replace(/_/g, '-'),
     role: c.role || 'employee',
     mustChangePassword: Boolean(c.mustChangePassword),

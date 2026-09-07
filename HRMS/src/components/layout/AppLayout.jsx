@@ -7,6 +7,7 @@ import { NotificationDrawer } from './NotificationDrawer';
 import { MobileNav } from './MobileNav';
 import { ShortcutHelpModal } from './ShortcutHelpModal';
 import { ForcePasswordChangeModal } from '../auth/ForcePasswordChangeModal';
+import { ImpersonationBanner } from './ImpersonationBanner';
 import { ErrorBoundary } from './ErrorBoundary';
 import { PageLoader } from './PageLoader';
 import { useUIStore } from '../../store/uiStore';
@@ -39,30 +40,33 @@ export function AppLayout() {
   const moduleKey = pathname.split('/').filter(Boolean)[0] || 'app';
 
   return (
-    <div className="flex h-screen overflow-hidden bg-page">
-      <a
-        href="#main-scroll"
-        className="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-[100] focus:rounded-lg focus:bg-primary focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-white focus:shadow-lg"
-      >
-        Skip to main content
-      </a>
-      <Sidebar />
-      <div className="flex flex-1 flex-col min-w-0">
-        <Topbar />
-        <main id="main-scroll" className="flex-1 overflow-y-auto" tabIndex={-1}>
-          <div className="mx-auto max-w-[1600px] px-4 sm:px-6 py-6">
-            <ErrorBoundary key={moduleKey}>
-              <Suspense fallback={<PageLoader />}>
-                <Outlet />
-              </Suspense>
-            </ErrorBoundary>
-          </div>
-        </main>
+    <div className="flex h-screen overflow-hidden bg-page flex-col">
+      <ImpersonationBanner />
+      <div className="flex flex-1 min-h-0">
+        <a
+          href="#main-scroll"
+          className="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-[100] focus:rounded-lg focus:bg-primary focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-white focus:shadow-lg"
+        >
+          Skip to main content
+        </a>
+        <Sidebar />
+        <div className="flex flex-1 flex-col min-w-0">
+          <Topbar />
+          <main id="main-scroll" className="flex-1 overflow-y-auto" tabIndex={-1}>
+            <div className="mx-auto max-w-[1600px] px-4 sm:px-6 py-6">
+              <ErrorBoundary key={moduleKey}>
+                <Suspense fallback={<PageLoader />}>
+                  <Outlet />
+                </Suspense>
+              </ErrorBoundary>
+            </div>
+          </main>
+        </div>
+        <NotificationDrawer />
+        <MobileNav />
+        <ShortcutHelpModal />
+        <ForcePasswordChangeModal />
       </div>
-      <NotificationDrawer />
-      <MobileNav />
-      <ShortcutHelpModal />
-      <ForcePasswordChangeModal />
     </div>
   );
 }

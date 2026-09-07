@@ -2,18 +2,13 @@ const logger = require('../utils/logger');
 const { AppError } = require('../utils/errors');
 
 /**
- * Endpoints reachable with NO authentication at all. A raw Postgres/Supabase error
- * message leaking here is reachable by literally anyone on the internet, unlike the
- * ~177 other call sites across the app that pass a typed (400-range) error straight
- * through with the DB's raw `.message` — those all require a logged-in session first,
- * which is lower severity. This list intentionally stays narrow (see audit finding
- * on error-message hygiene) rather than rewriting error handling app-wide.
+ * Audit finding M-07: raw Postgres/Supabase error text (column/relation/
+ * constraint names) was only masked on a narrow allowlist of unauthenticated
+ * paths — every other 400-range throw across ~177 call sites passed the DB's
+ * raw `.message` straight through to any authenticated caller, including a
+ * plain `employee` role. Masking now applies to every response regardless
+ * of auth state; the real message is always still logged server-side below.
  */
-const UNAUTHENTICATED_PATHS = new Set([
-  '/api/auth/bootstrap-admin',
-]);
-
-/** Recognizable raw Postgres/Supabase error phrasing that should never reach a client. */
 const RAW_DB_ERROR_PATTERNS = [
   /duplicate key value violates/i,
   /violates foreign key constraint/i,
@@ -42,10 +37,11 @@ const errorHandler = (err, req, res, next) => {
     code = 'VALIDATION_ERROR';
   }
 
-  // A raw DB error on a 400-range response is not masked by the generic 500 handling
-  // below. On endpoints reachable with no auth at all, close that leak specifically.
-  if (statusCode < 500 && UNAUTHENTICATED_PATHS.has(req.path) && looksLikeRawDbError(message)) {
-    logger.warn('Masked raw DB error on unauthenticated endpoint', {
+  // A raw DB error on a 400-range response is not masked by the generic 500
+  // handling below — close that leak for every caller, not just unauthenticated
+  // ones (see M-07). The real message is always logged, just never returned.
+  if (statusCode < 500 && looksLikeRawDbError(message)) {
+    logger.warn('Masked raw DB error in API response', {
       path: req.path,
       original: message,
     });

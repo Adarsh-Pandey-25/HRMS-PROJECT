@@ -2,8 +2,10 @@ const cron = require('node-cron');
 const attendanceService = require('../services/attendance.service');
 const logger = require('../utils/logger');
 const config = require('../config/database');
+const { withCronLock } = require('../utils/cronLock');
+const { alertOnCronFailure } = require('../utils/cronAlert');
 
-const runAutoCheckout = async (reason = 'cron') => {
+const runAutoCheckout = withCronLock('auto_checkout', 5 * 60 * 1000, async (reason = 'cron') => {
   logger.info(`Running auto checkout (${reason})`);
   try {
     const result = await attendanceService.processAutoCheckout();
@@ -11,9 +13,12 @@ const runAutoCheckout = async (reason = 'cron') => {
     return result;
   } catch (err) {
     logger.error('Auto checkout failed', { reason, error: err.message });
+    await alertOnCronFailure('autoCheckout', err.message).catch((e) => {
+      logger.error('[CRON] alertOnCronFailure itself failed', { job: 'autoCheckout', error: e.message });
+    });
     return { processed: 0, error: err.message };
   }
-};
+});
 
 const startAutoCheckoutCron = () => {
   // Catch up on server start (if backend was down at 4:00 AM)

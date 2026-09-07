@@ -8,10 +8,10 @@ import {
 } from 'lucide-react';
 import {
   Card, CardHeader, Button, Avatar, StatusBadge, Tabs, EmptyState, Skeleton,
-  Modal, Select, Input, Textarea,
+  Modal, Select, Input, Textarea, ConfirmDialog,
 } from '../../components/ui';
 import { AttendanceCalendar } from '../../components/shared/AttendanceCalendar';
-import { useEmployee, useEmployeeMap } from '../../hooks/useEmployees';
+import { useEmployee, useEmployeeMap, useEmployeeMutations } from '../../hooks/useEmployees';
 import { useAccessibleCompanies } from '../../hooks/useCompanies';
 import { useEmployeeAttendanceReport } from '../../hooks/useAttendance';
 import { useAllLeaves, useMyLeaves, useTeamLeaves } from '../../hooks/useLeaves';
@@ -44,6 +44,7 @@ const CAREER_EVENT_ICONS = {
   department_change: Building2,
   manager_change: User,
   salary_change: DollarSign,
+  bank_change: CreditCard,
   note: FileText,
 };
 
@@ -68,6 +69,8 @@ function careerEventText(ev, employeeMap) {
       return from ? `Reporting manager changed from ${from} to ${to || '—'}` : `Reporting manager set to ${to || '—'}`;
     case 'salary_change':
       return 'Salary details updated';
+    case 'bank_change':
+      return 'Bank details updated';
     case 'note':
       return ev.note || 'Career note';
     default:
@@ -138,11 +141,147 @@ export default function EmployeeProfile() {
   const { data: payslips = [] } = useAllPayslipsForYear(now.getFullYear());
   const { data: careerEvents = [], isLoading: careerLoading } = useCareerEvents(id);
   const { addNote } = useCareerEventMutations(id);
+  const { update: updateEmployee, uploadPhoto } = useEmployeeMutations();
   const companyName = brandedHomeName;
+
+  // Self-service profile edit — contact info, address, emergency contact,
+  // profile photo, and (item 2) bank details only while currently unset.
+  // Matches employee.controller.js's isSelf whitelist exactly; salary,
+  // designation, department, manager, role, is_active stay HR/Admin-only.
+  //
+  // Item 3: this edit is allowed exactly once (profileSelfEditUsed).
+  // 'warning' step requires an explicit acknowledgment click before 'form'
+  // ever opens — not a toast, not auto-dismissing. Once used, the whole
+  // form renders read-only instead of just silently rejecting a submit on
+  // a form that still looks editable.
+  const editLocked = Boolean(emp?.profileSelfEditUsed);
+  const hasBankDetails = Boolean(emp?.bank?.account || emp?.bank?.name || emp?.bank?.ifsc);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editStep, setEditStep] = useState('warning'); // 'warning' | 'form'
+  const [ackChecked, setAckChecked] = useState(false);
+  const [editForm, setEditForm] = useState(null);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [photoUploading, setPhotoUploading] = useState(false);
+  const { resetSelfEditLock } = useEmployeeMutations();
+  const [resettingLock, setResettingLock] = useState(false);
+
+  const buildEditForm = () => {
+    const addr = emp?.addressRaw || {};
+    const ec = emp?.emergencyContact || {};
+    return {
+      phone: emp?.phone || '',
+      personalEmail: emp?.personalEmail || addr.personalEmail || '',
+      addressLine1: addr.line1 || '',
+      addressLine2: addr.line2 || '',
+      city: addr.city || '',
+      state: addr.state || '',
+      pincode: addr.pincode || '',
+      country: addr.country || 'India',
+      emergencyName: ec.name || '',
+      emergencyPhone: ec.phone || '',
+      emergencyRelation: ec.relation || '',
+      bankName: '',
+      bankAccount: '',
+      bankIfsc: '',
+    };
+  };
+
+  const openEditModal = () => {
+    setEditForm(buildEditForm());
+    setAckChecked(false);
+    setEditStep(editLocked ? 'form' : 'warning');
+    setEditOpen(true);
+  };
+
+  const proceedPastWarning = () => {
+    if (!ackChecked) return;
+    setEditStep('form');
+  };
+
+  const submitEditForm = async () => {
+    setSavingEdit(true);
+    try {
+      const mergedAddress = {
+        ...(emp?.addressRaw || {}),
+        line1: editForm.addressLine1.trim(),
+        line2: editForm.addressLine2.trim(),
+        city: editForm.city.trim(),
+        state: editForm.state.trim(),
+        pincode: editForm.pincode.trim(),
+        country: editForm.country.trim() || 'India',
+        personalEmail: editForm.personalEmail.trim(),
+      };
+      const payload = {
+        phone: editForm.phone.trim(),
+        address: mergedAddress,
+        emergencyContact: {
+          name: editForm.emergencyName.trim(),
+          phone: editForm.emergencyPhone.trim(),
+          relation: editForm.emergencyRelation.trim(),
+        },
+      };
+      if (!hasBankDetails && (editForm.bankName || editForm.bankAccount || editForm.bankIfsc)) {
+        payload.bankDetails = {
+          bankName: editForm.bankName.trim(),
+          accountNumber: editForm.bankAccount.trim(),
+          ifsc: editForm.bankIfsc.trim().toUpperCase(),
+        };
+      }
+      await updateEmployee.mutateAsync({ id, payload });
+      toast.success('Profile updated — this was your one-time self-edit.');
+      setEditOpen(false);
+    } catch (err) {
+      toast.error(err.message || 'Update failed');
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  const doResetSelfEditLock = async () => {
+    setResettingLock(true);
+    try {
+      await resetSelfEditLock.mutateAsync({ id, reason: 'Reset by HR/Admin from employee profile' });
+      toast.success('Self-edit lock reset — employee can edit their profile once more');
+    } catch (err) {
+      toast.error(err.message || 'Reset failed');
+    } finally {
+      setResettingLock(false);
+    }
+  };
+
+  const confirmDeleteDoc = async () => {
+    setDeletingDoc(true);
+    try {
+      await remove.mutateAsync(deleteDocTarget.id);
+      toast.success('Document deleted');
+      setDeleteDocTarget(null);
+    } catch (err) {
+      toast.error(err.message || 'Delete failed');
+    } finally {
+      setDeletingDoc(false);
+    }
+  };
+
+  const onPhotoChange = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setPhotoUploading(true);
+    try {
+      await uploadPhoto.mutateAsync({ id, file });
+      toast.success('Photo updated');
+    } catch (err) {
+      toast.error(err.message || 'Photo upload failed');
+    } finally {
+      setPhotoUploading(false);
+    }
+  };
   const [viewingPayslip, setViewingPayslip] = useState(null);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadForm, setUploadForm] = useState({ documentType: 'aadhar', documentName: '', file: null });
   const [openingId, setOpeningId] = useState(null);
+  const [deleteDocTarget, setDeleteDocTarget] = useState(null);
+  const [deletingDoc, setDeletingDoc] = useState(false);
   const [noteModalOpen, setNoteModalOpen] = useState(false);
   const [noteForm, setNoteForm] = useState({ note: '', effectiveDate: new Date().toISOString().slice(0, 10) });
 
@@ -239,7 +378,18 @@ export default function EmployeeProfile() {
       {/* Header */}
       <Card className="p-6">
         <div className="flex flex-col sm:flex-row sm:items-center gap-5">
-          <Avatar name={emp.name} src={emp.avatar} size="xl" />
+          <div className="relative shrink-0">
+            <Avatar name={emp.name} src={emp.avatar} size="xl" />
+            {isOwnProfile && (
+              <label
+                className="absolute -bottom-1 -right-1 h-7 w-7 rounded-full bg-primary text-white flex items-center justify-center cursor-pointer shadow hover:bg-primary/90"
+                title="Change photo"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+                <input type="file" accept="image/*" className="hidden" disabled={photoUploading} onChange={onPhotoChange} />
+              </label>
+            )}
+          </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-3 flex-wrap">
               <h1 className="text-page-title text-fg">{emp.name}</h1>
@@ -260,11 +410,106 @@ export default function EmployeeProfile() {
               <span className="flex items-center gap-1.5"><Calendar className="h-3.5 w-3.5" /> Joined {formatDate(emp.joinDate)}</span>
             </div>
           </div>
-          {canManage && (
-            <Button variant="outline" icon={Pencil} onClick={() => navigate(employeeEditPath(emp))}>Edit</Button>
-          )}
+          <div className="flex items-center gap-2">
+            {isOwnProfile && (
+              <Button variant="outline" icon={Pencil} onClick={openEditModal}>
+                {editLocked ? 'View my info (locked)' : 'Edit my info'}
+              </Button>
+            )}
+            {canManage && editLocked && (
+              <Button variant="outline" loading={resettingLock} onClick={doResetSelfEditLock}>
+                Reset self-edit lock
+              </Button>
+            )}
+            {canManage && (
+              <Button variant="outline" icon={Pencil} onClick={() => navigate(employeeEditPath(emp))}>Edit</Button>
+            )}
+          </div>
         </div>
       </Card>
+
+      <Modal
+        open={editOpen}
+        onClose={() => setEditOpen(false)}
+        title={editStep === 'warning' ? 'Before you continue' : (editLocked ? 'Your profile (locked)' : 'Edit my info')}
+        subtitle={editStep === 'form' && !editLocked ? 'Contact info, address, emergency contact, and bank details — for anything else, ask HR.' : undefined}
+        footer={editStep === 'warning' ? (
+          <>
+            <Button variant="outline" onClick={() => setEditOpen(false)}>Cancel</Button>
+            <Button onClick={proceedPastWarning} disabled={!ackChecked}>I understand, continue</Button>
+          </>
+        ) : editLocked ? (
+          <Button variant="outline" onClick={() => setEditOpen(false)}>Close</Button>
+        ) : (
+          <>
+            <Button variant="outline" onClick={() => setEditOpen(false)} disabled={savingEdit}>Cancel</Button>
+            <Button onClick={submitEditForm} loading={savingEdit}>Save changes</Button>
+          </>
+        )}
+      >
+        {editStep === 'warning' ? (
+          <div className="space-y-4">
+            <div className="rounded-xl border border-warning/40 bg-warning/10 p-4">
+              <p className="text-sm font-semibold text-fg">This is the only time you can edit your profile yourself.</p>
+              <p className="mt-1.5 text-sm text-fg-muted">
+                After saving, any further changes — including to bank details — will need to be made by HR/Admin.
+                Please review your details carefully before submitting.
+              </p>
+            </div>
+            <label className="flex items-start gap-2.5 text-sm text-fg cursor-pointer">
+              <input
+                type="checkbox"
+                checked={ackChecked}
+                onChange={(e) => setAckChecked(e.target.checked)}
+                className="mt-0.5 h-4 w-4 accent-[#6C63FF]"
+              />
+              I understand this is a one-time edit and I've reviewed the note above.
+            </label>
+          </div>
+        ) : editForm && (
+          <fieldset disabled={editLocked} className="space-y-4">
+            {editLocked && (
+              <p className="text-sm text-fg-muted rounded-xl bg-muted/50 p-3">
+                You've used your one-time profile edit. Contact HR to make changes.
+              </p>
+            )}
+            <Input label="Phone" value={editForm.phone} onChange={(e) => setEditForm((f) => ({ ...f, phone: e.target.value }))} />
+            <Input label="Personal email" type="email" value={editForm.personalEmail} onChange={(e) => setEditForm((f) => ({ ...f, personalEmail: e.target.value }))} />
+            <div className="grid grid-cols-2 gap-3">
+              <Input label="Address line 1" value={editForm.addressLine1} onChange={(e) => setEditForm((f) => ({ ...f, addressLine1: e.target.value }))} />
+              <Input label="Address line 2" value={editForm.addressLine2} onChange={(e) => setEditForm((f) => ({ ...f, addressLine2: e.target.value }))} />
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <Input label="City" value={editForm.city} onChange={(e) => setEditForm((f) => ({ ...f, city: e.target.value }))} />
+              <Input label="State" value={editForm.state} onChange={(e) => setEditForm((f) => ({ ...f, state: e.target.value }))} />
+              <Input label="Pincode" value={editForm.pincode} onChange={(e) => setEditForm((f) => ({ ...f, pincode: e.target.value }))} />
+            </div>
+            <Input label="Country" value={editForm.country} onChange={(e) => setEditForm((f) => ({ ...f, country: e.target.value }))} />
+            <div className="pt-2 border-t border-border/60">
+              <p className="text-xs font-medium text-fg-muted mb-3">Emergency contact</p>
+              <div className="grid grid-cols-3 gap-3">
+                <Input label="Name" value={editForm.emergencyName} onChange={(e) => setEditForm((f) => ({ ...f, emergencyName: e.target.value }))} />
+                <Input label="Phone" value={editForm.emergencyPhone} onChange={(e) => setEditForm((f) => ({ ...f, emergencyPhone: e.target.value }))} />
+                <Input label="Relation" value={editForm.emergencyRelation} onChange={(e) => setEditForm((f) => ({ ...f, emergencyRelation: e.target.value }))} />
+              </div>
+            </div>
+            <div className="pt-2 border-t border-border/60">
+              <p className="text-xs font-medium text-fg-muted mb-1">Bank details</p>
+              {hasBankDetails ? (
+                <p className="text-sm text-fg-subtle">
+                  Already on file ({emp?.bank?.name || 'bank'} ····{String(emp?.bank?.account || '').slice(-4)}). Changing it requires HR/Admin.
+                </p>
+              ) : (
+                <div className="grid grid-cols-3 gap-3 mt-2">
+                  <Input label="Bank name" value={editForm.bankName} onChange={(e) => setEditForm((f) => ({ ...f, bankName: e.target.value }))} />
+                  <Input label="Account number" value={editForm.bankAccount} onChange={(e) => setEditForm((f) => ({ ...f, bankAccount: e.target.value }))} />
+                  <Input label="IFSC" value={editForm.bankIfsc} onChange={(e) => setEditForm((f) => ({ ...f, bankIfsc: e.target.value }))} />
+                </div>
+              )}
+            </div>
+          </fieldset>
+        )}
+      </Modal>
 
       <Tabs tabs={TABS} value={tab} onChange={setTab} />
 
@@ -561,22 +806,14 @@ export default function EmployeeProfile() {
                       }}
                     />
                   )}
-                  {isHrAdmin && (
+                  {(isHrAdmin || (isOwnProfile && doc.uploadedBy === user?.id)) && (
                     <Button
                       variant="ghost"
                       size="sm"
                       icon={Trash2}
                       title="Delete"
                       disabled={remove.isPending}
-                      onClick={async () => {
-                        if (!window.confirm(`Delete "${doc.name}"?`)) return;
-                        try {
-                          await remove.mutateAsync(doc.id);
-                          toast.success('Document deleted');
-                        } catch (err) {
-                          toast.error(err.message || 'Delete failed');
-                        }
-                      }}
+                      onClick={() => setDeleteDocTarget(doc)}
                     />
                   )}
                 </div>
@@ -751,6 +988,15 @@ export default function EmployeeProfile() {
           </Modal>
         </Card>
       )}
+
+      <ConfirmDialog
+        open={Boolean(deleteDocTarget)}
+        onClose={() => setDeleteDocTarget(null)}
+        onConfirm={confirmDeleteDoc}
+        loading={deletingDoc}
+        title={`Delete "${deleteDocTarget?.name}"?`}
+        confirmLabel="Delete"
+      />
     </div>
   );
 }

@@ -4,7 +4,10 @@ const path = require('path');
 
 const logDir = path.join(__dirname, '../../logs');
 
-const SENSITIVE_KEY = /password|token|secret|otp|authorization|api[_-]?key|cookie/i;
+// Audit finding L-09: originally missed PII/financial key names that could
+// plausibly appear in a logged object (e.g. an employee row spread into a
+// log call) — ssn/pan/bank/salary/aadhar-style keys never matched before.
+const SENSITIVE_KEY = /password|token|secret|otp|authorization|api[_-]?key|cookie|ssn|pan|bank|salary|aadhar|aadhaar|ifsc|account[_-]?number/i;
 
 const redactDeep = (obj, depth = 0) => {
   if (!obj || typeof obj !== 'object' || depth > 6) return;

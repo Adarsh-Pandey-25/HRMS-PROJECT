@@ -1,5 +1,27 @@
 const superAdminService = require('../services/superAdmin.service');
-const { successResponse } = require('../utils/helpers');
+const auditLogService = require('../services/auditLog.service');
+const { successResponse, paginate, buildMeta } = require('../utils/helpers');
+const { BadRequestError } = require('../utils/errors');
+
+/**
+ * Item 5: super-admin views must be company-selectable, never one global
+ * unscoped dump across every tenant — company_id is required, not optional.
+ */
+const listAuditLogs = async (req, res, next) => {
+  try {
+    if (!req.query.company_id) throw new BadRequestError('company_id is required');
+    const { page, limit } = paginate(req.query);
+    const { data, total } = await auditLogService.listAuditLogs(req.query.company_id, {
+      page, limit,
+      actorId: req.query.actor_id,
+      actionType: req.query.action_type,
+      targetType: req.query.target_type,
+      from: req.query.from,
+      to: req.query.to,
+    });
+    successResponse(res, 'Audit logs fetched', data, buildMeta(page, limit, total));
+  } catch (err) { next(err); }
+};
 
 /**
  * Same policy as auth.controller.js's cookieOptions — see that file for the full
@@ -39,9 +61,27 @@ const cookieOptions = (req, maxAge, path = '/') => {
 
 const login = async (req, res, next) => {
   try {
-    const { admin, accessToken, refreshToken } = await superAdminService.login(
-      req.body.email,
-      req.body.password,
+    const result = await superAdminService.login(req.body.email, req.body.password);
+    if (result.twoFactorRequired) {
+      successResponse(res, 'Authentication code required', { twoFactorRequired: true, pendingToken: result.pendingToken });
+      return;
+    }
+    const { admin, accessToken, refreshToken } = result;
+    res.cookie('saAccessToken', accessToken, cookieOptions(req, 24 * 60 * 60 * 1000));
+    res.cookie(
+      'saRefreshToken',
+      refreshToken,
+      cookieOptions(req, 7 * 24 * 60 * 60 * 1000, '/api/super-admin'),
+    );
+    successResponse(res, 'Super admin login successful', { admin });
+  } catch (err) { next(err); }
+};
+
+const verifyTwoFactor = async (req, res, next) => {
+  try {
+    const { admin, accessToken, refreshToken } = await superAdminService.verifyTwoFactorLogin(
+      req.body.pending_token || req.body.pendingToken,
+      req.body.code,
     );
     res.cookie('saAccessToken', accessToken, cookieOptions(req, 24 * 60 * 60 * 1000));
     res.cookie(
@@ -50,6 +90,75 @@ const login = async (req, res, next) => {
       cookieOptions(req, 7 * 24 * 60 * 60 * 1000, '/api/super-admin'),
     );
     successResponse(res, 'Super admin login successful', { admin });
+  } catch (err) { next(err); }
+};
+
+const startTwoFactorEnrollment = async (req, res, next) => {
+  try {
+    const data = await superAdminService.initiateTwoFactorEnrollment(req.superAdmin.id);
+    successResponse(res, 'Scan this QR code with your authenticator app', data);
+  } catch (err) { next(err); }
+};
+
+const confirmTwoFactorEnrollment = async (req, res, next) => {
+  try {
+    const data = await superAdminService.confirmTwoFactorEnrollment(req.superAdmin.id, req.body.code);
+    successResponse(res, 'Two-factor authentication enabled', data);
+  } catch (err) { next(err); }
+};
+
+const disableTwoFactor = async (req, res, next) => {
+  try {
+    const data = await superAdminService.disableTwoFactor(req.superAdmin.id, req.body.code);
+    successResponse(res, 'Two-factor authentication disabled', data);
+  } catch (err) { next(err); }
+};
+
+// ── Module 5: super-admin user management (full_admin only) ────────────────
+
+const listSuperAdminUsers = async (req, res, next) => {
+  try {
+    successResponse(res, 'Super admin users fetched', await superAdminService.listSuperAdminUsers());
+  } catch (err) { next(err); }
+};
+
+const createSuperAdminUser = async (req, res, next) => {
+  try {
+    const data = await superAdminService.createSuperAdminUser(req.superAdmin.id, {
+      email: req.body.email,
+      password: req.body.password,
+      name: req.body.name,
+      role: req.body.role,
+    });
+    await auditLogService.logPlatformAudit({
+      superAdminId: req.superAdmin.id, actionType: 'super_admin_user_created', targetType: 'super_admin', targetId: data.id,
+      afterState: { email: data.email, role: data.role }, ipAddress: req.ip,
+    });
+    successResponse(res, 'Super admin user created', data, null, 201);
+  } catch (err) { next(err); }
+};
+
+const setSuperAdminActive = async (req, res, next) => {
+  try {
+    const isActive = req.body.is_active ?? req.body.isActive;
+    if (typeof isActive !== 'boolean') throw new BadRequestError('is_active boolean is required');
+    const data = await superAdminService.setSuperAdminActive(req.params.id, isActive);
+    await auditLogService.logPlatformAudit({
+      superAdminId: req.superAdmin.id, actionType: isActive ? 'super_admin_user_activated' : 'super_admin_user_deactivated',
+      targetType: 'super_admin', targetId: req.params.id, ipAddress: req.ip,
+    });
+    successResponse(res, 'Super admin user updated', data);
+  } catch (err) { next(err); }
+};
+
+const updateSuperAdminRole = async (req, res, next) => {
+  try {
+    const data = await superAdminService.updateSuperAdminRole(req.params.id, req.body.role);
+    await auditLogService.logPlatformAudit({
+      superAdminId: req.superAdmin.id, actionType: 'super_admin_role_changed', targetType: 'super_admin', targetId: req.params.id,
+      afterState: { role: req.body.role }, ipAddress: req.ip,
+    });
+    successResponse(res, 'Super admin role updated', data);
   } catch (err) { next(err); }
 };
 
@@ -137,6 +246,14 @@ const revokeInvite = async (req, res, next) => {
 
 module.exports = {
   login,
+  verifyTwoFactor,
+  startTwoFactorEnrollment,
+  confirmTwoFactorEnrollment,
+  disableTwoFactor,
+  listSuperAdminUsers,
+  createSuperAdminUser,
+  setSuperAdminActive,
+  updateSuperAdminRole,
   logout,
   refreshToken,
   me,
@@ -146,4 +263,5 @@ module.exports = {
   createInvite,
   listInvites,
   revokeInvite,
+  listAuditLogs,
 };

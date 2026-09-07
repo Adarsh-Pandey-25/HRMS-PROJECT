@@ -16,7 +16,14 @@ export function useCheckContext() {
     queryKey: ['attendance', 'context'],
     queryFn: fetchCheckContextApi,
     enabled: isAuthenticated,
-    refetchInterval: 60_000,
+    // Poll faster while a biometric session is pending/provisional — that's
+    // exactly when a new scan could change what's shown, and the backend
+    // also does an on-demand recompute on every fetch (checkContext
+    // controller) so this always reflects current truth, not stale cache.
+    refetchInterval: (query) => {
+      const status = query.state.data?.today?.checkoutStatus;
+      return status === 'pending' || status === 'provisional' ? 20_000 : 60_000;
+    },
     staleTime: 20_000,
   });
 }
@@ -41,6 +48,10 @@ export function useTeamAttendance(params = {}) {
     queryKey: ['attendance', 'team', role, params],
     queryFn: () => (isCompanyWide ? fetchAllAttendanceApi(params) : fetchTeamAttendanceApi(params)),
     enabled: isAuthenticated,
+    // Biometric pending/provisional rows change server-side via the 15-min
+    // periodic sweep (or a new punch) without this tab doing anything —
+    // poll so HR sees transitions without a manual refresh.
+    refetchInterval: 30_000,
   });
 }
 

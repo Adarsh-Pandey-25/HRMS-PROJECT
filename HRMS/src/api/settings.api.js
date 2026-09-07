@@ -22,6 +22,17 @@ export async function updateSettingApi(key, value) {
   return toCamelCase(row);
 }
 
+/** Item 6: real on-demand backup — used to be a disabled, "Not yet implemented" button. */
+export async function runBackupNowApi() {
+  const data = await apiRequest({ method: 'POST', url: '/settings/backup/run' });
+  return toCamelCase(data);
+}
+
+export async function fetchBackupStatusApi() {
+  const data = await apiRequest({ method: 'GET', url: '/settings/backup/status' });
+  return toCamelCase(data);
+}
+
 export async function fetchCompanyProfileApi() {
   return apiRequest({ method: 'GET', url: '/settings/company-profile' });
 }

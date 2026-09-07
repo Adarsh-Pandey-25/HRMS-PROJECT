@@ -51,3 +51,17 @@ export async function deleteAnnouncementApi(id) {
 export async function acknowledgeAnnouncementApi(id) {
   return apiRequest({ method: 'POST', url: `/announcements/${id}/acknowledge` });
 }
+
+/** The stored attachment value is a private-bucket storage path, never a directly fetchable
+ *  link — fetch a signed URL with cookie auth, then open it in a new tab. */
+export async function openAnnouncementAttachmentApi(id) {
+  const data = await apiRequest({
+    method: 'GET',
+    url: `/announcements/${id}/attachment`,
+    params: { format: 'json' },
+  });
+  const url = data?.url;
+  if (!url) throw new Error('Attachment URL not available');
+  window.open(url, '_blank', 'noopener,noreferrer');
+  return url;
+}

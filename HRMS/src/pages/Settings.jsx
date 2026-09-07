@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import {
@@ -7,13 +7,13 @@ import {
   ListChecks,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { PageHeader, Card, CardHeader, Button, Input, Select, Badge, StatusBadge, Avatar, DataTable, FileUpload } from '../components/ui';
+import { PageHeader, Card, CardHeader, Button, Input, Select, Badge, StatusBadge, Avatar, DataTable, FileUpload, SaveStatusIndicator } from '../components/ui';
+import { useAutosave } from '../hooks/useAutosave';
 import { useCompanyStore } from '../store/companyStore';
 import { updateSettingApi, uploadCompanyLogoApi, uploadCompanyBrandIconApi } from '../api/settings.api';
 import { useEmployees } from '../hooks/useEmployees';
 import { useSettingsStore } from '../store/settingsStore';
 import { useSaveShortcut } from '../hooks/useSaveShortcut';
-import { useCan } from '../hooks/useCan';
 import { INDUSTRIES, COMPANY_SIZES } from '../lib/constants';
 import { PERMISSION_MODULES, PERMISSION_ACTIONS, MODULE_LABELS, ROLES as RBAC_ROLES, isPrivilegedRole } from '../lib/permissions';
 import { cn, humanize } from '../lib/utils';
@@ -191,7 +191,6 @@ function CompanyProfileSection() {
   const [logoPreview, setLogoPreview] = useState(null);
   const [iconFile, setIconFile] = useState(null);
   const [iconPreview, setIconPreview] = useState(null);
-  const [saving, setSaving] = useState(false);
 
   // Rehydrate after bootstrap loads company_profile from server
   useEffect(() => {
@@ -218,54 +217,44 @@ function CompanyProfileSection() {
     return () => URL.revokeObjectURL(objectUrl);
   }, [iconFile]);
 
-  const save = async () => {
-    setSaving(true);
-    try {
-      let next = { ...form };
-      if (logoFile) {
-        const uploaded = await uploadCompanyLogoApi(logoFile);
-        next = {
-          ...next,
-          logoPath: uploaded.logoPath,
-          logoUrl: uploaded.logoUrl,
-          logoName: uploaded.logoName,
-        };
-        setLogoFile(null);
-      }
-      if (iconFile) {
-        const uploaded = await uploadCompanyBrandIconApi(iconFile);
-        next = {
-          ...next,
-          brandIconPath: uploaded.brandIconPath,
-          brandIconUrl: uploaded.brandIconUrl,
-          brandIconName: uploaded.brandIconName,
-        };
-        setIconFile(null);
-      }
-      const payload = { ...next };
-      delete payload.logoUrl;
-      delete payload.brandIconUrl;
-      if (!payload.logoPath) {
-        delete payload.logoPath;
-        delete payload.logoName;
-      }
-      if (!payload.brandIconPath) {
-        delete payload.brandIconPath;
-        delete payload.brandIconName;
-      }
-      updateCompany(next);
-      await updateSettingApi('company_profile', payload);
-      await invalidateAndRefetch(qc, ['settings', 'company-profile']);
-      await invalidateAndRefetch(qc, ['companies']);
-      setForm(next);
-      toast.success('Company profile saved to server');
-    } catch (err) {
-      toast.error(err.message || 'Saved locally; server sync failed');
-    } finally {
-      setSaving(false);
+  /**
+   * Item 4: text/select edits below autosave (selects instantly on change;
+   * every text/number/date input via ONE onBlur handler on the form's
+   * outer wrapper — React's synthetic onBlur bubbles, so this also covers
+   * every nested field inside CompanyLegalFields without wiring each one
+   * individually). Logo/icon upload already persists immediately on file
+   * pick (uploadLogoNow/uploadBrandIconNow below) — unaffected.
+   */
+  const doSave = useCallback(async (nextForm) => {
+    const payload = { ...nextForm };
+    delete payload.logoUrl;
+    delete payload.brandIconUrl;
+    if (!payload.logoPath) {
+      delete payload.logoPath;
+      delete payload.logoName;
     }
+    if (!payload.brandIconPath) {
+      delete payload.brandIconPath;
+      delete payload.brandIconName;
+    }
+    updateCompany(nextForm);
+    await updateSettingApi('company_profile', payload);
+    await invalidateAndRefetch(qc, ['settings', 'company-profile']);
+    await invalidateAndRefetch(qc, ['companies']);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qc, updateCompany]);
+  const { status, save, retry } = useAutosave(doSave);
+
+  const patch = (partial) => {
+    setForm((prev) => {
+      const next = typeof partial === 'function' ? partial(prev) : { ...prev, ...partial };
+      save(next);
+      return next;
+    });
   };
-  useSaveShortcut(save);
+  /** Fires on any nested field's blur (event bubbling) — saves current form as-is. */
+  const saveNow = () => save(form);
+  useSaveShortcut(saveNow);
 
   const uploadLogoNow = async (file) => {
     setLogoFile(file);
@@ -313,7 +302,8 @@ function CompanyProfileSection() {
   const displayIconUrl = iconPreview || form.brandIconUrl;
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-5" onBlur={saveNow}>
+      <div className="flex justify-end"><SaveStatusIndicator status={status} onRetry={retry} /></div>
       <div className="rounded-xl border border-border/70 bg-muted/30 p-4">
         <p className="text-sm font-semibold text-fg">Sidebar brand logo</p>
         <p className="text-xs text-fg-muted mt-1 mb-3">
@@ -374,18 +364,18 @@ function CompanyProfileSection() {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Input label="Company name" required placeholder="e.g. Acme Technologies Pvt. Ltd." value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-        <Select label="Industry" options={INDUSTRIES} placeholder="Select industry" value={form.industry} onChange={(e) => setForm({ ...form, industry: e.target.value })} />
-        <Select label="Company size" options={COMPANY_SIZES} placeholder="Select size" value={form.size} onChange={(e) => setForm({ ...form, size: e.target.value })} />
+        <Select label="Industry" options={INDUSTRIES} placeholder="Select industry" value={form.industry} onChange={(e) => patch({ industry: e.target.value })} />
+        <Select label="Company size" options={COMPANY_SIZES} placeholder="Select size" value={form.size} onChange={(e) => patch({ size: e.target.value })} />
         <Input label="Founded year" type="number" placeholder="e.g. 2018" value={form.foundedYear} onChange={(e) => setForm({ ...form, foundedYear: e.target.value })} />
         <Input label="Website URL" placeholder="https://www.company.com" value={form.website} onChange={(e) => setForm({ ...form, website: e.target.value })} />
         <Input label="Tagline" placeholder="e.g. Building tomorrow, today." value={form.tagline} onChange={(e) => setForm({ ...form, tagline: e.target.value })} />
-        <Select label="Financial year start" options={[{ value: 'April', label: 'April' }, { value: 'January', label: 'January' }]} value={form.fyStart || 'April'} onChange={(e) => setForm({ ...form, fyStart: e.target.value })} />
-        <Select label="Default currency" options={CURRENCIES} value={form.currency || 'INR'} onChange={(e) => setForm({ ...form, currency: e.target.value })} />
-        <Select label="Timezone" options={TIMEZONES} value={form.timezone || 'Asia/Kolkata'} onChange={(e) => setForm({ ...form, timezone: e.target.value })} />
+        <Select label="Financial year start" options={[{ value: 'April', label: 'April' }, { value: 'January', label: 'January' }]} value={form.fyStart || 'April'} onChange={(e) => patch({ fyStart: e.target.value })} />
+        <Select label="Default currency" options={CURRENCIES} value={form.currency || 'INR'} onChange={(e) => patch({ currency: e.target.value })} />
+        <Select label="Timezone" options={TIMEZONES} value={form.timezone || 'Asia/Kolkata'} onChange={(e) => patch({ timezone: e.target.value })} />
         <div className="flex flex-col gap-1.5">
           <label className="text-xs font-medium text-fg-muted">Primary brand color</label>
           <div className="flex items-center gap-2.5">
-            <input type="color" value={form.brandColor} onChange={(e) => { setForm({ ...form, brandColor: e.target.value }); updateCompany({ brandColor: e.target.value }); }} className="h-10 w-12 rounded-input border border-border bg-card cursor-pointer" />
+            <input type="color" value={form.brandColor} onChange={(e) => { patch({ brandColor: e.target.value }); updateCompany({ brandColor: e.target.value }); }} className="h-10 w-12 rounded-input border border-border bg-card cursor-pointer" />
             <Input className="flex-1" placeholder="e.g. #6C63FF" value={form.brandColor} onChange={(e) => { setForm({ ...form, brandColor: e.target.value }); if (/^#[0-9a-fA-F]{6}$/.test(e.target.value)) updateCompany({ brandColor: e.target.value }); }} />
           </div>
         </div>
@@ -397,9 +387,9 @@ function CompanyProfileSection() {
           <Input label="Address line 1" placeholder="e.g. 4th Floor, Nexus Tower" containerClass="sm:col-span-2" value={form.addressLine1} onChange={(e) => setForm({ ...form, addressLine1: e.target.value })} />
           <Input label="Address line 2" placeholder="e.g. Koramangala 5th Block" containerClass="sm:col-span-2" value={form.addressLine2} onChange={(e) => setForm({ ...form, addressLine2: e.target.value })} />
           <Input label="City" placeholder="e.g. Bengaluru" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} />
-          <Select label="State" options={STATES} placeholder="Select state" value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} />
+          <Select label="State" options={STATES} placeholder="Select state" value={form.state} onChange={(e) => patch({ state: e.target.value })} />
           <Input label="Pincode" placeholder="e.g. 560095" value={form.pincode} onChange={(e) => setForm({ ...form, pincode: e.target.value })} />
-          <Select label="Country" options={COUNTRIES} placeholder="Select country" value={form.country} onChange={(e) => setForm({ ...form, country: e.target.value })} />
+          <Select label="Country" options={COUNTRIES} placeholder="Select country" value={form.country} onChange={(e) => patch({ country: e.target.value })} />
         </div>
       </div>
 
@@ -417,10 +407,6 @@ function CompanyProfileSection() {
           <Input label="Contact email" type="email" placeholder="e.g. riya.sharma@company.com" value={form.contactEmail} onChange={(e) => setForm({ ...form, contactEmail: e.target.value })} />
           <Input label="Contact phone" placeholder="e.g. +91-9876543210" value={form.contactPhone} onChange={(e) => setForm({ ...form, contactPhone: e.target.value })} />
         </div>
-      </div>
-
-      <div className="flex justify-end">
-        <Button icon={Save} onClick={save} loading={saving} disabled={saving}>Save Changes</Button>
       </div>
     </div>
   );
@@ -493,25 +479,22 @@ const SECTION_BODY = {
 };
 
 export default function Settings() {
-  const canManageSettings = useCan('settings', 'manage');
-  const sections = canManageSettings ? SECTIONS : [];
+  // Item 1: permission for this page is already fully checked at the route
+  // level (App.jsx gates /settings behind ProtectedRoute with
+  // permission={module:'settings', action:'manage'}) — this component only
+  // ever mounts once that's confirmed. A second, independent
+  // useCan('settings','manage') check here — re-deriving the identical
+  // permission from the identical role/rolePermissions source a second
+  // time, in a second component, with its OWN different failure message —
+  // was exactly the kind of duplicate/divergent-looking check that made
+  // this bug so hard to pin down. One gate, at the route, is authoritative.
+  const sections = SECTIONS;
   const [section, setSection] = useState('company');
   const [navCollapsed, setNavCollapsed] = useState(false);
   const [hoverTip, setHoverTip] = useState(null);
   const [mobileDrilledIn, setMobileDrilledIn] = useState(false);
   const active = sections.find((s) => s.id === section) || sections[0];
   const BodyComponent = active ? SECTION_BODY[active.id] : null;
-
-  if (!canManageSettings || !active) {
-    return (
-      <div className="animate-fade-in">
-        <PageHeader title="Settings" subtitle="Global control panel — configuration, roles & policy rules" />
-        <Card className="mt-6 p-8 text-center">
-          <p className="text-sm text-fg-muted">You do not have permission to manage settings. Contact an Admin or HR.</p>
-        </Card>
-      </div>
-    );
-  }
 
   const selectSection = (id) => {
     setSection(id);

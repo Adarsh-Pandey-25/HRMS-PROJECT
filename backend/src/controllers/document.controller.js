@@ -3,6 +3,8 @@ const { uploadDocument, getSignedUrl, deleteFile, STORAGE_BUCKETS } = require('.
 const { successResponse, paginate, buildMeta } = require('../utils/helpers');
 const { BadRequestError, NotFoundError, ForbiddenError } = require('../utils/errors');
 const notificationService = require('../services/notification.service');
+const { logAudit } = require('../services/auditLog.service');
+const logger = require('../utils/logger');
 
 const companyEmployeeIds = (req) => {
   const tenant = require('../services/tenant.service');
@@ -46,20 +48,31 @@ const upload = async (req, res, next) => {
       .eq('id', employeeId)
       .maybeSingle();
 
-    const { data, error } = await supabaseAdmin
+    const basePayload = {
+      employee_id: employeeId,
+      document_type: req.body.document_type,
+      document_name: req.body.document_name,
+      document_url: path,
+      uploaded_by: req.user.id,
+      expires_at: req.body.expires_at || null,
+      is_verified: false,
+    };
+
+    let { data, error } = await supabaseAdmin
       .from('documents')
-      .insert({
-        employee_id: employeeId,
-        company_id: targetEmployee?.company_id || req.user.company_id,
-        document_type: req.body.document_type,
-        document_name: req.body.document_name,
-        document_url: path,
-        uploaded_by: req.user.id,
-        expires_at: req.body.expires_at || null,
-        is_verified: false,
-      })
+      .insert({ ...basePayload, company_id: targetEmployee?.company_id || req.user.company_id })
       .select('*, employee:employee_id(id, first_name, last_name, employee_code, email)')
       .single();
+
+    // The company_id migration hasn't landed in this environment yet — fall
+    // back to inserting without it rather than failing every upload.
+    if (error && isMissingCompanyIdColumn(error.message)) {
+      ({ data, error } = await supabaseAdmin
+        .from('documents')
+        .insert(basePayload)
+        .select('*, employee:employee_id(id, first_name, last_name, employee_code, email)')
+        .single());
+    }
 
     if (error) throw new BadRequestError(error.message);
 
@@ -81,6 +94,16 @@ const upload = async (req, res, next) => {
       });
     }
 
+    // Item 5: explicitly requested — self-service document uploads are an
+    // employee self-action worth logging, not just HR/Admin writes.
+    logAudit({
+      companyId: targetEmployee?.company_id || req.user.company_id,
+      actorId: req.user.id, actorRole: req.user.role,
+      actionType: employeeId === req.user.id ? 'document.self_upload' : 'document.upload',
+      targetType: 'document', targetId: data.id,
+      afterState: { documentType: req.body.document_type, employeeId }, ipAddress: req.ip,
+    }).catch((e) => logger.warn('Audit log failed', { error: e.message }));
+
     successResponse(res, 'Document uploaded', data, null, 201);
   } catch (err) { next(err); }
 };
@@ -99,6 +122,9 @@ const myDocuments = async (req, res, next) => {
     successResponse(res, 'Documents fetched', data, buildMeta(page, limit, count));
   } catch (err) { next(err); }
 };
+
+/** True when the documents.company_id migration hasn't been applied in this environment yet. */
+const isMissingCompanyIdColumn = (message) => /column .*company_id.* does not exist/i.test(message || '');
 
 const allDocuments = async (req, res, next) => {
   try {
@@ -119,7 +145,31 @@ const allDocuments = async (req, res, next) => {
     if (req.query.status === 'pending') query = query.eq('is_verified', false);
     if (req.query.status === 'verified') query = query.eq('is_verified', true);
 
-    const { data, error, count } = await query;
+    let { data, error, count } = await query;
+
+    // The company_id migration hasn't landed in this environment yet — fall
+    // back to the pre-migration behavior (scope by employee instead) rather
+    // than hard-failing the whole admin documents view.
+    if (error && isMissingCompanyIdColumn(error.message)) {
+      const ids = await companyEmployeeIds(req);
+      let fallbackQuery = supabaseAdmin
+        .from('documents')
+        .select('*, employee:employee_id(id, first_name, last_name, employee_code, email)')
+        .order('uploaded_at', { ascending: false })
+        .limit(5000);
+      if (req.query.status === 'pending') fallbackQuery = fallbackQuery.eq('is_verified', false);
+      if (req.query.status === 'verified') fallbackQuery = fallbackQuery.eq('is_verified', true);
+      const fallback = await fallbackQuery;
+      if (fallback.error) throw new BadRequestError(fallback.error.message);
+      const scoped = (fallback.data || []).filter((doc) => ids.includes(doc.employee_id));
+      return successResponse(
+        res,
+        'All documents fetched',
+        scoped.slice(offset, offset + limit),
+        buildMeta(page, limit, scoped.length),
+      );
+    }
+
     if (error) throw new BadRequestError(error.message);
     successResponse(res, 'All documents fetched', data || [], buildMeta(page, limit, count || 0));
   } catch (err) { next(err); }
@@ -151,7 +201,14 @@ const employeeDocuments = async (req, res, next) => {
 const remove = async (req, res, next) => {
   try {
     const doc = await requireCompanyDocument(req);
-    if (doc.employee_id !== req.user.id && !['hr', 'admin'].includes(req.user.role)) {
+    const isHrAdmin = ['hr', 'admin'].includes(req.user.role);
+    // Self-service delete is scoped to documents the employee uploaded
+    // themselves — an HR-uploaded document (offer letter, verified
+    // certificate, etc.) living under their employee_id is not theirs to
+    // remove just because it's about them. uploaded_by exists precisely to
+    // key this distinction off of.
+    const isOwnUpload = doc.employee_id === req.user.id && doc.uploaded_by === req.user.id;
+    if (!isOwnUpload && !isHrAdmin) {
       throw new ForbiddenError('Not authorized');
     }
 

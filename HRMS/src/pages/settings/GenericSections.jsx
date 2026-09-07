@@ -1,55 +1,65 @@
-import { useEffect, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
-import { Save, RefreshCw } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { RefreshCw } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { Card, CardHeader, Input, Select, Toggle, Button, Badge, ConfirmDialog } from '../../components/ui';
+import { Card, CardHeader, Input, Select, Toggle, Button, Badge, ConfirmDialog, SaveStatusIndicator } from '../../components/ui';
 import { ExportButton } from '../../components/shared/ExportButton';
 import { useSettingsStore } from '../../store/settingsStore';
 import { useCompanyStore } from '../../store/companyStore';
 import { useAuthStore } from '../../store/authStore';
 import { isPrivilegedRole } from '../../lib/permissions';
-import { updateSettingApi } from '../../api/settings.api';
+import { updateSettingApi, runBackupNowApi, fetchBackupStatusApi } from '../../api/settings.api';
 import { fetchApiKeysApi, createApiKeyApi, revokeApiKeyApi } from '../../api/apiKeys.api';
 import { exportAllCompanyData } from '../../lib/exportAllData';
 import { formatDateTime } from '../../lib/utils';
 import { invalidateAndRefetch } from '../../lib/queryCache';
 import { useAssetCategories, useAssetMutations } from '../../hooks/useModules';
+import { useCompanyFeatures } from '../../hooks/useCompanyFeatures';
+import { useAutosave } from '../../hooks/useAutosave';
+import { WebhooksSection } from './WebhooksSection';
 
-function usePersistedSettingsForm(cfg, updateStore) {
+/**
+ * Item 4: replaces the old explicit "Save Changes" pattern. `form` still
+ * exists for the widgets that build a payload up over several fields, but
+ * every toggle/select now calls `patch()` directly (autosaves the whole
+ * settings blob immediately) and every text/number field autosaves onBlur
+ * instead of waiting for a button click. `shape` optionally reshapes the
+ * form before it's sent (a couple of sections save a payload with a
+ * slightly different structure than `form` itself).
+ */
+function usePersistedSettingsForm(cfg, updateStore, settingsKey, shape = (f) => f) {
   const qc = useQueryClient();
   const [form, setForm] = useState(cfg);
-  const [saving, setSaving] = useState(false);
   useEffect(() => { setForm(cfg); }, [cfg]);
 
-  const save = async (key, payload, successMsg) => {
-    setSaving(true);
-    try {
-      await updateSettingApi(key, payload);
-      updateStore(payload);
-      await invalidateAndRefetch(qc, ['settings']);
-      toast.success(successMsg);
-    } catch (err) {
-      toast.error(err.message || 'Failed to save settings');
-    } finally {
-      setSaving(false);
-    }
-  };
+  const doSave = useCallback(async (payload) => {
+    await updateSettingApi(settingsKey, payload);
+    updateStore(payload);
+    await invalidateAndRefetch(qc, ['settings']);
+  }, [qc, updateStore, settingsKey]);
 
-  return { form, setForm, saving, save };
-}
+  const { status, save, retry } = useAutosave(doSave);
 
-function SaveFooter({ onSave, saving }) {
-  return (
-    <div className="flex justify-end">
-      <Button icon={Save} onClick={onSave} loading={saving} disabled={saving}>Save Changes</Button>
-    </div>
-  );
+  /** Merge a patch into form, update local state immediately, autosave the result. */
+  const patch = useCallback((partial) => {
+    setForm((prev) => {
+      const next = typeof partial === 'function' ? partial(prev) : { ...prev, ...partial };
+      save(shape(next));
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [save]);
+
+  /** For text/number fields: call on blur to autosave the current form as-is. */
+  const saveNow = useCallback(() => save(shape(form)), [save, form, shape]);
+
+  return { form, setForm, patch, saveNow, status, retry };
 }
 
 export function RecruitmentSettingsSection() {
   const cfg = useSettingsStore((s) => s.recruitmentConfig);
   const update = useSettingsStore((s) => s.updateRecruitmentConfig);
-  const { form, setForm, saving, save } = usePersistedSettingsForm(cfg, update);
+  const { form, patch, saveNow, status, retry } = usePersistedSettingsForm(cfg, update, 'recruitment_config');
   const [newStage, setNewStage] = useState('');
 
   const addStage = () => {
@@ -58,16 +68,17 @@ export function RecruitmentSettingsSection() {
     if ((form.stages || []).some((s) => s.toLowerCase() === name.toLowerCase())) {
       return toast.error('That stage already exists');
     }
-    setForm({ ...form, stages: [...(form.stages || []), name] });
+    patch({ stages: [...(form.stages || []), name] });
     setNewStage('');
   };
 
   const removeStage = (name) => {
-    setForm({ ...form, stages: (form.stages || []).filter((s) => s !== name) });
+    patch({ stages: (form.stages || []).filter((s) => s !== name) });
   };
 
   return (
     <div className="space-y-5">
+      <div className="flex justify-end"><SaveStatusIndicator status={status} onRetry={retry} /></div>
       <Card>
         <CardHeader title="Pipeline Stages" subtitle="Used on Candidates kanban. Rejected is always available from the candidate drawer." />
         <div className="p-5 pt-3 space-y-4">
@@ -100,18 +111,34 @@ export function RecruitmentSettingsSection() {
       <Card>
         <CardHeader title="Careers Page" />
         <div className="p-5 pt-3 space-y-4">
-          <Toggle label="Public careers page enabled" checked={form.careersPageEnabled} onChange={(v) => setForm({ ...form, careersPageEnabled: v })} />
-          <Input label="Careers page slug" hint={`careers.acmetech.in/${form.careersPageSlug}`} value={form.careersPageSlug} onChange={(e) => setForm({ ...form, careersPageSlug: e.target.value })} />
+          <Toggle label="Public careers page enabled" checked={form.careersPageEnabled} onChange={(v) => patch({ careersPageEnabled: v })} />
+          <Input
+            label="Careers page slug"
+            hint={`careers.acmetech.in/${form.careersPageSlug}`}
+            value={form.careersPageSlug}
+            onChange={(e) => setForm((f) => ({ ...f, careersPageSlug: e.target.value }))}
+            onBlur={saveNow}
+          />
         </div>
       </Card>
       <Card>
         <CardHeader title="Offer Letter Template" />
         <div className="p-5 pt-3 space-y-4">
-          <textarea className="w-full h-28 rounded-input border border-border bg-card px-3 py-2 text-sm text-fg" value={form.offerLetterTemplate} onChange={(e) => setForm({ ...form, offerLetterTemplate: e.target.value })} />
-          <Input label="Auto-reject candidates after (days of inactivity)" type="number" value={form.autoRejectAfterDays} onChange={(e) => setForm({ ...form, autoRejectAfterDays: Number(e.target.value) })} />
+          <textarea
+            className="w-full h-28 rounded-input border border-border bg-card px-3 py-2 text-sm text-fg"
+            value={form.offerLetterTemplate}
+            onChange={(e) => setForm((f) => ({ ...f, offerLetterTemplate: e.target.value }))}
+            onBlur={saveNow}
+          />
+          <Input
+            label="Auto-reject candidates after (days of inactivity)"
+            type="number"
+            value={form.autoRejectAfterDays}
+            onChange={(e) => setForm((f) => ({ ...f, autoRejectAfterDays: Number(e.target.value) }))}
+            onBlur={saveNow}
+          />
         </div>
       </Card>
-      <SaveFooter saving={saving} onSave={() => save('recruitment_config', form, 'Recruitment settings saved')} />
     </div>
   );
 }
@@ -119,26 +146,31 @@ export function RecruitmentSettingsSection() {
 export function AnnouncementSettingsSection() {
   const cfg = useSettingsStore((s) => s.announcementConfig);
   const update = useSettingsStore((s) => s.updateAnnouncementConfig);
-  const { form, setForm, saving, save } = usePersistedSettingsForm(cfg, update);
+  const { form, setForm, patch, saveNow, status, retry } = usePersistedSettingsForm(cfg, update, 'announcement_config');
 
   return (
     <div className="space-y-5">
+      <div className="flex justify-end"><SaveStatusIndicator status={status} onRetry={retry} /></div>
       <Card>
         <CardHeader title="Default Delivery Channels" />
         <div className="p-5 pt-3 space-y-4">
           <Toggle label="In-app (web)" hint="Always on" checked disabled />
-          <Toggle label="Mobile push" checked={form.defaultChannels.mobilePush} onChange={(v) => setForm({ ...form, defaultChannels: { ...form.defaultChannels, mobilePush: v } })} />
-          <Toggle label="Email" checked={form.defaultChannels.email} onChange={(v) => setForm({ ...form, defaultChannels: { ...form.defaultChannels, email: v } })} />
+          <Toggle label="Mobile push" checked={form.defaultChannels.mobilePush} onChange={(v) => patch({ defaultChannels: { ...form.defaultChannels, mobilePush: v } })} />
+          <Toggle label="Email" checked={form.defaultChannels.email} onChange={(v) => patch({ defaultChannels: { ...form.defaultChannels, email: v } })} />
         </div>
       </Card>
       <Card>
         <CardHeader title="Email Subject Template" />
         <div className="p-5 pt-3 space-y-4">
-          <Input value={form.emailSubjectTemplate} onChange={(e) => setForm({ ...form, emailSubjectTemplate: e.target.value })} hint="Variables: {{company}}, {{priority}}, {{title}}" />
-          <Toggle label="Require admin approval before publish" checked={form.requireApproval} onChange={(v) => setForm({ ...form, requireApproval: v })} />
+          <Input
+            value={form.emailSubjectTemplate}
+            onChange={(e) => setForm((f) => ({ ...f, emailSubjectTemplate: e.target.value }))}
+            onBlur={saveNow}
+            hint="Variables: {{company}}, {{priority}}, {{title}}"
+          />
+          <Toggle label="Require admin approval before publish" checked={form.requireApproval} onChange={(v) => patch({ requireApproval: v })} />
         </div>
       </Card>
-      <SaveFooter saving={saving} onSave={() => save('announcement_config', form, 'Announcement settings saved')} />
     </div>
   );
 }
@@ -146,7 +178,6 @@ export function AnnouncementSettingsSection() {
 export function AssetSettingsSection() {
   const cfg = useSettingsStore((s) => s.assetConfig);
   const update = useSettingsStore((s) => s.updateAssetConfig);
-  const { form, setForm, saving, save } = usePersistedSettingsForm(cfg, update);
   const { data: categories = [] } = useAssetCategories();
   const { createCategory } = useAssetMutations();
   const [newCategory, setNewCategory] = useState('');
@@ -155,6 +186,16 @@ export function AssetSettingsSection() {
   const categoryNames = (Array.isArray(categories) ? categories : [])
     .map((c) => (typeof c === 'string' ? c : c?.name))
     .filter(Boolean);
+
+  const shape = useCallback((f) => ({
+    categories: categoryNames.length ? categoryNames : (f.categories || []),
+    depreciationMethod: f.depreciationMethod || 'straight-line',
+    depreciationYears: Number(f.depreciationYears || 3),
+    exitRecoveryReminderDays: Number(f.exitRecoveryReminderDays || 7),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [categoryNames.join('|')]);
+
+  const { form, setForm, patch, saveNow, status, retry } = usePersistedSettingsForm(cfg, update, 'asset_config', shape);
   const displayCategories = categoryNames.length ? categoryNames : (form.categories || []);
 
   const addCategory = async () => {
@@ -166,7 +207,7 @@ export function AssetSettingsSection() {
     setAdding(true);
     try {
       await createCategory.mutateAsync({ name });
-      setForm({ ...form, categories: [...displayCategories, name] });
+      patch({ categories: [...displayCategories, name] });
       setNewCategory('');
       toast.success('Category added');
     } catch (err) {
@@ -178,6 +219,7 @@ export function AssetSettingsSection() {
 
   return (
     <div className="space-y-5">
+      <div className="flex justify-end"><SaveStatusIndicator status={status} onRetry={retry} /></div>
       <Card>
         <CardHeader title="Asset Categories" subtitle="Used in Inventory, Requests, and My Assets" />
         <div className="p-5 pt-3 space-y-4">
@@ -203,25 +245,30 @@ export function AssetSettingsSection() {
       <Card>
         <CardHeader title="Depreciation" subtitle="Book value on Asset Inventory uses this method and period" />
         <div className="p-5 pt-3 grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <Select label="Method" options={[{ value: 'straight-line', label: 'Straight-line' }, { value: 'declining-balance', label: 'Declining balance' }]} value={form.depreciationMethod} onChange={(e) => setForm({ ...form, depreciationMethod: e.target.value })} />
-          <Input label="Depreciation period (years)" type="number" min={1} value={form.depreciationYears} onChange={(e) => setForm({ ...form, depreciationYears: Number(e.target.value) })} />
+          <Select label="Method" options={[{ value: 'straight-line', label: 'Straight-line' }, { value: 'declining-balance', label: 'Declining balance' }]} value={form.depreciationMethod} onChange={(e) => patch({ depreciationMethod: e.target.value })} />
+          <Input
+            label="Depreciation period (years)"
+            type="number"
+            min={1}
+            value={form.depreciationYears}
+            onChange={(e) => setForm((f) => ({ ...f, depreciationYears: Number(e.target.value) }))}
+            onBlur={saveNow}
+          />
         </div>
       </Card>
       <Card>
         <CardHeader title="Exit Recovery" subtitle="Assigned assets of inactive employees are flagged for recovery" />
         <div className="p-5 pt-3">
-          <Input label="Reminder days before employee exit" type="number" min={0} value={form.exitRecoveryReminderDays} onChange={(e) => setForm({ ...form, exitRecoveryReminderDays: Number(e.target.value) })} />
+          <Input
+            label="Reminder days before employee exit"
+            type="number"
+            min={0}
+            value={form.exitRecoveryReminderDays}
+            onChange={(e) => setForm((f) => ({ ...f, exitRecoveryReminderDays: Number(e.target.value) }))}
+            onBlur={saveNow}
+          />
         </div>
       </Card>
-      <SaveFooter
-        saving={saving}
-        onSave={() => save('asset_config', {
-          categories: displayCategories,
-          depreciationMethod: form.depreciationMethod || 'straight-line',
-          depreciationYears: Number(form.depreciationYears || 3),
-          exitRecoveryReminderDays: Number(form.exitRecoveryReminderDays || 7),
-        }, 'Asset settings saved')}
-      />
     </div>
   );
 }
@@ -229,31 +276,35 @@ export function AssetSettingsSection() {
 export function ExpenseSettingsSection() {
   const cfg = useSettingsStore((s) => s.expenseConfig);
   const update = useSettingsStore((s) => s.updateExpenseConfig);
-  const { form, setForm, saving, save } = usePersistedSettingsForm(cfg, update);
+  const shape = useCallback((f) => ({
+    approvalFlow: f.approvalFlow || 'manager-then-hr',
+    requireReceiptAbove: Number(f.requireReceiptAbove ?? 500),
+  }), []);
+  const { form, setForm, patch, saveNow, status, retry } = usePersistedSettingsForm(cfg, update, 'expense_config', shape);
 
   return (
     <div className="space-y-5">
+      <div className="flex justify-end"><SaveStatusIndicator status={status} onRetry={retry} /></div>
       <Card>
         <CardHeader title="Approval Flow" />
         <div className="p-5 pt-3 space-y-2.5">
           {[['manager-only', 'Manager approval only'], ['manager-then-hr', 'Manager → HR']].map(([val, label]) => (
             <label key={val} className="flex items-center gap-2.5 text-sm text-fg cursor-pointer">
-              <input type="radio" name="expenseApprovalFlow" className="h-4 w-4 accent-primary" checked={form.approvalFlow === val} onChange={() => setForm({ ...form, approvalFlow: val })} />
+              <input type="radio" name="expenseApprovalFlow" className="h-4 w-4 accent-primary" checked={form.approvalFlow === val} onChange={() => patch({ approvalFlow: val })} />
               {label}
             </label>
           ))}
         </div>
       </Card>
       <Card className="p-5">
-        <Input label="Require receipt for claims above (₹)" type="number" value={form.requireReceiptAbove} onChange={(e) => setForm({ ...form, requireReceiptAbove: Number(e.target.value) })} />
+        <Input
+          label="Require receipt for claims above (₹)"
+          type="number"
+          value={form.requireReceiptAbove}
+          onChange={(e) => setForm((f) => ({ ...f, requireReceiptAbove: Number(e.target.value) }))}
+          onBlur={saveNow}
+        />
       </Card>
-      <SaveFooter
-        saving={saving}
-        onSave={() => save('expense_config', {
-          approvalFlow: form.approvalFlow || 'manager-then-hr',
-          requireReceiptAbove: Number(form.requireReceiptAbove ?? 500),
-        }, 'Expense settings saved')}
-      />
     </div>
   );
 }
@@ -265,49 +316,46 @@ export function TrainingSettingsSection() {
   const attendanceConfig = useSettingsStore((s) => s.attendanceConfig);
   const updateAttendance = useSettingsStore((s) => s.updateAttendanceConfig);
   const [form, setForm] = useState(cfg);
-  const [saving, setSaving] = useState(false);
-
   useEffect(() => { setForm(cfg); }, [cfg]);
 
-  const onSave = async () => {
-    setSaving(true);
-    try {
-      const payload = {
-        ...cfg,
-        enforceWatchOrder: Boolean(form.enforceWatchOrder),
-        notifyHrOnOverdue: Boolean(form.notifyHrOnOverdue),
-        certificateOnCompletion: Boolean(form.certificateOnCompletion),
-      };
-      const nextAttendance = {
-        ...attendanceConfig,
-        orderedNewJoinerVideos: payload.enforceWatchOrder,
-      };
-      await updateSettingApi('training_config', payload);
-      await updateSettingApi('attendance_config', nextAttendance);
-      update(payload);
-      updateAttendance(nextAttendance);
-      await invalidateAndRefetch(qc, ['settings']);
-      await invalidateAndRefetch(qc, ['training']);
-      await invalidateAndRefetch(qc, ['attendance']);
-      toast.success('Training settings saved');
-    } catch (err) {
-      toast.error(err.message || 'Failed to save training settings');
-    } finally {
-      setSaving(false);
-    }
+  const doSave = useCallback(async (nextForm) => {
+    const payload = {
+      ...cfg,
+      enforceWatchOrder: Boolean(nextForm.enforceWatchOrder),
+      notifyHrOnOverdue: Boolean(nextForm.notifyHrOnOverdue),
+      certificateOnCompletion: Boolean(nextForm.certificateOnCompletion),
+    };
+    const nextAttendance = { ...attendanceConfig, orderedNewJoinerVideos: payload.enforceWatchOrder };
+    await updateSettingApi('training_config', payload);
+    await updateSettingApi('attendance_config', nextAttendance);
+    update(payload);
+    updateAttendance(nextAttendance);
+    await invalidateAndRefetch(qc, ['settings']);
+    await invalidateAndRefetch(qc, ['training']);
+    await invalidateAndRefetch(qc, ['attendance']);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qc, cfg, attendanceConfig, update, updateAttendance]);
+  const { status, save, retry } = useAutosave(doSave);
+
+  const patch = (partial) => {
+    setForm((prev) => {
+      const next = { ...prev, ...partial };
+      save(next);
+      return next;
+    });
   };
 
   return (
     <div className="space-y-5">
+      <div className="flex justify-end"><SaveStatusIndicator status={status} onRetry={retry} /></div>
       <Card>
         <CardHeader title="Rules" />
         <div className="p-5 pt-3 space-y-4">
-          <Toggle label="Enforce watch order" hint="Next video unlocks only after the previous is completed" checked={form.enforceWatchOrder} onChange={(v) => setForm({ ...form, enforceWatchOrder: v })} />
-          <Toggle label="Notify HR when a new joiner is overdue" checked={form.notifyHrOnOverdue} onChange={(v) => setForm({ ...form, notifyHrOnOverdue: v })} />
-          <Toggle label="Issue certificate on course completion" checked={form.certificateOnCompletion} onChange={(v) => setForm({ ...form, certificateOnCompletion: v })} />
+          <Toggle label="Enforce watch order" hint="Next video unlocks only after the previous is completed" checked={form.enforceWatchOrder} onChange={(v) => patch({ enforceWatchOrder: v })} />
+          <Toggle label="Notify HR when a new joiner is overdue" checked={form.notifyHrOnOverdue} onChange={(v) => patch({ notifyHrOnOverdue: v })} />
+          <Toggle label="Issue certificate on course completion" checked={form.certificateOnCompletion} onChange={(v) => patch({ certificateOnCompletion: v })} />
         </div>
       </Card>
-      <SaveFooter saving={saving} onSave={onSave} />
     </div>
   );
 }
@@ -315,7 +363,7 @@ export function TrainingSettingsSection() {
 export function HelpdeskSettingsSection() {
   const cfg = useSettingsStore((s) => s.helpdeskConfig);
   const update = useSettingsStore((s) => s.updateHelpdeskConfig);
-  const { form, setForm, saving, save } = usePersistedSettingsForm(cfg, update);
+  const { form, setForm, patch, saveNow, status, retry } = usePersistedSettingsForm(cfg, update, 'helpdesk_config');
   const [newCategory, setNewCategory] = useState('');
 
   const addCategory = () => {
@@ -324,16 +372,17 @@ export function HelpdeskSettingsSection() {
     if ((form.categories || []).some((c) => c.toLowerCase() === name.toLowerCase())) {
       return toast.error('That category already exists');
     }
-    setForm({ ...form, categories: [...(form.categories || []), name] });
+    patch({ categories: [...(form.categories || []), name] });
     setNewCategory('');
   };
 
   const removeCategory = (name) => {
-    setForm({ ...form, categories: (form.categories || []).filter((c) => c !== name) });
+    patch({ categories: (form.categories || []).filter((c) => c !== name) });
   };
 
   return (
     <div className="space-y-5">
+      <div className="flex justify-end"><SaveStatusIndicator status={status} onRetry={retry} /></div>
       <Card>
         <CardHeader title="Categories" subtitle="Shown when raising a ticket" />
         <div className="p-5 pt-3 space-y-4">
@@ -367,32 +416,42 @@ export function HelpdeskSettingsSection() {
         <CardHeader title="SLA Rules" subtitle="Hours to resolution, by priority" />
         <div className="p-5 pt-3 grid grid-cols-2 sm:grid-cols-4 gap-4">
           {Object.entries(form.slaHours || {}).map(([priority, hours]) => (
-            <Input key={priority} label={`${priority[0].toUpperCase()}${priority.slice(1)} (hrs)`} type="number" value={hours} onChange={(e) => setForm({ ...form, slaHours: { ...form.slaHours, [priority]: Number(e.target.value) } })} />
+            <Input
+              key={priority}
+              label={`${priority[0].toUpperCase()}${priority.slice(1)} (hrs)`}
+              type="number"
+              value={hours}
+              onChange={(e) => setForm((f) => ({ ...f, slaHours: { ...f.slaHours, [priority]: Number(e.target.value) } }))}
+              onBlur={saveNow}
+            />
           ))}
         </div>
       </Card>
       <Card>
         <CardHeader title="Assignment & Escalation" />
         <div className="p-5 pt-3 space-y-4">
-          <Toggle label="Auto-assignment" hint="Route new tickets to available agents automatically" checked={form.autoAssignment} onChange={(v) => setForm({ ...form, autoAssignment: v })} />
-          <Input label="Escalate if unresolved after (hours)" type="number" value={form.escalateAfterHours} onChange={(e) => setForm({ ...form, escalateAfterHours: Number(e.target.value) })} />
+          <Toggle label="Auto-assignment" hint="Route new tickets to available agents automatically" checked={form.autoAssignment} onChange={(v) => patch({ autoAssignment: v })} />
+          <Input
+            label="Escalate if unresolved after (hours)"
+            type="number"
+            value={form.escalateAfterHours}
+            onChange={(e) => setForm((f) => ({ ...f, escalateAfterHours: Number(e.target.value) }))}
+            onBlur={saveNow}
+          />
         </div>
       </Card>
-      <SaveFooter saving={saving} onSave={() => save('helpdesk_config', form, 'Helpdesk settings saved')} />
     </div>
   );
 }
 
 export function IntegrationsSection() {
-  const cfg = useSettingsStore((s) => s.integrationsConfig);
-  const update = useSettingsStore((s) => s.updateIntegrationsConfig);
-  const { form, setForm, saving, save } = usePersistedSettingsForm(cfg, update);
-
   // API Keys are admin-only on the backend (apiKey.routes.js enforces isAdmin on every
   // action, including list). HR has full "settings" module access in the default role
   // matrix, so gate this specific card here rather than 403ing on every action.
   const role = useAuthStore((s) => s.role);
   const canManageApiKeys = isPrivilegedRole(role);
+  const enabledFeatures = useCompanyFeatures();
+  const apiAccessEnabled = enabledFeatures ? Boolean(enabledFeatures.apiAccess) : true;
 
   const [keys, setKeys] = useState([]);
   const [keysLoading, setKeysLoading] = useState(true);
@@ -423,13 +482,13 @@ export function IntegrationsSection() {
   };
 
   useEffect(() => {
-    if (!canManageApiKeys) {
+    if (!canManageApiKeys || !apiAccessEnabled) {
       setKeysLoading(false);
       return;
     }
     loadKeys();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canManageApiKeys]);
+  }, [canManageApiKeys, apiAccessEnabled]);
 
   const toggleScope = (id) => {
     setSelectedScopes((prev) =>
@@ -500,7 +559,20 @@ export function IntegrationsSection() {
           </div>
         </Card>
       )}
-      {canManageApiKeys && (
+      {canManageApiKeys && !apiAccessEnabled && (
+        <Card>
+          <CardHeader
+            title="API Keys"
+            subtitle="Give partners and devices a key instead of a user password. Keys are company-scoped; only a hash is stored."
+          />
+          <div className="p-5 pt-3">
+            <p className="text-sm text-fg-subtle">
+              API access isn't included in your company's current plan. Contact your account administrator to upgrade.
+            </p>
+          </div>
+        </Card>
+      )}
+      {canManageApiKeys && apiAccessEnabled && (
       <Card>
         <CardHeader
           title="API Keys"
@@ -635,51 +707,7 @@ export function IntegrationsSection() {
           </div>
         </Card>
       ))}
-      <Card>
-        <CardHeader title="Webhooks" subtitle="Outbound webhook endpoints for custom integrations. Endpoints are saved here but no events are dispatched to them yet." />
-        <div className="p-5 pt-3 space-y-3">
-          <Input
-            label="Add webhook URL"
-            placeholder="https://example.com/hooks/hrms"
-            value={form._newWebhook || ''}
-            onChange={(e) => setForm({ ...form, _newWebhook: e.target.value })}
-            onKeyDown={(e) => {
-              if (e.key !== 'Enter') return;
-              const url = String(form._newWebhook || '').trim();
-              if (!url) return;
-              setForm({ ...form, webhooks: [...(form.webhooks || []), url], _newWebhook: '' });
-            }}
-          />
-          {(form.webhooks || []).length === 0 ? (
-            <p className="text-sm text-fg-subtle">No webhooks configured yet. Press Enter to add a URL.</p>
-          ) : (
-            <ul className="space-y-2">
-              {form.webhooks.map((w, i) => (
-                <li key={`${w}-${i}`} className="flex items-center justify-between gap-2 text-sm text-fg font-mono">
-                  <span className="truncate">{w}</span>
-                  <button
-                    type="button"
-                    className="text-xs text-danger shrink-0"
-                    onClick={() => setForm({ ...form, webhooks: form.webhooks.filter((_, idx) => idx !== i) })}
-                  >
-                    Remove
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </Card>
-      <SaveFooter
-        saving={saving}
-        onSave={() => {
-          const { _newWebhook, ...rest } = form;
-          return save('integrations_config', {
-            ...rest,
-            webhooks: rest.webhooks || [],
-          }, 'Integrations settings saved');
-        }}
-      />
+      <WebhooksSection />
       <ConfirmDialog
         open={Boolean(revokeTarget)}
         onClose={() => setRevokeTarget(null)}
@@ -697,27 +725,39 @@ export function IntegrationsSection() {
 export function SecuritySection() {
   const cfg = useSettingsStore((s) => s.securityConfig);
   const update = useSettingsStore((s) => s.updateSecurityConfig);
-  const { form, setForm, saving, save } = usePersistedSettingsForm(cfg, update);
+  const { form, setForm, patch, saveNow, status, retry } = usePersistedSettingsForm(cfg, update, 'security_config');
 
   return (
     <div className="space-y-5">
+      <div className="flex justify-end"><SaveStatusIndicator status={status} onRetry={retry} /></div>
       <Card>
         <CardHeader title="Password Policy" subtitle="Requirements for all user account passwords" />
         <div className="p-5 pt-3 space-y-4">
-          <Input label="Minimum length" type="number" value={form.passwordMinLength} onChange={(e) => setForm({ ...form, passwordMinLength: Number(e.target.value) })} />
-          <Toggle label="Require a special character" checked={form.passwordRequireSpecialChar} onChange={(v) => setForm({ ...form, passwordRequireSpecialChar: v })} />
-          <Toggle label="Require a number" checked={form.passwordRequireNumber} onChange={(v) => setForm({ ...form, passwordRequireNumber: v })} />
+          <Input
+            label="Minimum length"
+            type="number"
+            value={form.passwordMinLength}
+            onChange={(e) => setForm((f) => ({ ...f, passwordMinLength: Number(e.target.value) }))}
+            onBlur={saveNow}
+          />
+          <Toggle label="Require a special character" checked={form.passwordRequireSpecialChar} onChange={(v) => patch({ passwordRequireSpecialChar: v })} />
+          <Toggle label="Require a number" checked={form.passwordRequireNumber} onChange={(v) => patch({ passwordRequireNumber: v })} />
         </div>
       </Card>
       <Card>
         <CardHeader title="Session & Access" />
         <div className="p-5 pt-3 space-y-4">
-          <Toggle label="Two-factor authentication" hint="Require 2FA for all admin and HR accounts" checked={form.twoFactorEnabled} onChange={(v) => setForm({ ...form, twoFactorEnabled: v })} />
-          <Input label="Session timeout (minutes)" type="number" value={form.sessionTimeoutMinutes} onChange={(e) => setForm({ ...form, sessionTimeoutMinutes: Number(e.target.value) })} />
-          <Toggle label="Audit log" hint="Record all admin actions for compliance" checked={form.auditLogEnabled} onChange={(v) => setForm({ ...form, auditLogEnabled: v })} />
+          <Toggle label="Two-factor authentication" hint="Require 2FA for all admin and HR accounts" checked={form.twoFactorEnabled} onChange={(v) => patch({ twoFactorEnabled: v })} />
+          <Input
+            label="Session timeout (minutes)"
+            type="number"
+            value={form.sessionTimeoutMinutes}
+            onChange={(e) => setForm((f) => ({ ...f, sessionTimeoutMinutes: Number(e.target.value) }))}
+            onBlur={saveNow}
+          />
+          <Toggle label="Audit log" hint="Record all admin actions for compliance" checked={form.auditLogEnabled} onChange={(v) => patch({ auditLogEnabled: v })} />
         </div>
       </Card>
-      <SaveFooter saving={saving} onSave={() => save('security_config', form, 'Security settings saved')} />
     </div>
   );
 }
@@ -726,8 +766,12 @@ export function DataBackupSection() {
   const cfg = useSettingsStore((s) => s.backupConfig);
   const update = useSettingsStore((s) => s.updateBackupConfig);
   const companyName = useCompanyStore((s) => s.company.name);
-  const { form, setForm, saving, save } = usePersistedSettingsForm(cfg, update);
+  const { form, setForm, patch, saveNow, status, retry } = usePersistedSettingsForm(cfg, update, 'backup_config');
   const [exporting, setExporting] = useState(false);
+  const [runningBackup, setRunningBackup] = useState(false);
+  const qc = useQueryClient();
+
+  const { data: lastBackup } = useQuery({ queryKey: ['settings', 'backup-status'], queryFn: fetchBackupStatusApi });
 
   const handleExportAll = async (format) => {
     setExporting(true);
@@ -738,27 +782,57 @@ export function DataBackupSection() {
     }
   };
 
+  const handleRunBackupNow = async () => {
+    setRunningBackup(true);
+    try {
+      await runBackupNowApi();
+      toast.success('Backup completed');
+      await invalidateAndRefetch(qc, ['settings', 'backup-status']);
+    } catch (err) {
+      toast.error(err.message || 'Backup failed');
+    } finally {
+      setRunningBackup(false);
+    }
+  };
+
   return (
     <div className="space-y-5">
+      <div className="flex justify-end"><SaveStatusIndicator status={status} onRetry={retry} /></div>
       <Card>
         <CardHeader
           title="Automatic Backups"
-          subtitle="Not yet implemented — no scheduled or on-demand backups run today. These controls are disabled until real backup infrastructure is wired up."
+          subtitle={
+            lastBackup
+              ? `Last backup: ${formatDateTime(lastBackup.completedAt || lastBackup.startedAt)} (${lastBackup.status}, ${lastBackup.triggeredBy})`
+              : 'No backup has run yet.'
+          }
           action={(
-            <Button size="sm" variant="outline" icon={RefreshCw} disabled title="Not yet implemented">
+            <Button size="sm" variant="outline" icon={RefreshCw} loading={runningBackup} onClick={handleRunBackupNow}>
               Run Backup Now
             </Button>
           )}
         />
         <div className="p-5 pt-3 space-y-4">
-          <Toggle label="Auto-backup enabled" checked={form.autoBackupEnabled} disabled onChange={() => {}} />
-          <Select label="Frequency" disabled options={[{ value: 'daily', label: 'Daily' }, { value: 'weekly', label: 'Weekly' }, { value: 'monthly', label: 'Monthly' }]} value={form.autoBackupFrequency} onChange={() => {}} />
+          <Toggle label="Auto-backup enabled" checked={form.autoBackupEnabled} onChange={(v) => patch({ autoBackupEnabled: v })} />
+          <Select label="Frequency" options={[{ value: 'daily', label: 'Daily' }, { value: 'weekly', label: 'Weekly' }, { value: 'monthly', label: 'Monthly' }]} value={form.autoBackupFrequency} onChange={(e) => patch({ autoBackupFrequency: e.target.value })} />
+          <p className="text-xs text-fg-subtle">
+            Backs up employees, leaves, reimbursements, assets, tickets, recruitment, payroll, and the last 90 days of attendance to private cloud storage. Does not include uploaded documents or payslip PDFs — those already live in their own storage separately.
+          </p>
         </div>
       </Card>
       <Card>
         <CardHeader title="Data Retention" />
-        <div className="p-5 pt-3">
-          <Input label="Retain data for (months)" type="number" value={form.dataRetentionMonths} onChange={(e) => setForm({ ...form, dataRetentionMonths: Number(e.target.value) })} />
+        <div className="p-5 pt-3 space-y-2">
+          <Input
+            label="Retain data for (months)"
+            type="number"
+            value={form.dataRetentionMonths}
+            onChange={(e) => setForm((f) => ({ ...f, dataRetentionMonths: Number(e.target.value) }))}
+            onBlur={saveNow}
+          />
+          <p className="text-xs text-fg-subtle">
+            This number is not yet enforced — no job deletes or archives data based on it. Deliberately: most records here (payroll, attendance, tax-relevant employment history) may carry legal retention minimums that could exceed whatever's set here, and applying this automatically without a documented, legally-reviewed policy risks deleting data a company is required to keep. Distinct from Supabase's own point-in-time recovery (an infrastructure-level setting, separate from this app).
+          </p>
         </div>
       </Card>
       <Card>
@@ -774,7 +848,6 @@ export function DataBackupSection() {
           />
         </div>
       </Card>
-      <SaveFooter saving={saving} onSave={() => save('backup_config', form, 'Backup settings saved')} />
     </div>
   );
 }

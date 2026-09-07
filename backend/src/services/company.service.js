@@ -255,7 +255,7 @@ const createChild = async (actorCompanyId, actorUserId, { name, slug } = {}) => 
     const verify = await getCompanyById(childId);
     if (!verify || verify.company_type !== 'child') {
       throw new BadRequestError(
-        'Failed to create child company. Ensure migration 20260723_company_hierarchy.sql is applied in Supabase.',
+        'Failed to create child company. Ensure the 20260723_company_hierarchy section of backend/supabase/COMPLETE_DATABASE_SETUP.sql is applied in Supabase.',
       );
     }
   }

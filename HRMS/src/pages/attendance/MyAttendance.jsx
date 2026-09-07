@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { LogIn, LogOut, Clock, UserCheck, Home, UserX, CheckCircle2, MapPin } from 'lucide-react';
-import { PageHeader, Card, Button, Modal, EmptyState, Skeleton } from '../../components/ui';
+import { PageHeader, Card, Button, Modal, EmptyState, Skeleton, StatusBadge } from '../../components/ui';
 import { AttendanceCalendar } from '../../components/shared/AttendanceCalendar';
 import { cn, formatDate } from '../../lib/utils';
 import {
@@ -11,6 +11,33 @@ import toast from 'react-hot-toast';
 
 const GOAL_HOURS = 9;
 const GOAL_MS = GOAL_HOURS * 60 * 60 * 1000;
+
+/**
+ * Section E: requested at the moment of check-in/out, not page load — a
+ * permission prompt on every page load would be intrusive and often
+ * denied reflexively. Resolves null (not throws) when geofencing isn't
+ * on for this company, so callers only pay the permission-prompt cost
+ * when it's actually needed.
+ */
+function requestGeolocation() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) {
+      reject(new Error('Location is not available in this browser.'));
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }),
+      (err) => {
+        if (err.code === err.PERMISSION_DENIED) {
+          reject(new Error('Location access was denied. Please allow location access and try again.'));
+        } else {
+          reject(new Error('Could not determine your location. Please try again.'));
+        }
+      },
+      { enableHighAccuracy: true, timeout: 10_000, maximumAge: 0 },
+    );
+  });
+}
 
 const STAT_CARDS = [
   { key: 'present', label: 'Present', tone: 'text-success', icon: UserCheck, filter: (a) => a.status !== 'wfh' && ['present', 'late', 'early_departure'].includes(a.status) },
@@ -32,6 +59,11 @@ function formatDuration(ms) {
 function formatClockLabel(timeStr) {
   if (!timeStr) return '—';
   return timeStr.length >= 5 ? timeStr.slice(0, 5) : timeStr;
+}
+
+const METHOD_LABEL = { biometric: 'Biometric', office_ip: 'Office network', web: 'Web' };
+function methodHint(method) {
+  return method && method !== 'web' ? METHOD_LABEL[method] || method : null;
 }
 
 export default function MyAttendance() {
@@ -77,6 +109,13 @@ export default function MyAttendance() {
   );
   const checkInTime = todayRecord?.checkIn || null;
   const checkOutTime = todayRecord?.checkOut || null;
+  const checkInMethod = todayRecord?.checkInMethod || null;
+  const checkOutMethod = todayRecord?.checkOutMethod || null;
+  // Only biometric-sourced rows ever have a non-'finalized' lifecycle —
+  // web/manual/office_ip rows are always 'finalized' the instant they're
+  // written, so this block only renders for checkInMethod === 'biometric'.
+  const checkoutStatus = todayRecord?.checkoutStatus || 'finalized';
+  const isBiometricToday = checkInMethod === 'biometric';
 
   const permanentWfh = checkContext?.attendanceMode === 'wfh';
   const dailyWfhStatus = checkContext?.dailyWfhStatus || null;
@@ -150,7 +189,14 @@ export default function MyAttendance() {
   const ipAllowed = checkContext?.canCheckInFromThisIp !== false;
   const ipEnforced = checkContext?.officeIpRequired !== false && checkContext?.ipRequiredForWeb !== false;
   const privilegedAttendance = role === 'admin' || role === 'hr';
-  const canClockIn = privilegedAttendance || !ipEnforced || ipAllowed || wfhApproved;
+  // Web Check-in toggle (Settings > Attendance Config) applies to every
+  // role, including admin/hr — the server's assertMethodAllowed doesn't
+  // special-case privileged roles either. Never gates Clock Out: someone
+  // already clocked in before the toggle was turned off must still be able
+  // to close their session (checkOut has no method-enabled check at all).
+  const webCheckInEnabled = checkContext?.webCheckInEnabled !== false;
+  const canClockIn = webCheckInEnabled
+    && (privilegedAttendance || !ipEnforced || ipAllowed || wfhApproved || Boolean(checkContext?.gpsGeofenceOn));
 
   const handleRequestWfh = async () => {
     try {
@@ -173,24 +219,43 @@ export default function MyAttendance() {
     }
   };
 
-  /** Web-only check-in (desktop or phone browser) — office IP is the only gate. */
+  /** Web check-in (desktop or phone browser) — office IP and/or GPS geofence, per company config. */
   const handleClock = async () => {
     try {
+      // Section E: requested at the moment of check-in/out, not page load.
+      // Skipped entirely for WFH/privileged/geofencing-off — no permission
+      // prompt shown when it isn't actually needed.
+      const needsLocation = Boolean(checkContext?.gpsGeofenceOn) && !wfhApproved && !privilegedAttendance;
+      let location;
+      if (needsLocation) {
+        const toastId = toast.loading('Getting your location…');
+        try {
+          location = await requestGeolocation();
+          toast.dismiss(toastId);
+        } catch (geoErr) {
+          toast.dismiss(toastId);
+          toast.error(geoErr.message);
+          return;
+        }
+      }
+
       if (clockedIn) {
-        await checkOut.mutateAsync({ method: 'web' });
+        await checkOut.mutateAsync({ method: 'web', location });
         toast.success('Clocked out successfully');
       } else {
         if (!canClockIn) {
           toast.error(
-            wfhPending
-              ? 'WFH request is still pending Manager/HR approval'
-              : canRequestDailyWfh
-                ? `Check-in blocked — your IP (${checkContext?.clientIp}) is not on the approved network. Request WFH for today (needs Manager/HR approval).`
-                : `Check-in blocked — your IP (${checkContext?.clientIp}) is not on the approved network.`
+            !webCheckInEnabled
+              ? 'Web check-in is disabled for your company. Contact HR.'
+              : wfhPending
+                ? 'WFH request is still pending Manager/HR approval'
+                : canRequestDailyWfh
+                  ? `Check-in blocked — your IP (${checkContext?.clientIp}) is not on the approved network. Request WFH for today (needs Manager/HR approval).`
+                  : `Check-in blocked — your IP (${checkContext?.clientIp}) is not on the approved network.`
           );
           return;
         }
-        await checkIn.mutateAsync({ method: 'web', is_wfh: Boolean(wfhApproved) });
+        await checkIn.mutateAsync({ method: 'web', is_wfh: Boolean(wfhApproved), location });
         toast.success(
           wfhApproved
             ? 'Clocked in as WFH — 9h goal timer started'
@@ -234,12 +299,29 @@ export default function MyAttendance() {
             <div className="flex-1 rounded-xl bg-muted/50 px-3 py-2">
               <p className="text-[10px] uppercase tracking-wide text-fg-subtle">Check-in</p>
               <p className="text-sm font-semibold text-success tabular-nums">{formatClockLabel(checkInTime)}</p>
+              {methodHint(checkInMethod) && <p className="text-[10px] text-fg-subtle mt-0.5">via {methodHint(checkInMethod)}</p>}
             </div>
             <div className="flex-1 rounded-xl bg-muted/50 px-3 py-2">
               <p className="text-[10px] uppercase tracking-wide text-fg-subtle">Check-out</p>
               <p className="text-sm font-semibold text-danger tabular-nums">{formatClockLabel(checkOutTime)}</p>
+              {methodHint(checkOutMethod) && <p className="text-[10px] text-fg-subtle mt-0.5">via {methodHint(checkOutMethod)}</p>}
             </div>
           </div>
+
+          {isBiometricToday && checkoutStatus === 'pending' && (
+            <p className="flex items-center gap-1.5 text-[11px] text-info mb-3">
+              <Clock className="h-3 w-3 shrink-0" />
+              Checked in — still in progress. Checkout appears once your shift's grace period passes.
+            </p>
+          )}
+          {isBiometricToday && (checkoutStatus === 'provisional' || checkoutStatus === 'finalized') && todayRecord?.status && (
+            <div className="flex items-center gap-2 mb-3">
+              <StatusBadge status={todayRecord.status} />
+              {checkoutStatus === 'provisional' && (
+                <span className="text-[11px] text-warning font-medium">may still update</span>
+              )}
+            </div>
+          )}
 
           {showWfhControls && (
             <div className="w-full max-w-[280px] mb-4 rounded-xl border border-border bg-background px-3 py-2.5 text-left space-y-2">
@@ -282,16 +364,22 @@ export default function MyAttendance() {
             </p>
           )}
 
-          <Button
-            variant={clockedIn ? 'danger' : 'primary'}
-            icon={clockedIn ? LogOut : LogIn}
-            onClick={handleClock}
-            size="lg"
-            disabled={checkIn.isPending || checkOut.isPending || (!clockedIn && !canClockIn)}
-            loading={checkIn.isPending || checkOut.isPending}
-          >
-            {clockedIn ? 'Clock Out' : wfhApproved ? 'Clock In (WFH)' : 'Clock In'}
-          </Button>
+          {!clockedIn && !webCheckInEnabled ? (
+            <p className="text-xs text-fg-subtle text-center max-w-[240px]">
+              Web check-in is disabled for your company. Contact HR if you need to check in.
+            </p>
+          ) : (
+            <Button
+              variant={clockedIn ? 'danger' : 'primary'}
+              icon={clockedIn ? LogOut : LogIn}
+              onClick={handleClock}
+              size="lg"
+              disabled={checkIn.isPending || checkOut.isPending || (!clockedIn && !canClockIn)}
+              loading={checkIn.isPending || checkOut.isPending}
+            >
+              {clockedIn ? 'Clock Out' : wfhApproved ? 'Clock In (WFH)' : 'Clock In'}
+            </Button>
+          )}
 
           {checkContext && (
             <p className={cn(

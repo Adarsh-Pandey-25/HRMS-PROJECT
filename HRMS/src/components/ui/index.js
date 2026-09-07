@@ -21,3 +21,4 @@ export { RichTextEditor } from './RichTextEditor';
 export { DateRangePicker } from './DateRangePicker';
 export { AnnouncementCard } from './AnnouncementCard';
 export { Toggle } from './Toggle';
+export { SaveStatusIndicator } from './SaveStatusIndicator';

@@ -14,6 +14,7 @@
   Settings,
   Building2,
   BarChart3,
+  ShieldCheck,
 } from 'lucide-react';
 import { canRole, isPrivilegedRole } from './permissions';
 
@@ -71,6 +72,7 @@ export const NAV_ITEMS = [
   {
     icon: DollarSign,
     label: 'Payroll',
+    featureKey: 'payroll',
     children: [
       { label: 'My Payslips', path: '/payroll/me', permission: { module: 'payroll', action: 'view' }, ...SELF_SERVICE },
       { label: 'Run Payroll', path: '/payroll/run', permission: { module: 'payroll', action: 'manage' } },
@@ -82,6 +84,7 @@ export const NAV_ITEMS = [
     icon: Briefcase,
     label: 'Recruitment',
     permission: { module: 'recruitment', action: 'view' },
+    featureKey: 'recruitment',
     children: [
       { label: 'Job Openings', path: '/recruitment/jobs', permission: { module: 'recruitment', action: 'view' } },
       { label: 'Add Job', path: '/recruitment/jobs/add', permission: { module: 'recruitment', action: 'create' } },
@@ -103,6 +106,7 @@ export const NAV_ITEMS = [
   {
     icon: BookOpen,
     label: 'Training',
+    featureKey: 'training',
     children: [
       { label: 'Course Catalog', path: '/training/catalog', permission: { module: 'training', action: 'view' } },
       { label: 'My Trainings', path: '/training/me', permission: { module: 'training', action: 'view' }, ...SELF_SERVICE },
@@ -112,6 +116,7 @@ export const NAV_ITEMS = [
   {
     icon: Monitor,
     label: 'Assets',
+    featureKey: 'assets',
     children: [
       { label: 'My Assets', path: '/assets/me', permission: { module: 'assets', action: 'view' }, ...SELF_SERVICE },
       { label: 'Asset Inventory', path: '/assets/inventory', permission: { module: 'assets', action: 'edit' } },
@@ -132,6 +137,7 @@ export const NAV_ITEMS = [
   {
     icon: LifeBuoy,
     label: 'Helpdesk',
+    featureKey: 'helpdesk',
     children: [
       { label: 'My Tickets', path: '/helpdesk/me', permission: { module: 'helpdesk', action: 'view' }, ...SELF_SERVICE },
       { label: 'Raise Ticket', path: '/helpdesk/new', permission: { module: 'helpdesk', action: 'create' }, ...SELF_SERVICE },
@@ -144,6 +150,18 @@ export const NAV_ITEMS = [
     label: 'Reports',
     path: '/reports',
     permission: { module: 'reports', action: 'view' },
+    // camelCase to match the shape /companies/me/features actually returns
+    // (see company.controller.js's myFeatures) — a snake_case key here would
+    // silently never match and hide this nav item unconditionally.
+    featureKey: 'advancedReports',
+  },
+  {
+    icon: ShieldCheck,
+    label: 'Audit Log',
+    path: '/audit-log',
+    // Not delegable via the configurable RBAC matrix — matches the backend
+    // route's isHROrAdmin gate exactly, not a module/action permission.
+    roles: ['admin', 'hr'],
   },
 ];
 
@@ -152,9 +170,18 @@ export const PINNED_NAV_ITEMS = [
   { icon: Settings, label: 'Settings', path: '/settings', permission: { module: 'settings', action: 'manage' } },
 ];
 
-function allowed(item, role, rolePermissions) {
+/**
+ * enabledFeatures is a { key: boolean } map from GET /companies/me/features
+ * (item 5) — undefined/missing means "not loaded yet or not gated," so a
+ * plain role/permission check still applies and nothing is hidden while the
+ * features request is in flight. Checked independently of role/permission:
+ * a company without the feature hides the item for EVERY role, not just
+ * some.
+ */
+function allowed(item, role, rolePermissions, enabledFeatures) {
   if (item.excludeRoles?.includes(role)) return false;
   if (item.roles && !item.roles.includes(role)) return false;
+  if (item.featureKey && enabledFeatures && enabledFeatures[item.featureKey] === false) return false;
   if (isPrivilegedRole(role)) return true;
   if (item.permission) {
     return canRole(rolePermissions, role, item.permission.module, item.permission.action);
@@ -162,16 +189,16 @@ function allowed(item, role, rolePermissions) {
   return true;
 }
 
-export function visibleNav(role, rolePermissions) {
-  return NAV_ITEMS.filter((item) => allowed(item, role, rolePermissions))
+export function visibleNav(role, rolePermissions, enabledFeatures) {
+  return NAV_ITEMS.filter((item) => allowed(item, role, rolePermissions, enabledFeatures))
     .map((item) => (item.children
-      ? { ...item, children: item.children.filter((c) => allowed(c, role, rolePermissions)) }
+      ? { ...item, children: item.children.filter((c) => allowed(c, role, rolePermissions, enabledFeatures)) }
       : item))
     .filter((item) => !item.children || item.children.length > 0);
 }
 
-export function visiblePinnedItems(role, rolePermissions) {
-  return PINNED_NAV_ITEMS.filter((item) => allowed(item, role, rolePermissions));
+export function visiblePinnedItems(role, rolePermissions, enabledFeatures) {
+  return PINNED_NAV_ITEMS.filter((item) => allowed(item, role, rolePermissions, enabledFeatures));
 }
 
 export const DEPARTMENTS = [
@@ -207,6 +234,7 @@ export const STATUS_TONE = {
   probation: 'warning',
   'on-leave': 'info',
   resigned: 'neutral',
+  offboarded: 'neutral',
   terminated: 'danger',
   'pending-setup': 'warning',
   // generic workflow
@@ -219,6 +247,15 @@ export const STATUS_TONE = {
   processed: 'info',
   'auto-processed': 'teal',
   paid: 'success',
+  // subscription billing
+  trialing: 'info',
+  past_due: 'warning',
+  grace_period: 'warning',
+  suspended: 'danger',
+  expired: 'neutral',
+  failed: 'danger',
+  refunded: 'neutral',
+  void: 'neutral',
   // attendance
   present: 'success',
   absent: 'danger',

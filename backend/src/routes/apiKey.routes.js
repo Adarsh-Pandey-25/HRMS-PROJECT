@@ -3,6 +3,7 @@ const apiKeyController = require('../controllers/apiKey.controller');
 const { authenticate } = require('../middleware/auth.middleware');
 const { isAdmin } = require('../middleware/role.middleware');
 const { validate } = require('../middleware/validation.middleware');
+const { requireFeature } = require('../middleware/featureGate.middleware');
 const { body } = require('express-validator');
 const { uuidParam } = require('../utils/validators');
 
@@ -10,6 +11,7 @@ const router = express.Router();
 
 router.use(authenticate);
 router.use(isAdmin);
+router.use(requireFeature('api_access'));
 
 router.get('/scopes', apiKeyController.scopes);
 router.get('/', apiKeyController.list);

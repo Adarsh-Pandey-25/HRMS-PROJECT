@@ -4,6 +4,7 @@ import { Button } from '../ui/Button';
 import { useDropdown, handleMenuArrowKeys } from '../../hooks/useDropdown';
 import { exportData, EXPORT_FORMATS } from '../../lib/export';
 import { useCompanyStore } from '../../store/companyStore';
+import { useExportAuthorization, useFreshExportCheck, EXPORT_BLOCKED_MESSAGE } from '../../hooks/useExportAuthorization';
 import { cn } from '../../lib/utils';
 
 const FORMAT_ICONS = {
@@ -35,9 +36,18 @@ export function ExportButton({
   const { open, setOpen, close, containerRef, triggerRef } = useDropdown();
   const storeCompanyName = useCompanyStore((s) => s.company.name);
   const companyName = companyNameProp ?? storeCompanyName;
+  const { allowed: exportAllowed } = useExportAuthorization();
+  const freshExportCheck = useFreshExportCheck();
 
   const runExport = async (format) => {
     close();
+    // Defense in depth: re-check fresh (not the cached hook value) right
+    // before actually running the export, in case status changed since
+    // the button was rendered.
+    if (!(await freshExportCheck())) {
+      toast.error(EXPORT_BLOCKED_MESSAGE);
+      return;
+    }
     if (onExport) {
       try {
         const ok = await onExport(format.id);
@@ -77,12 +87,13 @@ export function ExportButton({
         variant={variant}
         size={size}
         icon={Download}
-        disabled={disabled || loading}
+        disabled={disabled || loading || !exportAllowed}
         loading={loading}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
         className="gap-1"
+        title={exportAllowed ? undefined : EXPORT_BLOCKED_MESSAGE}
       >
         {showLabel && label}
         <ChevronDown className={cn('h-3.5 w-3.5 opacity-70 transition-transform', open && 'rotate-180')} />

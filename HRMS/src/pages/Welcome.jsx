@@ -18,7 +18,7 @@ export default function Welcome() {
           <span className="text-white font-bold text-2xl leading-none">H</span>
         </div>
 
-        <h1 className="text-3xl font-semibold text-fg">SPAXADS HRMS</h1>
+        <h1 className="text-3xl font-semibold text-fg">HRMS</h1>
         <p className="mt-2 text-base text-fg-muted">Modern HR, simplified. Sign in to your company workspace.</p>
 
         <div className="mt-8 space-y-2.5 text-left">

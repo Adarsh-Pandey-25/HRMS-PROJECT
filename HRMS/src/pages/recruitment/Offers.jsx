@@ -1,13 +1,25 @@
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import { PageHeader, Card, CardHeader, Avatar, StatusBadge, EmptyState, Skeleton, Select } from '../../components/ui';
-import { useOffers, useJobs, useCandidateChecklist, useToggleCandidateChecklistItem } from '../../hooks/useModules';
+import { PageHeader, Card, CardHeader, Avatar, StatusBadge, EmptyState, Skeleton, Select, Button } from '../../components/ui';
+import {
+  useOffers, useJobs, useCandidateChecklist, useToggleCandidateChecklistItem, useRecruitmentMutations,
+} from '../../hooks/useModules';
 import { formatCurrency } from '../../lib/utils';
 
 export default function Offers() {
   const { data: offers = [], isLoading: offersLoading } = useOffers();
   const { data: jobs = [] } = useJobs();
+  const { updateOfferStatus } = useRecruitmentMutations();
   const jobTitle = (jobId) => jobs.find((j) => j.id === jobId)?.title || 'Role';
+
+  const handleOfferStatus = async (id, status) => {
+    try {
+      await updateOfferStatus.mutateAsync({ id, status });
+      toast.success(status === 'accepted' ? 'Offer marked accepted' : 'Offer marked declined');
+    } catch (err) {
+      toast.error(err.message || 'Failed to update offer');
+    }
+  };
 
   // Onboarding Checklist is per-candidate. Accepted offers are the candidates
   // who actually need onboarding, so that's the pool to pick from — default
@@ -51,10 +63,31 @@ export default function Offers() {
                     <p className="text-[11px] text-fg-subtle mt-0.5">Joining {o.joiningDate || o.joining_date}</p>
                   ) : null}
                 </div>
-                <StatusBadge
-                  status={o.status === 'accepted' ? 'approved' : 'pending'}
-                  label={o.status === 'accepted' ? 'Accepted' : humanizeStatus(o.status)}
-                />
+                {(o.status || 'pending') === 'pending' ? (
+                  <div className="flex items-center gap-2 shrink-0">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleOfferStatus(o.id, 'declined')}
+                      disabled={updateOfferStatus.isPending}
+                    >
+                      Decline
+                    </Button>
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={() => handleOfferStatus(o.id, 'accepted')}
+                      disabled={updateOfferStatus.isPending}
+                    >
+                      Accept
+                    </Button>
+                  </div>
+                ) : (
+                  <StatusBadge
+                    status={o.status === 'accepted' ? 'approved' : o.status === 'declined' ? 'rejected' : 'pending'}
+                    label={humanizeStatus(o.status)}
+                  />
+                )}
               </div>
             ))}
           </div>

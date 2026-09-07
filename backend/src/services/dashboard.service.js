@@ -65,7 +65,16 @@ const getActiveEmployees = async (companyId = null) => {
     .from('employees')
     .select('id, first_name, last_name, email, department, designation, role, date_of_joining, date_of_birth, created_at, address, company_id')
     .eq('is_active', true)
-    .order('first_name');
+    .order('first_name')
+    // Capped, not a bare count — this feeds headcount trend, department
+    // breakdown, birthday/anniversary detection, and team-scoping for the
+    // rest of the Admin/HR dashboard downstream, all of which genuinely
+    // need row-level data (date_of_birth, date_of_joining, department,
+    // role), not just a total. A COUNT()-only query (as originally
+    // suggested for M-15) would silently break all of those. Same cap
+    // tenant.service.js's getCompanyEmployeeIds already uses for the
+    // identical "unbounded roster fetch, single company" shape.
+    .limit(5000);
 
   if (companyId) query = query.eq('company_id', companyId);
   // employees.role is a Postgres enum (admin/hr/manager/employee) — never include super_admin here
@@ -1227,10 +1236,10 @@ const getTeamPerformance = async (managerId, companyId, limit = 4) => {
 };
 
 const getManagerDashboard = async (managerId) => {
-  const teamIds = await getTeamEmployeeIds(managerId);
   const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
   const { data: mgr } = await supabaseAdmin.from('employees').select('address').eq('id', managerId).maybeSingle();
   const companyId = mgr ? getCompanyId(mgr) : DEFAULT_COMPANY_ID;
+  const teamIds = await getTeamEmployeeIds(managerId, companyId);
 
   const { data: teamMembers, error: teamError } = await supabaseAdmin
     .from('employees')

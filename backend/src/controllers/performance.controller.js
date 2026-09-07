@@ -52,7 +52,7 @@ const updateReview = async (req, res, next) => {
 
 const createGoal = async (req, res, next) => {
   try {
-    const data = await performanceService.createGoal(req.user.id, req.body);
+    const data = await performanceService.createGoal(req.user.id, req.body, companyIdOf(req));
     successResponse(res, 'Goal created', data, null, 201);
   } catch (err) { next(err); }
 };

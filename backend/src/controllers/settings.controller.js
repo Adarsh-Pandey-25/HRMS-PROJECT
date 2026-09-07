@@ -1,10 +1,30 @@
 const settingsService = require('../services/settings.service');
+const backupService = require('../services/backup.service');
 const { supabaseAdmin } = require('../config/supabase');
 const { uploadCompanyLogo, uploadCompanyBrandIcon, getSignedUrl, STORAGE_BUCKETS } = require('../services/storage.service');
 const { successResponse } = require('../utils/helpers');
 const { BadRequestError, NotFoundError } = require('../utils/errors');
 const { LEAVE_TYPES } = require('../utils/constants');
+const { getCompanyId } = require('../utils/tenant');
 const logger = require('../utils/logger');
+
+/** Item 6: real on-demand backup — used to be a disabled "Not yet implemented" button. */
+const runBackupNow = async (req, res, next) => {
+  try {
+    const companyId = req.user.company_id || getCompanyId(req.user);
+    const log = await backupService.runBackup(companyId, 'manual', req.user.id);
+    if (log?.status === 'failed') throw new BadRequestError(log.error || 'Backup failed');
+    successResponse(res, 'Backup completed', log);
+  } catch (err) { next(err); }
+};
+
+const getBackupStatus = async (req, res, next) => {
+  try {
+    const companyId = req.user.company_id || getCompanyId(req.user);
+    const last = await backupService.getLastBackup(companyId);
+    successResponse(res, 'Backup status fetched', last);
+  } catch (err) { next(err); }
+};
 
 const enrichCompanyProfileValue = async (value) => {
   if (!value || typeof value !== 'object') return value;
@@ -451,5 +471,7 @@ module.exports = {
   getLeavePolicy,
   updateLeavePolicy,
   applyLeavePolicyToAll,
+  runBackupNow,
+  getBackupStatus,
 };
 

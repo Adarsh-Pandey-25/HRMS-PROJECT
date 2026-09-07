@@ -209,6 +209,11 @@ const contactFields = {
     .regex(/^[A-Za-z]{4}0[A-Za-z0-9]{6}$/, 'Enter a valid IFSC (e.g. HDFC0001234)'),
 };
 
+// Item 2: bank details are optional at creation — an employee fills them in
+// themselves post-onboarding (see item 3's one-time self-edit). Editing an
+// existing employee (employeeSchema below) keeps bank fields required via
+// the shared `contactFields`; only the creation schema relaxes them, by
+// overriding the 3 keys after the ...contactFields spread.
 const addEmployeeSchema = z.object({
   firstName: nameField,
   lastName: nameField,
@@ -239,6 +244,9 @@ const addEmployeeSchema = z.object({
   workEmail: emailField,
   role: z.string().min(1, 'Required'),
   ...contactFields,
+  bankName: z.string().trim().regex(/^[A-Za-z][A-Za-z\s.'&-]*$/, 'Bank name must contain letters only').optional().or(z.literal('')),
+  bankAccount: z.string().trim().regex(/^\d{9,18}$/, 'Account number must be 9–18 digits').optional().or(z.literal('')),
+  bankIfsc: z.string().trim().regex(/^[A-Za-z]{4}0[A-Za-z0-9]{6}$/, 'Enter a valid IFSC (e.g. HDFC0001234)').optional().or(z.literal('')),
 });
 
 const employeeSchema = z.object({
@@ -566,12 +574,16 @@ function PersonalStep({ register, errors, photoFile, setPhotoFile, watch, setVal
       <div className="space-y-4 pt-2 border-t border-border/60">
         <div>
           <h3 className="text-sm font-semibold text-fg">Bank Details</h3>
-          <p className="text-xs text-fg-subtle mt-0.5">Used for payroll disbursement.</p>
+          <p className="text-xs text-fg-subtle mt-0.5">
+            {isAdd
+              ? 'Used for payroll disbursement. Optional here — the employee can add it themselves post-onboarding, or fill it in now.'
+              : 'Used for payroll disbursement.'}
+          </p>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Input
             label="Bank name"
-            required
+            required={!isAdd}
             placeholder="e.g. HDFC Bank"
             {...register('bankName')}
             onInput={handleBankNameInput}
@@ -579,7 +591,7 @@ function PersonalStep({ register, errors, photoFile, setPhotoFile, watch, setVal
           />
           <Input
             label="Account number"
-            required
+            required={!isAdd}
             placeholder="e.g. 50100123456789"
             inputMode="numeric"
             pattern="[0-9]*"
@@ -588,7 +600,7 @@ function PersonalStep({ register, errors, photoFile, setPhotoFile, watch, setVal
           />
           <Input
             label="IFSC code"
-            required
+            required={!isAdd}
             placeholder="e.g. HDFC0001234"
             containerClass="sm:col-span-2"
             {...register('bankIfsc', {

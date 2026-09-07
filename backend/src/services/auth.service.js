@@ -6,7 +6,7 @@ const config = require('../config/database');
 const {
   BadRequestError, UnauthorizedError, NotFoundError, ForbiddenError, TooManyRequestsError,
 } = require('../utils/errors');
-const { omitSensitive, generateDefaultPassword } = require('../utils/helpers');
+const { omitSensitive, generateDefaultPassword, isMissingColumnError } = require('../utils/helpers');
 const { allocateNextEmployeeCode } = require('./employeeCode.service');
 const { welcomeEmail, passwordResetEmail, onboardingOtpEmail } = require('./email.service');
 const settingsService = require('./settings.service');
@@ -27,8 +27,19 @@ const otpGuards = new Map();
 
 const normalizeEmailKey = (email) => String(email || '').trim().toLowerCase();
 
-const getOtpGuard = (email) => {
-  const key = normalizeEmailKey(email);
+/**
+ * Email is no longer globally unique — the same address can legitimately
+ * belong to two different companies. Without a scope key, two unrelated
+ * people sharing an email would share one OTP lockout/cooldown state,
+ * letting one interfere with the other's password-reset attempts. `scopeKey`
+ * is the resolved tenant company id when known; requests that arrive with no
+ * resolved subdomain (the common case until BASE_DOMAIN/wildcard DNS are
+ * live) all collapse to the same 'unscoped' bucket, same as before.
+ */
+const otpGuardKey = (email, scopeKey) => `${scopeKey || 'unscoped'}:${normalizeEmailKey(email)}`;
+
+const getOtpGuard = (email, scopeKey = null) => {
+  const key = otpGuardKey(email, scopeKey);
   if (!otpGuards.has(key)) {
     otpGuards.set(key, {
       failedAttempts: 0,
@@ -41,8 +52,8 @@ const getOtpGuard = (email) => {
   return otpGuards.get(key);
 };
 
-const clearOtpGuard = (email) => {
-  otpGuards.delete(normalizeEmailKey(email));
+const clearOtpGuard = (email, scopeKey = null) => {
+  otpGuards.delete(otpGuardKey(email, scopeKey));
 };
 
 const waitLabel = (seconds) => {
@@ -63,8 +74,8 @@ const lockDetails = (guard, extra = {}) => {
   };
 };
 
-const assertNotOtpLocked = (email) => {
-  const guard = getOtpGuard(email);
+const assertNotOtpLocked = (email, scopeKey = null) => {
+  const guard = getOtpGuard(email, scopeKey);
   const now = Date.now();
   if (guard.lockedUntil > now) {
     const retryAfterSeconds = Math.ceil((guard.lockedUntil - now) / 1000);
@@ -105,6 +116,11 @@ const generateTokens = (employee) => {
     email: employee.email,
     role: employee.role,
     company_id: getCompanyId(employee),
+    // Audit finding N-12: carried so auth.middleware.js can reject a token
+    // whose version no longer matches the DB (bumped on logout/password
+    // change/deactivation). ?? 0 matches employees.token_version's default
+    // so a pre-migration/undefined value never mismatches.
+    token_version: employee.token_version ?? 0,
   };
   const accessToken = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: config.jwt.expire });
   const refreshToken = jwt.sign(payload, process.env.JWT_REFRESH_SECRET, {
@@ -136,16 +152,100 @@ const PORTAL_ALLOWED_ROLES = {
  * what lets the same email exist at two different companies, since the
  * lookup is no longer necessarily global. `allowedRoles`, when given,
  * enforces that this account's role matches the portal path it logged in
- * through (checked only AFTER the password itself is verified, so a wrong
- * password never leaks whether the portal/role mismatch is the "real"
- * reason — both cases are wrong until credentials are proven correct).
+ * through (checked only AFTER the password itself is verified). The
+ * mismatch throws the exact same error (class, message, status) as a wrong
+ * password — a distinguishable response here would let anyone holding a
+ * stolen credential pair probe all three portals to confirm the password is
+ * correct without ever needing to get the portal right, i.e. a
+ * password-correctness oracle that never even touches a session.
  */
+/**
+ * Item 4: explicit product decision — fail CLOSED. No subscription row at
+ * all, or a status outside active/trialing, blocks login entirely. This is
+ * the opposite convention from every OTHER gate this session (seat check,
+ * feature gating, export gate all fail OPEN with no subscription) —
+ * deliberately, per instruction, since login itself is the one place a
+ * genuinely unpaid/inactive company must not be let in at all. Checked
+ * before password comparison, same position as the existing company
+ * is_active check right below this function's call site — consistent with
+ * that established pattern in this exact function.
+ *
+ * Simpler "blocked on next login/refresh" over immediate token_version
+ * cutoff (N-12) — chosen per the task's own stated preference: N-12's
+ * mechanism would need bumping token_version for every employee at a
+ * company on every subscription status transition (suspend, cancel, the
+ * daily billing cron marking something past_due/expired) — a materially
+ * bigger, more invasive change across subscription.service.js and the
+ * billing cron, not a natural fit for a single login-time check.
+ */
+const GOOD_STANDING_STATUSES = ['active', 'trialing'];
+const HR_ADMIN_STATUS_MESSAGES = {
+  trialing: null, // never actually shown — allowed
+  active: null, // never actually shown — allowed
+  past_due: "Your company's subscription payment is past due. Contact billing to resolve this.",
+  grace_period: "Your company's subscription is in a grace period due to a payment issue. Contact billing to resolve this.",
+  suspended: "Your company's account has been deactivated. Contact billing to resolve this.",
+  cancelled: "Your company's subscription has been cancelled. Contact billing to resolve this.",
+  expired: "Your company's subscription has expired. Contact billing to resolve this.",
+};
+const EMPLOYEE_GENERIC_MESSAGE = 'Some problem occurred. Please contact your HR/Admin.';
+
+const assertCompanyInGoodStanding = async (companyId, role) => {
+  if (!companyId) return;
+  const { data: subscription } = await supabaseAdmin
+    .from('company_billing_subscriptions')
+    .select('status')
+    .eq('company_id', companyId)
+    .in('status', ['trialing', 'active', 'past_due', 'grace_period', 'suspended', 'cancelled', 'expired'])
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const status = subscription?.status || null;
+  if (status && GOOD_STANDING_STATUSES.includes(status)) return;
+
+  const isHrOrAdmin = role === 'admin' || role === 'hr';
+  if (isHrOrAdmin) {
+    const message = status
+      ? (HR_ADMIN_STATUS_MESSAGES[status] || "Your company's subscription is not active. Contact billing to resolve this.")
+      : "Your company doesn't have an active subscription. Contact your platform administrator.";
+    throw new ForbiddenError(message);
+  }
+  throw new ForbiddenError(EMPLOYEE_GENERIC_MESSAGE);
+};
+
 const authenticateEmployee = async (email, password, { tenantCompanyId = null, allowedRoles = null } = {}) => {
   let query = supabaseAdmin.from('employees').select('*').eq('email', email);
   if (tenantCompanyId) query = query.eq('company_id', tenantCompanyId);
-  const { data: employee, error } = await query.maybeSingle();
+  const { data: candidates, error } = await query;
 
-  if (error || !employee) throw new UnauthorizedError('Invalid email or password');
+  if (error || !candidates?.length) throw new UnauthorizedError('Invalid email or password');
+
+  // A scoped query (portal login, tenantCompanyId set) can only ever match
+  // one row — company_id+email is unique at the DB level. Only the legacy
+  // unscoped /login can land here with more than one candidate, once the
+  // same email exists at two companies. Rather than fail closed for BOTH
+  // accounts, try the password against each one — only after it actually
+  // matches a candidate do we say anything more specific than "Invalid
+  // email or password", so this can't be used to enumerate which emails
+  // are shared across companies.
+  let employee = candidates[0];
+  if (candidates.length > 1) {
+    const results = await Promise.all(
+      candidates.map(async (c) => ((await comparePassword(password, c.password_hash)) ? c : null))
+    );
+    const matches = results.filter(Boolean);
+    if (matches.length === 1) {
+      employee = matches[0];
+    } else if (matches.length > 1) {
+      throw new UnauthorizedError(
+        "This email is registered at more than one company. Please sign in through your company's own login page instead of the general sign-in.",
+      );
+    } else {
+      throw new UnauthorizedError('Invalid email or password');
+    }
+  }
+
   if (!employee.is_active) throw new ForbiddenError('Account is deactivated');
 
   const companyId = getCompanyId(employee);
@@ -158,15 +258,28 @@ const authenticateEmployee = async (email, password, { tenantCompanyId = null, a
     if (company && company.is_active === false) {
       throw new ForbiddenError('This company workspace is deactivated. Contact your platform administrator.');
     }
+    await assertCompanyInGoodStanding(companyId, employee.role);
   }
 
   const valid = await comparePassword(password, employee.password_hash);
   if (!valid) throw new UnauthorizedError('Invalid email or password');
 
+  // A temp password (single-create, bulk import) is time-boxed — checked
+  // here, not just stated in the welcome/bulk-import email copy. `select('*')`
+  // above means this is simply `undefined` pre-migration, so this is
+  // inert until 20260910_temp_password_expiry.sql lands, never a crash.
+  if (employee.must_change_password && employee.temp_password_expires_at
+    && new Date(employee.temp_password_expires_at).getTime() < Date.now()) {
+    throw new UnauthorizedError('Your temporary password has expired. Contact HR to get a new one.');
+  }
+
   // Authorization is checked only now — after identity is proven, before any
-  // session is issued. A correct password for the wrong portal gets nothing.
+  // session is issued. A correct password for the wrong portal throws the
+  // exact same error as a wrong password (same class, message, status) —
+  // see the docblock above for why a distinguishable response here is itself
+  // a vulnerability.
   if (allowedRoles && !allowedRoles.includes(employee.role)) {
-    throw new ForbiddenError('This account is not authorized to sign in through this portal.');
+    throw new UnauthorizedError('Invalid email or password');
   }
 
   const { accessToken, refreshToken } = generateTokens(employee);
@@ -223,6 +336,12 @@ const refreshAccessToken = async (refreshToken) => {
 
   if (!employee) throw new UnauthorizedError('User not found');
 
+  // Item 4: same fail-closed check as login, run again here so "blocked on
+  // next login/refresh" actually means refresh too — a long-lived refresh
+  // token would otherwise keep silently minting new access tokens for a
+  // company whose subscription lapsed after the original login.
+  await assertCompanyInGoodStanding(getCompanyId(employee), employee.role);
+
   const { accessToken, refreshToken: newRefresh } = generateTokens(employee);
   await supabaseAdmin.from('refresh_tokens').delete().eq('id', stored.id);
   await storeRefreshToken(employee.id, newRefresh);
@@ -232,6 +351,24 @@ const refreshAccessToken = async (refreshToken) => {
     refreshToken: newRefresh,
     employee: omitSensitive(employee, ['password_hash']),
   };
+};
+
+/**
+ * Audit finding N-12: bump employees.token_version so every access token
+ * already issued to this employee — cookie or Bearer, regardless of which
+ * refresh token (if any) it's paired with — stops passing auth.middleware.js's
+ * check immediately, instead of remaining valid until its own natural
+ * expiry (up to 24h). Best-effort: a failure here must never block the
+ * action that triggered it (logout/password change/deactivation itself
+ * already succeeded by the time this runs).
+ */
+const bumpTokenVersion = async (employeeId) => {
+  const { data } = await supabaseAdmin.from('employees').select('token_version').eq('id', employeeId).maybeSingle();
+  const next = (data?.token_version ?? 0) + 1;
+  const { error } = await supabaseAdmin.from('employees').update({ token_version: next }).eq('id', employeeId);
+  if (error && !/column .*token_version.* does not exist/i.test(error.message || '')) {
+    logger.warn('Failed to bump token_version', { employeeId, error: error.message });
+  }
 };
 
 const logout = async (employeeId, refreshToken) => {
@@ -245,6 +382,7 @@ const logout = async (employeeId, refreshToken) => {
   } else {
     await supabaseAdmin.from('refresh_tokens').delete().eq('employee_id', employeeId);
   }
+  await bumpTokenVersion(employeeId);
 };
 
 const changePassword = async (employeeId, currentPassword, newPassword) => {
@@ -269,10 +407,21 @@ const changePassword = async (employeeId, currentPassword, newPassword) => {
   await assertPasswordPolicy(newPassword, companyId);
 
   const passwordHash = await hashPassword(newPassword);
-  await supabaseAdmin
-    .from('employees')
-    .update({ password_hash: passwordHash, must_change_password: false })
-    .eq('id', employeeId);
+  {
+    const { error: pwError } = await supabaseAdmin
+      .from('employees')
+      .update({ password_hash: passwordHash, must_change_password: false, temp_password_expires_at: null })
+      .eq('id', employeeId);
+    if (pwError && isMissingColumnError(pwError.message, 'temp_password_expires_at')) {
+      await supabaseAdmin
+        .from('employees')
+        .update({ password_hash: passwordHash, must_change_password: false })
+        .eq('id', employeeId);
+    }
+  }
+  // Audit finding N-12: a changed password should kill any already-issued
+  // access token, not just future logins.
+  await bumpTokenVersion(employeeId);
 };
 
 /**
@@ -290,7 +439,7 @@ const findOneEmployeeByEmail = async (email, tenantCompanyId, selectCols = '*') 
 };
 
 const forgotPassword = async (email, tenantCompanyId = null) => {
-  const guard = assertNotOtpLocked(email);
+  const guard = assertNotOtpLocked(email, tenantCompanyId);
   const now = Date.now();
 
   if (guard.nextResendAt > now) {
@@ -353,7 +502,7 @@ const forgotPassword = async (email, tenantCompanyId = null) => {
 };
 
 const resetPassword = async (email, otp, newPassword, tenantCompanyId = null) => {
-  const guard = assertNotOtpLocked(email);
+  const guard = assertNotOtpLocked(email, tenantCompanyId);
 
   let candidateQuery = supabaseAdmin.from('employees').select('id, company_id, address').eq('email', email);
   if (tenantCompanyId) candidateQuery = candidateQuery.eq('company_id', tenantCompanyId);
@@ -412,18 +561,37 @@ const resetPassword = async (email, otp, newPassword, tenantCompanyId = null) =>
   const companyId = getCompanyId(employee);
   await assertPasswordPolicy(newPassword, companyId);
 
+  // Audit finding N-21: claim the OTP (used:false -> true, conditionally)
+  // BEFORE writing the new password, not after — the earlier SELECT above
+  // only narrowed the race window, it didn't close it. Two concurrent
+  // resetPassword calls with the same valid OTP could otherwise both pass
+  // that read and both reach the password write. Whichever request's
+  // conditional UPDATE actually flips zero rows lost the race and must not
+  // touch the password at all.
+  const { data: claimed, error: claimErr } = await supabaseAdmin
+    .from('password_reset_tokens')
+    .update({ used: true })
+    .eq('id', resetRecord.id)
+    .eq('used', false)
+    .select('id')
+    .maybeSingle();
+  if (claimErr) throw new BadRequestError(claimErr.message);
+  if (!claimed) {
+    throw new BadRequestError('Invalid or expired OTP', {
+      attemptsRemaining: OTP_MAX_ATTEMPTS - guard.failedAttempts,
+    });
+  }
+
   const passwordHash = await hashPassword(newPassword);
   await supabaseAdmin
     .from('employees')
     .update({ password_hash: passwordHash, must_change_password: false })
     .eq('id', resetRecord.employee_id);
+  // Audit finding N-12: OTP-based reset is still a password change — a
+  // stolen access token shouldn't survive the legitimate user resetting it.
+  await bumpTokenVersion(resetRecord.employee_id);
 
-  await supabaseAdmin
-    .from('password_reset_tokens')
-    .update({ used: true })
-    .eq('id', resetRecord.id);
-
-  clearOtpGuard(email);
+  clearOtpGuard(email, tenantCompanyId);
 };
 
 const getMe = async (employeeId) => {
@@ -440,18 +608,44 @@ const getMe = async (employeeId) => {
   };
 };
 
+/** True when the has_seen_install_prompt migration hasn't been applied yet in this environment. */
+const isMissingInstallPromptColumn = (message) => isMissingColumnError(message, 'has_seen_install_prompt');
+
+/**
+ * Item 4: server-side "seen" flag for the PWA install prompt, set once on
+ * dismiss/install/guide-viewed so it doesn't nag every session and doesn't
+ * reset on a browser data clear (a sessionStorage/localStorage flag would).
+ */
+const markInstallPromptSeen = async (employeeId) => {
+  const { error } = await supabaseAdmin
+    .from('employees')
+    .update({ has_seen_install_prompt: true })
+    .eq('id', employeeId);
+  if (error && !isMissingInstallPromptColumn(error.message)) throw error;
+};
+
 /** In-memory onboarding email OTP store: email -> { hash, expiresAt, failedAttempts, nextResendAt, verifiedToken, verifiedUntil } */
 const onboardingOtps = new Map();
+
+/**
+ * Scoped by invite id, not bare email — a brand new company has no
+ * company_id yet to scope by, but every onboarding attempt is already tied
+ * to one specific invite. Without this, two unrelated people onboarding two
+ * different new companies who happen to share an email would share one
+ * OTP lockout/cooldown state and could interfere with each other's attempts.
+ */
+const onboardingOtpKey = (email, inviteId) => `${inviteId || 'unscoped'}:${normalizeEmailKey(email)}`;
 
 const sendOnboardingOtp = async (email, adminName = '', inviteToken = null) => {
   const superAdminService = require('./superAdmin.service');
   const invite = await superAdminService.assertInviteValid(inviteToken);
 
-  const key = normalizeEmailKey(email);
-  if (!key) throw new BadRequestError('Valid email is required');
-  if (invite.email && invite.email !== key) {
+  const emailKey = normalizeEmailKey(email);
+  if (!emailKey) throw new BadRequestError('Valid email is required');
+  if (invite.email && invite.email !== emailKey) {
     throw new ForbiddenError('This invite is locked to a different email address');
   }
+  const key = onboardingOtpKey(email, invite.inviteId);
 
   // Deliberately no "does this email already exist" check here — this flow
   // creates a BRAND NEW company, and the same person's email may already be
@@ -487,7 +681,7 @@ const sendOnboardingOtp = async (email, adminName = '', inviteToken = null) => {
   onboardingOtps.set(key, entry);
 
   // Do not block the HTTP response on SMTP — Render + Gmail often exceeds 30s.
-  onboardingOtpEmail(key, adminName, otp).catch((err) => {
+  onboardingOtpEmail(email, adminName, otp).catch((err) => {
     logger.error('Onboarding OTP email failed', { error: err.message });
   });
 
@@ -499,8 +693,10 @@ const sendOnboardingOtp = async (email, adminName = '', inviteToken = null) => {
   };
 };
 
-const verifyOnboardingOtp = async (email, otp) => {
-  const key = normalizeEmailKey(email);
+const verifyOnboardingOtp = async (email, otp, inviteToken = null) => {
+  const superAdminService = require('./superAdmin.service');
+  const invite = await superAdminService.assertInviteValid(inviteToken);
+  const key = onboardingOtpKey(email, invite.inviteId);
   const entry = onboardingOtps.get(key);
   if (!entry?.hash) throw new BadRequestError('Request an OTP first');
 
@@ -546,8 +742,8 @@ const verifyOnboardingOtp = async (email, otp) => {
   };
 };
 
-const assertOnboardingEmailVerified = (email, verificationToken) => {
-  const key = normalizeEmailKey(email);
+const assertOnboardingEmailVerified = (email, verificationToken, inviteId) => {
+  const key = onboardingOtpKey(email, inviteId);
   const entry = onboardingOtps.get(key);
   if (!entry?.verifiedToken || !verificationToken) {
     throw new BadRequestError('Verify your email with OTP before launching');
@@ -561,8 +757,43 @@ const assertOnboardingEmailVerified = (email, verificationToken) => {
   }
 };
 
-const consumeOnboardingVerification = (email) => {
-  onboardingOtps.delete(normalizeEmailKey(email));
+const consumeOnboardingVerification = (email, inviteId) => {
+  onboardingOtps.delete(onboardingOtpKey(email, inviteId));
+};
+
+/**
+ * Item 3: auto-create a 'trialing' subscription on the lowest/default plan
+ * (Starter) at onboarding time, reusing subscription.service.js's
+ * createSubscription rather than a second insert path — same validation,
+ * event logging, and welcome-notification behavior every other
+ * subscription creation gets, just with initialStatus='trialing' (no
+ * invoice — a trial hasn't been charged) and triggeredBy='system' (no
+ * human actor initiated this).
+ */
+const bootstrapTrialSubscription = async (companyId) => {
+  const { data: defaultPlan, error } = await supabaseAdmin
+    .from('subscription_plans')
+    .select('id, code, included_seats')
+    .eq('code', 'starter')
+    .eq('is_active', true)
+    .maybeSingle();
+  if (error) throw new BadRequestError(`Could not look up the default plan: ${error.message}`);
+  if (!defaultPlan) {
+    logger.error('[Onboarding] No active "starter" plan found — cannot create trial subscription', { companyId });
+    throw new BadRequestError('No default plan is configured for new signups. Contact support.');
+  }
+
+  const subscriptionService = require('./subscription.service');
+  await subscriptionService.createSubscription(
+    companyId,
+    defaultPlan.id,
+    'monthly',
+    Math.max(1, defaultPlan.included_seats || 5),
+    null,
+    null,
+    'trialing',
+    'system',
+  );
 };
 
 /**
@@ -593,7 +824,7 @@ const bootstrapAdmin = async ({
     throw new ForbiddenError('The company name must match the onboarding invitation');
   }
 
-  assertOnboardingEmailVerified(email, verificationToken);
+  assertOnboardingEmailVerified(email, verificationToken, invite.inviteId);
 
   const last = last_name || 'Admin';
   const resolvedPassword = password || generateDefaultPassword();
@@ -632,25 +863,29 @@ const bootstrapAdmin = async ({
     profile.logoName = logoFile.originalname;
   }
 
-  const { data, error } = await supabaseAdmin
-    .from('employees')
-    .insert({
-      employee_code: await allocateNextEmployeeCode(companyId),
-      email: normalizedEmail,
-      password_hash: passwordHash,
-      first_name,
-      last_name: last,
-      role: 'admin',
-      department: 'Administration',
-      designation: 'Company Admin',
-      date_of_joining: new Date().toISOString().split('T')[0],
-      employment_type: 'full_time',
-      is_active: true,
-      must_change_password: !password,
-      ...companyIdFields(companyId, {}),
-    })
-    .select()
-    .single();
+  const bootstrapFields = {
+    employee_code: await allocateNextEmployeeCode(companyId),
+    email: normalizedEmail,
+    password_hash: passwordHash,
+    first_name,
+    last_name: last,
+    role: 'admin',
+    department: 'Administration',
+    designation: 'Company Admin',
+    date_of_joining: new Date().toISOString().split('T')[0],
+    employment_type: 'full_time',
+    is_active: true,
+    must_change_password: !password,
+    // Only a system-generated password is time-boxed — one the admin typed
+    // in themselves during onboarding isn't a "temporary" credential at all.
+    ...(!password ? { temp_password_expires_at: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString() } : {}),
+    ...companyIdFields(companyId, {}),
+  };
+  let { data, error } = await supabaseAdmin.from('employees').insert(bootstrapFields).select().single();
+  if (error && isMissingColumnError(error.message, 'temp_password_expires_at')) {
+    const { temp_password_expires_at, ...withoutExpiry } = bootstrapFields;
+    ({ data, error } = await supabaseAdmin.from('employees').insert(withoutExpiry).select().single());
+  }
   if (error) throw new BadRequestError(error.message);
 
   await settingsService.seedCompanySettings(companyId, {
@@ -659,8 +894,16 @@ const bootstrapAdmin = async ({
     adminEmail: profile.adminEmail || normalizedEmail,
   }, data.id);
 
+  // Item 3: without this, a freshly onboarded company has ZERO subscription
+  // rows — combined with item 4's fail-closed login rule ("no subscription
+  // row = blocked"), that would lock every brand-new signup out immediately.
+  // Not best-effort/fire-and-forget like the welcome email below — a
+  // failure here must fail onboarding itself, since a company silently left
+  // without a trial would be unable to log in at all.
+  await bootstrapTrialSubscription(companyId);
+
   await superAdminService.consumeInvite(inviteToken, companyId);
-  consumeOnboardingVerification(normalizedEmail);
+  consumeOnboardingVerification(normalizedEmail, invite.inviteId);
 
   welcomeEmail(data, resolvedPassword).catch((e) => logger.warn('Welcome email failed', e.message));
 
@@ -701,4 +944,7 @@ module.exports = {
   sendOnboardingOtp,
   verifyOnboardingOtp,
   bootstrapAdmin,
+  bootstrapTrialSubscription,
+  bumpTokenVersion,
+  markInstallPromptSeen,
 };

@@ -102,6 +102,7 @@ const openTeamReviews = async (managerId, cycleId, companyId) => {
   const have = new Set((existing || []).map((r) => r.employee_id));
   const toInsert = reports.filter((r) => !have.has(r.id)).map((r) => ({
     employee_id: r.id,
+    company_id: cid,
     manager_id: managerId,
     cycle_id: cycle.id,
     status: 'pending',
@@ -159,11 +160,12 @@ const updateReview = async (reviewId, managerId, patch, companyId) => {
   return data;
 };
 
-const createGoal = async (employeeId, body) => {
+const createGoal = async (employeeId, body, companyId) => {
   const title = String(body.title || '').trim();
   if (!title) throw new BadRequestError('Goal title is required');
   const payload = {
     employee_id: employeeId,
+    company_id: resolveCompanyId(companyId),
     title,
     cycle: body.cycle || null,
     progress: Math.min(100, Math.max(0, Number(body.progress) || 0)),

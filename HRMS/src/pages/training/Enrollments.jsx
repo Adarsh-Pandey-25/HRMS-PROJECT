@@ -44,6 +44,7 @@ function classifyEnrollment(e) {
     employeeId: e.employeeId || e.userId,
     employeeName: e.employeeName || e.employee_name || 'Employee',
     department: e.department || '—',
+    courseId: e.courseId || e.course_id,
     courseTitle: e.courseTitle || e.course_title || 'Course',
     enrolledOn: e.enrolledAt || e.enrolled_at,
     completedLessons,
@@ -57,6 +58,8 @@ function classifyEnrollment(e) {
     bucket,
     isArchived: Boolean(e.isArchived ?? e.is_archived),
     canArchive: e.status === 'COMPLETED' && !Boolean(e.isArchived ?? e.is_archived),
+    isMandatory: Boolean(e.isMandatory ?? e.is_mandatory),
+    assignedByName: e.assignedByName ?? e.assigned_by_name ?? null,
   };
 }
 
@@ -69,6 +72,10 @@ export default function Enrollments() {
   const { createEnrollments, archiveEnrollment } = useTrainingMutations();
   const [modal, setModal] = useState(false);
   const [filter, setFilter] = useState('all');
+  // Item 1: see completion status across everyone assigned to one course,
+  // rather than scrolling the full cross-course list — extends the
+  // existing status-filter bar instead of a separate dashboard.
+  const [courseFilter, setCourseFilter] = useState('');
   const [archivingId, setArchivingId] = useState(null);
   const [form, setForm] = useState({ courseId: '', target: 'all', department: '', employeeIds: [], deadline: '' });
 
@@ -86,9 +93,11 @@ export default function Enrollments() {
   }, [rows]);
 
   const filteredRows = useMemo(() => {
-    if (filter === 'all') return rows;
-    return rows.filter((r) => r.bucket === filter);
-  }, [rows, filter]);
+    let list = rows;
+    if (filter !== 'all') list = list.filter((r) => r.bucket === filter);
+    if (courseFilter) list = list.filter((r) => r.courseId === courseFilter);
+    return list;
+  }, [rows, filter, courseFilter]);
 
   const assignCourse = async () => {
     if (!form.courseId) return toast.error('Select a course');
@@ -139,7 +148,20 @@ export default function Enrollments() {
         </div>
       ),
     },
-    { accessorKey: 'courseTitle', header: 'Course' },
+    {
+      accessorKey: 'courseTitle',
+      header: 'Course',
+      cell: ({ row }) => (
+        <div>
+          <p>{row.original.courseTitle}</p>
+          {row.original.isMandatory && (
+            <p className="text-[11px] font-medium text-warning mt-0.5">
+              Mandatory · assigned by {row.original.assignedByName}
+            </p>
+          )}
+        </div>
+      ),
+    },
     {
       accessorKey: 'enrolledOn',
       header: 'Enrolled',
@@ -273,9 +295,22 @@ export default function Enrollments() {
               ? `${filteredRows.length} archived record${filteredRows.length !== 1 ? 's' : ''}`
               : `${filteredRows.length} ${FILTERS[filter].toLowerCase()}${filter !== 'all' ? '' : ` · ${rows.length} total`}`
           }
-          action={!showArchived && filter !== 'all' ? (
-            <Button size="sm" variant="ghost" onClick={() => setFilter('all')}>Clear filter</Button>
-          ) : null}
+          action={(
+            <div className="flex items-center gap-2">
+              {!showArchived && (
+                <Select
+                  className="w-56"
+                  value={courseFilter}
+                  onChange={(e) => setCourseFilter(e.target.value)}
+                  options={courses.map((c) => ({ value: c.id, label: c.title }))}
+                  placeholder="All courses"
+                />
+              )}
+              {!showArchived && (filter !== 'all' || courseFilter) && (
+                <Button size="sm" variant="ghost" onClick={() => { setFilter('all'); setCourseFilter(''); }}>Clear filter</Button>
+              )}
+            </div>
+          )}
         />
         {isLoading ? (
           <div className="p-5"><Skeleton className="h-48 rounded-xl" /></div>

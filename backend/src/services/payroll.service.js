@@ -9,39 +9,84 @@ const logger = require('../utils/logger');
 const { TIMEZONE } = require('../utils/constants');
 const settingsService = require('./settings.service');
 const notificationService = require('./notification.service');
+const emailService = require('./email.service');
 const { buildPayslipPdfBuffer } = require('./payslipPdf.service');
+const { buildMeta } = require('../utils/helpers');
 
 const WORKING_DAYS_PER_MONTH = 26;
 const MONTH_STATUS = { PENDING: 'PENDING', COMPLETED: 'COMPLETED' };
 const PAYSLIP_STATUS = { DRAFT: 'DRAFT', PUBLISHED: 'PUBLISHED' };
-const PAYSLIP_EMPLOYEE_SELECT = 'id, first_name, last_name, employee_code, email, company_id, address, designation, date_of_joining, bank_details, salary_details';
+const PAYSLIP_EMPLOYEE_SELECT = 'id, first_name, last_name, employee_code, email, company_id, address, designation, date_of_joining, bank_details, salary_details, gender';
 
 const round2 = (n) => Math.round(Number(n) * 100) / 100;
 
-// Approximate monthly Professional Tax slabs by state (₹, based on monthly gross).
-// Covers the states offered in Settings → Payroll → PT State. Not exhaustive —
-// states not listed here fall back to the flat configured payroll_professional_tax amount.
-const PT_SLABS_BY_STATE = {
-  Karnataka: [{ upTo: 24999, amount: 0 }, { upTo: Infinity, amount: 200 }],
-  Maharashtra: [{ upTo: 7500, amount: 0 }, { upTo: 10000, amount: 175 }, { upTo: Infinity, amount: 200 }],
-  'Tamil Nadu': [
-    { upTo: 21000, amount: 0 },
-    { upTo: 30000, amount: 135 },
-    { upTo: 45000, amount: 315 },
-    { upTo: 60000, amount: 690 },
-    { upTo: 75000, amount: 1025 },
-    { upTo: Infinity, amount: 1250 },
-  ],
-  Delhi: [{ upTo: Infinity, amount: 0 }], // No professional tax levied in Delhi
-  Telangana: [{ upTo: 15000, amount: 0 }, { upTo: 20000, amount: 150 }, { upTo: Infinity, amount: 200 }],
-};
+/**
+ * Professional Tax by state. Modeled per-state explicitly rather than one
+ * generic monthly-slab table, because the real statutory rules genuinely
+ * differ in structure and forcing them into one shape produces silently
+ * wrong deductions:
+ *  - Tamil Nadu's published slab is assessed on HALF-YEARLY income, not
+ *    monthly — applying it directly to monthly gross both misclassifies
+ *    the bracket and deducts 6x too much every month.
+ *  - Karnataka and Maharashtra both carry an extra amount in February so
+ *    twelve monthly deductions reach the ₹2,500 statutory annual cap
+ *    (₹200 × 11 + ₹300 = ₹2,500).
+ *  - Maharashtra additionally exempts women earning up to ₹25,000/month
+ *    entirely, in force since the April 2023 amendment — this is not a
+ *    different slab, it overrides the general slab outright below that
+ *    threshold regardless of which band the amount would otherwise fall in.
+ * Covers the states offered in Settings → Payroll → PT State. Not
+ * exhaustive — states not listed here (or an unresolved employee gender
+ * where it matters) fall back to the flat configured payroll_professional_tax amount.
+ *
+ * @param {string} state
+ * @param {number} gross monthly gross
+ * @param {{ month?: number, gender?: string }} ctx month is 1-12 (calendar month being paid); gender is the employee's gender_type ('male'|'female'|'other')
+ * @returns {number|null} the PT amount, or null when the state isn't modeled (caller falls back)
+ */
+const getProfessionalTaxForState = (state, gross, { month, gender } = {}) => {
+  const normalizedState = String(state || '').trim();
+  const isFeb = Number(month) === 2;
 
-/** Slab-based PT for a state, or null when the state isn't in the table (caller should fall back). */
-const getProfessionalTaxForState = (state, gross) => {
-  const slabs = PT_SLABS_BY_STATE[String(state || '').trim()];
-  if (!slabs) return null;
-  const slab = slabs.find((s) => gross <= s.upTo);
-  return slab ? slab.amount : slabs[slabs.length - 1].amount;
+  switch (normalizedState) {
+    case 'Karnataka':
+      if (gross <= 24999) return 0;
+      return isFeb ? 300 : 200;
+
+    case 'Maharashtra':
+      if (gender === 'female' && gross <= 25000) return 0;
+      if (gross <= 7500) return 0;
+      if (gross <= 10000) return 175;
+      return isFeb ? 300 : 200;
+
+    case 'Tamil Nadu': {
+      // Convert monthly gross to its half-yearly equivalent to match the
+      // published slab's real basis, then divide the half-yearly amount
+      // back down to the equivalent monthly deduction.
+      const halfYearlyGross = gross * 6;
+      const halfYearlySlabs = [
+        { upTo: 21000, amount: 0 },
+        { upTo: 30000, amount: 135 },
+        { upTo: 45000, amount: 315 },
+        { upTo: 60000, amount: 690 },
+        { upTo: 75000, amount: 1025 },
+        { upTo: Infinity, amount: 1250 },
+      ];
+      const slab = halfYearlySlabs.find((s) => halfYearlyGross <= s.upTo) || halfYearlySlabs[halfYearlySlabs.length - 1];
+      return round2(slab.amount / 6);
+    }
+
+    case 'Delhi':
+      return 0; // No professional tax levied in Delhi
+
+    case 'Telangana':
+      if (gross <= 15000) return 0;
+      if (gross <= 20000) return 150;
+      return 200;
+
+    default:
+      return null;
+  }
 };
 
 /**
@@ -56,7 +101,8 @@ const getProfessionalTaxForState = (state, gross) => {
  * Custom   = from Settings → payroll_config.custom_payroll_options + payroll_components
  * Net      = Gross − all deductions
  */
-const calculateContractPayslip = async (employee, attendanceSummary) => {
+const calculateContractPayslip = async (employee, attendanceSummary, month = null) => {
+  const payslipMonth = Number(month) || (moment.tz(TIMEZONE).month() + 1);
   const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
   const companyId = getCompanyId(employee) || DEFAULT_COMPANY_ID;
 
@@ -154,7 +200,7 @@ const calculateContractPayslip = async (employee, attendanceSummary) => {
   // Professional Tax — state-specific slab on gross when the configured PT state
   // has a known slab table; otherwise fall back to the flat configured amount.
   const ptState = String(payrollConfig.pt_state ?? payrollConfig.ptState ?? '').trim();
-  const ptByState = getProfessionalTaxForState(ptState, gross);
+  const ptByState = getProfessionalTaxForState(ptState, gross, { month: payslipMonth, gender: employee?.gender });
   const ptFlatAmount = Math.max(0, await settingsService.getNumber('payroll_professional_tax', 200, companyId));
   const ptAmount = ptByState != null ? ptByState : ptFlatAmount;
   const professional_tax = ptApplicable ? round2(ptAmount) : 0;
@@ -495,7 +541,7 @@ const getMonthStatus = async (month, year, companyId = null) => {
   return data || null;
 };
 
-const generateDraftPayslip = async (payrollMonthId, userId) => {
+const generateDraftPayslip = async (payrollMonthId, userId, companyId = null) => {
   const { data: payrollMonth } = await supabaseAdmin
     .from('payroll_months')
     .select('*')
@@ -503,6 +549,12 @@ const generateDraftPayslip = async (payrollMonthId, userId) => {
     .single();
 
   if (!payrollMonth) throw new NotFoundError('Payroll month not found');
+  // A client-supplied payroll_month_id must belong to the caller's own
+  // company — otherwise an HR/Admin who knows/guesses another tenant's
+  // payroll_months UUID could attach their own employee's payslip to it.
+  if (companyId && payrollMonth.company_id !== companyId) {
+    throw new NotFoundError('Payroll month not found');
+  }
   // Allow generating slips for newly added employees even after a month was auto-closed
   if (payrollMonth.status === MONTH_STATUS.COMPLETED) {
     await supabaseAdmin
@@ -539,7 +591,7 @@ const generateDraftPayslip = async (payrollMonthId, userId) => {
     const { summary } = await attendanceService.getMonthlySummary(userId, payrollMonth.month, payrollMonth.year);
     const calc = await enrichPayslipBreakdown(
       employee,
-      await calculateContractPayslip(employee, summary),
+      await calculateContractPayslip(employee, summary, payrollMonth.month),
       payrollMonth.month,
       payrollMonth.year,
     );
@@ -562,7 +614,7 @@ const generateDraftPayslip = async (payrollMonthId, userId) => {
   const { summary } = await attendanceService.getMonthlySummary(userId, payrollMonth.month, payrollMonth.year);
   const calc = await enrichPayslipBreakdown(
     employee,
-    await calculateContractPayslip(employee, summary),
+    await calculateContractPayslip(employee, summary, payrollMonth.month),
     payrollMonth.month,
     payrollMonth.year,
   );
@@ -572,6 +624,7 @@ const generateDraftPayslip = async (payrollMonthId, userId) => {
     .insert({
       employee_id: userId,
       payroll_month_id: payrollMonthId,
+      company_id: payrollMonth.company_id,
       month: payrollMonth.month,
       year: payrollMonth.year,
       ...calc,
@@ -586,24 +639,19 @@ const generateDraftPayslip = async (payrollMonthId, userId) => {
 };
 
 const generateAllDraftPayslips = async (payrollMonthId, companyId = null) => {
-  let employees;
-  if (companyId) {
-    const tenantService = require('./tenant.service');
-    const ids = await tenantService.getCompanyEmployeeIds(companyId);
-    employees = ids.map((id) => ({ id }));
-  } else {
-    const { data, error } = await supabaseAdmin
-      .from('employees')
-      .select('id')
-      .eq('is_active', true);
-    if (error) throw new BadRequestError(error.message);
-    employees = data || [];
-  }
+  // No caller in this codebase ever legitimately omits companyId for a
+  // payroll operation — fail closed instead of silently generating payslips
+  // for every active employee on the entire platform.
+  if (!companyId) throw new BadRequestError('companyId is required to generate payslips');
+
+  const tenantService = require('./tenant.service');
+  const ids = await tenantService.getCompanyEmployeeIds(companyId);
+  const employees = ids.map((id) => ({ id }));
 
   const results = [];
-  for (const emp of employees || []) {
+  for (const emp of employees) {
     try {
-      const payslip = await generateDraftPayslip(payrollMonthId, emp.id);
+      const payslip = await generateDraftPayslip(payrollMonthId, emp.id, companyId);
       results.push({ user_id: emp.id, status: 'generated', payslip });
     } catch (err) {
       results.push({ user_id: emp.id, status: 'skipped', reason: err.message });
@@ -659,6 +707,22 @@ const publishPayslip = async (payslipId, publisher) => {
     throw new BadRequestError('Payslip is already published');
   }
 
+  // Item 2: bank_details is optional at employee creation, so a draft
+  // payslip can exist and be reviewed with it still missing — but
+  // publishing is the point this payslip becomes final/actionable for
+  // real disbursement, so it's the right gate to fail loudly here rather
+  // than silently publishing a payslip with a blank account number.
+  const bank = payslip.employee?.bank_details || {};
+  const hasBankDetails = Boolean(
+    (bank.account_number || bank.accountNumber || bank.account)
+    && (bank.ifsc || bank.ifscCode)
+    && (bank.bank_name || bank.bankName),
+  );
+  if (!hasBankDetails) {
+    const name = `${payslip.employee?.first_name || ''} ${payslip.employee?.last_name || ''}`.trim() || 'this employee';
+    throw new BadRequestError(`Cannot publish payslip for ${name} — bank details are missing. Ask them to add bank details, or add them via Employee → Edit.`);
+  }
+
   // Prefer explicit link; fall back to month/year so older/seeded slips still publish
   let payrollMonth = null;
   if (payslip.payroll_month_id) {
@@ -706,20 +770,53 @@ const publishPayslip = async (payslipId, publisher) => {
 
   const pdfBuffer = await generatePayslipPdf(payslip.employee, payslip, payrollMonth, publisher.company_id);
   const { path } = await uploadPayslip(pdfBuffer, payslip.employee_id, payslip.month, payslip.year);
-  const signedUrl = await getSignedUrl(STORAGE_BUCKETS.payslips, path, 60 * 60 * 24 * 365);
+  // Audit finding N-09: was a 1-year TTL — this URL is a bearer credential
+  // for a salary PDF with no further auth check once issued, and it's
+  // returned as-is in the payroll list/detail API response (payslip_url).
+  // The actual "download payslip" flow (downloadPayslip below) never uses
+  // this stored URL at all — it regenerates the PDF fresh from live data
+  // on every request — so this stored copy is only ever a background-
+  // refreshed deep-link value, not something that needs a long lifetime.
+  const signedUrl = await getSignedUrl(STORAGE_BUCKETS.payslips, path, 60 * 60);
 
-  const { data: updated, error } = await supabaseAdmin
+  // published_by/published_at are the authoritative, queryable audit record
+  // for who published this payslip — set from the authenticated `publisher`,
+  // never from a request body. logger.info below stays as a secondary trace.
+  const publishPatch = {
+    payslip_status: PAYSLIP_STATUS.PUBLISHED,
+    payslip_url: signedUrl,
+    payment_status: 'processed',
+    published_by: publisher.id,
+    published_at: new Date().toISOString(),
+  };
+
+  // Audit finding N-06: .eq('payslip_status', DRAFT) on the write itself
+  // closes the TOCTOU window between the read-time check above (line 705)
+  // and this write — a lost race updates zero rows instead of double-
+  // publishing (duplicate notification, duplicate month-close check).
+  let { data: updated, error } = await supabaseAdmin
     .from('payroll')
-    .update({
-      payslip_status: PAYSLIP_STATUS.PUBLISHED,
-      payslip_url: signedUrl,
-      payment_status: 'processed',
-    })
+    .update(publishPatch)
     .eq('id', payslipId)
+    .eq('payslip_status', PAYSLIP_STATUS.DRAFT)
     .select('*, employee:employee_id(id, first_name, last_name, employee_code)')
-    .single();
+    .maybeSingle();
+
+  if (error && /column .*published_(by|at).* does not exist/i.test(error.message || '')) {
+    // Migration 20260829_payroll_publish_audit.sql not applied yet in this
+    // environment — fall back rather than blocking every publish on it.
+    const { published_by, published_at, ...withoutAuditCols } = publishPatch;
+    ({ data: updated, error } = await supabaseAdmin
+      .from('payroll')
+      .update(withoutAuditCols)
+      .eq('id', payslipId)
+      .eq('payslip_status', PAYSLIP_STATUS.DRAFT)
+      .select('*, employee:employee_id(id, first_name, last_name, employee_code)')
+      .maybeSingle());
+  }
 
   if (error) throw new BadRequestError(error.message);
+  if (!updated) throw new ConflictError('Payslip is already published');
 
   await maybeCloseMonth(payslip.payroll_month_id);
   logger.info('Payslip published', { payslipId, publisherId: publisher.id });
@@ -734,6 +831,20 @@ const publishPayslip = async (payslipId, publisher) => {
     meta: { payslip_id: payslipId, month: payslip.month, year: payslip.year },
   });
 
+  if (payslip.employee?.email) {
+    // Section G1: the shared suppression gate — payslip email is a
+    // Payroll-linked email, so it's absolutely blocked while Payroll
+    // visibility is off for this company, independent of data_collection_mode.
+    // The payslip record itself is still published/calculated normally either way.
+    require('./emailSuppression.service').guardedSend(publisher.company_id, 'payroll', 'payslip_published', () =>
+      emailService.payslipEmail(payslip.employee, payslip)).catch((e) =>
+      logger.warn('payslipEmail failed', { error: e.message }));
+  }
+
+  require('./webhook.service').dispatchWebhookEvent(publisher.company_id, 'payroll.payslip_published', {
+    payslipId: updated.id, employeeId: payslip.employee_id, month: payslip.month, year: payslip.year,
+  });
+
   return {
     id: updated.id,
     status: PAYSLIP_STATUS.PUBLISHED,
@@ -742,19 +853,36 @@ const publishPayslip = async (payslipId, publisher) => {
   };
 };
 
-const listPayslips = async ({ month, year, user, role, mine = false, companyId = null }) => {
-  let query = supabaseAdmin
-    .from('payroll')
-    .select('*, employee:employee_id(id, first_name, last_name, employee_code, email, company_id, address)')
-    .eq('month', month)
-    .eq('year', year)
-    .order('created_at', { ascending: false });
+const PAYROLL_LIST_SELECT = '*, employee:employee_id(id, first_name, last_name, employee_code, email, company_id, address)';
 
-  // Personal "My Payslips" (or employee role): only own published slips
+const listPayslips = async ({
+  month, year, user, role, mine = false, companyId = null, pageQuery = {},
+}) => {
+  // Personal "My Payslips" (or employee role): only own published slips —
+  // inherently bounded (one row per month, per employee), no pagination needed.
   const personalOnly = mine || role === 'employee' || role === 'manager';
   if (personalOnly) {
-    query = query.eq('employee_id', user.id).eq('payslip_status', PAYSLIP_STATUS.PUBLISHED);
-  } else if (companyId) {
+    const { data, error } = await supabaseAdmin
+      .from('payroll')
+      .select(PAYROLL_LIST_SELECT)
+      .eq('month', month)
+      .eq('year', year)
+      .eq('employee_id', user.id)
+      .eq('payslip_status', PAYSLIP_STATUS.PUBLISHED)
+      .order('created_at', { ascending: false });
+    if (error) throw new BadRequestError(error.message);
+    return { data: (data || []).map(mapPayslipRow), meta: null };
+  }
+
+  // hr / admin without mine=true: company-wide list (Run Payroll / Salary
+  // Sheet) — this is the branch that scales with headcount (audit M-14).
+  let query = supabaseAdmin
+    .from('payroll')
+    .select(PAYROLL_LIST_SELECT, { count: 'exact' })
+    .eq('month', month)
+    .eq('year', year);
+
+  if (companyId) {
     const tenantService = require('./tenant.service');
     const ids = await tenantService.getCompanyEmployeeIds(companyId);
     query = query.in(
@@ -762,11 +890,16 @@ const listPayslips = async ({ month, year, user, role, mine = false, companyId =
       ids.length ? ids : ['00000000-0000-0000-0000-000000000000']
     );
   }
-  // hr / admin without mine=true keep company-wide list (Run Payroll / Salary Sheet)
 
-  const { data, error } = await query;
+  const page = Math.max(1, parseInt(pageQuery.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(pageQuery.limit, 10) || 50));
+  const offset = (page - 1) * limit;
+
+  const { data, error, count } = await query
+    .order('created_at', { ascending: false })
+    .range(offset, offset + limit - 1);
   if (error) throw new BadRequestError(error.message);
-  return (data || []).map(mapPayslipRow);
+  return { data: (data || []).map(mapPayslipRow), meta: buildMeta(page, limit, count || 0) };
 };
 
 /**
@@ -837,7 +970,7 @@ const recalculatePayslipsFromSettings = async ({
         );
         const calc = await enrichPayslipBreakdown(
           employee,
-          await calculateContractPayslip(employee, summary),
+          await calculateContractPayslip(employee, summary, row.month),
           row.month,
           row.year,
         );
@@ -922,10 +1055,12 @@ const downloadPayslip = async (payslipId, user) => {
     user.company_id,
   );
 
-  // Refresh stored copy in background so email/deep links stay current
+  // Refresh stored copy in background so email/deep links stay current.
+  // Audit finding N-09: shortened from a 1-year TTL — see the matching
+  // comment in publishPayslip above.
   uploadPayslip(pdfBuffer, payslip.employee_id, payslip.month, payslip.year)
     .then(async ({ path }) => {
-      const signedUrl = await getSignedUrl(STORAGE_BUCKETS.payslips, path, 60 * 60 * 24 * 365);
+      const signedUrl = await getSignedUrl(STORAGE_BUCKETS.payslips, path, 60 * 60);
       await supabaseAdmin
         .from('payroll')
         .update({ payslip_url: signedUrl })
@@ -1011,6 +1146,19 @@ const processAutoPayroll = async (reason = 'cron') => {
 
   for (const company of companies) {
     try {
+      // Section G2: data_collection_mode='stop' for payroll — a clean,
+      // total skip, no calculation and nothing written, checked before
+      // autoRunPayrollForCompany does any work at all. Distinct from
+      // visibility (which only ever gates outward emails/display) — this
+      // is the one place a company can be excluded from processing itself.
+      const mode = await require('./featureOverride.service').getDataCollectionMode(company.id, 'payroll');
+      if (mode === 'stop') {
+        logger.info('[AutoPayroll] Skipped — data_collection_mode is stop', { companyId: company.id, name: company.name });
+        summary.skipped += 1;
+        summary.details.push({ companyId: company.id, name: company.name, skipped: true, reason: 'data_collection_stopped' });
+        continue;
+      }
+
       const result = await autoRunPayrollForCompany(company.id);
       summary.details.push({ name: company.name, ...result });
       if (result.skipped) summary.skipped += 1;

@@ -1,13 +1,14 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, Trash2, Save, RefreshCw } from 'lucide-react';
+import { Plus, Trash2, RefreshCw } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { Card, CardHeader, Button, Input, Select, Toggle, Modal, Skeleton } from '../../components/ui';
+import { Card, CardHeader, Button, Input, Select, Toggle, Modal, Skeleton, SaveStatusIndicator } from '../../components/ui';
 import { useSettingsStore } from '../../store/settingsStore';
 import { updateLeavePolicyApi, applyLeavePolicyApi, updateSettingApi, fetchLeavePolicyApi } from '../../api/settings.api';
 import { fetchHolidaysByYearApi, createHolidayApi, deleteHolidayApi } from '../../api/holidays.api';
 import { formatDate } from '../../lib/utils';
 import { invalidateAndRefetch } from '../../lib/queryCache';
+import { useAutosave } from '../../hooks/useAutosave';
 
 const HOLIDAY_TYPE_OPTIONS = [
   { value: 'public', label: 'Public / National' },
@@ -143,7 +144,6 @@ export function LeavePolicySection() {
   });
   const [ltModal, setLtModal] = useState(false);
   const [holModal, setHolModal] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [applying, setApplying] = useState(false);
   const [holidays, setHolidays] = useState([]);
 
@@ -187,84 +187,102 @@ export function LeavePolicySection() {
 
   const usedCodes = leaveTypes.map((t) => t.code).filter(Boolean);
 
+  /**
+   * Item 4: autosaves the policy CONFIG only (leave types + approval/accrual/
+   * auto-deduct meta) — deliberately does NOT call applyLeavePolicyApi.
+   * That call bulk-writes real leave-balance changes to every employee, a
+   * genuinely consequential action, not an in-place field edit — it stays
+   * an explicit "Apply allocations to all employees" button below (same
+   * reasoning the spec gives for PF/PT/TDS recalculation: don't let
+   * autosave silently trigger something expensive/impactful on every
+   * keystroke).
+   */
+  const doSaveConfig = useCallback(async (types, meta) => {
+    const missingCode = types.find((t) => !t.code);
+    if (missingCode) throw new Error(`Leave type "${missingCode.name}" needs a code`);
+    const invalid = types.find((t) => !ALLOWED_LEAVE_CODES.includes(String(t.code).toUpperCase()));
+    if (invalid) throw new Error(`Invalid code "${invalid.code}". Allowed: ${ALLOWED_LEAVE_CODES.join(', ')}`);
+
+    const policy = types.map((t) => ({
+      code: String(t.code).trim().toUpperCase(),
+      name: t.name,
+      allocation: Number(t.daysPerYear) || 0,
+      active: t.active !== false,
+      carry_forward: Boolean(t.carryForward),
+      max_carry: Number(t.maxCarry) || 0,
+      encashment: Boolean(t.encashment),
+      paid: t.paid !== false,
+    }));
+
+    await updateLeavePolicyApi(policy);
+    await updateSettingApi('leave_policy_meta', {
+      approval_level: meta.approvalLevel,
+      accrual_method: meta.accrualMethod,
+      auto_deduct: meta.autoDeduct,
+    });
+
+    syncStore({
+      leaveTypes: types.map((t) => ({ ...t, code: String(t.code).trim().toUpperCase() })),
+      approvalLevel: meta.approvalLevel,
+      accrualMethod: meta.accrualMethod,
+      autoDeduct: meta.autoDeduct,
+      holidays,
+    });
+
+    await invalidateAndRefetch(qc, ['settings', 'leave-policy']);
+    await invalidateAndRefetch(qc, ['leaves']);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qc, syncStore, holidays]);
+  const { status, save, retry } = useAutosave(([types, meta]) => doSaveConfig(types, meta));
+  const saveConfig = (types = leaveTypes, meta = form) => {
+    if (!types.length) return; // nothing to save yet
+    save([types, meta]);
+  };
+
   const patchType = (id, patch) => {
-    setLeaveTypes((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)));
+    setLeaveTypes((prev) => {
+      const next = prev.map((l) => (l.id === id ? { ...l, ...patch } : l));
+      saveConfig(next, form);
+      return next;
+    });
   };
 
   const handleAddType = (lt) => {
-    setLeaveTypes((prev) => [
-      ...prev,
-      {
-        id: `LT-${lt.code}-${Date.now()}`,
-        code: lt.code,
-        name: lt.name,
-        daysPerYear: lt.daysPerYear,
-        carryForward: lt.carryForward,
-        maxCarry: lt.maxCarry,
-        encashment: lt.encashment,
-        paid: lt.paid,
-        active: lt.active !== false,
-      },
-    ]);
-    toast.success('Leave type added — click Save Changes to sync');
+    setLeaveTypes((prev) => {
+      const next = [
+        ...prev,
+        {
+          id: `LT-${lt.code}-${Date.now()}`,
+          code: lt.code,
+          name: lt.name,
+          daysPerYear: lt.daysPerYear,
+          carryForward: lt.carryForward,
+          maxCarry: lt.maxCarry,
+          encashment: lt.encashment,
+          paid: lt.paid,
+          active: lt.active !== false,
+        },
+      ];
+      saveConfig(next, form);
+      return next;
+    });
+    toast.success('Leave type added');
   };
 
   const handleRemoveType = (id) => {
-    setLeaveTypes((prev) => prev.filter((l) => l.id !== id));
+    setLeaveTypes((prev) => {
+      const next = prev.filter((l) => l.id !== id);
+      saveConfig(next, form);
+      return next;
+    });
   };
 
-  const save = async () => {
-    if (!leaveTypes.length) return toast.error('Add at least one leave type');
-    const missingCode = leaveTypes.find((t) => !t.code);
-    if (missingCode) return toast.error(`Leave type "${missingCode.name}" needs a code`);
-    const invalid = leaveTypes.find((t) => !ALLOWED_LEAVE_CODES.includes(String(t.code).toUpperCase()));
-    if (invalid) {
-      return toast.error(
-        `Invalid code "${invalid.code}". Allowed: ${ALLOWED_LEAVE_CODES.join(', ')}`
-      );
-    }
-
-    setSaving(true);
-    try {
-      const policy = leaveTypes.map((t) => ({
-        code: String(t.code).trim().toUpperCase(),
-        name: t.name,
-        allocation: Number(t.daysPerYear) || 0,
-        active: t.active !== false,
-        carry_forward: Boolean(t.carryForward),
-        max_carry: Number(t.maxCarry) || 0,
-        encashment: Boolean(t.encashment),
-        paid: t.paid !== false,
-      }));
-
-      await updateLeavePolicyApi(policy);
-      await updateSettingApi('leave_policy_meta', {
-        approval_level: form.approvalLevel,
-        accrual_method: form.accrualMethod,
-        auto_deduct: form.autoDeduct,
-      });
-
-      // Sync store once after successful save (not on every keystroke)
-      syncStore({
-        leaveTypes: leaveTypes.map((t) => ({ ...t, code: String(t.code).trim().toUpperCase() })),
-        approvalLevel: form.approvalLevel,
-        accrualMethod: form.accrualMethod,
-        autoDeduct: form.autoDeduct,
-        holidays,
-      });
-
-      await invalidateAndRefetch(qc, ['settings', 'leave-policy']);
-      await invalidateAndRefetch(qc, ['leaves']);
-
-      // Push new allocations to all employees immediately after save
-      await applyLeavePolicyApi(year);
-
-      toast.success(`Leave policy saved and applied to all employees for ${year}`);
-    } catch (err) {
-      toast.error(err.message || 'Failed to save leave policy');
-    } finally {
-      setSaving(false);
-    }
+  const patchMeta = (partial) => {
+    setForm((prev) => {
+      const next = { ...prev, ...partial };
+      saveConfig(leaveTypes, next);
+      return next;
+    });
   };
 
   const applyToAll = async () => {
@@ -298,7 +316,7 @@ export function LeavePolicySection() {
       <Card>
         <CardHeader
           title="Leave Types"
-          subtitle="Edit days locally (instant). Save, then Apply to push allocations to employees."
+          subtitle="Changes save automatically. Use “Apply allocations” below to push updated balances to employees."
           action={<Button size="sm" icon={Plus} onClick={() => setLtModal(true)}>Add Leave Type</Button>}
         />
         <div className="p-5 pt-3 overflow-x-auto">
@@ -326,8 +344,9 @@ export function LeavePolicySection() {
                         value={lt.daysPerYear ?? ''}
                         onChange={(e) => {
                           const raw = e.target.value;
-                          patchType(lt.id, { daysPerYear: raw === '' ? '' : Math.max(0, Number(raw) || 0) });
+                          setLeaveTypes((prev) => prev.map((l) => (l.id === lt.id ? { ...l, daysPerYear: raw === '' ? '' : Math.max(0, Number(raw) || 0) } : l)));
                         }}
+                        onBlur={() => saveConfig()}
                         className="h-9 w-20 rounded-input border border-border bg-card px-2 text-sm tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/30"
                       />
                     </td>
@@ -357,7 +376,7 @@ export function LeavePolicySection() {
         <div className="p-5 pt-3 space-y-2.5">
           {[['single', 'Single-level: Manager only'], ['two-level', 'Two-level: Manager → HR']].map(([val, label]) => (
             <label key={val} className="flex items-center gap-2.5 text-sm text-fg cursor-pointer">
-              <input type="radio" name="approvalLevel" className="h-4 w-4 accent-primary" checked={form.approvalLevel === val} onChange={() => setForm({ ...form, approvalLevel: val })} />
+              <input type="radio" name="approvalLevel" className="h-4 w-4 accent-primary" checked={form.approvalLevel === val} onChange={() => patchMeta({ approvalLevel: val })} />
               {label}
             </label>
           ))}
@@ -369,7 +388,7 @@ export function LeavePolicySection() {
         <div className="p-5 pt-3 space-y-2.5">
           {[['upfront', 'Upfront — full balance at year start'], ['monthly', 'Monthly — credit each month'], ['quarterly', 'Quarterly']].map(([val, label]) => (
             <label key={val} className="flex items-center gap-2.5 text-sm text-fg cursor-pointer">
-              <input type="radio" name="accrualMethod" className="h-4 w-4 accent-primary" checked={form.accrualMethod === val} onChange={() => setForm({ ...form, accrualMethod: val })} />
+              <input type="radio" name="accrualMethod" className="h-4 w-4 accent-primary" checked={form.accrualMethod === val} onChange={() => patchMeta({ accrualMethod: val })} />
               {label}
             </label>
           ))}
@@ -377,7 +396,7 @@ export function LeavePolicySection() {
       </Card>
 
       <Card className="p-5">
-        <Toggle label="Auto-deduct casual leave for unplanned absence" checked={form.autoDeduct} onChange={(v) => setForm({ ...form, autoDeduct: v })} />
+        <Toggle label="Auto-deduct casual leave for unplanned absence" checked={form.autoDeduct} onChange={(v) => patchMeta({ autoDeduct: v })} />
       </Card>
 
       <Card>
@@ -420,11 +439,11 @@ export function LeavePolicySection() {
         </div>
       </Card>
 
-      <div className="sticky bottom-0 z-10 -mx-1 flex flex-wrap items-center justify-end gap-2 border-t border-border/60 bg-card/95 backdrop-blur px-3 py-3 rounded-xl">
+      <div className="sticky bottom-0 z-10 -mx-1 flex flex-wrap items-center justify-end gap-3 border-t border-border/60 bg-card/95 backdrop-blur px-3 py-3 rounded-xl">
+        <SaveStatusIndicator status={status} onRetry={retry} />
         <Button variant="outline" icon={RefreshCw} onClick={applyToAll} loading={applying}>
           Apply allocations to all ({year})
         </Button>
-        <Button icon={Save} onClick={save} loading={saving}>Save Changes</Button>
       </div>
 
       <AddLeaveTypeModal open={ltModal} onClose={() => setLtModal(false)} onAdd={handleAddType} usedCodes={usedCodes} />

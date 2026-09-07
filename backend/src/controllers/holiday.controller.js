@@ -7,6 +7,17 @@ const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
 
 const companyIdOf = (req) => req.user.company_id || getCompanyId(req.user) || DEFAULT_COMPANY_ID;
 
+/** Fields a caller may set on a holiday — never spread req.body into a Supabase write. */
+const HOLIDAY_WRITABLE_FIELDS = ['title', 'date', 'type', 'description', 'is_mandatory'];
+
+const pickHolidayFields = (body = {}) => {
+  const fields = {};
+  for (const key of HOLIDAY_WRITABLE_FIELDS) {
+    if (body[key] !== undefined) fields[key] = body[key];
+  }
+  return fields;
+};
+
 const assertHolidayCompany = async (holidayId, companyId) => {
   const cid = companyId || DEFAULT_COMPANY_ID;
   const { data } = await supabaseAdmin
@@ -60,7 +71,7 @@ const update = async (req, res, next) => {
 
     const { data, error } = await supabaseAdmin
       .from('holidays')
-      .update(req.body)
+      .update(pickHolidayFields(req.body))
       .eq('id', req.params.id)
       .eq('company_id', companyId)
       .select()

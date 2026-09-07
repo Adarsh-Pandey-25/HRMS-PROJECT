@@ -23,7 +23,7 @@ const isTenantAnnouncement = (row, companyId) => {
 const requireTenantAnnouncement = async (id, companyId) => {
   const { data } = await supabaseAdmin
     .from('announcements')
-    .select('id, published_by, company_id, publisher:published_by(id, address, company_id)')
+    .select('id, published_by, company_id, attachment_url, publisher:published_by(id, address, company_id)')
     .eq('id', id)
     .maybeSingle();
   if (!data || !isTenantAnnouncement(data, companyId)) {
@@ -278,6 +278,24 @@ const active = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+/** Only these fields are ever settable via update — never company_id, published_by, or attachment_url. */
+const ANNOUNCEMENT_WRITABLE_FIELDS = ['title', 'content', 'priority', 'target_audience', 'department', 'expires_at', 'is_active'];
+
+const pickAnnouncementFields = (body) => {
+  const patch = {};
+  for (const field of ANNOUNCEMENT_WRITABLE_FIELDS) {
+    if (body[field] === undefined) continue;
+    if (field === 'title' || field === 'content') {
+      patch[field] = String(body[field] || '').trim();
+    } else if (field === 'is_active') {
+      patch[field] = body[field] === true || body[field] === 'true';
+    } else {
+      patch[field] = body[field] === '' ? null : body[field];
+    }
+  }
+  return patch;
+};
+
 const update = async (req, res, next) => {
   try {
     await requireTenantAnnouncement(req.params.id, companyIdOf(req));
@@ -287,7 +305,7 @@ const update = async (req, res, next) => {
 
     const { data, error } = await supabaseAdmin
       .from('announcements')
-      .update(req.body)
+      .update(pickAnnouncementFields(req.body))
       .eq('id', req.params.id)
       .eq('company_id', companyId)
       .select()
@@ -304,6 +322,22 @@ const update = async (req, res, next) => {
     }
 
     successResponse(res, 'Announcement updated', data);
+  } catch (err) { next(err); }
+};
+
+/** Any employee who can see the announcement can fetch a signed URL for its attachment — the
+ *  stored value is a private-bucket storage path, never a directly fetchable link. */
+const attachment = async (req, res, next) => {
+  try {
+    const { getSignedUrl, STORAGE_BUCKETS } = require('../services/storage.service');
+    const row = await requireTenantAnnouncement(req.params.id, companyIdOf(req));
+    if (!row.attachment_url) throw new BadRequestError('This announcement has no attachment');
+
+    const url = await getSignedUrl(STORAGE_BUCKETS.documents, row.attachment_url);
+    if (req.query.format === 'json') {
+      return successResponse(res, 'Attachment URL generated', { url });
+    }
+    return res.redirect(302, url);
   } catch (err) { next(err); }
 };
 
@@ -336,4 +370,4 @@ const acknowledge = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-module.exports = { create, all, active, update, remove, acknowledge };
+module.exports = { create, all, active, update, remove, acknowledge, attachment };

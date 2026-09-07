@@ -46,6 +46,11 @@ export async function fetchMeApi() {
   return mapEmployeeFromApi(employee);
 }
 
+/** Item 4: marks the PWA install prompt as seen, server-side, so it stops showing automatically. */
+export async function markInstallPromptSeenApi() {
+  return apiRequest({ method: 'PATCH', url: '/auth/me/install-prompt-seen' });
+}
+
 /** Request a 6-digit OTP via SMTP (nodemailer on backend). */
 export async function forgotPasswordApi(email) {
   return apiRequest({
@@ -84,11 +89,11 @@ export async function sendOnboardingOtpApi(email, adminName, inviteToken) {
 }
 
 /** Verify onboarding OTP — returns verificationToken for Launch. */
-export async function verifyOnboardingOtpApi(email, otp) {
+export async function verifyOnboardingOtpApi(email, otp, inviteToken) {
   return apiRequest({
     method: 'POST',
     url: '/auth/onboarding/verify-otp',
-    data: { email, otp },
+    data: { email, otp, inviteToken },
   });
 }
 

@@ -5,8 +5,6 @@ const corsOrigins = [
   process.env.FRONTEND_URL,
   'http://localhost:5173',
   'http://127.0.0.1:5173',
-  'https://hrms.spaxads.net',
-  'https://hrms-ten-lac.vercel.app',
 ]
   .filter(Boolean)
   .join(',')
@@ -15,6 +13,26 @@ const corsOrigins = [
   .filter(Boolean);
 
 const uniqueCorsOrigins = [...new Set(corsOrigins)];
+
+// Subdomain-per-tenant means every company gets its own {slug}.BASE_DOMAIN
+// origin — an allow-list can never enumerate those in advance. When
+// BASE_DOMAIN is configured, also accept any single-label subdomain of it
+// (in addition to the bare domain), mirroring tenantSubdomain.middleware.js's
+// own notion of what counts as a valid tenant host.
+const baseDomain = String(process.env.BASE_DOMAIN || '').toLowerCase().trim();
+const isAllowedTenantOrigin = (origin) => {
+  if (!baseDomain) return false;
+  let hostname;
+  try {
+    hostname = new URL(origin).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (hostname === baseDomain) return true;
+  if (!hostname.endsWith(`.${baseDomain}`)) return false;
+  const slug = hostname.slice(0, -(`.${baseDomain}`.length));
+  return Boolean(slug) && !slug.includes('.');
+};
 
 module.exports = {
   env: process.env.NODE_ENV || 'development',
@@ -33,11 +51,20 @@ module.exports = {
     refreshSecret: process.env.JWT_REFRESH_SECRET,
     expire: process.env.JWT_EXPIRE || '24h',
     refreshExpire: process.env.JWT_REFRESH_EXPIRE || '7d',
+    // Audit finding N-18: employee and super-admin access tokens previously
+    // shared JWT_SECRET — a single secret leak compromised both auth
+    // systems at once. Falls back to the shared secret when unset so this
+    // deploys without hard-breaking existing super-admin sessions; setting
+    // SUPER_ADMIN_JWT_SECRET is a deliberate, separate cutover step (see
+    // .env.example) that invalidates every currently-issued super-admin
+    // token the moment it's set, since they were signed with the old
+    // shared secret and won't verify against the new one.
+    superAdminSecret: process.env.SUPER_ADMIN_JWT_SECRET || process.env.JWT_SECRET,
   },
   cors: {
     origin(origin, callback) {
       // Requests without Origin are server-to-server tools such as curl/Postman.
-      if (!origin || uniqueCorsOrigins.includes(origin.replace(/\/$/, ''))) {
+      if (!origin || uniqueCorsOrigins.includes(origin.replace(/\/$/, '')) || isAllowedTenantOrigin(origin)) {
         return callback(null, true);
       }
       const error = new Error('Origin not allowed by CORS');

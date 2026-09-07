@@ -2,7 +2,7 @@ const moment = require('moment-timezone');
 const { supabaseAdmin } = require('../config/supabase');
 const { TIMEZONE } = require('../utils/constants');
 const {
-  BadRequestError, NotFoundError, ForbiddenError,
+  BadRequestError, NotFoundError, ForbiddenError, ConflictError,
 } = require('../utils/errors');
 const { calculateLeaveDays, paginate, buildMeta } = require('../utils/helpers');
 const { getTeamEmployeeIds } = require('./attendance.service');
@@ -11,7 +11,22 @@ const settingsService = require('./settings.service');
 const config = require('../config/database');
 const { LEAVE_TYPES } = require('../utils/constants');
 const notificationService = require('./notification.service');
+const emailService = require('./email.service');
 const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
+
+/** Real per-employee balance after the transaction — same table/formula getLeaveBalance reads, so the number shown in the email always matches what the UI shows (N-04). */
+const remainingBalanceFor = async (employeeId, leaveType, year, companyId) => {
+  try {
+    const balances = await getLeaveBalance(employeeId, year, companyId);
+    const row = (balances || []).find((b) => b.leave_type === leaveType);
+    if (!row) return null;
+    return Number(row.total_allocated || 0) - Number(row.used || 0) - Number(row.encashed || 0);
+  } catch {
+    return null;
+  }
+};
+
+const LOW_BALANCE_THRESHOLD = 3;
 
 const resolveEmployeeCompanyId = async (employeeId) => {
   const { data } = await supabaseAdmin
@@ -56,6 +71,24 @@ const applyLeave = async (employeeId, data) => {
 
   const totalDays = calculateLeaveDays(from_date, to_date, is_half_day);
 
+  // Audit finding N-13: block a new application that overlaps an existing
+  // pending/approved leave for the same employee — standard interval
+  // overlap test (existing.from_date <= new.to_date AND existing.to_date
+  // >= new.from_date) against the two statuses that represent a real,
+  // still-live claim on those days.
+  const { data: overlapping, error: overlapErr } = await supabaseAdmin
+    .from('leaves')
+    .select('id')
+    .eq('employee_id', employeeId)
+    .in('status', ['pending', 'approved'])
+    .lte('from_date', to_date)
+    .gte('to_date', from_date)
+    .limit(1);
+  if (overlapErr) throw new BadRequestError(overlapErr.message);
+  if (overlapping?.length) {
+    throw new BadRequestError('You already have a pending or approved leave request that overlaps these dates');
+  }
+
   const companyId = await resolveEmployeeCompanyId(employeeId);
 
   // Block applying for disabled leave types
@@ -88,6 +121,7 @@ const applyLeave = async (employeeId, data) => {
     .from('leaves')
     .insert({
       employee_id: employeeId,
+      company_id: companyId,
       leave_type,
       from_date,
       to_date,
@@ -104,9 +138,13 @@ const applyLeave = async (employeeId, data) => {
   // Notify manager (if any) else HR/Admin
   const { data: employee } = await supabaseAdmin
     .from('employees')
-    .select('id, first_name, last_name, manager_id')
+    .select('id, first_name, last_name, email, department, manager_id')
     .eq('id', employeeId)
     .single();
+
+  const balanceAfterApproval = await remainingBalanceFor(employeeId, leave_type, year, companyId);
+  emailService.leaveAppliedEmail(employee, leave, { balanceAfterApproval }).catch((e) =>
+    logger.warn('leaveAppliedEmail failed', { error: e.message }));
 
   if (employee?.manager_id) {
     await notificationService.createNotification({
@@ -117,6 +155,28 @@ const applyLeave = async (employeeId, data) => {
       link: '/leave/team',
       meta: { leave_id: leave.id },
     });
+
+    const { data: manager } = await supabaseAdmin
+      .from('employees')
+      .select('id, first_name, last_name, email')
+      .eq('id', employee.manager_id)
+      .maybeSingle();
+
+    if (manager?.email) {
+      // Real overlap count — same interval-overlap test as the N-13 guard above,
+      // scoped to this company, excluding the applicant, approved only.
+      const { count: othersOnLeave } = await supabaseAdmin
+        .from('leaves')
+        .select('id', { count: 'exact', head: true })
+        .eq('company_id', companyId)
+        .neq('employee_id', employeeId)
+        .eq('status', 'approved')
+        .lte('from_date', to_date)
+        .gte('to_date', from_date);
+
+      emailService.leaveApprovalRequestEmail(manager, employee, leave, { othersOnLeave: othersOnLeave || 0 }).catch((e) =>
+        logger.warn('leaveApprovalRequestEmail failed', { error: e.message }));
+    }
   } else {
     const tenantService = require('./tenant.service');
     const hrIds = await tenantService.getCompanyHrAdminIds(companyId);
@@ -178,7 +238,7 @@ const adjustLeaveBalanceUsed = async (employeeId, leaveDate, leaveType, deltaDay
   }
 };
 
-const notifyLeaveApproved = async (leave) => {
+const notifyLeaveApproved = async (leave, approver) => {
   await notificationService.createNotification({
     user_id: leave.employee_id,
     type: 'LEAVE',
@@ -199,6 +259,21 @@ const notifyLeaveApproved = async (leave) => {
   } catch {
     /* non-fatal */
   }
+
+  if (leave.employee?.email) {
+    const year = moment(leave.from_date).year();
+    const companyId = getCompanyId(leave.employee) || leave.employee.company_id;
+    const approverName = approver ? `${approver.first_name || ''} ${approver.last_name || ''}`.trim() : undefined;
+    const remaining = await remainingBalanceFor(leave.employee_id, leave.leave_type, year, companyId);
+
+    emailService.leaveApprovedEmail(leave.employee, leave, { approverName, remainingBalance: remaining }).catch((e) =>
+      logger.warn('leaveApprovedEmail failed', { error: e.message }));
+
+    if (remaining != null && remaining <= LOW_BALANCE_THRESHOLD) {
+      emailService.leaveBalanceLowEmail(leave.employee, { leaveType: leave.leave_type, remaining, threshold: LOW_BALANCE_THRESHOLD }).catch((e) =>
+        logger.warn('leaveBalanceLowEmail failed', { error: e.message }));
+    }
+  }
 };
 
 /** Reads Settings → Leave Policy → Approval Flow (leave_policy_meta). */
@@ -212,6 +287,12 @@ const getLeaveApprovalLevel = async (companyId = null) => {
 const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
   const { data: leave } = await supabaseAdmin.from('leaves').select('*, employee:employee_id(id, first_name, last_name, email, employee_code, department, manager_id, company_id, address)').eq('id', leaveId).single();
   if (!leave) throw new NotFoundError('Leave not found');
+  // Audit finding N-02: applies to both the manager path and the HR/Admin
+  // path below — neither previously checked this, so a manager or HR/Admin
+  // could approve their own leave application with no second reviewer.
+  if (approver.id === leave.employee_id) {
+    throw new ForbiddenError('You cannot approve your own leave application');
+  }
   if (leave.status !== 'pending' && !(isManagerApproval && !leave.manager_approved_by)) {
     throw new BadRequestError('Leave cannot be approved in current status');
   }
@@ -225,13 +306,17 @@ const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
   const singleLevel = approvalLevel === 'single';
 
   if (isManagerApproval && approver.role === 'manager') {
-    const teamIds = await getTeamEmployeeIds(approver.id);
+    const teamIds = await getTeamEmployeeIds(approver.id, approverCompanyId);
     if (!teamIds.includes(leave.employee_id)) {
       throw new ForbiddenError('Not authorized to approve this leave');
     }
 
     // Single-level: manager approval is final
     if (singleLevel) {
+      // Audit finding N-05: .eq('status','pending') on the write itself
+      // (not just the earlier read-time check) closes the TOCTOU window —
+      // a double-click/retried request that loses the race updates zero
+      // rows instead of double-approving and double-deducting balance.
       const { data: updated, error } = await supabaseAdmin
         .from('leaves')
         .update({
@@ -242,11 +327,13 @@ const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
           approved_at: new Date().toISOString(),
         })
         .eq('id', leaveId)
+        .eq('status', 'pending')
         .select()
-        .single();
+        .maybeSingle();
       if (error) throw new BadRequestError(error.message);
+      if (!updated) throw new ConflictError('This leave has already been processed');
       await adjustLeaveBalanceUsed(leave.employee_id, leave.from_date, leave.leave_type, leave.total_days);
-      await notifyLeaveApproved({ ...leave, id: leaveId });
+      await notifyLeaveApproved({ ...leave, id: leaveId }, approver);
       return updated;
     }
 
@@ -283,6 +370,9 @@ const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
     throw new BadRequestError('Manager approval required before HR approval');
   }
 
+  // Audit finding N-05: same TOCTOU close as the manager branch above —
+  // .eq('status','pending') on the write itself, not just the read-time
+  // check, so a lost race updates zero rows instead of double-approving.
   const { data: updated, error } = await supabaseAdmin
     .from('leaves')
     .update({
@@ -291,13 +381,15 @@ const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
       approved_at: new Date().toISOString(),
     })
     .eq('id', leaveId)
+    .eq('status', 'pending')
     .select()
-    .single();
+    .maybeSingle();
 
   if (error) throw new BadRequestError(error.message);
+  if (!updated) throw new ConflictError('This leave has already been processed');
 
   await adjustLeaveBalanceUsed(leave.employee_id, leave.from_date, leave.leave_type, leave.total_days);
-  await notifyLeaveApproved({ ...leave, id: leaveId });
+  await notifyLeaveApproved({ ...leave, id: leaveId }, approver);
 
   return updated;
 };
@@ -336,6 +428,16 @@ const rejectLeave = async (approver, leaveId, rejection_reason) => {
     link: '/leave/me',
     meta: { leave_id: leaveId },
   });
+
+  if (leave.employee?.email) {
+    const year = moment(leave.from_date).year();
+    const companyId = getCompanyId(leave.employee) || leave.employee.company_id;
+    const approverName = `${approver.first_name || ''} ${approver.last_name || ''}`.trim();
+    const unchangedBalance = await remainingBalanceFor(leave.employee_id, leave.leave_type, year, companyId);
+
+    emailService.leaveRejectedEmail(leave.employee, leave, { approverName, reason: rejection_reason, unchangedBalance }).catch((e) =>
+      logger.warn('leaveRejectedEmail failed', { error: e.message }));
+  }
 
   return updated;
 };

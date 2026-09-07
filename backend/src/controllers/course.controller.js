@@ -1,6 +1,8 @@
 const courseService = require('../services/course.service');
+const { logAudit } = require('../services/auditLog.service');
 const { successResponse } = require('../utils/helpers');
 const { getCompanyId } = require('../utils/tenant');
+const logger = require('../utils/logger');
 
 const companyIdOf = (req) => req.user.company_id || getCompanyId(req.user);
 
@@ -116,7 +118,14 @@ const createEnrollments = async (req, res, next) => {
     const courseId = req.body.course_id || req.body.courseId;
     const employeeIds = req.body.employee_ids || req.body.employeeIds || req.body.user_ids || [];
     const deadline = req.body.deadline || null;
-    const data = await courseService.createEnrollmentsBulk({ courseId, employeeIds, deadline }, companyIdOf(req));
+    // Item 1: assigned_by marks this mandatory (HR/Admin-driven) rather than
+    // self-enrolled — set from the authenticated actor, never the request body.
+    const data = await courseService.createEnrollmentsBulk({ courseId, employeeIds, deadline, assignedBy: req.user.id }, companyIdOf(req));
+    logAudit({
+      companyId: companyIdOf(req), actorId: req.user.id, actorRole: req.user.role,
+      actionType: 'course.assign', targetType: 'course', targetId: courseId,
+      afterState: { employeeIds, deadline }, ipAddress: req.ip,
+    }).catch((e) => logger.warn('Audit log failed', { error: e.message }));
     successResponse(res, 'Enrollments created', data, null, 201);
   } catch (err) { next(err); }
 };
@@ -132,7 +141,7 @@ const listEnrollments = async (req, res, next) => {
 
 const archiveEnrollment = async (req, res, next) => {
   try {
-    const data = await courseService.archiveEnrollment(req.params.id);
+    const data = await courseService.archiveEnrollment(req.params.id, companyIdOf(req));
     successResponse(res, 'Enrollment archived', data);
   } catch (err) { next(err); }
 };

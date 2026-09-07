@@ -82,6 +82,13 @@ const createOffer = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+const updateOfferStatus = async (req, res, next) => {
+  try {
+    const data = await recruitmentService.updateOfferStatus(req.params.id, req.body.status, companyIdOf(req));
+    successResponse(res, 'Offer updated', data);
+  } catch (err) { next(err); }
+};
+
 const getChecklist = async (req, res, next) => {
   try {
     const data = await recruitmentService.getCandidateChecklist(req.params.id, companyIdOf(req));
@@ -115,6 +122,7 @@ module.exports = {
   updateInterviewOutcome,
   offers,
   createOffer,
+  updateOfferStatus,
   getChecklist,
   updateChecklistItem,
 };

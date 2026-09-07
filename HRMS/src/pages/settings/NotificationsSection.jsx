@@ -1,11 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Send, CheckCircle2, XCircle, Save } from 'lucide-react';
+import { Send, CheckCircle2, XCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { Card, CardHeader, Toggle, Button } from '../../components/ui';
+import { Card, CardHeader, Toggle, Button, SaveStatusIndicator } from '../../components/ui';
 import { useSettingsStore } from '../../store/settingsStore';
 import { updateSettingApi } from '../../api/settings.api';
 import { invalidateAndRefetch } from '../../lib/queryCache';
+import { useAutosave } from '../../hooks/useAutosave';
 
 /**
  * SMTP credentials live only in backend/.env — never stored in the browser.
@@ -17,37 +18,36 @@ export function NotificationsSection() {
   const update = useSettingsStore((s) => s.updateNotificationConfig);
   const updateTrigger = useSettingsStore((s) => s.updateNotificationTrigger);
   const [emailEnabled, setEmailEnabled] = useState(Boolean(cfg.smtp?.enabled));
-  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     setEmailEnabled(Boolean(cfg.smtp?.enabled));
   }, [cfg.smtp?.enabled]);
 
-  const save = async () => {
-    const payload = {
-      smtp: {
-        enabled: emailEnabled,
-        host: '',
-        port: 587,
-        username: '',
-        password: '',
-        fromName: '',
-        fromEmail: '',
-        encryption: 'TLS',
-      },
-      triggers: cfg.triggers || [],
-    };
-    setSaving(true);
-    try {
-      await updateSettingApi('notification_config', payload);
-      update(payload);
-      await invalidateAndRefetch(qc, ['settings']);
-      toast.success('Notification preferences saved to server');
-    } catch (err) {
-      toast.error(err.message || 'Failed to save notification preferences');
-    } finally {
-      setSaving(false);
-    }
+  const doSave = useCallback(async (payload) => {
+    await updateSettingApi('notification_config', payload);
+    update(payload);
+    await invalidateAndRefetch(qc, ['settings']);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qc, update]);
+  const { status, save, retry } = useAutosave(doSave);
+
+  const buildPayload = (nextEmailEnabled, triggers) => ({
+    smtp: {
+      enabled: nextEmailEnabled,
+      host: '', port: 587, username: '', password: '', fromName: '', fromEmail: '', encryption: 'TLS',
+    },
+    triggers: triggers || [],
+  });
+
+  const onToggleEmailEnabled = (v) => {
+    setEmailEnabled(v);
+    save(buildPayload(v, cfg.triggers));
+  };
+
+  const onToggleTrigger = (event, channel, checked) => {
+    updateTrigger(event, channel, checked);
+    const nextTriggers = (cfg.triggers || []).map((t) => (t.event === event ? { ...t, [channel]: checked } : t));
+    save(buildPayload(emailEnabled, nextTriggers));
   };
 
   const sendTest = () => {
@@ -56,6 +56,7 @@ export function NotificationsSection() {
 
   return (
     <div className="space-y-5">
+      <div className="flex justify-end"><SaveStatusIndicator status={status} onRetry={retry} /></div>
       <Card>
         <CardHeader
           title="Email Provider (SMTP)"
@@ -79,17 +80,16 @@ export function NotificationsSection() {
             label="Prefer email for notification events"
             hint="Master switch. Per-event Email checkboxes below still apply. Delivery requires SMTP_* on the backend."
             checked={emailEnabled}
-            onChange={setEmailEnabled}
+            onChange={onToggleEmailEnabled}
           />
           <div className="flex items-center gap-3 pt-1">
             <Button variant="outline" icon={Send} onClick={sendTest}>Send Test Email</Button>
-            <Button icon={Save} onClick={save} loading={saving} disabled={saving}>Save Changes</Button>
           </div>
         </div>
       </Card>
 
       <Card>
-        <CardHeader title="Notification Triggers" subtitle="Toggle In-App, Mobile Push, and Email per event — click Save Changes above to persist" />
+        <CardHeader title="Notification Triggers" subtitle="Toggle In-App, Mobile Push, and Email per event — saves automatically" />
         <div className="p-5 pt-3 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -110,7 +110,7 @@ export function NotificationsSection() {
                         type="checkbox"
                         className="h-4 w-4 accent-primary"
                         checked={t[ch]}
-                        onChange={(e) => updateTrigger(t.event, ch, e.target.checked)}
+                        onChange={(e) => onToggleTrigger(t.event, ch, e.target.checked)}
                       />
                     </td>
                   ))}

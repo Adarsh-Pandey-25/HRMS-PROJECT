@@ -292,9 +292,32 @@ const escapePostgrestFilter = (value) => String(value || '')
   .replace(/\)/g, ' ')
   .replace(/\./g, ' ');
 
+/**
+ * Confirmed live (2026-08-28, direct testing during item 3's build): a
+ * missing-column error from Supabase/PostgREST shows up in at least two
+ * different message shapes depending on the code path —
+ * "Could not find the 'x' column of 'y' in the schema cache" (PostgREST's
+ * schema-cache miss) and "column employees.x does not exist" (a raw
+ * Postgres error surfacing through) — not just one. Every isMissing*Column
+ * helper across this codebase before this point only matched one shape or
+ * the other, so it silently failed to trigger its fallback on whichever
+ * shape it didn't expect. This checks for the column name plus either
+ * known phrase, robust to both. Existing single-shape helpers elsewhere
+ * (adms.service.js, document.controller.js, etc.) are not retroactively
+ * fixed here — flagged as a real, confirmed, cross-cutting gap worth a
+ * dedicated pass, out of scope for this one.
+ */
+const isMissingColumnError = (message, columnName) => {
+  const msg = String(message || '').toLowerCase();
+  const col = String(columnName || '').toLowerCase();
+  if (!col || !msg.includes(col)) return false;
+  return msg.includes('does not exist') || msg.includes('schema cache');
+};
+
 module.exports = {
   successResponse,
   errorResponse,
+  isMissingColumnError,
   getClientIp,
   getClientIps,
   anyIpInCidr,

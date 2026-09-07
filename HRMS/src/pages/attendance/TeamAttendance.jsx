@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
-import { UserCheck, Home, Clock, UserX, X } from 'lucide-react';
-import { PageHeader, Card, CardHeader, Button, Avatar, StatusBadge, DataTable, Skeleton, Input, Badge } from '../../components/ui';
+import { UserCheck, Home, Clock, UserX, X, Loader2 } from 'lucide-react';
+import { PageHeader, Card, CardHeader, Button, Avatar, StatusBadge, DataTable, Skeleton, Input, Badge, StatCard } from '../../components/ui';
 import { useTeamAttendance, useTeamMembers } from '../../hooks/useAttendance';
 import { useEmployees } from '../../hooks/useEmployees';
 import { useAuthStore } from '../../store/authStore';
@@ -8,10 +8,11 @@ import { ExportButton } from '../../components/shared/ExportButton';
 import { formatDate, cn } from '../../lib/utils';
 
 const KPI_CARDS = [
-  { key: 'present', label: 'Present', tone: 'text-success', bg: 'bg-success/10', ring: 'ring-success', icon: UserCheck },
-  { key: 'wfh', label: 'WFH', tone: 'text-primary', bg: 'bg-primary/10', ring: 'ring-primary', icon: Home },
-  { key: 'late', label: 'Late', tone: 'text-warning', bg: 'bg-warning/10', ring: 'ring-warning', icon: Clock },
-  { key: 'absent', label: 'Absent', tone: 'text-danger', bg: 'bg-danger/10', ring: 'ring-danger', icon: UserX },
+  { key: 'present', label: 'Present', tone: 'success', icon: UserCheck },
+  { key: 'inProgress', label: 'In Progress', tone: 'info', icon: Loader2 },
+  { key: 'wfh', label: 'WFH', tone: 'primary', icon: Home },
+  { key: 'late', label: 'Late', tone: 'warning', icon: Clock },
+  { key: 'absent', label: 'Absent', tone: 'danger', icon: UserX },
 ];
 
 function formatHours(h) {
@@ -97,10 +98,22 @@ export default function TeamAttendance() {
     );
   }, [records, roster, date]);
 
+  // Present/WFH/Late/Absent are the only 4 summary tiles this view has — a
+  // row whose status is 'half_day' or 'early_departure' still means the
+  // employee showed up and worked real hours (just not a full day), so both
+  // fold into the Present bucket. Previously 'half_day' matched neither
+  // branch here at all and was silently dropped from every KPI count,
+  // undercounting Present without ever showing up as Absent either — the
+  // per-row StatusBadge was always correct, only this aggregation wasn't.
   const attendanceKpis = useMemo(() => {
-    const kpis = { present: 0, wfh: 0, late: 0, absent: 0 };
+    const kpis = { present: 0, wfh: 0, late: 0, absent: 0, inProgress: 0 };
     for (const a of teamAttendance) {
-      if (a.status === 'present' || a.status === 'early_departure') kpis.present += 1;
+      // Biometric 'pending' rows carry a 'present' placeholder status
+      // server-side (see attendance.service.js) that must never be shown
+      // or counted as authoritative before checkout_status finalizes —
+      // they're their own bucket here, not folded into Present.
+      if (a.checkoutStatus === 'pending') { kpis.inProgress += 1; continue; }
+      if (a.status === 'present' || a.status === 'early_departure' || a.status === 'half_day') kpis.present += 1;
       else if (kpis[a.status] !== undefined) kpis[a.status] += 1;
     }
     return kpis;
@@ -108,10 +121,13 @@ export default function TeamAttendance() {
 
   const filteredTeam = useMemo(() => {
     let list = teamAttendance;
-    if (statusFilter === 'present') {
-      list = list.filter((a) => a.status === 'present' || a.status === 'early_departure');
+    if (statusFilter === 'inProgress') {
+      list = list.filter((a) => a.checkoutStatus === 'pending');
+    } else if (statusFilter === 'present') {
+      list = list.filter((a) => a.checkoutStatus !== 'pending'
+        && (a.status === 'present' || a.status === 'early_departure' || a.status === 'half_day'));
     } else if (statusFilter) {
-      list = list.filter((a) => a.status === statusFilter);
+      list = list.filter((a) => a.checkoutStatus !== 'pending' && a.status === statusFilter);
     }
     const q = search.trim().toLowerCase();
     if (q) {
@@ -170,10 +186,14 @@ export default function TeamAttendance() {
         header: 'Check-out',
         cell: ({ row }) => {
           const r = row.original;
+          if (r.checkoutStatus === 'pending') {
+            return <span className="inline-flex items-center gap-1 text-xs text-info font-medium"><Loader2 className="h-3 w-3" />In progress</span>;
+          }
           return (
             <div>
               <p className="text-sm text-fg tabular-nums">{r.checkOut || '—'}</p>
               {r.isAutoCheckout && <p className="text-[10px] text-fg-subtle">Auto</p>}
+              {r.checkoutStatus === 'provisional' && <p className="text-[10px] text-warning font-medium">may still update</p>}
             </div>
           );
         },
@@ -201,7 +221,16 @@ export default function TeamAttendance() {
       {
         accessorKey: 'status',
         header: 'Status',
-        cell: ({ getValue }) => <StatusBadge status={getValue()} />,
+        cell: ({ row }) => {
+          const r = row.original;
+          if (r.checkoutStatus === 'pending') return <Badge tone="info">In progress</Badge>;
+          return (
+            <div className="flex items-center gap-1.5">
+              <StatusBadge status={r.status} />
+              {r.checkoutStatus === 'provisional' && <span className="text-[10px] text-warning font-medium">may update</span>}
+            </div>
+          );
+        },
       },
     ],
     []
@@ -223,7 +252,7 @@ export default function TeamAttendance() {
       checkOutIp: r.checkOutIp || '',
       totalHours: r.workHours ? Number(r.workHours).toFixed(2) : '',
       wfh: (r.isWfh || r.status === 'wfh') ? 'Yes' : 'No',
-      status: r.status,
+      status: r.checkoutStatus === 'pending' ? 'in_progress' : r.checkoutStatus === 'provisional' ? `${r.status} (provisional)` : r.status,
       method: r.checkInMethod || '',
     })),
     [filteredTeam, date]
@@ -247,29 +276,18 @@ export default function TeamAttendance() {
         )}
       />
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {KPI_CARDS.map(({ key, label, tone, bg, ring, icon: Icon }) => {
-          const active = statusFilter === key;
-          return (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setStatusFilter(active ? null : key)}
-              className={cn(
-                'rounded-card bg-card shadow-card border border-border/60 p-4 flex items-center gap-3 text-left w-full transition-shadow hover:shadow-card-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
-                active && `ring-2 ${ring}`
-              )}
-            >
-              <div className={cn('h-10 w-10 rounded-lg flex items-center justify-center shrink-0', bg)}>
-                <Icon className={cn('h-5 w-5', tone)} />
-              </div>
-              <div>
-                <p className={cn('text-xl font-semibold', tone)}>{attendanceKpis[key]}</p>
-                <p className="text-xs text-fg-subtle">{label}</p>
-              </div>
-            </button>
-          );
-        })}
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+        {KPI_CARDS.map(({ key, label, tone, icon }) => (
+          <StatCard
+            key={key}
+            label={label}
+            value={attendanceKpis[key]}
+            icon={icon}
+            tone={tone}
+            active={statusFilter === key}
+            onClick={() => setStatusFilter(statusFilter === key ? null : key)}
+          />
+        ))}
       </div>
 
       <Card>

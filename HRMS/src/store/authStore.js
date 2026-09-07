@@ -124,6 +124,27 @@ export const useAuthStore = create((set, get) => ({
   },
 }));
 
+/**
+ * Item 1: `role` is a separate top-level field from `user.role`, kept in
+ * sync by convention — every action above (login/hydrateSession/logout)
+ * currently does derive+set it correctly in the same atomic call, audited
+ * end to end. But "kept in sync by convention across N call sites" is
+ * exactly the "two places tracking role that can drift" shape of bug this
+ * was reported as, and relying on every future call site to remember to
+ * do it right is fragile. This subscriber makes it a structural
+ * invariant instead of a convention: any state change, from any action,
+ * that leaves `role` not matching `user.role` is corrected in the same
+ * synchronous tick, before React renders anything from it — so `role` can
+ * no longer diverge even if some future code path forgets to set it
+ * alongside `user`.
+ */
+useAuthStore.subscribe((state) => {
+  const derivedRole = state.user?.role || 'employee';
+  if (state.role !== derivedRole) {
+    useAuthStore.setState({ role: derivedRole });
+  }
+});
+
 /** Start session restore immediately — don't wait for React mount. */
 export function startSessionHydration() {
   if (!hydrationPromise) {

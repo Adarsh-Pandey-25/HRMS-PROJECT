@@ -4,7 +4,7 @@ import { CalendarCheck, CalendarOff, Receipt, LifeBuoy, LogIn, LogOut, DollarSig
 import toast from 'react-hot-toast';
 import { Card, CardHeader, StatCard, Button, StatusBadge, ProgressBar, Skeleton } from '../../components/ui';
 import { useDashboardData } from '../../hooks/useDashboardData';
-import { useAttendanceMutations } from '../../hooks/useAttendance';
+import { useAttendanceMutations, useCheckContext } from '../../hooks/useAttendance';
 import { MOODS } from '../../data';
 import { useWellnessStore, getWellnessToday } from '../../store/wellnessStore';
 import { formatDate, formatCurrency, cn } from '../../lib/utils';
@@ -14,6 +14,7 @@ import { Greeting, RecentAnnouncements } from './shared';
 export default function EmployeeDashboard({ user }) {
   const { data: api, isLoading } = useDashboardData();
   const { checkIn, checkOut } = useAttendanceMutations();
+  const { data: checkContext } = useCheckContext();
 
   const todayKey = getWellnessToday();
   const todayMood = useWellnessStore((s) => s.myCheckins[todayKey]);
@@ -31,7 +32,14 @@ export default function EmployeeDashboard({ user }) {
   const openExpenses = api?.openExpenseClaims?.items || [];
 
   const checkedIn = todayStatus.status === 'checked_in';
-  const canCheckIn = todayStatus.canCheckIn;
+  // Web check-in can be turned off in Settings > Attendance Config; the
+  // server already rejects a web check-in when it's off (assertMethodAllowed
+  // in attendance.service.js) — this just keeps the button from inviting a
+  // click that's guaranteed to fail. Checkout is never gated by this toggle,
+  // so someone already clocked in from before it was turned off can still
+  // check out normally.
+  const webCheckInEnabled = checkContext?.webCheckInEnabled !== false;
+  const canCheckIn = todayStatus.canCheckIn && webCheckInEnabled;
   const canCheckOut = todayStatus.canCheckOut;
 
   const totalRemaining = useMemo(
@@ -117,7 +125,13 @@ export default function EmployeeDashboard({ user }) {
             loading={checkIn.isPending || checkOut.isPending}
             disabled={!canCheckIn && !canCheckOut}
           >
-            {canCheckOut ? 'Check Out' : canCheckIn ? 'Check In' : 'Day Complete'}
+            {canCheckOut
+              ? 'Check Out'
+              : canCheckIn
+                ? 'Check In'
+                : !webCheckInEnabled && todayStatus.canCheckIn
+                  ? 'Web check-in disabled'
+                  : 'Day Complete'}
           </Button>
         </Card>
 

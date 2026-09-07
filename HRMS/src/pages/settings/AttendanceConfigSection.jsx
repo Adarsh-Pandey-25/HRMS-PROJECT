@@ -1,34 +1,64 @@
-import { useEffect, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
-import { Plus, Trash2, Save } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Plus, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { Card, CardHeader, Button, Input, Toggle, Badge, Modal } from '../../components/ui';
+import { Card, CardHeader, Button, Input, Toggle, Badge, Modal, SaveStatusIndicator } from '../../components/ui';
 import { useSettingsStore } from '../../store/settingsStore';
 import { updateSettingApi } from '../../api/settings.api';
+import { listIpWhitelistApi, createIpWhitelistEntryApi, removeIpWhitelistEntryApi } from '../../api/ipWhitelist.api';
 import { invalidateAndRefetch } from '../../lib/queryCache';
 import { DeviceMappingSection } from './DeviceMappingSection';
 import { AdmsDevicesSection } from './AdmsDevicesSection';
+import { BeaconManagementSection } from './BeaconManagementSection';
+import { GeofenceManagementSection } from './GeofenceManagementSection';
+import { useCompanyFeatures } from '../../hooks/useCompanyFeatures';
+import { useAutosave } from '../../hooks/useAutosave';
 
+// Section B: featureKey maps each method to its entitlement — a non-
+// entitled method is hidden entirely (Section B's "no upgrade-prompt
+// clutter, just absent"). comingSoon methods (app, ipApp) always render,
+// always disabled, regardless of entitlement — inert until
+// MOBILE_APP_AVAILABLE flips, per Section B.
+// Keys here are camelCase to match what /companies/me/features actually
+// returns (see company.controller.js's myFeatures) — a snake_case key
+// silently never matches enabledFeatures, hiding the whole method/section
+// unconditionally even when the entitlement is genuinely on.
 const METHOD_LABELS = {
-  web: ['Web Check-in', 'Browser on desktop or phone'],
-  app: ['App Check-in', 'Not used — phone uses Web Check-in'],
-  biometric: ['Biometric Device', 'Physical device pushes via webhook'],
-  ipWeb: ['IP-based Web', 'Office employees must check in from whitelisted IP'],
-  ipApp: ['IP-based App', 'Unused — phone uses IP-based Web'],
+  web: ['Web Check-in', 'Browser on desktop or phone', 'webCheckin'],
+  app: ['App Check-in', 'Coming soon', 'appCheckin'],
+  biometric: ['Biometric Device', 'Physical device pushes via webhook', 'biometricAdms'],
+  ipWeb: ['IP-based Web', 'Office employees must check in from whitelisted IP', 'ipBasedWeb'],
+  ipApp: ['IP-based App', 'Coming soon', 'ipBasedApp'],
 };
+const COMING_SOON_METHODS = ['app', 'ipApp'];
 
-function AddIpModal({ open, onClose }) {
-  const addIpWhitelist = useSettingsStore((s) => s.addIpWhitelist);
+/**
+ * Section 0/C: writes directly to the real ip_whitelist table (immediate,
+ * not batched with the rest of this page's "Save Changes" — matching how
+ * Beacon/Geofence management already work) — this used to add to a local
+ * array that synced into a settings JSON blob nothing server-side ever
+ * enforced against.
+ */
+function AddIpModal({ open, onClose, onCreated }) {
   const [form, setForm] = useState({ ip: '', label: '' });
-  const save = () => {
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
     if (!form.ip.trim() || !form.label.trim()) return toast.error('IP/CIDR and label are required');
-    addIpWhitelist(form);
-    toast.success('IP added to whitelist — click Save Changes to sync');
-    setForm({ ip: '', label: '' });
-    onClose();
+    setSaving(true);
+    try {
+      await createIpWhitelistEntryApi(form.ip.trim(), form.label.trim());
+      toast.success('IP added to whitelist');
+      setForm({ ip: '', label: '' });
+      onCreated?.();
+      onClose();
+    } catch (err) {
+      toast.error(err.message || 'Could not add IP');
+    } finally {
+      setSaving(false);
+    }
   };
   return (
-    <Modal open={open} onClose={onClose} title="Add IP to Whitelist" footer={<><Button variant="outline" onClick={onClose}>Cancel</Button><Button onClick={save}>Add IP</Button></>}>
+    <Modal open={open} onClose={onClose} title="Add IP to Whitelist" footer={<><Button variant="outline" onClick={onClose}>Cancel</Button><Button loading={saving} onClick={save}>Add IP</Button></>}>
       <div className="space-y-4">
         <Input
           label="IP or CIDR (IPv4 or IPv6)"
@@ -46,18 +76,27 @@ function AddIpModal({ open, onClose }) {
   );
 }
 
-function AddShiftModal({ open, onClose }) {
+function AddShiftModal({ open, onClose, onAdded }) {
   const addShift = useSettingsStore((s) => s.addShift);
   const [form, setForm] = useState({ name: '', start: '09:00', end: '18:00' });
-  const save = () => {
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
     if (!form.name.trim()) return toast.error('Shift name is required');
-    addShift(form);
-    toast.success('Shift added — click Save Changes to sync');
-    setForm({ name: '', start: '09:00', end: '18:00' });
-    onClose();
+    setSaving(true);
+    try {
+      addShift(form);
+      await onAdded();
+      toast.success('Shift added');
+      setForm({ name: '', start: '09:00', end: '18:00' });
+      onClose();
+    } catch (err) {
+      toast.error(err.message || 'Failed to save shift');
+    } finally {
+      setSaving(false);
+    }
   };
   return (
-    <Modal open={open} onClose={onClose} title="Add Shift" footer={<><Button variant="outline" onClick={onClose}>Cancel</Button><Button onClick={save}>Add Shift</Button></>}>
+    <Modal open={open} onClose={onClose} title="Add Shift" footer={<><Button variant="outline" onClick={onClose}>Cancel</Button><Button onClick={save} loading={saving}>Add Shift</Button></>}>
       <div className="space-y-4">
         <Input label="Shift name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -81,22 +120,46 @@ function buildPayload(form, cfg) {
 
 export function AttendanceConfigSection() {
   const qc = useQueryClient();
+  // Item 8B: device management is a completely separate concern from IP-based
+  // check-in config also in this tab — only these two sections are gated,
+  // not the whole "Attendance Config" tab, so non-biometric config stays usable.
+  const enabledFeatures = useCompanyFeatures();
+  const biometricAdmsEnabled = enabledFeatures ? Boolean(enabledFeatures.biometricAdms) : true;
   const cfg = useSettingsStore((s) => s.attendanceConfig);
   const update = useSettingsStore((s) => s.updateAttendanceConfig);
   const updateTrainingConfig = useSettingsStore((s) => s.updateTrainingConfig);
-  const removeIpWhitelist = useSettingsStore((s) => s.removeIpWhitelist);
   const removeShift = useSettingsStore((s) => s.removeShift);
   const [form, setForm] = useState(cfg);
   const [ipModal, setIpModal] = useState(false);
   const [shiftModal, setShiftModal] = useState(false);
-  const [saving, setSaving] = useState(false);
+
+  const ipWebEntitled = enabledFeatures ? Boolean(enabledFeatures.ipBasedWeb) : true;
+  const gpsEntitled = enabledFeatures ? Boolean(enabledFeatures.gpsGeofence) : true;
+  const { data: whitelistEntries = [], refetch: refetchWhitelist } = useQuery({
+    queryKey: ['ip-whitelist'],
+    queryFn: listIpWhitelistApi,
+    enabled: ipWebEntitled,
+  });
+  const removeWhitelistEntry = async (id) => {
+    try {
+      await removeIpWhitelistEntryApi(id);
+      toast.success('Removed');
+      await refetchWhitelist();
+    } catch (err) {
+      toast.error(err.message || 'Could not remove entry');
+    }
+  };
 
   // Re-sync scalar fields when bootstrap (or another tab) updates the store
   useEffect(() => {
     setForm((prev) => ({
       ...prev,
       methods: cfg.methods,
+      gpsGeofenceEnabled: cfg.gpsGeofenceEnabled,
+      requireBothLocationChecks: cfg.requireBothLocationChecks,
       gracePeriodMinutes: cfg.gracePeriodMinutes,
+      checkoutGracePeriodMinutes: cfg.checkoutGracePeriodMinutes,
+      halfDayThresholdPercent: cfg.halfDayThresholdPercent,
       autoAbsentTime: cfg.autoAbsentTime,
       overtimeAfterHours: cfg.overtimeAfterHours,
       selfieRequired: cfg.selfieRequired,
@@ -106,7 +169,11 @@ export function AttendanceConfigSection() {
     }));
   }, [
     cfg.methods,
+    cfg.gpsGeofenceEnabled,
+    cfg.requireBothLocationChecks,
     cfg.gracePeriodMinutes,
+    cfg.checkoutGracePeriodMinutes,
+    cfg.halfDayThresholdPercent,
     cfg.autoAbsentTime,
     cfg.overtimeAfterHours,
     cfg.selfieRequired,
@@ -115,47 +182,95 @@ export function AttendanceConfigSection() {
     cfg.orderedNewJoinerVideos,
   ]);
 
-  const save = async () => {
-    const payload = buildPayload(form, cfg);
+  /**
+   * Item 4: toggles (check-in methods, GPS enforce/require-both, selfie,
+   * watch-order) call `patch()` and save immediately. Number/time fields in
+   * "Rules" keep onChange local-only and save onBlur. Shift add/remove
+   * already mutate the store instantly (via addShift/removeShift below) —
+   * this is what actually persists that to the server now, since there's
+   * no more page-level Save button to do it afterward.
+   */
+  const doSave = useCallback(async (nextForm) => {
+    const payload = buildPayload(nextForm, useSettingsStore.getState().attendanceConfig);
     update(payload);
     updateTrainingConfig({
       newJoinerWindowDays: payload.newJoinerWindowDays,
       newJoinerDeadlineDays: payload.newJoinerDeadlineDays,
       orderedNewJoinerVideos: payload.orderedNewJoinerVideos,
     });
-    setSaving(true);
-    try {
-      const activeIps = (payload.ipWhitelist || []).filter((i) => i.active !== false && i.ip);
-      const cidrList = activeIps.map((i) => String(i.ip).trim()).filter(Boolean);
-      await Promise.all([
-        updateSettingApi('attendance_config', payload),
-        // Office IP whitelist applies to check-in only (login is always allowed from any IP)
-        updateSettingApi('office_cidr', cidrList.join(',') || '0.0.0.0/32'),
-        updateSettingApi('office_ip', cidrList[0] || ''),
-        updateSettingApi('allow_remote_login', true),
-      ]);
-      await invalidateAndRefetch(qc, ['settings']);
-      await invalidateAndRefetch(qc, ['attendance']);
-      toast.success('Attendance configuration saved to server');
-    } catch (err) {
-      toast.error(err.message || 'Saved locally; server sync failed');
-    } finally {
-      setSaving(false);
-    }
+    // Section 0/C: office-IP enforcement now reads the real ip_whitelist
+    // table directly (managed live via the card below) — no more shadow
+    // office_cidr/office_ip/allow_remote_login settings writes, which
+    // nothing enforces against anymore now that assertOfficeIpAllowed
+    // reads the real table.
+    await updateSettingApi('attendance_config', payload);
+    await invalidateAndRefetch(qc, ['settings']);
+    await invalidateAndRefetch(qc, ['attendance']);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qc, update, updateTrainingConfig]);
+  const { status, save, retry } = useAutosave(doSave);
+
+  const patch = (partial) => {
+    setForm((prev) => {
+      const next = typeof partial === 'function' ? partial(prev) : { ...prev, ...partial };
+      save(next);
+      return next;
+    });
   };
+  /** doSave re-reads shifts/ipWhitelist fresh from the store, so this also covers shift add/remove. */
+  const saveNow = () => save(form);
 
   return (
     <div className="space-y-5">
+      <div className="flex justify-end"><SaveStatusIndicator status={status} onRetry={retry} /></div>
       <Card>
         <CardHeader title="Check-in Methods" subtitle="Toggle which check-in modes employees can use" />
         <div className="p-5 pt-3 space-y-4">
-          {Object.entries(METHOD_LABELS).map(([key, [label, hint]]) => (
-            <Toggle key={key} label={label} hint={hint} checked={form.methods[key]} onChange={(v) => setForm({ ...form, methods: { ...form.methods, [key]: v } })} />
-          ))}
+          {Object.entries(METHOD_LABELS)
+            // Section B: a non-entitled method is hidden entirely — no
+            // upgrade-prompt clutter. Coming-soon methods always render
+            // (disabled) so their state is visible, never hidden or toggleable.
+            .filter(([key, [, , featureKey]]) => COMING_SOON_METHODS.includes(key) || !enabledFeatures || enabledFeatures[featureKey] !== false)
+            .map(([key, [label, hint]]) => {
+              const comingSoon = COMING_SOON_METHODS.includes(key);
+              return (
+                <Toggle
+                  key={key}
+                  label={comingSoon ? `${label} (Coming soon)` : label}
+                  hint={hint}
+                  checked={comingSoon ? false : form.methods[key]}
+                  disabled={comingSoon}
+                  onChange={(v) => patch({ methods: { ...form.methods, [key]: v } })}
+                />
+              );
+            })}
+
+          {/* GPS geofencing is a location check layered onto web/IP-based
+              check-in, not a check-in method of its own — it's meaningless
+              with both of those off (no method left for it to apply to),
+              so it lives here and is gated the same way. */}
+          {gpsEntitled && (form.methods.web || form.methods.ipWeb) && (
+            <div className="pt-4 mt-4 border-t border-border space-y-4">
+              <Toggle
+                label="Enforce GPS geofencing on check-in"
+                hint="Off by default. Add office locations below, then turn this on to require employees be at one of them to check in."
+                checked={Boolean(form.gpsGeofenceEnabled)}
+                onChange={(v) => patch({ gpsGeofenceEnabled: v })}
+              />
+              {form.gpsGeofenceEnabled && ipWebEntitled && form.methods.ipWeb && (
+                <Toggle
+                  label="Require both IP whitelist and GPS location"
+                  hint="Off (default): either check passing is enough. On: both must pass."
+                  checked={Boolean(form.requireBothLocationChecks)}
+                  onChange={(v) => patch({ requireBothLocationChecks: v })}
+                />
+              )}
+            </div>
+          )}
         </div>
       </Card>
 
-      {(form.methods.ipWeb || form.methods.ipApp) && (
+      {ipWebEntitled && (form.methods.ipWeb || form.methods.ipApp) && (
         <Card>
           <CardHeader
             title="IP Whitelist"
@@ -164,14 +279,13 @@ export function AttendanceConfigSection() {
           />
           <div className="p-5 pt-3 overflow-x-auto">
             <table className="w-full text-sm">
-              <thead><tr className="border-b border-border text-left"><th className="py-2 font-semibold text-fg-subtle text-xs uppercase">IP / CIDR</th><th className="py-2 font-semibold text-fg-subtle text-xs uppercase">Label</th><th className="py-2 font-semibold text-fg-subtle text-xs uppercase">Status</th><th className="py-2"></th></tr></thead>
+              <thead><tr className="border-b border-border text-left"><th className="py-2 font-semibold text-fg-subtle text-xs uppercase">IP / CIDR</th><th className="py-2 font-semibold text-fg-subtle text-xs uppercase">Label</th><th className="py-2"></th></tr></thead>
               <tbody>
-                {cfg.ipWhitelist.map((ip) => (
+                {whitelistEntries.map((ip) => (
                   <tr key={ip.id} className="border-b border-border/50">
-                    <td className="py-2.5 font-mono text-xs text-fg">{ip.ip}</td>
-                    <td className="py-2.5 text-fg-muted">{ip.label}</td>
-                    <td className="py-2.5"><Badge tone={ip.active ? 'success' : 'neutral'}>{ip.active ? 'Active' : 'Inactive'}</Badge></td>
-                    <td className="py-2.5 text-right"><button type="button" onClick={() => removeIpWhitelist(ip.id)} className="p-1.5 rounded-md text-fg-subtle hover:bg-danger/10 hover:text-danger"><Trash2 className="h-3.5 w-3.5" /></button></td>
+                    <td className="py-2.5 font-mono text-xs text-fg">{ip.cidr}</td>
+                    <td className="py-2.5 text-fg-muted">{ip.label || '—'}</td>
+                    <td className="py-2.5 text-right"><button type="button" onClick={() => removeWhitelistEntry(ip.id)} className="p-1.5 rounded-md text-fg-subtle hover:bg-danger/10 hover:text-danger"><Trash2 className="h-3.5 w-3.5" /></button></td>
                   </tr>
                 ))}
               </tbody>
@@ -180,9 +294,27 @@ export function AttendanceConfigSection() {
         </Card>
       )}
 
-      <AdmsDevicesSection />
+      {/* Gap fix: entitlement alone isn't enough — a company can also turn
+          IP-based Web off for itself via the Check-in Methods toggle
+          above (form.methods.ipWeb), and beacons only make sense with
+          the method actually on, same standard as the IP Whitelist card
+          right above. */}
+      {ipWebEntitled && form.methods.ipWeb && <BeaconManagementSection />}
 
-      <DeviceMappingSection />
+      {/* Same standard as Beacon/IP Whitelist above: entitlement alone
+          isn't enough, locations only matter once enforcement is actually
+          on. Safe to gate this way — 0 geofences configured means
+          enforcement is a no-op server-side (geofence.service.js's
+          isWithinAnyGeofence fails open), so toggling Enforce on first
+          never locks anyone out before a location is added. */}
+      {gpsEntitled && form.gpsGeofenceEnabled && <GeofenceManagementSection />}
+
+      {biometricAdmsEnabled && form.methods.biometric && (
+        <>
+          <AdmsDevicesSection />
+          <DeviceMappingSection />
+        </>
+      )}
 
       <Card>
         <CardHeader title="Shift Timings" action={<Button size="sm" icon={Plus} onClick={() => setShiftModal(true)}>Add Shift</Button>} />
@@ -196,7 +328,7 @@ export function AttendanceConfigSection() {
                   <td className="py-2.5 text-fg-muted">{sh.start}</td>
                   <td className="py-2.5 text-fg-muted">{sh.end}</td>
                   <td className="py-2.5"><Badge tone={sh.active ? 'success' : 'neutral'}>{sh.active ? 'Active' : 'Inactive'}</Badge></td>
-                  <td className="py-2.5 text-right"><button type="button" onClick={() => removeShift(sh.id)} className="p-1.5 rounded-md text-fg-subtle hover:bg-danger/10 hover:text-danger"><Trash2 className="h-3.5 w-3.5" /></button></td>
+                  <td className="py-2.5 text-right"><button type="button" onClick={() => { removeShift(sh.id); saveNow(); }} className="p-1.5 rounded-md text-fg-subtle hover:bg-danger/10 hover:text-danger"><Trash2 className="h-3.5 w-3.5" /></button></td>
                 </tr>
               ))}
             </tbody>
@@ -208,22 +340,41 @@ export function AttendanceConfigSection() {
         <CardHeader title="Rules" />
         <div className="p-5 pt-3 space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Input label="Grace period for late arrival (minutes)" type="number" value={form.gracePeriodMinutes} onChange={(e) => setForm({ ...form, gracePeriodMinutes: Number(e.target.value) })} />
-            <Input label="Auto-mark absent if no check-in by" type="time" value={form.autoAbsentTime} onChange={(e) => setForm({ ...form, autoAbsentTime: e.target.value })} />
-            <Input label="Overtime calculation after (hours/day)" type="number" value={form.overtimeAfterHours} onChange={(e) => setForm({ ...form, overtimeAfterHours: Number(e.target.value) })} />
-            <Input label="New joiner training window (days)" type="number" value={form.newJoinerWindowDays} onChange={(e) => setForm({ ...form, newJoinerWindowDays: Number(e.target.value) })} />
-            <Input label="New joiner training deadline (days)" type="number" value={form.newJoinerDeadlineDays} onChange={(e) => setForm({ ...form, newJoinerDeadlineDays: Number(e.target.value) })} />
+            <Input label="Grace period for late arrival (minutes)" type="number" value={form.gracePeriodMinutes} onChange={(e) => setForm({ ...form, gracePeriodMinutes: Number(e.target.value) })} onBlur={saveNow} />
+            <Input label="Auto-mark absent if no check-in by" type="time" value={form.autoAbsentTime} onChange={(e) => setForm({ ...form, autoAbsentTime: e.target.value })} onBlur={saveNow} />
+            <Input label="Overtime calculation after (hours/day)" type="number" value={form.overtimeAfterHours} onChange={(e) => setForm({ ...form, overtimeAfterHours: Number(e.target.value) })} onBlur={saveNow} />
+            {biometricAdmsEnabled && form.methods.biometric && (
+              <>
+                <Input
+                  label="Biometric checkout grace period (minutes)"
+                  hint="How long past shift end to wait before a biometric session's checkout/status becomes visible"
+                  type="number"
+                  value={form.checkoutGracePeriodMinutes}
+                  onChange={(e) => setForm({ ...form, checkoutGracePeriodMinutes: Number(e.target.value) })}
+                  onBlur={saveNow}
+                />
+                <Input
+                  label="Half-day threshold (% of shift duration)"
+                  hint="Below this, a biometric day is marked Half Day"
+                  type="number"
+                  min={1}
+                  max={99}
+                  value={form.halfDayThresholdPercent}
+                  onChange={(e) => setForm({ ...form, halfDayThresholdPercent: Number(e.target.value) })}
+                  onBlur={saveNow}
+                />
+              </>
+            )}
+            <Input label="New joiner training window (days)" type="number" value={form.newJoinerWindowDays} onChange={(e) => setForm({ ...form, newJoinerWindowDays: Number(e.target.value) })} onBlur={saveNow} />
+            <Input label="New joiner training deadline (days)" type="number" value={form.newJoinerDeadlineDays} onChange={(e) => setForm({ ...form, newJoinerDeadlineDays: Number(e.target.value) })} onBlur={saveNow} />
           </div>
-          <Toggle label="Selfie required on check-in" hint="Applies to web + app check-in" checked={form.selfieRequired} onChange={(v) => setForm({ ...form, selfieRequired: v })} />
-          <Toggle label="Enforce new joiner video watch order" hint="Next video unlocks only after the previous is completed" checked={form.orderedNewJoinerVideos} onChange={(v) => setForm({ ...form, orderedNewJoinerVideos: v })} />
-        </div>
-        <div className="px-5 pb-5 flex justify-end">
-          <Button icon={Save} onClick={save} loading={saving}>Save Changes</Button>
+          <Toggle label="Selfie required on check-in" hint="Applies to web + app check-in" checked={form.selfieRequired} onChange={(v) => patch({ selfieRequired: v })} />
+          <Toggle label="Enforce new joiner video watch order" hint="Next video unlocks only after the previous is completed" checked={form.orderedNewJoinerVideos} onChange={(v) => patch({ orderedNewJoinerVideos: v })} />
         </div>
       </Card>
 
-      <AddIpModal open={ipModal} onClose={() => setIpModal(false)} />
-      <AddShiftModal open={shiftModal} onClose={() => setShiftModal(false)} />
+      <AddIpModal open={ipModal} onClose={() => setIpModal(false)} onCreated={refetchWhitelist} />
+      <AddShiftModal open={shiftModal} onClose={() => setShiftModal(false)} onAdded={saveNow} />
     </div>
   );
 }

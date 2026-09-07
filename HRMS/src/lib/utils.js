@@ -1,5 +1,6 @@
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import DOMPurify from 'dompurify';
 import {
   format,
   formatDistanceToNow,
@@ -91,28 +92,21 @@ export function stripHtml(html = '') {
 }
 
 /**
- * Sanitize rich HTML before dangerouslySetInnerHTML.
- * Removes scripts/iframes and event-handler / javascript: attributes.
+ * Sanitize rich HTML before dangerouslySetInnerHTML / innerHTML.
+ * Audit finding M-23: replaces a home-grown denylist sanitizer (which only
+ * blocked known-bad tags/attributes, with plausible bypasses e.g. via
+ * obfuscated javascript: URLs or CSS-based vectors) with DOMPurify, a
+ * maintained allowlist sanitizer. Tag/attribute list matches what the
+ * RichTextEditor toolbar can actually produce (bold/italic/heading/lists)
+ * plus inline links.
  */
 export function sanitizeHtml(html = '') {
   if (!html || typeof document === 'undefined') return stripHtml(html);
-  const doc = new DOMParser().parseFromString(String(html), 'text/html');
-  doc.querySelectorAll('script,iframe,object,embed,link,meta,style,form').forEach((el) => el.remove());
-  doc.querySelectorAll('*').forEach((el) => {
-    [...el.attributes].forEach((attr) => {
-      const name = attr.name.toLowerCase();
-      const value = String(attr.value || '');
-      if (
-        name.startsWith('on')
-        || name === 'srcdoc'
-        || name === 'xlink:href'
-        || ((name === 'href' || name === 'src') && /^\s*(javascript|data|vbscript):/i.test(value))
-      ) {
-        el.removeAttribute(attr.name);
-      }
-    });
+  return DOMPurify.sanitize(String(html), {
+    ALLOWED_TAGS: ['b', 'i', 'u', 'em', 'strong', 'p', 'br', 'ul', 'ol', 'li',
+      'h1', 'h2', 'h3', 'blockquote', 'a', 'span'],
+    ALLOWED_ATTR: ['href', 'target', 'rel', 'class'],
   });
-  return doc.body.innerHTML;
 }
 
 /** Allow only http(s) / relative / mailto / tel links for attachments. */

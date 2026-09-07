@@ -1,4 +1,5 @@
 import { useMemo, useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Building2, Plus, Eye, ShieldCheck, ToggleLeft, ToggleRight,
   ImagePlus, ChevronRight, Pencil, Check, X, MapPin, Landmark, FileText, BadgeCheck,
@@ -679,7 +680,18 @@ function AccessTab({ companies, myCompany, loading }) {
 }
 
 export default function Organizations() {
-  const [tab, setTab] = useState('view');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabFromUrl = searchParams.get('tab');
+  const validTab = TABS.some((t) => t.id === tabFromUrl) ? tabFromUrl : 'view';
+  const [tab, setTabState] = useState(validTab);
+  const setTab = (id) => {
+    setTabState(id);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('tab', id);
+      return next;
+    }, { replace: true });
+  };
   const [selected, setSelected] = useState(null);
   const role = useAuthStore((s) => s.role);
   const myCompanyQ = useMyCompany(true);

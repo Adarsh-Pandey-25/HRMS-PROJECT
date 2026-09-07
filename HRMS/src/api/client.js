@@ -20,6 +20,11 @@ export const api = axios.create({
     'Content-Type': 'application/json',
     // Free ngrok returns an HTML interstitial unless this header is set
     'ngrok-skip-browser-warning': 'true',
+    // CSRF defense (audit H-08): a plain cross-site HTML form can never set
+    // a custom header, so the backend requires this on every state-changing
+    // request (see backend/src/middleware/csrf.middleware.js). Sending it
+    // here also forces a CORS preflight, letting the origin allowlist run.
+    'X-Requested-With': 'XMLHttpRequest',
   },
 });
 

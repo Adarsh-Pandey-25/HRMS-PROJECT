@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { BookOpen, PlayCircle, Plus, Pencil, Archive, Trash2, ListVideo, Settings2 } from 'lucide-react';
 import {
   PageHeader, Card, Badge, EmptyState, Button, Skeleton, ProgressBar,
-  Modal, Input, RichTextEditor, StatusBadge,
+  Modal, Input, RichTextEditor, StatusBadge, ConfirmDialog,
 } from '../../components/ui';
 import {
   useCourseCatalog, useManageCourses, useManageCourse, useTrainingMutations,
@@ -224,23 +224,28 @@ export default function CourseCatalog() {
     }
   };
 
-  const archiveCourseHandler = async (id) => {
-    if (!window.confirm('Archive this course? Employees will no longer see it in the catalog.')) return;
-    try {
-      await archiveCourse.mutateAsync(id);
-      toast.success('Course archived');
-    } catch (err) {
-      toast.error(err.message || 'Failed to archive');
-    }
-  };
+  const [confirmAction, setConfirmAction] = useState(null); // { type: 'archive' | 'delete', id, title }
+  const [confirmBusy, setConfirmBusy] = useState(false);
 
-  const deleteCourseHandler = async (id, title) => {
-    if (!window.confirm(`Permanently delete "${title || 'this course'}"? This cannot be undone.`)) return;
+  const archiveCourseHandler = (id) => setConfirmAction({ type: 'archive', id });
+  const deleteCourseHandler = (id, title) => setConfirmAction({ type: 'delete', id, title });
+
+  const runConfirmAction = async () => {
+    const { type, id } = confirmAction;
+    setConfirmBusy(true);
     try {
-      await deleteCourse.mutateAsync(id);
-      toast.success('Course deleted');
+      if (type === 'archive') {
+        await archiveCourse.mutateAsync(id);
+        toast.success('Course archived');
+      } else {
+        await deleteCourse.mutateAsync(id);
+        toast.success('Course deleted');
+      }
+      setConfirmAction(null);
     } catch (err) {
-      toast.error(err.message || 'Failed to delete');
+      toast.error(err.message || `Failed to ${type}`);
+    } finally {
+      setConfirmBusy(false);
     }
   };
 
@@ -408,6 +413,21 @@ export default function CourseCatalog() {
           />
         </>
       )}
+
+      <ConfirmDialog
+        open={Boolean(confirmAction)}
+        onClose={() => setConfirmAction(null)}
+        onConfirm={runConfirmAction}
+        loading={confirmBusy}
+        tone={confirmAction?.type === 'delete' ? 'danger' : 'warning'}
+        title={confirmAction?.type === 'delete'
+          ? `Permanently delete "${confirmAction?.title || 'this course'}"?`
+          : 'Archive this course?'}
+        message={confirmAction?.type === 'delete'
+          ? 'This cannot be undone.'
+          : 'Employees will no longer see it in the catalog.'}
+        confirmLabel={confirmAction?.type === 'delete' ? 'Delete' : 'Archive'}
+      />
     </div>
   );
 }

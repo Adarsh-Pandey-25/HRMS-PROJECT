@@ -4,6 +4,10 @@ const config = require('./config/database');
 const logger = require('./utils/logger');
 const { startAutoCheckoutCron } = require('./cron/autoCheckout.cron');
 const { startAutoPayrollCron } = require('./cron/autoPayroll.cron');
+const { startSubscriptionBillingCron } = require('./cron/subscriptionBilling.cron');
+const { startAttendanceAnomalyCron } = require('./cron/attendanceAnomaly.cron');
+const { startBackupCron } = require('./cron/backup.cron');
+const { startBiometricWindowTransitionCron } = require('./cron/biometricWindowTransition.cron');
 
 const PORT = config.port;
 
@@ -25,15 +29,28 @@ const server = app.listen(PORT, config.host, () => {
   logger.info(`Timezone: ${config.timezone}`);
   startAutoCheckoutCron();
   startAutoPayrollCron();
+  startSubscriptionBillingCron();
+  startAttendanceAnomalyCron();
+  startBackupCron();
+  startBiometricWindowTransitionCron();
   // Tag legacy employees under the default company so new workspaces stay empty
   require('./services/tenant.service').ensureTenantBackfill()
     .then(() => require('./services/settings.service').migrateLegacySettingsToDefaultCompany())
     .then(() => require('./services/superAdmin.service').ensureSeedSuperAdmin())
-    .catch(() => {});
+    .catch((err) => {
+      logger.error('FATAL: Startup migration chain failed', { error: err.message, stack: err.stack });
+      process.exit(1);
+    });
 });
 
 process.on('unhandledRejection', (err) => {
+  // Matches uncaughtException's policy below: an unhandled rejection can
+  // leave the process holding a partially-completed async operation in an
+  // inconsistent state — logging and continuing risks serving requests
+  // against corrupted in-memory state. Exit and let the process manager
+  // (PM2/Docker) restart cleanly, same as a synchronous uncaught exception.
   logger.error('Unhandled Rejection', { error: err.message, stack: err.stack });
+  process.exit(1);
 });
 
 process.on('uncaughtException', (err) => {
@@ -41,9 +58,15 @@ process.on('uncaughtException', (err) => {
   process.exit(1);
 });
 
-process.on('SIGTERM', () => {
-  logger.info('SIGTERM received, shutting down gracefully');
+const gracefulShutdown = (signal) => {
+  logger.info(`${signal} received, shutting down gracefully`);
   server.close(() => process.exit(0));
-});
+};
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+// SIGINT (Ctrl+C locally, and some orchestrators/PaaS) previously had no
+// handler at all — Node's default behavior is an immediate hard kill with
+// no drain of in-flight requests. Mirror SIGTERM's graceful shutdown.
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 module.exports = server;

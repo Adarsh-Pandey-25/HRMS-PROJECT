@@ -48,7 +48,7 @@ export default function PortalLogin({ portal, portalLabel, placeholderEmail }) {
   }, []);
 
   const resolvedName = workspace?.resolved ? String(workspace.name || '').trim() : '';
-  const genericAppName = company.name?.trim() || 'SPAXADS HRMS';
+  const genericAppName = company.name?.trim() || 'HRMS';
   const appName = resolvedName || genericAppName;
 
   const { register, handleSubmit, formState: { errors } } = useForm({

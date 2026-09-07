@@ -10,6 +10,7 @@ import { SidebarBrand } from './CompanyBrandMark';
 import { useSettingsStore } from '../../store/settingsStore';
 import { handleMenuArrowKeys } from '../../hooks/useDropdown';
 import { prefetchRoute } from '../../lib/routePrefetch';
+import { useCompanyFeatures } from '../../hooks/useCompanyFeatures';
 import { cn } from '../../lib/utils';
 
 const CLOSE_DELAY = 150;
@@ -197,8 +198,9 @@ export function Sidebar() {
   const toggle = useUIStore((s) => s.toggleSidebar);
   const role = useAuthStore((s) => s.role);
   const rolePermissions = useSettingsStore((s) => s.rolePermissions);
-  const navItems = visibleNav(role, rolePermissions);
-  const pinnedItems = visiblePinnedItems(role, rolePermissions);
+  const enabledFeatures = useCompanyFeatures();
+  const navItems = visibleNav(role, rolePermissions, enabledFeatures);
+  const pinnedItems = visiblePinnedItems(role, rolePermissions, enabledFeatures);
 
   return (
     <aside

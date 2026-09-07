@@ -25,6 +25,7 @@ function mapDocument(row) {
     url: c.documentUrl,
     isVerified: Boolean(c.isVerified),
     uploadedAt: c.uploadedAt || c.createdAt,
+    uploadedBy: c.uploadedBy,
     expiresAt: c.expiresAt,
     employeeName: emp.firstName ? `${emp.firstName} ${emp.lastName}`.trim() : undefined,
   };

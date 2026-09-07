@@ -86,6 +86,10 @@ export async function createOfferApi(payload) {
   return apiRequest({ method: 'POST', url: '/recruitment/offers', data: toSnakeCase(payload) });
 }
 
+export async function updateOfferStatusApi(id, status) {
+  return apiRequest({ method: 'PUT', url: `/recruitment/offers/${id}`, data: { status } });
+}
+
 /** Company's active checklist templates joined with this candidate's checked state. */
 export async function fetchCandidateChecklistApi(candidateId) {
   const rows = await apiRequest({ method: 'GET', url: `/recruitment/candidates/${candidateId}/checklist` });

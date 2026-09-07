@@ -6,9 +6,13 @@ import { Card, CardHeader, Button, Badge, Input, Skeleton, Modal, ConfirmDialog 
 import { createInviteApi, listInvitesApi, revokeInviteApi, suggestSlugApi } from '../../api/superAdmin.api';
 import { formatDateTime } from '../../lib/utils';
 
-// Placeholder shown in the "Workspace URL" preview — real wildcard DNS/TLS for
-// subdomains isn't live on this deployment yet, this is just display text.
-const WORKSPACE_DOMAIN = 'spaxads.net';
+// Shown in the "Workspace URL" preview — real wildcard DNS/TLS for
+// subdomains isn't live on every deployment yet, but the domain shown must
+// still be the ACTUAL configured one (VITE_BASE_DOMAIN, mirroring the
+// backend's own BASE_DOMAIN — see tenantSubdomain.middleware.js), never a
+// literal. A blank/unset env var means "no domain configured yet" and is
+// shown as such rather than falling back to any specific brand's domain.
+const WORKSPACE_DOMAIN = import.meta.env.VITE_BASE_DOMAIN || '';
 
 const STATUS_TONE = {
   active: 'success',
@@ -249,7 +253,9 @@ export default function SuperAdminInvites() {
             hint={slugSuggesting ? 'Suggesting…' : 'Auto-suggested from the company name — you can edit it'}
           />
           <p className="text-xs text-fg-subtle -mt-2">
-            Workspace URL: <span className="font-mono font-medium text-fg">{slug || '—'}</span>.{WORKSPACE_DOMAIN}
+            {WORKSPACE_DOMAIN
+              ? <>Workspace URL: <span className="font-mono font-medium text-fg">{slug || '—'}</span>.{WORKSPACE_DOMAIN}</>
+              : <>Workspace subdomain: <span className="font-mono font-medium text-fg">{slug || '—'}</span> (base domain not configured on this deployment yet)</>}
           </p>
           <Input
             label="Expires in (days)"

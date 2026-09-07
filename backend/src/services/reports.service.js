@@ -2,8 +2,14 @@ const { supabaseAdmin } = require('../config/supabase');
 const { BadRequestError } = require('../utils/errors');
 const attendanceService = require('./attendance.service');
 const leaveService = require('./leave.service');
+const { mapWithConcurrency } = require('../utils/concurrency');
 
 const EMPLOYEE_SELECT = 'id, employee_code, first_name, last_name, department, designation';
+
+/** Same cap as reports.controller.js's teamPerformance — HR/Admin scope can
+ *  be a whole company, so a bare Promise.all per employee would fire an
+ *  unbounded burst of concurrent queries. Kept in sync with that value. */
+const REPORT_FANOUT_CONCURRENCY = 15;
 
 const fetchEmployeesById = async (employeeIds) => {
   if (!employeeIds.length) return {};
@@ -20,10 +26,10 @@ const getAttendanceSummaryReport = async (employeeIds, from, to) => {
   if (!employeeIds.length) return [];
   const employeeById = await fetchEmployeesById(employeeIds);
 
-  return Promise.all(employeeIds.map(async (employeeId) => ({
+  return mapWithConcurrency(employeeIds, REPORT_FANOUT_CONCURRENCY, async (employeeId) => ({
     employee: employeeById[employeeId] || { id: employeeId },
     summary: await attendanceService.getRangeSummary(employeeId, from, to),
-  })));
+  }));
 };
 
 /** Per-employee payroll rollup for a month/year, read straight from the `payroll` table; optionally rolled up by department. */
@@ -84,10 +90,10 @@ const getLeaveSummaryReport = async (employeeIds, year, companyId, groupBy = 'em
   if (!employeeIds.length) return [];
   const employeeById = await fetchEmployeesById(employeeIds);
 
-  const results = await Promise.all(employeeIds.map(async (employeeId) => ({
+  const results = await mapWithConcurrency(employeeIds, REPORT_FANOUT_CONCURRENCY, async (employeeId) => ({
     employee: employeeById[employeeId] || { id: employeeId },
     balances: await leaveService.getLeaveBalance(employeeId, year, companyId),
-  })));
+  }));
 
   if (groupBy !== 'department') return results;
 

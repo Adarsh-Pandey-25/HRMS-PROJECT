@@ -123,6 +123,10 @@ export function mapAttendanceFromApi(row) {
     checkOutIp: c.checkOutIp || null,
     checkInMethod: c.checkInMethod || null,
     checkOutMethod: c.checkOutMethod || null,
+    // Only meaningful for biometric-sourced rows — web/manual/office_ip
+    // rows are always 'finalized' at the DB level.
+    checkoutStatus: c.checkoutStatus || 'finalized',
+    lastPunchAt: c.lastPunchAt || null,
     isAutoCheckout: Boolean(c.isAutoCheckout),
     workHours: Number(c.totalHours || c.workHours || 0),
     overtime: Number(c.overtimeHours || 0),
@@ -271,8 +275,10 @@ export function mapAnnouncementFromApi(row) {
     audience: c.targetAudience || c.audience || 'all',
     createdBy: c.publishedBy || c.createdBy || c.authorId,
     attachmentUrl,
+    // `url` is a private-bucket storage path, never directly fetchable — the
+    // card resolves a real signed URL on click via openAnnouncementAttachmentApi(announcementId).
     attachments: attachmentUrl
-      ? [{ name: String(attachmentUrl).split('/').pop(), url: attachmentUrl }]
+      ? [{ name: String(attachmentUrl).split('/').pop(), announcementId: c.id }]
       : [],
     isAcknowledged: Boolean(c.isAcknowledged),
   };

@@ -184,6 +184,14 @@ function parseSpreadsheet(file, onLoaded) {
       onLoaded(rows);
       return;
     }
+    /* TRUSTED_INPUT_ONLY — see audit M-22: xlsx has unfixed prototype-pollution
+     * and ReDoS CVEs (GHSA-4r6h-8v6p-xvw6, GHSA-5pgg-2g8v-p4x9) with no
+     * upstream fix. This is the one place in the app that parses an
+     * uploaded file, entirely client-side in the uploading HR/Admin's own
+     * browser tab (bulk employee import) — not a server-side or cross-user
+     * attack surface, but this user should only ever upload a spreadsheet
+     * they trust. Tracked in /tracked-vulnerabilities.md for follow-up
+     * (e.g. migrating to exceljs) rather than fixed here. */
     const workbook = XLSX.read(e.target.result, { type: 'array' });
     const firstSheet = workbook.SheetNames[0];
     const sheet = workbook.Sheets[firstSheet];
@@ -331,6 +339,7 @@ export function BulkImportPanel({ onSkip, onImported }) {
       try {
         const salaryPeriod = normalizeSalaryPeriod(row['Salary Entered As']);
         const { employee } = await createEmployeeApi({
+          source: 'bulk_import',
           firstName: row._first,
           lastName: row._last,
           email: row._email,

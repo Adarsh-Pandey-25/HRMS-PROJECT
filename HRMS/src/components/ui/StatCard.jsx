@@ -12,6 +12,19 @@ const ICON_TONES = {
   teal: 'bg-teal/12 text-teal',
 };
 
+// Selected-state ring matches the card's own tone (e.g. a red ring on an
+// Absent tile) rather than always defaulting to primary blue — added when
+// consolidating TeamAttendance's hand-rolled KPI tiles into this shared
+// component (item 8), which relied on exactly this tone-matched ring.
+const RING_TONES = {
+  primary: 'border-primary ring-primary/20',
+  success: 'border-success ring-success/20',
+  warning: 'border-warning ring-warning/20',
+  danger: 'border-danger ring-danger/20',
+  info: 'border-info ring-info/20',
+  teal: 'border-teal ring-teal/20',
+};
+
 export function StatCard({ label, value, icon: Icon, tone = 'primary', delta, deltaLabel, footer, className, to, onClick, active }) {
   const positive = delta > 0;
   const negative = delta < 0;
@@ -23,7 +36,7 @@ export function StatCard({ label, value, icon: Icon, tone = 'primary', delta, de
       className={cn(
         'p-5 h-full',
         interactive && 'transition-colors hover:border-primary/35 cursor-pointer',
-        active && 'border-primary ring-2 ring-primary/20',
+        active && `ring-2 ${RING_TONES[tone] || RING_TONES.primary}`,
         className,
       )}
     >

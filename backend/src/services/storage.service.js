@@ -48,6 +48,20 @@ const uploadFile = async (bucket, file, folder = '') => {
 
 const signedUrlCache = new Map();
 
+// Audit finding N-23: this cache had no eviction at all — every distinct
+// bucket:path ever requested stayed in memory for the life of the process,
+// worse now that N-09 makes generateDraftPayslip-adjacent calls more
+// frequent at a shorter TTL. Sweep out anything already past its own
+// expiresAt periodically. unref() so this timer never blocks graceful
+// shutdown (SIGTERM/SIGINT) from exiting.
+const SIGNED_URL_CACHE_SWEEP_MS = 10 * 60 * 1000;
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of signedUrlCache) {
+    if (entry.expiresAt <= now) signedUrlCache.delete(key);
+  }
+}, SIGNED_URL_CACHE_SWEEP_MS).unref();
+
 const getSignedUrl = async (bucket, path, expiresIn = 3600) => {
   const key = `${bucket}:${path}`;
   const cached = signedUrlCache.get(key);
@@ -76,6 +90,31 @@ const deleteFile = async (bucket, path) => {
   const { error } = await supabaseAdmin.storage.from(bucket).remove([path]);
   if (error) {
     logger.warn('File delete failed', { bucket, path, error: error.message });
+  }
+};
+
+/**
+ * Audit finding N-10: every upload helper below namespaces files under
+ * `${folder}/...` where folder is an employeeId (uploadDocument/
+ * uploadReceipt/uploadProfilePicture) or `${employeeId}/${year}-${month}.pdf`
+ * (uploadPayslip) — so every bucket an employee's files can land in uses
+ * their id as the top-level prefix. Listing and removing everything under
+ * that prefix, rather than reconstructing each path from a DB row, catches
+ * every file for that employee in one bucket even if a DB row is missing/
+ * inconsistent. Best-effort: logs and continues past a failure rather than
+ * throwing, matching deleteFile's existing behavior above.
+ */
+const deleteEmployeeFolder = async (bucket, employeeId) => {
+  const { data: entries, error: listError } = await supabaseAdmin.storage.from(bucket).list(employeeId);
+  if (listError) {
+    logger.warn('Storage folder list failed', { bucket, employeeId, error: listError.message });
+    return;
+  }
+  if (!entries?.length) return;
+  const paths = entries.map((e) => `${employeeId}/${e.name}`);
+  const { error: removeError } = await supabaseAdmin.storage.from(bucket).remove(paths);
+  if (removeError) {
+    logger.warn('Storage folder cleanup failed', { bucket, employeeId, error: removeError.message });
   }
 };
 
@@ -132,6 +171,7 @@ module.exports = {
   uploadFile,
   getSignedUrl,
   deleteFile,
+  deleteEmployeeFolder,
   uploadDocument,
   uploadReceipt,
   uploadTrainingMaterial,

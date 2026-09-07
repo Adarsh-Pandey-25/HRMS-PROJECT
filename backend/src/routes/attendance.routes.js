@@ -6,6 +6,7 @@ const { isHROrAdmin, isManagerOrAbove, isEmployee } = require('../middleware/rol
 const { requireApiScope } = require('../middleware/apiKey.middleware');
 const { attachClientIp } = require('../middleware/ipValidation.middleware');
 const { validate } = require('../middleware/validation.middleware');
+const { requireFeature } = require('../middleware/featureGate.middleware');
 const { checkInRules, uuidParam, paginationQuery } = require('../utils/validators');
 
 const router = express.Router();
@@ -29,8 +30,13 @@ router.put('/manual-entry', isHROrAdmin, attendanceController.manualEntry);
 router.get('/monthly-summary', isEmployee, attendanceController.monthlySummary);
 
 // ADMS biometric device (raw punch log — see backend/src/routes/adms.routes.js for the device push endpoints)
-router.get('/adms/test', isHROrAdmin, admsController.testStatus);
-router.put('/adms/devices/:serial', isHROrAdmin, admsController.registerDevice);
+// Item 8B: device MANAGEMENT (not punch ingestion — that's /iclock/*, never
+// gated) — a company can't see or register devices at all while the
+// feature is off, even though ingestion for already-claimed devices
+// continues unconditionally in the background (see adms.service.js).
+router.get('/adms/test', isHROrAdmin, requireFeature('biometric_adms'), admsController.testStatus);
+router.put('/adms/devices/:serial', isHROrAdmin, requireFeature('biometric_adms'), admsController.registerDevice);
+router.delete('/adms/devices/:serial', isHROrAdmin, requireFeature('biometric_adms'), admsController.releaseDevice);
 router.get('/device-punches/today', isEmployee, admsController.todayPunches);
 
 const wfhRequestController = require('../controllers/wfhRequest.controller');

@@ -64,6 +64,8 @@ router.post(
 router.post('/logout', authenticate, authController.logout);
 router.post('/refresh-token', authLimiter, authController.refreshToken);
 router.get('/me', authenticate, authController.getMe);
+router.patch('/me/install-prompt-seen', authenticate, authController.markInstallPromptSeen);
+router.post('/impersonation/end', authenticate, authController.endImpersonation);
 router.put('/change-password', authenticate, changePasswordRules, validate, authController.changePassword);
 router.post('/forgot-password', authLimiter, forgotPasswordRules, validate, authController.forgotPassword);
 router.post('/reset-password', authLimiter, resetPasswordRules, validate, authController.resetPassword);

@@ -20,8 +20,19 @@ const HrLogin = lazy(() => import('./pages/HrLogin'));
 const EmployeeLogin = lazy(() => import('./pages/EmployeeLogin'));
 const ForgotPassword = lazy(() => import('./pages/ForgotPassword'));
 const SuperAdminLogin = lazy(() => import('./pages/super-admin/Login'));
+const SuperAdminDashboard = lazy(() => import('./pages/super-admin/Dashboard'));
 const SuperAdminCompanies = lazy(() => import('./pages/super-admin/Companies'));
+const SuperAdminCompanyDetail = lazy(() => import('./pages/super-admin/CompanyDetail'));
 const SuperAdminInvites = lazy(() => import('./pages/super-admin/Invites'));
+const BillingOverview = lazy(() => import('./pages/super-admin/BillingOverview'));
+const PlansManagement = lazy(() => import('./pages/super-admin/PlansManagement'));
+const SubscriptionsList = lazy(() => import('./pages/super-admin/SubscriptionsList'));
+const SubscriptionDetail = lazy(() => import('./pages/super-admin/SubscriptionDetail'));
+const Invoices = lazy(() => import('./pages/super-admin/Invoices'));
+const SuperAdminCoupons = lazy(() => import('./pages/super-admin/Coupons'));
+const SuperAdminFailedPayments = lazy(() => import('./pages/super-admin/FailedPayments'));
+const SuperAdminSystemHealth = lazy(() => import('./pages/super-admin/SystemHealth'));
+const SuperAdminUsers = lazy(() => import('./pages/super-admin/AdminUsers'));
 const Dashboard = lazy(loaders['/dashboard']);
 const EmployeeList = lazy(loaders['/employees']);
 const EmployeeProfile = lazy(() => import('./pages/employees/EmployeeProfile'));
@@ -77,6 +88,8 @@ const KnowledgeBase = lazy(loaders['/helpdesk/kb']);
 
 const Announcements = lazy(loaders['/announcements']);
 const Reports = lazy(loaders['/reports']);
+const AuditLog = lazy(() => import('./pages/AuditLog'));
+const SubscriptionBilling = lazy(() => import('./pages/SubscriptionBilling'));
 const Settings = lazy(loaders['/settings']);
 const Organizations = lazy(loaders['/organizations']);
 const SearchResults = lazy(loaders['/search']);
@@ -124,9 +137,20 @@ export default function App() {
         <Route path="login" element={<Suspense fallback={<PageLoader />}><SuperAdminLogin /></Suspense>} />
         <Route element={<RequireSuperAdmin />}>
           <Route element={<SuperAdminLayout />}>
-            <Route index element={<Navigate to="companies" replace />} />
+            <Route index element={<Navigate to="dashboard" replace />} />
+            <Route path="dashboard" element={<Suspense fallback={<PageLoader />}><SuperAdminDashboard /></Suspense>} />
             <Route path="companies" element={<Suspense fallback={<PageLoader />}><SuperAdminCompanies /></Suspense>} />
+            <Route path="companies/:id" element={<Suspense fallback={<PageLoader />}><SuperAdminCompanyDetail /></Suspense>} />
             <Route path="invites" element={<Suspense fallback={<PageLoader />}><SuperAdminInvites /></Suspense>} />
+            <Route path="billing" element={<Suspense fallback={<PageLoader />}><BillingOverview /></Suspense>} />
+            <Route path="plans" element={<Suspense fallback={<PageLoader />}><PlansManagement /></Suspense>} />
+            <Route path="subscriptions" element={<Suspense fallback={<PageLoader />}><SubscriptionsList /></Suspense>} />
+            <Route path="subscriptions/:id" element={<Suspense fallback={<PageLoader />}><SubscriptionDetail /></Suspense>} />
+            <Route path="invoices" element={<Suspense fallback={<PageLoader />}><Invoices /></Suspense>} />
+            <Route path="coupons" element={<Suspense fallback={<PageLoader />}><SuperAdminCoupons /></Suspense>} />
+            <Route path="failed-payments" element={<Suspense fallback={<PageLoader />}><SuperAdminFailedPayments /></Suspense>} />
+            <Route path="system-health" element={<Suspense fallback={<PageLoader />}><SuperAdminSystemHealth /></Suspense>} />
+            <Route path="admin-users" element={<Suspense fallback={<PageLoader />}><SuperAdminUsers /></Suspense>} />
           </Route>
         </Route>
       </Route>
@@ -214,6 +238,8 @@ export default function App() {
 
             <Route path="/announcements" element={page(Announcements, { module: 'announcements', action: 'view' })} />
             <Route path="/reports" element={page(Reports, { module: 'reports', action: 'view' })} />
+            <Route path="/audit-log" element={page(AuditLog, ['admin', 'hr'])} />
+            <Route path="/subscription-billing" element={page(SubscriptionBilling, ['admin', 'hr'])} />
             <Route path="/organizations" element={page(Organizations, ['admin', 'hr'])} />
             <Route path="/settings" element={page(Settings, { module: 'settings', action: 'manage' })} />
             <Route path="/search" element={page(SearchResults)} />

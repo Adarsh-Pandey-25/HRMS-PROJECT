@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { Plus, Trash2, Users, Clock } from 'lucide-react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { Plus, Trash2, Users, Clock, Pencil } from 'lucide-react';
 import {
   PageHeader, Card, CardHeader, Button, Badge, Modal, Input, Select,
   SearchInput, Avatar, Skeleton, EmptyState, Tabs,
@@ -46,13 +46,71 @@ function AddShiftModal({ open, onClose }) {
   );
 }
 
+/**
+ * Item 7: this modal — and the Edit button that opens it — did not exist.
+ * The Shift Timings table only ever offered Add and Delete; there was no
+ * update path at all, at any layer (no updateShift store action, no edit
+ * UI), so it wasn't a submission failure or a permission check silently
+ * rejecting valid edits — the feature was simply never built.
+ */
+function EditShiftModal({ shift, onClose }) {
+  const updateShift = useSettingsStore((s) => s.updateShift);
+  const [form, setForm] = useState(() => ({ name: shift?.name || '', start: shift?.start || '09:00', end: shift?.end || '18:00' }));
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    if (!form.name.trim()) return toast.error('Shift name is required');
+    setSaving(true);
+    updateShift(shift.id, form);
+    try {
+      const cfg = useSettingsStore.getState().attendanceConfig;
+      await updateSettingApi('attendance_config', cfg);
+      toast.success('Shift timings updated');
+    } catch {
+      toast.success('Updated locally — open Attendance Config and Save to sync');
+    } finally {
+      setSaving(false);
+    }
+    onClose();
+  };
+
+  return (
+    <Modal
+      open={Boolean(shift)}
+      onClose={onClose}
+      title="Edit Shift Timings"
+      footer={<><Button variant="outline" onClick={onClose} disabled={saving}>Cancel</Button><Button onClick={save} loading={saving}>Save changes</Button></>}
+    >
+      <div className="space-y-4">
+        <Input label="Shift name" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <Input label="Start time" type="time" value={form.start} onChange={(e) => setForm((f) => ({ ...f, start: e.target.value }))} />
+          <Input label="End time" type="time" value={form.end} onChange={(e) => setForm((f) => ({ ...f, end: e.target.value }))} />
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 export default function Shifts() {
   const shifts = useSettingsStore((s) => s.attendanceConfig.shifts);
   const removeShift = useSettingsStore((s) => s.removeShift);
   const { employees, isLoading } = useEmployees();
   const { update } = useEmployeeMutations();
   const [modal, setModal] = useState(false);
-  const [tab, setTab] = useState('assignments');
+  const [editingShift, setEditingShift] = useState(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabFromUrl = searchParams.get('tab');
+  const validTab = ['assignments', 'timings'].includes(tabFromUrl) ? tabFromUrl : 'assignments';
+  const [tab, setTab] = useState(validTab);
+  const changeTab = (id) => {
+    setTab(id);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('tab', id);
+      return next;
+    }, { replace: true });
+  };
   const [search, setSearch] = useState('');
   const [shiftFilter, setShiftFilter] = useState('');
   const [savingId, setSavingId] = useState(null);
@@ -163,7 +221,7 @@ export default function Shifts() {
           { id: 'timings', label: 'Shift timings' },
         ]}
         value={tab}
-        onChange={setTab}
+        onChange={changeTab}
       />
 
       {tab === 'assignments' && (
@@ -276,7 +334,10 @@ export default function Shifts() {
                       <td className="py-3 text-fg-muted">{count}</td>
                       <td className="py-3"><Badge tone={sh.active !== false ? 'success' : 'neutral'}>{sh.active !== false ? 'Active' : 'Inactive'}</Badge></td>
                       <td className="py-3 text-right">
-                        <button type="button" onClick={() => handleRemove(sh.id)} className="p-1.5 rounded-md text-fg-subtle hover:bg-danger/10 hover:text-danger">
+                        <button type="button" onClick={() => setEditingShift(sh)} className="p-1.5 rounded-md text-fg-subtle hover:bg-primary/10 hover:text-primary">
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                        <button type="button" onClick={() => handleRemove(sh.id)} className="ml-1 p-1.5 rounded-md text-fg-subtle hover:bg-danger/10 hover:text-danger">
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
                       </td>
@@ -290,6 +351,7 @@ export default function Shifts() {
       )}
 
       <AddShiftModal open={modal} onClose={() => setModal(false)} />
+      {editingShift && <EditShiftModal shift={editingShift} onClose={() => setEditingShift(null)} />}
     </div>
   );
 }

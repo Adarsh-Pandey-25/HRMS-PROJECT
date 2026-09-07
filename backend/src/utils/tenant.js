@@ -1,6 +1,22 @@
 const { randomUUID } = require('crypto');
 
-/** Legacy / demo data lives under this company until assigned otherwise. */
+/**
+ * Legacy / demo data lives under this company until assigned otherwise.
+ *
+ * ⚠️ getCompanyId() below falls back to this id for ANY employee/address that
+ * has no resolvable company_id — including `null`/`undefined` input. That
+ * means a bug elsewhere (a failed fetch, a stale/partial object passed in by
+ * mistake) doesn't surface as "no company" — it silently resolves to a real,
+ * queryable tenant. Every one of this function's ~75 call sites across the
+ * codebase inherits that behavior. Not currently reachable through any
+ * normal request flow (real employee rows always carry company_id since the
+ * subdomain-per-tenant migration), but it's the reason a "just add
+ * companyId ?? DEFAULT_COMPANY_ID" fallback should never be added elsewhere
+ * to paper over a missing tenant id — prefer failing loud (see
+ * recruitment.service.js's resolveCompanyId for the pattern this codebase
+ * uses instead) so a real bug surfaces immediately instead of quietly
+ * writing/reading legacy-tenant data.
+ */
 const DEFAULT_COMPANY_ID = '00000000-0000-0000-0000-000000000001';
 
 const getAddress = (employeeOrAddress) => {

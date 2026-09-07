@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { GraduationCap, BookOpen, PlayCircle } from 'lucide-react';
+import { GraduationCap, BookOpen, PlayCircle, ShieldAlert } from 'lucide-react';
 import { PageHeader, Card, ProgressBar, EmptyState, Button, Skeleton, Badge } from '../../components/ui';
 import { useCourseCatalog } from '../../hooks/useTraining';
 import { humanize } from '../../lib/utils';
@@ -9,8 +9,13 @@ export default function MyTrainings() {
   const navigate = useNavigate();
   const { data: courses = [], isLoading } = useCourseCatalog();
 
+  // Item 1: mandatory (HR/Admin-assigned) courses surface first, not buried
+  // among self-enrolled ones — the employee can't decline, hide, or ignore
+  // them, so they stay visibly prominent until completed.
   const enrolled = useMemo(
-    () => (courses || []).filter((c) => c.enrollment || c.enrolled),
+    () => (courses || [])
+      .filter((c) => c.enrollment || c.enrolled)
+      .sort((a, b) => (b.enrollment?.isMandatory ? 1 : 0) - (a.enrollment?.isMandatory ? 1 : 0)),
     [courses]
   );
 
@@ -40,8 +45,9 @@ export default function MyTrainings() {
             const total = c.totalLessons ?? c.total_lessons ?? 0;
             const pct = c.progressPercent ?? (total ? Math.round((completed / total) * 100) : 0);
             const status = c.enrollment?.status || c.status || 'in_progress';
+            const isMandatory = Boolean(c.enrollment?.isMandatory);
             return (
-              <Card key={c.id} className="p-5">
+              <Card key={c.id} className={isMandatory && pct < 100 ? 'p-5 ring-1 ring-warning/50' : 'p-5'}>
                 <div className="flex items-start gap-3">
                   <div className="h-12 w-12 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
                     <BookOpen className="h-6 w-6" />
@@ -51,6 +57,12 @@ export default function MyTrainings() {
                       <p className="font-semibold text-fg">{c.title}</p>
                       <Badge tone={pct >= 100 ? 'success' : 'info'}>{humanize(String(status).toLowerCase())}</Badge>
                     </div>
+                    {isMandatory && pct < 100 && (
+                      <p className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-warning">
+                        <ShieldAlert className="h-3.5 w-3.5" />
+                        Assigned by {c.enrollment.assignedByName} — Required
+                      </p>
+                    )}
                     <p className="text-xs text-fg-subtle mt-0.5">{completed}/{total} lessons</p>
                     <div className="mt-3">
                       <ProgressBar value={pct} size="sm" />

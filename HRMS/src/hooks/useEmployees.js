@@ -3,7 +3,8 @@ import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tansta
 import { useAuthStore } from '../store/authStore';
 import {
   fetchAllEmployeesApi, fetchTeamEmployeesApi, fetchEmployeeByIdApi,
-  createEmployeeApi, updateEmployeeApi, deleteEmployeeApi, deactivateEmployeeApi,
+  createEmployeeApi, updateEmployeeApi, offboardEmployeeApi, eraseEmployeeApi, deactivateEmployeeApi,
+  uploadEmployeePhotoApi, resetSelfEditLockApi,
 } from '../api/employees.api';
 import { useEmployeeStore } from '../store/employeeStore';
 import { invalidateAndRefetch, patchQueriesData } from '../lib/queryCache';
@@ -92,9 +93,23 @@ export function useEmployeeMutations() {
         await invalidate();
       },
     }),
-    remove: useMutation({
-      mutationFn: deleteEmployeeApi,
-      onSuccess: async (_, id) => {
+    // Soft offboard (N-10) — data retained, so the employee stays in the
+    // directory (marked offboarded) rather than being evicted from cache
+    // like a real delete. See `erase` below for the genuine hard delete.
+    offboard: useMutation({
+      mutationFn: ({ id, reason }) => offboardEmployeeApi(id, reason),
+      onSuccess: async (updated, { id }) => {
+        patchQueriesData(qc, ['employees'], (old) => {
+          if (!Array.isArray(old)) return old;
+          return old.map((e) => (e.id === id ? { ...e, ...updated, status: 'offboarded', employmentStatus: 'offboarded' } : e));
+        });
+        qc.setQueryData(['employees', id], (old) => ({ ...old, ...updated, status: 'offboarded', employmentStatus: 'offboarded' }));
+        await invalidate();
+      },
+    }),
+    erase: useMutation({
+      mutationFn: ({ id, confirmEmployeeCode, reason }) => eraseEmployeeApi(id, confirmEmployeeCode, reason),
+      onSuccess: async (_, { id }) => {
         removeEmployee(id);
         patchQueriesData(qc, ['employees'], (old) => {
           if (!Array.isArray(old)) return old;
@@ -107,6 +122,28 @@ export function useEmployeeMutations() {
     deactivate: useMutation({
       mutationFn: deactivateEmployeeApi,
       onSuccess: invalidate,
+    }),
+    uploadPhoto: useMutation({
+      mutationFn: ({ id, file }) => uploadEmployeePhotoApi(id, file),
+      onSuccess: async (updated, { id }) => {
+        patchQueriesData(qc, ['employees'], (old) => {
+          if (!Array.isArray(old)) return old;
+          return old.map((e) => (e.id === id ? { ...e, ...updated } : e));
+        });
+        qc.setQueryData(['employees', id], updated);
+        await invalidate();
+      },
+    }),
+    resetSelfEditLock: useMutation({
+      mutationFn: ({ id, reason }) => resetSelfEditLockApi(id, reason),
+      onSuccess: async (updated, { id }) => {
+        patchQueriesData(qc, ['employees'], (old) => {
+          if (!Array.isArray(old)) return old;
+          return old.map((e) => (e.id === id ? { ...e, ...updated } : e));
+        });
+        qc.setQueryData(['employees', id], updated);
+        await invalidate();
+      },
     }),
   };
 }

@@ -3,7 +3,14 @@ const attendanceService = require('../services/attendance.service');
 const tenantService = require('../services/tenant.service');
 const reportsService = require('../services/reports.service');
 const { successResponse } = require('../utils/helpers');
-const { BadRequestError } = require('../utils/errors');
+const { BadRequestError, ForbiddenError } = require('../utils/errors');
+const { mapWithConcurrency } = require('../utils/concurrency');
+
+/** Team Performance fans out 4 queries per employee in scope — for HR/Admin
+ *  that scope can be the entire company. Capping concurrency keeps one
+ *  request from firing thousands of simultaneous queries at once as a
+ *  company grows; it still completes the same total work, just in waves. */
+const TEAM_PERFORMANCE_CONCURRENCY = 15;
 
 /**
  * Manager-and-above report scope (plain Employees never reach these controllers —
@@ -29,10 +36,17 @@ const resolveReportScope = async (req) => {
     }
     return ids;
   }
-  return attendanceService.getTeamEmployeeIds(req.user.id);
+  return attendanceService.getTeamEmployeeIds(req.user.id, req.user.company_id);
 };
 
 const isValidDateString = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || '')) && !Number.isNaN(new Date(value).getTime());
+
+/** Attendance Summary computes per-employee, per-day in JS (getRangeSummary's
+ *  day-by-day loop) on top of an unfiltered-by-size DB query — an arbitrary
+ *  from/to (e.g. a century apart) turns one request into an unbounded scan
+ *  across every employee in scope. A year is generous for a single report
+ *  request; anything longer should be pulled a year at a time. */
+const MAX_ATTENDANCE_SUMMARY_RANGE_DAYS = 366;
 
 // Manager "team performance" = monthly attendance + leave + reimbursement summaries for team.
 const teamPerformance = async (req, res, next) => {
@@ -44,11 +58,11 @@ const teamPerformance = async (req, res, next) => {
     const teamIds = await resolveReportScope(req);
     if (!teamIds.length) return successResponse(res, 'Team performance report fetched', []);
 
-    // Each team member's four lookups (and each team member vs. the others) are
-    // independent — run them concurrently instead of awaiting one at a time in a loop.
-    // Promise.all (not allSettled): a lookup failing here already meant the whole
-    // request failed under the old sequential code, so we keep that behavior.
-    const summaries = await Promise.all(teamIds.map(async (employeeId) => {
+    // Each team member's four lookups are independent — run them concurrently
+    // instead of awaiting one at a time in a loop, but capped (not a bare
+    // Promise.all across the whole scope) so an HR/Admin request scoped to a
+    // large company can't fire thousands of simultaneous queries at once.
+    const summaries = await mapWithConcurrency(teamIds, TEAM_PERFORMANCE_CONCURRENCY, async (employeeId) => {
       const [{ data: employee }, attendance, { data: leaves }, { data: reimbursements }] = await Promise.all([
         supabaseAdmin
           .from('employees')
@@ -84,7 +98,7 @@ const teamPerformance = async (req, res, next) => {
           totalAmount: (reimbursements || []).reduce((s, r) => s + Number(r.amount || 0), 0),
         },
       };
-    }));
+    });
 
     successResponse(res, 'Team performance report fetched', summaries);
   } catch (err) {
@@ -101,6 +115,11 @@ const attendanceSummary = async (req, res, next) => {
     }
     if (String(from) > String(to)) throw new BadRequestError('from must be on or before to');
 
+    const rangeDays = Math.round((new Date(to) - new Date(from)) / (24 * 60 * 60 * 1000)) + 1;
+    if (rangeDays > MAX_ATTENDANCE_SUMMARY_RANGE_DAYS) {
+      throw new BadRequestError(`Date range cannot exceed ${MAX_ATTENDANCE_SUMMARY_RANGE_DAYS} days. Please narrow your dates.`);
+    }
+
     const employeeIds = await resolveReportScope(req);
     const data = await reportsService.getAttendanceSummaryReport(employeeIds, from, to);
     successResponse(res, 'Attendance summary report fetched', data);
@@ -112,6 +131,16 @@ const attendanceSummary = async (req, res, next) => {
 // Payroll Summary — per-employee (or per-department) gross/deductions/net/overtime for a payroll month.
 const payrollSummary = async (req, res, next) => {
   try {
+    // The mature Payroll module never lets a manager see a subordinate's
+    // payslip data — even net pay, let alone the full gross/PF/ESI/TDS
+    // breakdown this report returns (see payroll.service.js's `personalOnly`
+    // rule: mine/employee/manager all resolve to "own records only"). This
+    // report must respect the same boundary rather than quietly exposing
+    // salary data through a different door.
+    if (req.user.role === 'manager') {
+      throw new ForbiddenError('Managers cannot view salary data for their team. This report is available to HR/Admin only.');
+    }
+
     const month = parseInt(req.query.month, 10);
     const year = parseInt(req.query.year, 10);
     if (!month || !year) throw new BadRequestError('month and year are required');

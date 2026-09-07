@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import { Pin, Paperclip, ChevronDown, Clock3 } from 'lucide-react';
-import { cn, stripHtml, sanitizeHtml, safeHref, timeAgo, humanize } from '../../lib/utils';
+import toast from 'react-hot-toast';
+import { cn, stripHtml, sanitizeHtml, timeAgo, humanize } from '../../lib/utils';
 import { PRIORITY_TONE } from '../../lib/constants';
+import { openAnnouncementAttachmentApi } from '../../api/announcements.api';
 import { Card } from './Card';
 import { Badge } from './Badge';
 import { Avatar } from './Avatar';
@@ -50,9 +52,14 @@ export function AnnouncementCard({ announcement: a, author, isUnread, onOpen, ac
           {a.attachments?.length > 0 && expanded && (
             <div className="mt-2 space-y-1">
               {a.attachments.map((att) => (
-                <a key={att.name} href={safeHref(att.url)} rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-xs text-primary hover:underline">
+                <button
+                  key={att.name}
+                  type="button"
+                  onClick={() => openAnnouncementAttachmentApi(att.announcementId).catch((err) => toast.error(err.message || 'Could not open attachment'))}
+                  className="inline-flex items-center gap-1.5 text-xs text-primary hover:underline"
+                >
                   <Paperclip className="h-3 w-3" /> {att.name}
-                </a>
+                </button>
               ))}
             </div>
           )}

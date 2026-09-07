@@ -16,15 +16,15 @@ const companyIds = async (req) => {
 const list = async (req, res, next) => {
   try {
     const ids = await companyIds(req);
-    const data = await assetsService.listAssets(req.query, ids, companyIdOf(req));
-    successResponse(res, 'Assets fetched', data);
+    const result = await assetsService.listAssets(req.query, ids, companyIdOf(req), req.query);
+    successResponse(res, 'Assets fetched', result.data, result.meta);
   } catch (err) { next(err); }
 };
 
 const mine = async (req, res, next) => {
   try {
-    const data = await assetsService.myAssets(req.user.id, companyIdOf(req));
-    successResponse(res, 'My assets fetched', data);
+    const result = await assetsService.myAssets(req.user.id, companyIdOf(req), req.query);
+    successResponse(res, 'My assets fetched', result.data, result.meta);
   } catch (err) { next(err); }
 };
 
@@ -33,8 +33,8 @@ const requests = async (req, res, next) => {
     const isPrivileged = ['admin', 'hr'].includes(req.user.role);
     // Employees only see their own requests; HR/Admin see the company queue.
     const ids = isPrivileged ? await companyIds(req) : [req.user.id];
-    const data = await assetsService.listRequests(req.query, ids, companyIdOf(req));
-    successResponse(res, 'Asset requests fetched', data);
+    const result = await assetsService.listRequests(req.query, ids, companyIdOf(req), req.query);
+    successResponse(res, 'Asset requests fetched', result.data, result.meta);
   } catch (err) { next(err); }
 };
 
@@ -78,6 +78,9 @@ const assign = async (req, res, next) => {
     const ids = await companyIds(req);
     const employeeId = req.body.employee_id || req.body.employeeId;
     const data = await assetsService.assignAsset(req.params.id, employeeId, companyIdOf(req), ids);
+    require('../services/webhook.service').dispatchWebhookEvent(companyIdOf(req), 'asset.assigned', {
+      assetId: req.params.id, employeeId,
+    });
     successResponse(res, 'Asset assigned', data);
   } catch (err) { next(err); }
 };

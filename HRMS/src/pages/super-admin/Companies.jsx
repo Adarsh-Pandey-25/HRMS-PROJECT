@@ -1,5 +1,6 @@
 import { Fragment, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 import { Building2, ChevronDown, ChevronRight, CornerDownRight, Power } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { Card, CardHeader, Button, Badge, Skeleton } from '../../components/ui';
@@ -8,6 +9,7 @@ import { formatDateTime } from '../../lib/utils';
 
 export default function SuperAdminCompanies() {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const { data: companies = [], isLoading } = useQuery({
     queryKey: ['super-admin', 'companies'],
     queryFn: listAllCompaniesApi,
@@ -105,9 +107,10 @@ export default function SuperAdminCompanies() {
                         return (
                           <tr
                             key={c.id}
+                            onClick={() => navigate(`/super-admin/companies/${c.id}`)}
                             className={isChild
-                              ? 'border-b border-border/40 bg-muted/25'
-                              : 'border-b border-border/60'}
+                              ? 'border-b border-border/40 bg-muted/25 cursor-pointer hover:bg-muted/40'
+                              : 'border-b border-border/60 cursor-pointer hover:bg-muted/30'}
                           >
                             <td className="py-3 pr-3">
                               <div className={`flex items-start gap-2 ${isChild ? 'pl-8' : ''}`}>
@@ -116,7 +119,7 @@ export default function SuperAdminCompanies() {
                                 ) : children.length > 0 ? (
                                   <button
                                     type="button"
-                                    onClick={() => toggleExpanded(company.id)}
+                                    onClick={(e) => { e.stopPropagation(); toggleExpanded(company.id); }}
                                     className="mt-0.5 rounded p-0.5 text-fg-muted hover:bg-muted hover:text-primary"
                                     aria-label={isExpanded ? 'Collapse child companies' : 'Expand child companies'}
                                   >
@@ -157,7 +160,7 @@ export default function SuperAdminCompanies() {
                                 variant="outline"
                                 icon={Power}
                                 loading={busyId === c.id}
-                                onClick={() => toggle(c)}
+                                onClick={(e) => { e.stopPropagation(); toggle(c); }}
                               >
                                 {active ? 'Deactivate' : 'Activate'}
                               </Button>

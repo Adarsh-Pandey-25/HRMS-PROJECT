@@ -7,6 +7,7 @@ import { useUIStore } from '../../store/uiStore';
 import { useAuthStore } from '../../store/authStore';
 import { useSettingsStore } from '../../store/settingsStore';
 import { SidebarBrand } from './CompanyBrandMark';
+import { useCompanyFeatures } from '../../hooks/useCompanyFeatures';
 import { cn } from '../../lib/utils';
 
 export function MobileNav() {
@@ -14,9 +15,10 @@ export function MobileNav() {
   const setMobileNav = useUIStore((s) => s.setMobileNav);
   const role = useAuthStore((s) => s.role);
   const rolePermissions = useSettingsStore((s) => s.rolePermissions);
+  const enabledFeatures = useCompanyFeatures();
   const location = useLocation();
-  const navItems = visibleNav(role, rolePermissions);
-  const pinnedItems = visiblePinnedItems(role, rolePermissions);
+  const navItems = visibleNav(role, rolePermissions, enabledFeatures);
+  const pinnedItems = visiblePinnedItems(role, rolePermissions, enabledFeatures);
   if (!open) return null;
 
   const close = () => setMobileNav(false);

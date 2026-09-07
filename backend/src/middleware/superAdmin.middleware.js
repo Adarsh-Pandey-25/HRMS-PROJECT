@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const { supabaseAdmin } = require('../config/supabase');
+const config = require('../config/database');
 const { UnauthorizedError, ForbiddenError } = require('../utils/errors');
 
 /**
@@ -16,9 +17,11 @@ const authenticateSuperAdmin = async (req, res, next) => {
 
     if (!token) throw new UnauthorizedError('Super admin access token required');
 
+    // Audit finding N-18: verifies against the super-admin-specific secret,
+    // not the one employee tokens verify against.
     let decoded;
     try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET);
+      decoded = jwt.verify(token, config.jwt.superAdminSecret);
     } catch {
       throw new UnauthorizedError('Invalid or expired super admin token');
     }
@@ -29,7 +32,7 @@ const authenticateSuperAdmin = async (req, res, next) => {
 
     const { data: admin, error } = await supabaseAdmin
       .from('super_admins')
-      .select('id, email, name, is_active')
+      .select('id, email, name, is_active, role')
       .eq('id', decoded.id)
       .eq('is_active', true)
       .maybeSingle();
@@ -44,4 +47,17 @@ const authenticateSuperAdmin = async (req, res, next) => {
   }
 };
 
-module.exports = { authenticateSuperAdmin };
+/**
+ * Module 5: role-scoped route access. full_admin passes every check — it's
+ * the unrestricted role. billing_admin/support_admin are blocked from
+ * routes outside the roles list passed at each route.
+ */
+const requireSuperAdminRole = (...allowedRoles) => (req, res, next) => {
+  if (!req.superAdmin) return next(new UnauthorizedError('Super admin authentication required'));
+  if (req.superAdmin.role === 'full_admin' || allowedRoles.includes(req.superAdmin.role)) {
+    return next();
+  }
+  return next(new ForbiddenError('Your super-admin role does not have access to this action'));
+};
+
+module.exports = { authenticateSuperAdmin, requireSuperAdminRole };

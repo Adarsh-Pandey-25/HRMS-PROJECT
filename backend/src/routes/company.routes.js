@@ -27,6 +27,11 @@ const companyIdParam = [param('id').isUUID()];
 // HR + Admin can list companies for employee assignment
 router.get('/me', isHROrAdmin, companyController.getMe);
 router.get('/accessible', isHROrAdmin, companyController.listAccessible);
+router.get('/billing/seats', isHROrAdmin, companyController.seatUsage);
+// Every authenticated role — nav filtering (item 5) needs this regardless of role.
+router.get('/me/features', companyController.myFeatures);
+// Every authenticated role — checked before any bulk export action (item 6).
+router.get('/me/export-status', companyController.exportStatus);
 
 // Only Admin manages child companies
 router.get('/children', isAdmin, companyController.listChildren);

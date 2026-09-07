@@ -1,5 +1,7 @@
 const payrollService = require('../services/payroll.service');
+const { logAudit } = require('../services/auditLog.service');
 const { successResponse } = require('../utils/helpers');
+const logger = require('../utils/logger');
 
 const initializeMonth = async (req, res, next) => {
   try {
@@ -31,7 +33,7 @@ const generatePayslip = async (req, res, next) => {
       }
     }
     const data = user_id
-      ? await payrollService.generateDraftPayslip(payroll_month_id, user_id)
+      ? await payrollService.generateDraftPayslip(payroll_month_id, user_id, req.user.company_id)
       : await payrollService.generateAllDraftPayslips(payroll_month_id, req.user.company_id);
     successResponse(res, user_id ? 'Draft payslip generated' : 'Draft payslips generated', data, null, 201);
   } catch (err) { next(err); }
@@ -40,6 +42,12 @@ const generatePayslip = async (req, res, next) => {
 const publishPayslip = async (req, res, next) => {
   try {
     const data = await payrollService.publishPayslip(req.params.id, req.user);
+    logAudit({
+      companyId: req.user.company_id || require('../utils/tenant').getCompanyId(req.user),
+      actorId: req.user.id, actorRole: req.user.role,
+      actionType: 'payroll.publish', targetType: 'payslip', targetId: req.params.id,
+      ipAddress: req.ip,
+    }).catch((e) => logger.warn('Audit log failed', { error: e.message }));
     successResponse(res, 'Payslip published', data);
   } catch (err) { next(err); }
 };
@@ -49,15 +57,16 @@ const listPayslips = async (req, res, next) => {
     const month = parseInt(req.query.month, 10);
     const year = parseInt(req.query.year, 10);
     const mine = String(req.query.mine || '').toLowerCase() === 'true' || req.query.mine === '1';
-    const data = await payrollService.listPayslips({
+    const result = await payrollService.listPayslips({
       month,
       year,
       user: req.user,
       role: req.user.role,
       mine,
       companyId: req.user.company_id,
+      pageQuery: req.query,
     });
-    successResponse(res, 'Payslips fetched', data);
+    successResponse(res, 'Payslips fetched', result.data, result.meta);
   } catch (err) { next(err); }
 };
 

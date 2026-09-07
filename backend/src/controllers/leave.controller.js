@@ -1,13 +1,19 @@
 const leaveService = require('../services/leave.service');
 const attendanceService = require('../services/attendance.service');
+const { logAudit } = require('../services/auditLog.service');
 const { successResponse } = require('../utils/helpers');
 const { ForbiddenError } = require('../utils/errors');
 const moment = require('moment-timezone');
 const { TIMEZONE } = require('../utils/constants');
+const logger = require('../utils/logger');
 
 const apply = async (req, res, next) => {
   try {
     const leave = await leaveService.applyLeave(req.user.id, req.body);
+    require('../services/webhook.service').dispatchWebhookEvent(req.user.company_id, 'leave.applied', {
+      leaveId: leave.id, employeeId: req.user.id, leaveType: leave.leave_type || leave.leaveType,
+      fromDate: leave.from_date || leave.fromDate, toDate: leave.to_date || leave.toDate,
+    });
     successResponse(res, 'Leave applied successfully', leave, null, 201);
   } catch (err) { next(err); }
 };
@@ -21,7 +27,7 @@ const myLeaves = async (req, res, next) => {
 
 const teamLeaves = async (req, res, next) => {
   try {
-    const teamIds = await attendanceService.getTeamEmployeeIds(req.user.id);
+    const teamIds = await attendanceService.getTeamEmployeeIds(req.user.id, req.user.company_id);
     const filters = { employee_ids: teamIds };
     if (req.query.status) filters.status = req.query.status;
     const result = await leaveService.getLeaves(filters, req.query);
@@ -45,6 +51,14 @@ const approve = async (req, res, next) => {
   try {
     const isManager = req.user.role === 'manager';
     const leave = await leaveService.approveLeave(req.user, req.params.id, isManager);
+    logAudit({
+      companyId: req.user.company_id, actorId: req.user.id, actorRole: req.user.role,
+      actionType: 'leave.approve', targetType: 'leave', targetId: req.params.id,
+      afterState: { status: 'approved' }, ipAddress: req.ip,
+    }).catch((e) => logger.warn('Audit log failed', { error: e.message }));
+    require('../services/webhook.service').dispatchWebhookEvent(req.user.company_id, 'leave.approved', {
+      leaveId: req.params.id, approvedBy: req.user.id,
+    });
     successResponse(res, 'Leave approved', leave);
   } catch (err) { next(err); }
 };
@@ -52,6 +66,14 @@ const approve = async (req, res, next) => {
 const reject = async (req, res, next) => {
   try {
     const leave = await leaveService.rejectLeave(req.user, req.params.id, req.body.rejection_reason);
+    logAudit({
+      companyId: req.user.company_id, actorId: req.user.id, actorRole: req.user.role,
+      actionType: 'leave.reject', targetType: 'leave', targetId: req.params.id,
+      afterState: { status: 'rejected', reason: req.body.rejection_reason }, ipAddress: req.ip,
+    }).catch((e) => logger.warn('Audit log failed', { error: e.message }));
+    require('../services/webhook.service').dispatchWebhookEvent(req.user.company_id, 'leave.rejected', {
+      leaveId: req.params.id, rejectedBy: req.user.id, reason: req.body.rejection_reason,
+    });
     successResponse(res, 'Leave rejected', leave);
   } catch (err) { next(err); }
 };

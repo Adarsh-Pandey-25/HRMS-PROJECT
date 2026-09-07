@@ -6,7 +6,7 @@ const {
   withCompanyId,
   settingsKey,
 } = require('../utils/tenant');
-const { ForbiddenError, BadRequestError } = require('../utils/errors');
+const { ForbiddenError, BadRequestError, ConflictError } = require('../utils/errors');
 
 let backfillDone = false;
 
@@ -124,8 +124,19 @@ const ensureCompanyRow = async ({
   }
 
   if (error) {
-    logger.warn('ensureCompanyRow insert failed', { companyId, error: error.message });
-    return { id: companyId };
+    // Never return a phantom "the company exists" object on a failed insert
+    // — both callers (onboarding's bootstrapAdmin, child-company creation)
+    // go on to insert rows that reference this id as a real foreign key.
+    // Swallowing this here previously meant a slug-collision race between
+    // two concurrent onboarding flows quietly returned a non-existent
+    // company id, and the employee insert further downstream failed on an
+    // opaque FK violation instead of a clear "try a different name" error
+    // at the step that actually caused it.
+    logger.error('ensureCompanyRow insert failed', { companyId, error: error.message });
+    if (error.code === '23505') {
+      throw new ConflictError('This company name/slug is already in use. Please choose a different one.');
+    }
+    throw new BadRequestError(`Failed to create company workspace: ${error.message}`);
   }
   if (data?.company_type) hierarchyColumnsReady = true;
   return data;
@@ -175,7 +186,7 @@ const getCompanyById = async (companyId) => {
     if (isMissingHierarchyColumn(error)) {
       hierarchyColumnsReady = false;
       logger.warn(
-        'Company hierarchy columns missing — run backend/supabase/migrations/20260723_company_hierarchy.sql in Supabase. Using single-company scope until then.',
+        'Company hierarchy columns missing — run backend/supabase/COMPLETE_DATABASE_SETUP.sql (section: 20260723_company_hierarchy) in Supabase. Using single-company scope until then.',
       );
       return runBasic();
     }
@@ -234,7 +245,7 @@ const isCompanyInOrg = async (actorCompanyId, targetCompanyId) => {
 const promoteToParentIfNeeded = async (companyId) => {
   if (hierarchyColumnsReady === false) {
     throw new BadRequestError(
-      'Run migration 20260723_company_hierarchy.sql in Supabase before creating child companies.',
+      'Run backend/supabase/COMPLETE_DATABASE_SETUP.sql (section: 20260723_company_hierarchy) in Supabase before creating child companies.',
     );
   }
   const row = await getCompanyById(companyId);
@@ -257,7 +268,7 @@ const promoteToParentIfNeeded = async (companyId) => {
     if (isMissingHierarchyColumn(error)) {
       hierarchyColumnsReady = false;
       throw new BadRequestError(
-        'Run migration 20260723_company_hierarchy.sql in Supabase before creating child companies.',
+        'Run backend/supabase/COMPLETE_DATABASE_SETUP.sql (section: 20260723_company_hierarchy) in Supabase before creating child companies.',
       );
     }
     throw error;
@@ -268,7 +279,7 @@ const promoteToParentIfNeeded = async (companyId) => {
 const assertHierarchyReady = () => {
   if (hierarchyColumnsReady === false) {
     throw new BadRequestError(
-      'Company hierarchy is not set up yet. Run backend/supabase/migrations/20260723_company_hierarchy.sql in the Supabase SQL Editor, then retry.',
+      'Company hierarchy is not set up yet. Run backend/supabase/COMPLETE_DATABASE_SETUP.sql (section: 20260723_company_hierarchy) in the Supabase SQL Editor, then retry.',
     );
   }
 };
@@ -282,15 +293,14 @@ const getCompanyEmployeeIds = async (companyId) => {
     .eq('company_id', cid)
     .limit(5000);
 
-  if (error) {
-    // Fallback if column missing mid-deploy
-    const { data: rows, error: err2 } = await supabaseAdmin
-      .from('employees')
-      .select('id, address')
-      .limit(5000);
-    if (err2) throw err2;
-    return (rows || []).filter((e) => getCompanyId(e) === cid).map((e) => e.id);
-  }
+  // Fail loud rather than falling back to an unscoped, platform-wide fetch —
+  // that fallback used to fetch up to 5000 employees across every tenant on
+  // the query error path, which both risked truncating this company's own
+  // rows out of the window on a large platform and pulled other tenants'
+  // employee data into memory in the meantime. company_id has been a real,
+  // stable column since the original multi-tenant migration, so there's no
+  // legitimate "column missing mid-deploy" case left to fall back for.
+  if (error) throw error;
 
   return (data || []).map((e) => e.id);
 };
@@ -328,16 +338,9 @@ const getCompanyHrAdminIds = async (companyId) => {
     .eq('company_id', cid)
     .limit(500);
 
-  if (error) {
-    const { data: rows, error: err2 } = await supabaseAdmin
-      .from('employees')
-      .select('id, address, role')
-      .in('role', ['hr', 'admin'])
-      .eq('is_active', true)
-      .limit(500);
-    if (err2) throw err2;
-    return (rows || []).filter((e) => getCompanyId(e) === cid).map((e) => e.id);
-  }
+  // Same reasoning as getCompanyEmployeeIds above — fail loud instead of an
+  // unscoped, platform-wide fallback fetch.
+  if (error) throw error;
   return (data || []).map((e) => e.id);
 };
 

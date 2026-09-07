@@ -4,6 +4,14 @@ const { DEFAULT_COMPANY_ID } = require('../utils/tenant');
 const moment = require('moment-timezone');
 const { TIMEZONE } = require('../utils/constants');
 const settingsService = require('./settings.service');
+const { buildMeta } = require('../utils/helpers');
+
+/** Audit finding M-13. */
+const resolvePagination = (pageQuery = {}) => {
+  const page = Math.max(1, parseInt(pageQuery.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(pageQuery.limit, 10) || 50));
+  return { page, limit, offset: (page - 1) * limit };
+};
 
 const emptyId = '00000000-0000-0000-0000-000000000000';
 const REQUEST_STATUSES = new Set(['requested', 'pending', 'approved', 'rejected', 'fulfilled', 'cancelled']);
@@ -103,46 +111,52 @@ const ensureCategory = async (name, companyId) => {
   return data;
 };
 
-const listAssets = async (query = {}, _companyEmployeeIds = null, companyId = null) => {
+const listAssets = async (query = {}, _companyEmployeeIds = null, companyId = null, pageQuery = {}) => {
   const cid = resolveCompanyId(companyId);
+  const { page, limit, offset } = resolvePagination(pageQuery);
   let db = supabaseAdmin
     .from('assets')
-    .select('*')
+    .select('*', { count: 'exact' })
     .eq('company_id', cid)
-    .order('created_at', { ascending: false });
+    .order('created_at', { ascending: false })
+    .range(offset, offset + limit - 1);
   if (query.status) db = db.eq('status', query.status);
   if (query.assigned_to) db = db.eq('assigned_to', query.assigned_to);
-  const { data, error } = await db;
+  const { data, error, count } = await db;
   if (error) throw new BadRequestError(error.message);
-  return enrichAssets(data || [], cid);
+  return { data: await enrichAssets(data || [], cid), meta: buildMeta(page, limit, count || 0) };
 };
 
-const myAssets = async (employeeId, companyId = null) => {
+const myAssets = async (employeeId, companyId = null, pageQuery = {}) => {
+  const { page, limit, offset } = resolvePagination(pageQuery);
   let db = supabaseAdmin
     .from('assets')
-    .select('*')
+    .select('*', { count: 'exact' })
     .eq('assigned_to', employeeId)
-    .order('assigned_on', { ascending: false });
+    .order('assigned_on', { ascending: false })
+    .range(offset, offset + limit - 1);
   if (companyId) db = db.eq('company_id', resolveCompanyId(companyId));
-  const { data, error } = await db;
+  const { data, error, count } = await db;
   if (error) throw new BadRequestError(error.message);
-  return enrichAssets(data || [], companyId);
+  return { data: await enrichAssets(data || [], companyId), meta: buildMeta(page, limit, count || 0) };
 };
 
-const listRequests = async (query = {}, companyEmployeeIds = null, companyId = null) => {
+const listRequests = async (query = {}, companyEmployeeIds = null, companyId = null, pageQuery = {}) => {
+  const { page, limit, offset } = resolvePagination(pageQuery);
   let db = supabaseAdmin
     .from('asset_requests')
-    .select('*, employee:employee_id(id, first_name, last_name)')
-    .order('created_at', { ascending: false });
+    .select('*, employee:employee_id(id, first_name, last_name)', { count: 'exact' })
+    .order('created_at', { ascending: false })
+    .range(offset, offset + limit - 1);
   if (companyId) db = db.eq('company_id', resolveCompanyId(companyId));
   if (query.status) db = db.eq('status', query.status);
   if (query.employee_id) db = db.eq('employee_id', query.employee_id);
   if (companyEmployeeIds) {
     db = db.in('employee_id', companyEmployeeIds.length ? companyEmployeeIds : [emptyId]);
   }
-  const { data, error } = await db;
+  const { data, error, count } = await db;
   if (error) throw new BadRequestError(error.message);
-  return data || [];
+  return { data: data || [], meta: buildMeta(page, limit, count || 0) };
 };
 
 const createRequest = async (employeeId, body, companyId = null) => {
@@ -150,6 +164,20 @@ const createRequest = async (employeeId, body, companyId = null) => {
   const reason = String(body.reason || '').trim();
   if (!assetType) throw new BadRequestError('Asset type is required');
   if (!reason) throw new BadRequestError('Reason is required');
+
+  // Audit finding N-20: block a duplicate request for the same asset_type
+  // while an earlier one from this employee is still outstanding.
+  const { data: existingPending, error: existingErr } = await supabaseAdmin
+    .from('asset_requests')
+    .select('id')
+    .eq('employee_id', employeeId)
+    .eq('asset_type', assetType)
+    .in('status', ['requested', 'pending'])
+    .limit(1);
+  if (existingErr) throw new BadRequestError(existingErr.message);
+  if (existingPending?.length) {
+    throw new BadRequestError(`You already have a pending request for ${assetType}`);
+  }
 
   const payload = {
     employee_id: employeeId,

@@ -1,8 +1,8 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { MoreHorizontal, Plus, Paperclip, X } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { PageHeader, Card, CardHeader, Button, StatusBadge, DataTable, Skeleton } from '../../components/ui';
+import { PageHeader, Card, CardHeader, Button, StatusBadge, DataTable, Skeleton, ConfirmDialog } from '../../components/ui';
 import { useAuthStore } from '../../store/authStore';
 import { useMyReimbursements, useReimbursementMutations } from '../../hooks/useReimbursements';
 import { openReceiptApi } from '../../api/reimbursements.api';
@@ -15,13 +15,21 @@ export default function MyClaims() {
   const { withdraw } = useReimbursementMutations();
   const mine = expenses.filter((e) => !userId || e.employeeId === userId);
 
-  const onWithdraw = async (id) => {
-    if (!window.confirm('Withdraw this pending claim? This cannot be undone.')) return;
+  const [withdrawId, setWithdrawId] = useState(null);
+  const [withdrawing, setWithdrawing] = useState(false);
+
+  const onWithdraw = (id) => setWithdrawId(id);
+
+  const confirmWithdraw = async () => {
+    setWithdrawing(true);
     try {
-      await withdraw.mutateAsync(id);
+      await withdraw.mutateAsync(withdrawId);
       toast.success('Claim withdrawn');
+      setWithdrawId(null);
     } catch (err) {
       toast.error(err.message || 'Could not withdraw claim');
+    } finally {
+      setWithdrawing(false);
     }
   };
 
@@ -112,6 +120,16 @@ export default function MyClaims() {
         <CardHeader title="Expense History" subtitle={`${mine.length} claims`} />
         {isLoading ? <Skeleton className="h-40 m-5" /> : <DataTable columns={columns} data={mine} pageSize={8} />}
       </Card>
+
+      <ConfirmDialog
+        open={Boolean(withdrawId)}
+        onClose={() => setWithdrawId(null)}
+        onConfirm={confirmWithdraw}
+        loading={withdrawing}
+        title="Withdraw this claim?"
+        message="This pending claim will be withdrawn. This cannot be undone."
+        confirmLabel="Withdraw"
+      />
     </div>
   );
 }

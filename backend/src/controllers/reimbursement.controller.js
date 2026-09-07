@@ -57,6 +57,7 @@ const submit = async (req, res, next) => {
       .from('reimbursements')
       .insert({
         employee_id: req.user.id,
+        company_id: req.user.company_id,
         reimbursement_type: req.body.reimbursement_type,
         amount,
         description: req.body.description,
@@ -66,7 +67,16 @@ const submit = async (req, res, next) => {
       .select()
       .single();
 
-    if (error) throw new BadRequestError(error.message);
+    if (error) {
+      // "accommodation" depends on a manual DB migration (ALTER TYPE ... ADD
+      // VALUE) that may not have been run yet in a given environment — don't
+      // leak the raw Postgres enum-violation text, which names the exact
+      // column/type, to the browser.
+      if (/invalid input value for enum/i.test(error.message || '')) {
+        throw new BadRequestError('This expense category isn\'t available yet — contact your admin.');
+      }
+      throw new BadRequestError(error.message);
+    }
 
     // Notify manager (if any) else HR/Admin
     const { data: employee } = await supabaseAdmin
@@ -133,7 +143,7 @@ const myReimbursements = async (req, res, next) => {
 
 const teamReimbursements = async (req, res, next) => {
   try {
-    const teamIds = await attendanceService.getTeamEmployeeIds(req.user.id);
+    const teamIds = await attendanceService.getTeamEmployeeIds(req.user.id, req.user.company_id);
     const result = await listReimbursements({ employee_ids: teamIds }, req.query);
     successResponse(res, 'Team reimbursements fetched', result.data, result.meta);
   } catch (err) { next(err); }
@@ -153,7 +163,7 @@ const approve = async (req, res, next) => {
     const reimbursement = await requireCompanyReimbursement(req);
 
     if (req.user.role === 'manager') {
-      const teamIds = await attendanceService.getTeamEmployeeIds(req.user.id);
+      const teamIds = await attendanceService.getTeamEmployeeIds(req.user.id, req.user.company_id);
       if (!teamIds.includes(reimbursement.employee_id)) {
         throw new ForbiddenError('Not authorized to approve this reimbursement');
       }
@@ -226,7 +236,7 @@ const reject = async (req, res, next) => {
   try {
     const reimbursement = await requireCompanyReimbursement(req);
     if (req.user.role === 'manager') {
-      const teamIds = await attendanceService.getTeamEmployeeIds(req.user.id);
+      const teamIds = await attendanceService.getTeamEmployeeIds(req.user.id, req.user.company_id);
       if (!teamIds.includes(reimbursement.employee_id)) {
         throw new ForbiddenError('Not authorized to reject this reimbursement');
       }
@@ -282,7 +292,7 @@ const receipt = async (req, res, next) => {
     if (req.user.role === 'employee') {
       if (reimbursement.employee_id !== req.user.id) throw new ForbiddenError('Not authorized');
     } else if (req.user.role === 'manager') {
-      const teamIds = await attendanceService.getTeamEmployeeIds(req.user.id);
+      const teamIds = await attendanceService.getTeamEmployeeIds(req.user.id, req.user.company_id);
       if (!teamIds.includes(reimbursement.employee_id)) throw new ForbiddenError('Not authorized');
     }
 

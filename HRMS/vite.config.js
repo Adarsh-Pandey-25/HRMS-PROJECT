@@ -52,7 +52,7 @@ export default defineConfig({
       includeAssets: ['favicon.svg', 'pwa-192.png', 'pwa-512.png'],
       manifest: {
         id: '/',
-        name: 'SPAXADS HRMS',
+        name: 'HRMS',
         short_name: 'HRMS',
         description: 'HR Suite — attendance, leave, payroll, and more',
         theme_color: '#6C63FF',
@@ -116,7 +116,10 @@ export default defineConfig({
     // ("can't detect preamble") and blanks the app. Apply CSP on the production host.
     headers: {
       'Referrer-Policy': 'no-referrer',
-      'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+      // geolocation=(self): GPS geofence check-in and the "Use current
+      // location" geofence-setup button both need it; camera/microphone
+      // stay locked down (nothing in this app uses them yet).
+      'Permissions-Policy': 'camera=(), microphone=(), geolocation=(self)',
       'X-Content-Type-Options': 'nosniff',
       'X-Frame-Options': 'DENY',
     },
@@ -129,7 +132,10 @@ export default defineConfig({
     allowedHosts: ['.ngrok-free.dev', '.ngrok-free.app', 'yahoo-revision-silk.ngrok-free.dev'],
     headers: {
       'Referrer-Policy': 'no-referrer',
-      'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+      // geolocation=(self): GPS geofence check-in and the "Use current
+      // location" geofence-setup button both need it; camera/microphone
+      // stay locked down (nothing in this app uses them yet).
+      'Permissions-Policy': 'camera=(), microphone=(), geolocation=(self)',
       'X-Content-Type-Options': 'nosniff',
       'X-Frame-Options': 'DENY',
     },

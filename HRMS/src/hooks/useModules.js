@@ -12,7 +12,7 @@ import {
 import {
   fetchJobsApi, fetchCandidatesApi, moveCandidateApi, createJobApi, createCandidateApi,
   fetchInterviewsApi, createInterviewApi, updateInterviewOutcomeApi,
-  fetchOffersApi, createOfferApi,
+  fetchOffersApi, createOfferApi, updateOfferStatusApi,
   fetchCandidateChecklistApi, toggleCandidateChecklistItemApi,
 } from '../api/recruitment.api';
 import {
@@ -106,7 +106,7 @@ export function useHelpdeskMutations() {
   };
   return {
     createTicket: useMutation({ mutationFn: createTicketApi, onSuccess: invalidate }),
-    updateStatus: useMutation({ mutationFn: ({ id, status }) => updateTicketStatusApi(id, status), onSuccess: invalidate }),
+    updateStatus: useMutation({ mutationFn: ({ id, status, rejectionReason }) => updateTicketStatusApi(id, status, rejectionReason), onSuccess: invalidate }),
     addComment: useMutation({ mutationFn: ({ id, text }) => addTicketCommentApi(id, text), onSuccess: invalidate }),
   };
 }
@@ -147,6 +147,10 @@ export function useRecruitmentMutations() {
       onSuccess: invalidate,
     }),
     createOffer: useMutation({ mutationFn: createOfferApi, onSuccess: invalidate }),
+    updateOfferStatus: useMutation({
+      mutationFn: ({ id, status }) => updateOfferStatusApi(id, status),
+      onSuccess: invalidate,
+    }),
   };
 }
 

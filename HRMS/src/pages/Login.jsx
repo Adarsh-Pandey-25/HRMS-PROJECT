@@ -27,7 +27,7 @@ export default function Login() {
   const onboardEmail = justOnboarded ? (location.state?.email || '') : '';
   const appName = (justOnboarded ? location.state?.companyName : null)
     || company.name?.trim()
-    || 'SPAXADS HRMS';
+    || 'HRMS';
 
   const { register, handleSubmit, reset, formState: { errors } } = useForm({
     resolver: zodResolver(schema),

@@ -162,7 +162,8 @@ const listPendingForReviewer = async (reviewer, query = {}) => {
   let employeeIds = null;
 
   if (role === 'manager') {
-    employeeIds = await getTeamEmployeeIds(reviewer.id);
+    const { getCompanyId } = require('../utils/tenant');
+    employeeIds = await getTeamEmployeeIds(reviewer.id, reviewer.company_id || getCompanyId(reviewer));
     if (!employeeIds.length) return { data: [], meta: buildMeta(page, limit, 0) };
   } else {
     const tenantService = require('./tenant.service');
@@ -199,7 +200,8 @@ const review = async (reviewer, requestId, { status, review_note } = {}) => {
 
   const role = reviewer.role;
   if (role === 'manager') {
-    const teamIds = await getTeamEmployeeIds(reviewer.id);
+    const { getCompanyId } = require('../utils/tenant');
+    const teamIds = await getTeamEmployeeIds(reviewer.id, reviewer.company_id || getCompanyId(reviewer));
     if (!teamIds.includes(row.employee_id)) {
       throw new ForbiddenError('You can only review your team members');
     }

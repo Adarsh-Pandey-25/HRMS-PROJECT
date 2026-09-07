@@ -12,14 +12,24 @@ export function useMyReimbursements() {
   return useQuery({ queryKey: ['reimbursements', 'my'], queryFn: fetchMyReimbursementsApi, enabled: isAuthenticated });
 }
 
-export function useTeamReimbursements() {
+export function useTeamReimbursements(options = {}) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
-  return useQuery({ queryKey: ['reimbursements', 'team'], queryFn: fetchTeamReimbursementsApi, enabled: isAuthenticated });
+  const enabled = options.enabled !== false;
+  return useQuery({
+    queryKey: ['reimbursements', 'team', options.status || 'all'],
+    queryFn: () => fetchTeamReimbursementsApi(options.status ? { status: options.status } : {}),
+    enabled: isAuthenticated && enabled,
+  });
 }
 
-export function useAllReimbursements() {
+export function useAllReimbursements(options = {}) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
-  return useQuery({ queryKey: ['reimbursements', 'all'], queryFn: fetchAllReimbursementsApi, enabled: isAuthenticated });
+  const enabled = options.enabled !== false;
+  return useQuery({
+    queryKey: ['reimbursements', 'all', options.status || 'all'],
+    queryFn: () => fetchAllReimbursementsApi(options.status ? { status: options.status } : {}),
+    enabled: isAuthenticated && enabled,
+  });
 }
 
 export function useReimbursementMutations() {

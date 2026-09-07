@@ -1,8 +1,8 @@
 import { useMemo, useState, useEffect } from 'react';
-import { Plus, Clock, Check, UserPen } from 'lucide-react';
+import { Plus, Clock, Check, X, UserPen } from 'lucide-react';
 import {
   PageHeader, Card, CardHeader, Button, StatusBadge, Modal, Input, Textarea,
-  EmptyState, Skeleton, Avatar, Select,
+  EmptyState, Skeleton, Avatar, Select, Badge,
 } from '../../components/ui';
 import { useMyTickets, useAllTickets, useHelpdeskMutations } from '../../hooks/useModules';
 import { useAttendanceMutations } from '../../hooks/useAttendance';
@@ -191,6 +191,41 @@ function EmployeeRegularization() {
   );
 }
 
+/** Item 2: reason is required — it's what regularizationRejectedEmail shows the employee. */
+function RejectModal({ target, onClose, onConfirm, loading }) {
+  const [reason, setReason] = useState('');
+  useEffect(() => { if (target) setReason(''); }, [target]);
+  return (
+    <Modal
+      open={Boolean(target)}
+      onClose={onClose}
+      title="Reject correction request"
+      footer={(
+        <>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button className="text-danger" variant="outline" onClick={() => onConfirm(reason)} loading={loading} disabled={!reason.trim()}>
+            Reject Request
+          </Button>
+        </>
+      )}
+    >
+      <div className="space-y-4">
+        <p className="text-sm text-fg-muted">
+          The employee will be notified by email with this reason. This does not change their existing attendance record.
+        </p>
+        <Textarea label="Reason for rejection" rows={3} value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. No supporting evidence for the requested correction" />
+      </div>
+    </Modal>
+  );
+}
+
+const STATUS_FILTERS = [
+  { value: 'pending', label: 'Pending' },
+  { value: 'approved', label: 'Approved' },
+  { value: 'rejected', label: 'Rejected' },
+  { value: 'all', label: 'All' },
+];
+
 function HrRegularization() {
   const { data: tickets = [], isLoading } = useAllTickets();
   const { updateStatus } = useHelpdeskMutations();
@@ -200,6 +235,8 @@ function HrRegularization() {
   const [manualOpen, setManualOpen] = useState(false);
   const [manualInitial, setManualInitial] = useState(null);
   const [activeTicketId, setActiveTicketId] = useState(null);
+  const [rejectTarget, setRejectTarget] = useState(null);
+  const [statusFilter, setStatusFilter] = useState('pending');
 
   const allRequests = useMemo(
     () => tickets.filter(isRegularizationTicket).map(parseRegularizationTicket).filter(Boolean),
@@ -211,10 +248,16 @@ function HrRegularization() {
     [allRequests],
   );
 
-  const resolved = useMemo(
-    () => allRequests.filter((r) => !PENDING_STATUSES.has(r.status)),
-    [allRequests],
-  );
+  // 'resolved' = approved-and-corrected; 'closed' = rejected — the closest
+  // fit in the existing 4-status ticket model (open/in_progress/resolved/
+  // closed), same mapping the reject flow below writes.
+  const approved = useMemo(() => allRequests.filter((r) => r.status === 'resolved'), [allRequests]);
+  const rejected = useMemo(() => allRequests.filter((r) => r.status === 'closed'), [allRequests]);
+
+  const visibleRequests = statusFilter === 'all' ? allRequests
+    : statusFilter === 'pending' ? pending
+    : statusFilter === 'approved' ? approved
+    : rejected;
 
   const openManual = (row = null) => {
     setActiveTicketId(row?.ticketId || null);
@@ -248,6 +291,17 @@ function HrRegularization() {
     }
   };
 
+  const confirmReject = async (reason) => {
+    if (!reason.trim() || !rejectTarget) return;
+    try {
+      await updateStatus.mutateAsync({ id: rejectTarget.ticketId, status: 'closed', rejectionReason: reason.trim() });
+      toast.success('Request rejected — employee notified by email');
+      setRejectTarget(null);
+    } catch (err) {
+      toast.error(err.message || 'Failed to reject request');
+    }
+  };
+
   return (
     <div className="space-y-6 animate-fade-in">
       <PageHeader
@@ -257,15 +311,37 @@ function HrRegularization() {
       />
 
       <Card>
-        <CardHeader title="Pending requests" subtitle={`${pending.length} waiting for HR action`} />
+        <CardHeader
+          title="Correction requests"
+          subtitle={`${pending.length} pending · ${approved.length} approved · ${rejected.length} rejected`}
+          action={(
+            <div className="flex gap-1.5">
+              {STATUS_FILTERS.map((f) => (
+                <button
+                  key={f.value}
+                  type="button"
+                  onClick={() => setStatusFilter(f.value)}
+                  className={`text-xs px-2.5 py-1.5 rounded-md border transition-colors ${
+                    statusFilter === f.value
+                      ? 'border-primary bg-primary/10 text-primary font-medium'
+                      : 'border-border text-fg-muted hover:border-fg-subtle'
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+          )}
+        />
         <div className="p-5 pt-3 space-y-2">
           {isLoading ? (
             <Skeleton className="h-32 rounded-xl" />
-          ) : pending.length === 0 ? (
-            <EmptyState icon={Clock} title="No pending requests" message="Employee regularization requests will appear here for review." />
+          ) : visibleRequests.length === 0 ? (
+            <EmptyState icon={Clock} title="No requests" message="Employee regularization requests matching this filter will appear here." />
           ) : (
-            pending.map((row) => {
+            visibleRequests.map((row) => {
               const emp = employeeMap[row.employeeId];
+              const isPending = PENDING_STATUSES.has(row.status);
               return (
                 <div key={row.ticketId} className="flex flex-col sm:flex-row sm:items-center gap-3 rounded-xl border border-border/60 p-4">
                   <Avatar name={emp?.name || 'Employee'} size="sm" />
@@ -276,32 +352,29 @@ function HrRegularization() {
                     </p>
                     <p className="text-xs text-fg-muted truncate mt-0.5">{row.reason}</p>
                   </div>
-                  <StatusBadge status={row.status} />
-                  <Button size="sm" icon={Check} onClick={() => openManual(row)} loading={manualEntry.isPending}>
-                    Apply correction
-                  </Button>
+                  {row.status === 'resolved' ? (
+                    <Badge tone="success">Approved</Badge>
+                  ) : row.status === 'closed' ? (
+                    <Badge tone="danger">Rejected</Badge>
+                  ) : (
+                    <StatusBadge status={row.status} />
+                  )}
+                  {isPending && (
+                    <div className="flex gap-2 shrink-0">
+                      <Button size="sm" variant="outline" className="text-danger" icon={X} onClick={() => setRejectTarget(row)}>
+                        Reject
+                      </Button>
+                      <Button size="sm" icon={Check} onClick={() => openManual(row)} loading={manualEntry.isPending}>
+                        Apply correction
+                      </Button>
+                    </div>
+                  )}
                 </div>
               );
             })
           )}
         </div>
       </Card>
-
-      {resolved.length > 0 && (
-        <Card>
-          <CardHeader title="Processed" subtitle={`${resolved.length} resolved or closed`} />
-          <div className="p-5 pt-3">
-            <RequestList
-              rows={resolved}
-              loading={false}
-              emptyTitle=""
-              emptyMessage=""
-              employeeMap={employeeMap}
-              showEmployee
-            />
-          </div>
-        </Card>
-      )}
 
       <HrManualEntryModal
         open={manualOpen}
@@ -310,6 +383,12 @@ function HrRegularization() {
         employees={employees}
         onSubmit={applyManual}
         loading={manualEntry.isPending || updateStatus.isPending}
+      />
+      <RejectModal
+        target={rejectTarget}
+        onClose={() => setRejectTarget(null)}
+        onConfirm={confirmReject}
+        loading={updateStatus.isPending}
       />
     </div>
   );

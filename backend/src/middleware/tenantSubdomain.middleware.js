@@ -1,6 +1,28 @@
 const { supabaseAdmin } = require('../config/supabase');
 const logger = require('../utils/logger');
 
+/** Short-TTL cache so every request on a tenant subdomain doesn't hit the DB
+ *  just to resolve its own host — this middleware runs on literally every
+ *  request once BASE_DOMAIN is live. A stale hit for up to 30s (e.g. a
+ *  company just deactivated) is an acceptable tradeoff; deactivation is
+ *  still enforced again at login/session-checks downstream regardless. */
+const SLUG_CACHE_TTL_MS = 30 * 1000;
+const slugCache = new Map();
+
+const getCachedCompany = (slug) => {
+  const hit = slugCache.get(slug);
+  if (!hit) return undefined;
+  if (hit.expiresAt <= Date.now()) {
+    slugCache.delete(slug);
+    return undefined;
+  }
+  return hit.company;
+};
+
+const setCachedCompany = (slug, company) => {
+  slugCache.set(slug, { company, expiresAt: Date.now() + SLUG_CACHE_TTL_MS });
+};
+
 /**
  * Resolves which company a request belongs to from its subdomain
  * ({slug}.{BASE_DOMAIN}) and attaches it as `req.tenantCompany`.
@@ -25,8 +47,14 @@ const resolveTenantSubdomain = async (req, res, next) => {
     if (!host.endsWith(`.${baseDomain}`)) return next();
 
     const slug = host.slice(0, -(`.${baseDomain}`.length));
-    // A subdomain must be one label — "acme.spaxads.net" not "acme.staging.spaxads.net".
+    // A subdomain must be one label — "acme.example.com" not "acme.staging.example.com".
     if (!slug || slug.includes('.')) return next();
+
+    const cached = getCachedCompany(slug);
+    if (cached !== undefined) {
+      if (cached) req.tenantCompany = cached;
+      return next();
+    }
 
     const { data: company, error } = await supabaseAdmin
       .from('companies')
@@ -38,6 +66,7 @@ const resolveTenantSubdomain = async (req, res, next) => {
       logger.error('[tenantSubdomain] company lookup failed', { slug, error: error.message });
       return next();
     }
+    setCachedCompany(slug, company || null);
     if (company) req.tenantCompany = company;
     return next();
   } catch (err) {

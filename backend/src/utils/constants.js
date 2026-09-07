@@ -53,6 +53,10 @@ const STORAGE_BUCKETS = {
   courseVideos: 'course-videos',
   profilePictures: 'profile-pictures',
   payslips: 'payslips',
+  // Item 6: created live via supabaseAdmin.storage.createBucket() this
+  // session (private, not public) — no SQL migration provisions storage
+  // buckets, so this one didn't previously exist.
+  backups: 'backups',
 };
 
 module.exports = {

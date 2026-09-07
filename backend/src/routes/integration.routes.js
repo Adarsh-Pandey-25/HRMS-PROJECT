@@ -4,6 +4,7 @@ const { successResponse, omitSensitive } = require('../utils/helpers');
 const { authenticate } = require('../middleware/auth.middleware');
 const { requireApiScope } = require('../middleware/apiKey.middleware');
 const { getCompanyById } = require('../services/tenant.service');
+const { requireFeature } = require('../middleware/featureGate.middleware');
 
 const router = express.Router();
 
@@ -12,6 +13,9 @@ const router = express.Router();
  * Auth: company API key only (X-API-Key or Bearer hrms_…).
  */
 router.use(authenticate);
+// A downgraded plan should stop already-issued keys from working, not just
+// block creating new ones (apiKey.routes.js) — same feature, both edges gated.
+router.use(requireFeature('api_access'));
 
 /** Sanity check — beginners use this first. */
 router.get('/ping', requireApiScope('ping', 'employees:read', 'attendance:write'), async (req, res, next) => {

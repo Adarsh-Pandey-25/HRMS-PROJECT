@@ -27,6 +27,12 @@ const DEFAULT_DOCUMENT_TYPES = [
 
 const DEFAULT_ATTENDANCE_CONFIG = {
   methods: { web: true, app: true, biometric: false, ipWeb: true, ipApp: false },
+  // Section E: opt-in only — entitlement (gps_geofence on the plan) is
+  // separate from whether THIS company has chosen to enforce it. Off by
+  // default so a company that never configures a geofence never sees a
+  // GPS prompt on check-in.
+  gpsGeofenceEnabled: false,
+  requireBothLocationChecks: false,
   ipWhitelist: [
     { id: 'IP-001', ip: '192.168.1.0/24', label: 'Bangalore HQ', active: true },
   ],
@@ -37,6 +43,10 @@ const DEFAULT_ATTENDANCE_CONFIG = {
     { id: 'SHIFT-003', name: 'Night Shift', start: '22:00', end: '07:00', active: true },
   ],
   gracePeriodMinutes: 15,
+  // Biometric checkout/status lifecycle — separate from the late-arrival
+  // grace period above. Defaults match backend's getAttendanceConfig.
+  checkoutGracePeriodMinutes: 30,
+  halfDayThresholdPercent: 50,
   autoAbsentTime: '11:00',
   overtimeAfterHours: 9,
   selfieRequired: false,
@@ -372,6 +382,13 @@ export const useSettingsStore = create(
         })),
       removeShift: (id) =>
         set((s) => ({ attendanceConfig: { ...s.attendanceConfig, shifts: s.attendanceConfig.shifts.filter((sh) => sh.id !== id) } })),
+      updateShift: (id, patch) =>
+        set((s) => ({
+          attendanceConfig: {
+            ...s.attendanceConfig,
+            shifts: s.attendanceConfig.shifts.map((sh) => (sh.id === id ? { ...sh, ...patch } : sh)),
+          },
+        })),
 
       // -- Notification triggers --
       updateNotificationTrigger: (event, channel, value) =>

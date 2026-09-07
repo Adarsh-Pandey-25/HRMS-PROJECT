@@ -1,5 +1,7 @@
 const authService = require('../services/auth.service');
+const impersonationService = require('../services/impersonation.service');
 const { successResponse } = require('../utils/helpers');
+const { BadRequestError } = require('../utils/errors');
 
 /**
  * SameSite is a deliberate security decision, not something to infer from request
@@ -80,7 +82,16 @@ const loginAdmin = loginToPortal('admin');
 const loginHr = loginToPortal('hr');
 const loginEmployee = loginToPortal('employee');
 
-/** Public — safe fields only, used to brand a tenant's login pages before anyone signs in. */
+/**
+ * Public — safe fields only, used to brand a tenant's login pages before
+ * anyone signs in. This necessarily confirms whether a given subdomain slug
+ * maps to a real, active company — an accepted tradeoff, not an oversight:
+ * the whole point of the endpoint is to answer that question so the login
+ * page can render the right name/logo before authentication. Company slugs
+ * are not secrets (the subdomain itself already advertises them to anyone
+ * who visits), and nothing sensitive (employee data, counts, settings) is
+ * exposed here — only `name`/`slug`/`isActive`.
+ */
 const workspaceInfo = async (req, res, next) => {
   try {
     if (!req.tenantCompany) {
@@ -121,7 +132,41 @@ const refreshToken = async (req, res, next) => {
 const getMe = async (req, res, next) => {
   try {
     const employee = await authService.getMe(req.user.id);
-    successResponse(res, 'Profile fetched', employee);
+    successResponse(res, 'Profile fetched', { ...employee, impersonation: req.impersonation || null });
+  } catch (err) { next(err); }
+};
+
+/**
+ * Called from inside the actual HRMS UI (authenticated as the impersonated
+ * employee, not as the super-admin) by the "End Impersonation" banner button.
+ * Also naturally ends on its own once the token's hard TTL passes — this
+ * just lets the super-admin end it early and closes impersonation_sessions
+ * cleanly instead of leaving it to be inferred from the expiry alone.
+ */
+const endImpersonation = async (req, res, next) => {
+  try {
+    if (!req.impersonation) throw new BadRequestError('Not in an impersonation session');
+    const result = await impersonationService.endImpersonation(
+      req.impersonation.sessionId,
+      req.impersonation.superAdminId,
+      req.user.company_id,
+      req.ip,
+    );
+    // The DB row is now marked ended (auth.middleware.js rejects this
+    // token on its next use regardless), but also actively clear the
+    // cookies here so the browser stops holding a dead session at all —
+    // belt-and-braces alongside the server-side check, not a substitute
+    // for it.
+    res.clearCookie('accessToken', cookieOptions(req, 0));
+    res.clearCookie('refreshToken', cookieOptions(req, 0, '/api/auth'));
+    successResponse(res, 'Impersonation session ended', result);
+  } catch (err) { next(err); }
+};
+
+const markInstallPromptSeen = async (req, res, next) => {
+  try {
+    await authService.markInstallPromptSeen(req.user.id);
+    successResponse(res, 'Install prompt marked as seen');
   } catch (err) { next(err); }
 };
 
@@ -166,7 +211,8 @@ const sendOnboardingOtp = async (req, res, next) => {
 
 const verifyOnboardingOtp = async (req, res, next) => {
   try {
-    const result = await authService.verifyOnboardingOtp(req.body.email, req.body.otp);
+    const inviteToken = req.body.inviteToken || req.body.invite_token || null;
+    const result = await authService.verifyOnboardingOtp(req.body.email, req.body.otp, inviteToken);
     successResponse(res, result.message, {
       verificationToken: result.verificationToken,
       expiresInSeconds: result.expiresInSeconds,
@@ -209,4 +255,5 @@ module.exports = {
   login, loginAdmin, loginHr, loginEmployee, workspaceInfo,
   logout, refreshToken, getMe, changePassword, forgotPassword, resetPassword,
   sendOnboardingOtp, verifyOnboardingOtp, bootstrapAdmin, peekOnboardingInvite,
+  markInstallPromptSeen, endImpersonation,
 };

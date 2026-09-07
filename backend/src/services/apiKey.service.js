@@ -2,6 +2,21 @@ const crypto = require('crypto');
 const { supabaseAdmin } = require('../config/supabase');
 const { BadRequestError, NotFoundError, ForbiddenError } = require('../utils/errors');
 const { getCompanyId } = require('../utils/tenant');
+const emailService = require('./email.service');
+const logger = require('../utils/logger');
+
+/** Every HR/Admin in the company, not just the actor — a compromised/malicious admin's own key action should still be visible to peers. */
+const notifyHrAdmins = async (companyId, actorName, send) => {
+  const { data: recipients } = await supabaseAdmin
+    .from('employees')
+    .select('id, first_name, last_name, email')
+    .eq('company_id', companyId)
+    .eq('is_active', true)
+    .in('role', ['hr', 'admin']);
+  for (const r of recipients || []) {
+    send(r, actorName).catch((e) => logger.warn('API key notification email failed', { error: e.message }));
+  }
+};
 
 const KEY_PREFIX_LIVE = 'hrms_live_';
 const KEY_PREFIX_TEST = 'hrms_test_';
@@ -59,6 +74,7 @@ const publicRow = (row) => {
     scopes: row.scopes || [],
     last_used_at: row.last_used_at,
     revoked_at: row.revoked_at,
+    revoked_by: row.revoked_by,
     expires_at: row.expires_at,
     created_by: row.created_by,
     created_at: row.created_at,
@@ -110,6 +126,11 @@ const createApiKey = async (actor, { name, scopes, environment = 'live', expires
 
   if (error) throw new BadRequestError(error.message);
 
+  const actorName = `${actor.first_name || ''} ${actor.last_name || ''}`.trim() || 'A team member';
+  const scopeLabel = scopeList.join(', ');
+  notifyHrAdmins(companyId, actorName, (recipient, name) =>
+    emailService.apiKeyCreatedEmail(recipient, { keyName: trimmedName, keyPrefix, scopeLabel, createdByName: name }));
+
   return {
     ...publicRow(data),
     // Shown only on create — client must copy it now
@@ -141,14 +162,39 @@ const revokeApiKey = async (actor, keyId) => {
   if (!existing) throw new NotFoundError('API key not found');
   if (existing.revoked_at) return publicRow(existing);
 
-  const { data, error } = await supabaseAdmin
+  const revokePatch = {
+    revoked_at: new Date().toISOString(),
+    revoked_by: actor.id,
+    updated_at: new Date().toISOString(),
+  };
+
+  let { data, error } = await supabaseAdmin
     .from('api_keys')
-    .update({ revoked_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .update(revokePatch)
     .eq('id', keyId)
     .eq('company_id', companyId)
     .select('*')
     .single();
+
+  if (error && /column .*revoked_by.* does not exist/i.test(error.message || '')) {
+    // Migration 20260829_api_keys_revoked_by.sql not applied yet in this
+    // environment — fall back rather than blocking every revoke on it.
+    const { revoked_by, ...withoutRevokedBy } = revokePatch;
+    ({ data, error } = await supabaseAdmin
+      .from('api_keys')
+      .update(withoutRevokedBy)
+      .eq('id', keyId)
+      .eq('company_id', companyId)
+      .select('*')
+      .single());
+  }
+
   if (error) throw new BadRequestError(error.message);
+
+  const actorName = `${actor.first_name || ''} ${actor.last_name || ''}`.trim() || 'A team member';
+  notifyHrAdmins(companyId, actorName, (recipient, name) =>
+    emailService.apiKeyRevokedEmail(recipient, { keyName: existing.name, keyPrefix: existing.key_prefix, revokedByName: name }));
+
   return publicRow(data);
 };
 
@@ -207,6 +253,7 @@ const assertCompanyOwnsKey = (actor, row) => {
 module.exports = {
   ALLOWED_SCOPES: [...ALLOWED_SCOPES],
   hashKey,
+  timingSafeEqualHex,
   createApiKey,
   listApiKeys,
   revokeApiKey,

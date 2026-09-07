@@ -4,6 +4,7 @@ const { authenticate } = require('../middleware/auth.middleware');
 const { isHROrAdmin, isManagerOrAbove, isEmployee } = require('../middleware/role.middleware');
 const { uploadVideo, uploadThumbnail } = require('../middleware/videoUpload.middleware');
 const { validate } = require('../middleware/validation.middleware');
+const { requireFeature } = require('../middleware/featureGate.middleware');
 const {
   courseCreateRules,
   courseChapterRules,
@@ -16,6 +17,7 @@ const {
 const router = express.Router();
 
 router.use(authenticate);
+router.use(requireFeature('training'));
 
 // ----- LMS (flat course → lessons) -----
 router.get('/departments', isManagerOrAbove, courseController.listDepartments);

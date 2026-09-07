@@ -5,7 +5,7 @@ import {
   Trash2, ChevronDown, LayoutGrid, List, Network, Building2,
 } from 'lucide-react';
 import {
-  Card, Button, Avatar, StatusBadge, Select, Tabs, DataTable, EmptyState, ConfirmDialog, Skeleton, Badge,
+  Card, Button, Avatar, StatusBadge, Select, Tabs, DataTable, EmptyState, ConfirmDialog, Skeleton, Badge, Modal, Input,
 } from '../../components/ui';
 import { DEPARTMENTS } from '../../lib/constants';
 import { useEmployees, useEmployeeMutations } from '../../hooks/useEmployees';
@@ -20,8 +20,6 @@ import { companyTypeLabel } from '../../lib/companyLabels';
 import { formatDate, cn } from '../../lib/utils';
 import { employeeProfilePath, employeeEditPath, filterDirectoryEmployees } from '../../lib/employeeRoutes';
 import toast from 'react-hot-toast';
-
-const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
 
 const STATUS_META = {
   active: { label: 'Active', dot: 'bg-success' },
@@ -74,7 +72,7 @@ function MenuItem({ icon: Icon, children, onClick, danger, first }) {
 }
 
 /** Directory card — status + actions menu on top, centred identity, meta rows. */
-function DirectoryCard({ e, canEdit, canDelete, canChangeCompany, onDetails, onEdit, onDelete, onChangeCompany }) {
+function DirectoryCard({ e, canEdit, canDelete, canChangeCompany, onDetails, onEdit, onDelete, onErase, onChangeCompany }) {
   const { open, setOpen, close, containerRef, triggerRef } = useDropdown();
   const panelRef = useRef(null);
   const status = STATUS_META[e.status] || { label: e.status, dot: 'bg-fg-subtle' };
@@ -117,7 +115,12 @@ function DirectoryCard({ e, canEdit, canDelete, canChangeCompany, onDetails, onE
                   Change company
                 </MenuItem>
               )}
-              {canDelete && <MenuItem icon={Trash2} danger onClick={() => { close(); onDelete(); }}>Delete</MenuItem>}
+              {canDelete && e.employmentStatus !== 'offboarded' && (
+                <MenuItem icon={Trash2} danger onClick={() => { close(); onDelete(); }}>Offboard</MenuItem>
+              )}
+              {canDelete && e.employmentStatus === 'offboarded' && (
+                <MenuItem icon={Trash2} danger onClick={() => { close(); onErase(); }}>Permanently erase</MenuItem>
+              )}
             </div>
           )}
         </div>
@@ -241,7 +244,7 @@ export default function EmployeeList() {
   const canManage = useCan('employees', 'create');
   const canEdit = useCan('employees', 'edit');
   const canDelete = useCan('employees', 'delete') || canEdit;
-  const { remove } = useEmployeeMutations();
+  const { offboard, erase } = useEmployeeMutations();
   const { employees, isLoading, isError, refetch } = useEmployees();
   const companiesQ = useAccessibleCompanies(true);
   const brandedCompany = useCompanyStore((s) => s.company);
@@ -277,7 +280,17 @@ export default function EmployeeList() {
   const locations = useSettingsStore((s) => s.locations);
   const addLocation = useSettingsStore((s) => s.addLocation);
 
-  const [tab, setTab] = useState('directory');
+  const tabFromUrl = searchParams.get('tab');
+  const validTab = TABS.some((t) => t.id === tabFromUrl) ? tabFromUrl : 'directory';
+  const [tab, setTabState] = useState(validTab);
+  const setTab = (id) => {
+    setTabState(id);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('tab', id);
+      return next;
+    }, { replace: true });
+  };
   const [search, setSearch] = useState('');
   const [dept, setDept] = useState('');
   const [status, setStatus] = useState('');
@@ -287,6 +300,9 @@ export default function EmployeeList() {
   const [addingLocation, setAddingLocation] = useState(false);
   const [newLocation, setNewLocation] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [eraseTarget, setEraseTarget] = useState(null);
+  const [eraseConfirmCode, setEraseConfirmCode] = useState('');
+  const [erasing, setErasing] = useState(false);
   const [changeCompanyEmp, setChangeCompanyEmp] = useState(null);
   const canChangeCompany = canEdit || canManage;
 
@@ -423,14 +439,29 @@ export default function EmployeeList() {
     [filtered]
   );
 
-  const doDelete = async () => {
+  const doOffboard = async () => {
     const emp = confirmDelete;
     try {
-      await remove.mutateAsync(emp.id);
-      toast.success(`${emp.name} removed`);
+      await offboard.mutateAsync({ id: emp.id });
+      toast.success(`${emp.name} offboarded — their records are retained`);
       setConfirmDelete(null);
     } catch (err) {
-      toast.error(err.message || 'Failed to remove employee');
+      toast.error(err.message || 'Failed to offboard employee');
+    }
+  };
+
+  const doErase = async () => {
+    const emp = eraseTarget;
+    setErasing(true);
+    try {
+      await erase.mutateAsync({ id: emp.id, confirmEmployeeCode: eraseConfirmCode });
+      toast.success(`${emp.name}'s data has been permanently erased`);
+      setEraseTarget(null);
+      setEraseConfirmCode('');
+    } catch (err) {
+      toast.error(err.message || 'Failed to erase employee data');
+    } finally {
+      setErasing(false);
     }
   };
 
@@ -501,11 +532,8 @@ export default function EmployeeList() {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search by name, role or ID…"
-                className="h-11 w-full rounded-xl border border-border bg-muted/50 pl-10 pr-16 text-sm text-fg placeholder:text-fg-subtle transition-colors focus:border-primary focus:bg-card focus:outline-none focus:ring-2 focus:ring-primary/30"
+                className="h-11 w-full rounded-xl border border-border bg-muted/50 pl-10 pr-3 text-sm text-fg placeholder:text-fg-subtle transition-colors focus:border-primary focus:bg-card focus:outline-none focus:ring-2 focus:ring-primary/30"
               />
-              <kbd className="pointer-events-none absolute right-3 top-1/2 hidden -translate-y-1/2 items-center gap-0.5 rounded-md border border-border bg-card px-1.5 py-0.5 text-[11px] font-medium text-fg-subtle sm:flex">
-                {isMac ? '⌘F' : 'Ctrl F'}
-              </kbd>
             </div>
 
             <div className="flex items-center gap-2">
@@ -637,6 +665,7 @@ export default function EmployeeList() {
                     onDetails={() => navigate(employeeProfilePath(e, roster))}
                     onEdit={() => navigate(employeeEditPath(e, roster))}
                     onDelete={() => setConfirmDelete(e)}
+                    onErase={() => setEraseTarget(e)}
                     onChangeCompany={() => setChangeCompanyEmp(e)}
                   />
                 ))}
@@ -660,11 +689,44 @@ export default function EmployeeList() {
       <ConfirmDialog
         open={!!confirmDelete}
         onClose={() => setConfirmDelete(null)}
-        onConfirm={doDelete}
-        title={`Remove ${confirmDelete?.name}?`}
-        message="This removes the employee from the directory. This action cannot be undone."
-        confirmLabel="Remove"
+        onConfirm={doOffboard}
+        loading={offboard.isPending}
+        tone="warning"
+        title={`Offboard ${confirmDelete?.name}?`}
+        message="Their attendance, leave, payroll, and document records are retained — nothing is deleted. Login access is revoked immediately. A separate, explicit action is needed to permanently erase their data later."
+        confirmLabel="Offboard"
       />
+
+      <Modal
+        open={!!eraseTarget}
+        onClose={() => { setEraseTarget(null); setEraseConfirmCode(''); }}
+        title={`Permanently erase ${eraseTarget?.name}'s data?`}
+        subtitle="This cannot be undone — attendance, leave, payroll, and document records are deleted for good."
+        footer={(
+          <>
+            <Button variant="outline" onClick={() => { setEraseTarget(null); setEraseConfirmCode(''); }} disabled={erasing}>Cancel</Button>
+            <Button
+              variant="danger"
+              loading={erasing}
+              disabled={eraseConfirmCode.trim().toLowerCase() !== String(eraseTarget?.employeeCode || '').toLowerCase()}
+              onClick={doErase}
+            >
+              Permanently erase
+            </Button>
+          </>
+        )}
+      >
+        <p className="text-sm text-fg-muted">
+          Type <span className="font-mono font-semibold text-fg">{eraseTarget?.employeeCode}</span> to confirm.
+        </p>
+        <Input
+          className="mt-3"
+          value={eraseConfirmCode}
+          onChange={(e) => setEraseConfirmCode(e.target.value)}
+          placeholder="Employee code"
+          autoFocus
+        />
+      </Modal>
 
       <ChangeCompanyModal
         open={Boolean(changeCompanyEmp)}

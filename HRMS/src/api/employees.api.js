@@ -27,8 +27,18 @@ export async function updateEmployeeApi(id, payload) {
   return mapEmployeeFromApi(data);
 }
 
-export async function deleteEmployeeApi(id) {
-  return apiRequest({ method: 'DELETE', url: `/employees/${id}` });
+/** Soft offboard — data retained, not deleted. See N-10 resolution. */
+export async function offboardEmployeeApi(id, reason) {
+  return apiRequest({ method: 'DELETE', url: `/employees/${id}`, data: { reason } });
+}
+
+/** Genuine hard delete — only usable on an already-offboarded employee, requires typed confirmation. */
+export async function eraseEmployeeApi(id, confirmEmployeeCode, reason) {
+  return apiRequest({
+    method: 'POST',
+    url: `/employees/${id}/erase`,
+    data: { confirm_employee_code: confirmEmployeeCode, reason },
+  });
 }
 
 export async function deactivateEmployeeApi(id) {
@@ -39,5 +49,11 @@ export async function uploadEmployeePhotoApi(id, file) {
   const form = new FormData();
   form.append('photo', file);
   const data = await apiUpload({ method: 'POST', url: `/employees/${id}/photo`, data: form });
+  return mapEmployeeFromApi(data);
+}
+
+/** Item 3: HR/Admin-only — lets an employee use their one-time self-edit again. */
+export async function resetSelfEditLockApi(id, reason) {
+  const data = await apiRequest({ method: 'POST', url: `/employees/${id}/reset-self-edit-lock`, data: { reason } });
   return mapEmployeeFromApi(data);
 }

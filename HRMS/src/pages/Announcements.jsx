@@ -3,7 +3,7 @@ import { Plus, Megaphone, Pencil, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import {
   PageHeader, Card, Button, Input, Select, RichTextEditor, Modal, FileUpload,
-  AnnouncementCard, EmptyState, SearchInput,
+  AnnouncementCard, EmptyState, SearchInput, ConfirmDialog,
 } from '../components/ui';
 import { useEmployeeMap } from '../hooks/useEmployees';
 import { useAllAnnouncements, useActiveAnnouncements, useAnnouncementMutations } from '../hooks/useAnnouncements';
@@ -111,13 +111,21 @@ export default function Announcements() {
     setModal(true);
   };
 
-  const handleDelete = async (a) => {
-    if (!window.confirm(`Delete "${a.title}"? This cannot be undone.`)) return;
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const handleDelete = (a) => setDeleteTarget(a);
+
+  const confirmDelete = async () => {
+    setDeleting(true);
     try {
-      await remove.mutateAsync(a.id);
+      await remove.mutateAsync(deleteTarget.id);
       toast.success('Announcement deleted');
+      setDeleteTarget(null);
     } catch (err) {
       toast.error(err.message || 'Failed to delete announcement');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -342,6 +350,16 @@ export default function Announcements() {
           )}
         </div>
       </Modal>
+
+      <ConfirmDialog
+        open={Boolean(deleteTarget)}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={confirmDelete}
+        loading={deleting}
+        title={`Delete "${deleteTarget?.title}"?`}
+        message="This cannot be undone."
+        confirmLabel="Delete"
+      />
     </div>
   );
 }

@@ -1,34 +1,55 @@
 const { supabaseAdmin } = require('../config/supabase');
 const { BadRequestError, NotFoundError } = require('../utils/errors');
+const { buildMeta } = require('../utils/helpers');
 const { DEFAULT_COMPANY_ID, getCompanyId } = require('../utils/tenant');
 const notificationService = require('./notification.service');
 const tenantService = require('./tenant.service');
 
 const emptyId = '00000000-0000-0000-0000-000000000000';
 
+const VALID_TICKET_STATUSES = new Set(['open', 'in_progress', 'resolved', 'closed']);
+
 const resolveCompanyId = (companyId) => companyId || DEFAULT_COMPANY_ID;
 
-const listTickets = async (query = {}, companyEmployeeIds = null, companyId = null) => {
+/**
+ * Audit finding M-12 asked to also drop the comments join in favor of a
+ * bare comment_count — but there is no separate "get one ticket" endpoint
+ * in this app (AllTickets.jsx/MyTickets.jsx both do
+ * `tickets.find(t => t.id === selected.id)` against this very list response
+ * to render the comment thread when a row is opened). Dropping the join
+ * would break that UI outright with no replacement data source, so the
+ * join stays; what actually mattered for the audit finding — no pagination
+ * on a full-company-history fetch — is fixed below.
+ */
+const listTickets = async (query = {}, companyEmployeeIds = null, companyId = null, pageQuery = {}) => {
+  const page = Math.max(1, parseInt(pageQuery.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(pageQuery.limit, 10) || 50));
+  const offset = (page - 1) * limit;
+
   let db = supabaseAdmin
     .from('helpdesk_tickets')
-    .select('*, comments:helpdesk_ticket_comments(*)')
-    .order('created_at', { ascending: false });
+    .select('*, comments:helpdesk_ticket_comments(*)', { count: 'exact' })
+    .order('created_at', { ascending: false })
+    .range(offset, offset + limit - 1);
   if (companyId) db = db.eq('company_id', resolveCompanyId(companyId));
   if (query.raised_by) db = db.eq('raised_by', query.raised_by);
   if (query.status) db = db.eq('status', query.status);
   if (!companyId && companyEmployeeIds && !query.raised_by) {
     db = db.in('raised_by', companyEmployeeIds.length ? companyEmployeeIds : [emptyId]);
   }
-  const { data, error } = await db;
+  const { data, error, count } = await db;
   if (error) throw new BadRequestError(error.message);
-  return (data || []).map((t) => ({
-    ...t,
-    comments: (t.comments || []).map((c) => ({
-      by: c.author_id,
-      text: c.text,
-      at: c.created_at,
+  return {
+    data: (data || []).map((t) => ({
+      ...t,
+      comments: (t.comments || []).map((c) => ({
+        by: c.author_id,
+        text: c.text,
+        at: c.created_at,
+      })),
     })),
-  }));
+    meta: buildMeta(page, limit, count || 0),
+  };
 };
 
 const createTicket = async (employeeId, body, companyId = null) => {
@@ -98,6 +119,9 @@ const createTicket = async (employeeId, body, companyId = null) => {
 };
 
 const updateTicketStatus = async (id, status, companyEmployeeIds = null, companyId = null) => {
+  if (!VALID_TICKET_STATUSES.has(status)) {
+    throw new BadRequestError(`Invalid status: ${status}`);
+  }
   if (companyId || companyEmployeeIds) {
     let q = supabaseAdmin.from('helpdesk_tickets').select('raised_by, company_id').eq('id', id);
     if (companyId) q = q.eq('company_id', resolveCompanyId(companyId));
@@ -192,7 +216,7 @@ const addComment = async (id, comment, companyEmployeeIds = null, companyId = nu
     }
   }
 
-  const all = await listTickets({}, companyEmployeeIds, companyId);
+  const { data: all } = await listTickets({}, companyEmployeeIds, companyId);
   return all.find((t) => t.id === id) || null;
 };
 
@@ -297,27 +321,74 @@ const ensureKbArticlesSeeded = async (companyId) => {
   logger.info('KB articles seeded for company', { companyId: cid, count: rows.length });
 };
 
+/** Display names for the fixed category ids DEFAULT_KB_ARTICLES actually uses. */
+const DEFAULT_KB_CATEGORIES = [
+  { id: 'it', name: 'IT & Equipment' },
+  { id: 'payroll', name: 'Payroll' },
+  { id: 'leave', name: 'Leave' },
+  { id: 'onboarding', name: 'Onboarding' },
+  { id: 'benefits', name: 'Benefits' },
+];
+
+const ensureKbCategoriesSeeded = async (companyId) => {
+  const cid = resolveCompanyId(companyId);
+  const { count, error: countErr } = await supabaseAdmin
+    .from('kb_categories')
+    .select('id', { count: 'exact', head: true })
+    .eq('company_id', cid);
+  if (countErr) throw new BadRequestError(countErr.message);
+  if (count > 0) return;
+
+  const { error } = await supabaseAdmin
+    .from('kb_categories')
+    .insert(DEFAULT_KB_CATEGORIES.map((c) => ({ ...c, company_id: cid, article_count: 0 })));
+  if (error) throw new BadRequestError(error.message);
+  logger.info('KB categories seeded for company', { companyId: cid, count: DEFAULT_KB_CATEGORIES.length });
+};
+
+/** Audit finding M-19: matches document.controller.js's isMissingCompanyIdColumn pattern. */
+const isMissingKbCategoryCompanyColumn = (message) => /column .*company_id.* does not exist/i.test(message || '');
+
 const listKbCategories = async (companyId) => {
   const cid = resolveCompanyId(companyId);
-  await ensureKbArticlesSeeded(cid);
 
-  const [{ data: cats, error: catErr }, { data: articles, error: artErr }] = await Promise.all([
-    supabaseAdmin.from('kb_categories').select('*').order('name'),
-    supabaseAdmin.from('kb_articles').select('category').eq('company_id', cid),
-  ]);
-  if (catErr) throw new BadRequestError(catErr.message);
-  if (artErr) throw new BadRequestError(artErr.message);
+  try {
+    await ensureKbArticlesSeeded(cid);
+    await ensureKbCategoriesSeeded(cid);
 
-  const counts = {};
-  (articles || []).forEach((a) => {
-    counts[a.category] = (counts[a.category] || 0) + 1;
-  });
+    const [{ data: cats, error: catErr }, { data: articles, error: artErr }] = await Promise.all([
+      supabaseAdmin.from('kb_categories').select('*').eq('company_id', cid).order('name'),
+      supabaseAdmin.from('kb_articles').select('category').eq('company_id', cid),
+    ]);
+    if (catErr) throw new BadRequestError(catErr.message);
+    if (artErr) throw new BadRequestError(artErr.message);
 
-  return (cats || []).map((c) => ({
-    id: c.id,
-    name: c.name,
-    count: counts[c.id] || 0,
-  }));
+    const counts = {};
+    (articles || []).forEach((a) => {
+      counts[a.category] = (counts[a.category] || 0) + 1;
+    });
+
+    return (cats || []).map((c) => ({
+      id: c.id,
+      name: c.name,
+      count: counts[c.id] || 0,
+    }));
+  } catch (err) {
+    if (!isMissingKbCategoryCompanyColumn(err.message)) throw err;
+    // Migration 20260827_kb_categories_per_company.sql not applied yet in
+    // this environment — fall back to the pre-migration shape (one global,
+    // unscoped category list shared by every tenant) instead of hard-failing
+    // the whole Helpdesk KB tab.
+    logger.warn('kb_categories.company_id missing — falling back to unscoped KB categories', { companyId: cid });
+    const { data: cats, error: catErr } = await supabaseAdmin.from('kb_categories').select('*').order('name');
+    if (catErr) throw new BadRequestError(catErr.message);
+    const { data: articles } = await supabaseAdmin.from('kb_articles').select('category');
+    const counts = {};
+    (articles || []).forEach((a) => {
+      counts[a.category] = (counts[a.category] || 0) + 1;
+    });
+    return (cats || []).map((c) => ({ id: c.id, name: c.name, count: counts[c.id] || 0 }));
+  }
 };
 
 const listKbArticles = async (category, companyId) => {

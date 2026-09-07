@@ -20,7 +20,11 @@ router.put('/:id/update', uuidParam(), validate, employeeController.update);
 router.post('/:id/photo', uuidParam(), validate, upload.single('photo'), employeeController.uploadPhoto);
 router.get('/:id/career-events', uuidParam(), validate, employeeController.listCareerEvents);
 router.post('/:id/career-events', uuidParam(), careerNoteRules, validate, employeeController.addCareerNote);
-router.delete('/:id', isHROrAdmin, uuidParam(), validate, employeeController.remove);
+// DELETE here is a soft offboard (data retained) — N-10. Hard delete lives
+// at its own explicit, separately-gated path below.
+router.delete('/:id', isHROrAdmin, uuidParam(), validate, employeeController.offboard);
+router.post('/:id/erase', isHROrAdmin, uuidParam(), validate, employeeController.permanentlyErase);
 router.put('/:id/deactivate', isHROrAdmin, uuidParam(), validate, employeeController.deactivate);
+router.post('/:id/reset-self-edit-lock', isHROrAdmin, uuidParam(), validate, employeeController.resetSelfEditLock);
 
 module.exports = router;

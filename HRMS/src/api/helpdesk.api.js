@@ -17,8 +17,12 @@ export async function createTicketApi(payload) {
   return mapTicketFromApi(data);
 }
 
-export async function updateTicketStatusApi(id, status) {
-  const data = await apiRequest({ method: 'PUT', url: `/helpdesk/tickets/${id}/status`, data: { status } });
+export async function updateTicketStatusApi(id, status, rejectionReason) {
+  const data = await apiRequest({
+    method: 'PUT',
+    url: `/helpdesk/tickets/${id}/status`,
+    data: { status, ...(rejectionReason ? { rejection_reason: rejectionReason } : {}) },
+  });
   return mapTicketFromApi(data);
 }
 

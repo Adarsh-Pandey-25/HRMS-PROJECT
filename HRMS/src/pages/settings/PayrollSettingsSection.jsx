@@ -1,13 +1,20 @@
-import { useEffect, useState } from 'react';
-import { Save, Plus, Trash2 } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { Plus, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useQueryClient } from '@tanstack/react-query';
-import { Card, CardHeader, Input, Select, Toggle, Button } from '../../components/ui';
+import { Card, CardHeader, Input, Select, Toggle, Button, SaveStatusIndicator } from '../../components/ui';
 import { useSettingsStore } from '../../store/settingsStore';
 import { updateSettingApi } from '../../api/settings.api';
 import { recalculatePayslipsFromSettingsApi } from '../../api/payroll.api';
 import { invalidateAndRefetch } from '../../lib/queryCache';
 import { DEFAULT_SALARY_COMPONENTS } from '../../lib/payrollComponents';
+import { INDIAN_STATES, PT_APPLICABLE_LABEL } from '../../lib/indianStates';
+import { useAutosave } from '../../hooks/useAutosave';
+
+const PT_STATE_OPTIONS = INDIAN_STATES.map((s) => ({
+  value: s.name,
+  label: `${s.name}${PT_APPLICABLE_LABEL[s.ptApplicable]}`,
+}));
 
 const COMPONENT_LABELS = {
   hra: ['HRA', '% of Basic'],
@@ -54,7 +61,6 @@ export function PayrollSettingsSection() {
     tdsPercent: cfg.tdsPercent ?? 8,
     customPayrollOptions: cfg.customPayrollOptions || [],
   });
-  const [saving, setSaving] = useState(false);
 
   // Rehydrate after bootstrap loads payroll settings from server
   useEffect(() => {
@@ -68,95 +74,125 @@ export function PayrollSettingsSection() {
 
   const customOptions = form.customPayrollOptions || [];
 
-  const patchOption = (id, patch) => {
+  /**
+   * Item 4: this section's save writes 5 settings keys AND triggers a real
+   * payslip recalculation for the current/open month — genuinely expensive,
+   * and exactly the case the autosave spec calls out for care. Toggles/
+   * selects call `patch()` and autosave immediately (discrete actions,
+   * nothing to debounce). Every number/text field below keeps its onChange
+   * purely local and only calls `saveNow` on blur, so a recalculation never
+   * fires mid-keystroke — at most once per field edit, same as a deliberate
+   * Save click would have produced, just without the click.
+   */
+  const doSave = useCallback(async (nextForm) => {
+    update(nextForm);
+    await Promise.all([
+      updateSettingApi('payroll_working_days', nextForm.workingDaysPerMonth ?? 26),
+      updateSettingApi('payroll_pf_rate', (nextForm.pfEmployeePercent ?? 12) / 100),
+      updateSettingApi('payroll_professional_tax', nextForm.professionalTaxAmount ?? 200),
+      updateSettingApi('payroll_tds_percent', nextForm.tdsPercent ?? 8),
+      updateSettingApi('payroll_config', {
+        pf_employee_percent: nextForm.pfEmployeePercent ?? 12,
+        professional_tax_amount: nextForm.professionalTaxAmount ?? 200,
+        tds_percent: nextForm.tdsPercent ?? 8,
+        tds_mode: nextForm.tdsMode ?? 'auto',
+        pt_state: nextForm.ptState ?? 'Karnataka',
+        pf_wage_ceiling: nextForm.pfWageCeiling ?? null,
+        components: nextForm.components || DEFAULT_SALARY_COMPONENTS,
+        hra_percent: nextForm.hraPercent ?? 40,
+        da_percent: nextForm.daPercent ?? 10,
+        run_date: Number(nextForm.runDate) || 25,
+        auto_process: Boolean(nextForm.autoProcess),
+        auto_lock_days: Number(nextForm.autoLockDays) || 20,
+        bank_file_format: nextForm.bankFileFormat || 'NEFT',
+        custom_payroll_options: (nextForm.customPayrollOptions || []).map((o) => ({
+          id: o.id,
+          name: o.name,
+          kind: o.kind,
+          value_type: o.valueType,
+          value: o.value,
+          base: o.base,
+          active: o.active !== false,
+        })),
+      }),
+    ]);
+    try {
+      const result = await recalculatePayslipsFromSettingsApi();
+      const n = result?.updated ?? 0;
+      await invalidateAndRefetch(queryClient, ['payroll']);
+      await invalidateAndRefetch(queryClient, ['settings']);
+      if (n > 0) toast.success(`${n} payslip${n === 1 ? '' : 's'} recalculated`);
+    } catch (recalcErr) {
+      await invalidateAndRefetch(queryClient, ['settings']);
+      toast.error(
+        recalcErr.message?.includes('timeout')
+          ? 'Payslip refresh is still running in the background — check Run Payroll in a minute'
+          : (recalcErr.message || 'Payslip refresh failed; settings were still saved'),
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queryClient, update]);
+  const { status, save, retry } = useAutosave(doSave);
+
+  /** Toggles/selects: merge + save immediately. */
+  const patch = (partial) => {
+    setForm((prev) => {
+      const next = typeof partial === 'function' ? partial(prev) : { ...prev, ...partial };
+      save(next);
+      return next;
+    });
+  };
+
+  /** Number/text fields: call onBlur, saves current form as-is. */
+  const saveNow = () => save(form);
+
+  const patchOption = (id, patch2) => {
     setForm((s) => ({
       ...s,
-      customPayrollOptions: (s.customPayrollOptions || []).map((o) => (o.id === id ? { ...o, ...patch } : o)),
+      customPayrollOptions: (s.customPayrollOptions || []).map((o) => (o.id === id ? { ...o, ...patch2 } : o)),
     }));
+  };
+  const patchOptionAndSave = (id, patch2) => {
+    setForm((s) => {
+      const next = { ...s, customPayrollOptions: (s.customPayrollOptions || []).map((o) => (o.id === id ? { ...o, ...patch2 } : o)) };
+      save(next);
+      return next;
+    });
   };
 
   const addOption = () => {
-    setForm((s) => ({ ...s, customPayrollOptions: [...(s.customPayrollOptions || []), newCustomOption()] }));
+    setForm((s) => {
+      const next = { ...s, customPayrollOptions: [...(s.customPayrollOptions || []), newCustomOption()] };
+      save(next);
+      return next;
+    });
   };
 
   const removeOption = (id) => {
-    setForm((s) => ({ ...s, customPayrollOptions: (s.customPayrollOptions || []).filter((o) => o.id !== id) }));
-  };
-
-  const save = async () => {
-    update(form);
-    setSaving(true);
-    try {
-      await Promise.all([
-        updateSettingApi('payroll_working_days', form.workingDaysPerMonth ?? 26),
-        updateSettingApi('payroll_pf_rate', (form.pfEmployeePercent ?? 12) / 100),
-        updateSettingApi('payroll_professional_tax', form.professionalTaxAmount ?? 200),
-        updateSettingApi('payroll_tds_percent', form.tdsPercent ?? 8),
-        updateSettingApi('payroll_config', {
-          pf_employee_percent: form.pfEmployeePercent ?? 12,
-          professional_tax_amount: form.professionalTaxAmount ?? 200,
-          tds_percent: form.tdsPercent ?? 8,
-          tds_mode: form.tdsMode ?? 'auto',
-          pt_state: form.ptState ?? 'Karnataka',
-          pf_wage_ceiling: form.pfWageCeiling ?? null,
-          components: form.components || DEFAULT_SALARY_COMPONENTS,
-          hra_percent: form.hraPercent ?? 40,
-          da_percent: form.daPercent ?? 10,
-          run_date: Number(form.runDate) || 25,
-          auto_process: Boolean(form.autoProcess),
-          auto_lock_days: Number(form.autoLockDays) || 20,
-          bank_file_format: form.bankFileFormat || 'NEFT',
-          custom_payroll_options: (form.customPayrollOptions || []).map((o) => ({
-            id: o.id,
-            name: o.name,
-            kind: o.kind,
-            value_type: o.valueType,
-            value: o.value,
-            base: o.base,
-            active: o.active !== false,
-          })),
-        }),
-      ]);
-      let recalcMsg = '';
-      try {
-        const result = await recalculatePayslipsFromSettingsApi();
-        const n = result?.updated ?? 0;
-        recalcMsg = n > 0 ? ` · ${n} payslip${n === 1 ? '' : 's'} updated` : '';
-        await invalidateAndRefetch(queryClient, ['payroll']);
-        await invalidateAndRefetch(queryClient, ['settings']);
-        toast.success(`Payroll settings saved${recalcMsg}`);
-      } catch (recalcErr) {
-        await invalidateAndRefetch(queryClient, ['settings']);
-        toast.success('Payroll settings saved');
-        toast.error(
-          recalcErr.message?.includes('timeout')
-            ? 'Payslip refresh is still running in the background — check Run Payroll in a minute'
-            : (recalcErr.message || 'Payslip refresh failed; settings were still saved'),
-        );
-      }
-    } catch (err) {
-      toast.error(err.message || 'Saved locally but server sync failed');
-    } finally {
-      setSaving(false);
-    }
+    setForm((s) => {
+      const next = { ...s, customPayrollOptions: (s.customPayrollOptions || []).filter((o) => o.id !== id) };
+      save(next);
+      return next;
+    });
   };
 
   return (
     <div className="space-y-5">
+      <div className="flex justify-end"><SaveStatusIndicator status={status} onRetry={retry} /></div>
       <Card>
         <CardHeader title="Salary Components" subtitle="Toggle which components are active" />
         <div className="p-5 pt-3 space-y-4">
           <Toggle label="Basic Salary" hint="Always on" checked disabled />
           {Object.entries(COMPONENT_LABELS).map(([key, [label]]) => (
-            <Toggle key={key} label={label} checked={form.components[key]} onChange={(v) => setForm({ ...form, components: { ...form.components, [key]: v } })} />
+            <Toggle key={key} label={label} checked={form.components[key]} onChange={(v) => patch({ components: { ...form.components, [key]: v } })} />
           ))}
           {(form.components?.hra || form.components?.da) && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
               {form.components?.hra && (
-                <Input label="HRA % of Basic" type="number" value={form.hraPercent} onChange={(e) => setForm({ ...form, hraPercent: Number(e.target.value) })} />
+                <Input label="HRA % of Basic" type="number" value={form.hraPercent} onChange={(e) => setForm({ ...form, hraPercent: Number(e.target.value) })} onBlur={saveNow} />
               )}
               {form.components?.da && (
-                <Input label="DA % of Basic" type="number" value={form.daPercent} onChange={(e) => setForm({ ...form, daPercent: Number(e.target.value) })} />
+                <Input label="DA % of Basic" type="number" value={form.daPercent} onChange={(e) => setForm({ ...form, daPercent: Number(e.target.value) })} onBlur={saveNow} />
               )}
             </div>
           )}
@@ -166,7 +202,7 @@ export function PayrollSettingsSection() {
       <Card>
         <CardHeader
           title="PF, PT & TDS"
-          subtitle="Saving updates current & open-month payslips immediately (and salary preview)"
+          subtitle="Saves automatically and updates current & open-month payslips (and salary preview)"
         />
         <div className="p-5 pt-3 grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Input
@@ -175,6 +211,7 @@ export function PayrollSettingsSection() {
             min={0}
             value={form.pfEmployeePercent}
             onChange={(e) => setForm({ ...form, pfEmployeePercent: Number(e.target.value) })}
+            onBlur={saveNow}
             hint="% of Basic — shown as editable PF on employee salary"
           />
           <Input
@@ -183,6 +220,7 @@ export function PayrollSettingsSection() {
             min={0}
             value={form.professionalTaxAmount ?? 200}
             onChange={(e) => setForm({ ...form, professionalTaxAmount: Number(e.target.value) })}
+            onBlur={saveNow}
             hint="Flat monthly PT amount"
           />
           <Input
@@ -192,10 +230,17 @@ export function PayrollSettingsSection() {
             step="0.1"
             value={form.tdsPercent ?? 8}
             onChange={(e) => setForm({ ...form, tdsPercent: Number(e.target.value) })}
+            onBlur={saveNow}
             hint="Used to suggest TDS on employee salary"
           />
-          <Select label="TDS mode" options={[{ value: 'auto', label: 'Auto-calculate' }, { value: 'manual', label: 'Manual entry' }]} value={form.tdsMode} onChange={(e) => setForm({ ...form, tdsMode: e.target.value })} />
-          <Select label="Professional Tax — State" options={['Karnataka', 'Maharashtra', 'Tamil Nadu', 'Delhi', 'Telangana']} value={form.ptState} onChange={(e) => setForm({ ...form, ptState: e.target.value })} />
+          <Select label="TDS mode" options={[{ value: 'auto', label: 'Auto-calculate' }, { value: 'manual', label: 'Manual entry' }]} value={form.tdsMode} onChange={(e) => patch({ tdsMode: e.target.value })} />
+          <Select
+            label="Professional Tax — State"
+            options={PT_STATE_OPTIONS}
+            value={form.ptState}
+            onChange={(e) => patch({ ptState: e.target.value })}
+            hint="States marked “PT not applicable” or “unverified” use the flat Professional Tax amount above instead of a state slab."
+          />
         </div>
       </Card>
 
@@ -216,20 +261,21 @@ export function PayrollSettingsSection() {
                 value={opt.name}
                 placeholder="e.g. Insurance"
                 onChange={(e) => patchOption(opt.id, { name: e.target.value })}
+                onBlur={saveNow}
               />
               <Select
                 label="Type"
                 containerClass="sm:col-span-2"
                 options={KIND_OPTIONS}
                 value={opt.kind}
-                onChange={(e) => patchOption(opt.id, { kind: e.target.value })}
+                onChange={(e) => patchOptionAndSave(opt.id, { kind: e.target.value })}
               />
               <Select
                 label="Value type"
                 containerClass="sm:col-span-2"
                 options={VALUE_TYPE_OPTIONS}
                 value={opt.valueType}
-                onChange={(e) => patchOption(opt.id, { valueType: e.target.value })}
+                onChange={(e) => patchOptionAndSave(opt.id, { valueType: e.target.value })}
               />
               {opt.valueType === 'percent' && (
                 <Select
@@ -237,7 +283,7 @@ export function PayrollSettingsSection() {
                   containerClass="sm:col-span-2"
                   options={BASE_OPTIONS}
                   value={opt.base}
-                  onChange={(e) => patchOption(opt.id, { base: e.target.value })}
+                  onChange={(e) => patchOptionAndSave(opt.id, { base: e.target.value })}
                 />
               )}
               <Input
@@ -247,6 +293,7 @@ export function PayrollSettingsSection() {
                 containerClass={opt.valueType === 'percent' ? 'sm:col-span-2' : 'sm:col-span-4'}
                 value={opt.value}
                 onChange={(e) => patchOption(opt.id, { value: Number(e.target.value) })}
+                onBlur={saveNow}
               />
               <div className="sm:col-span-1 flex items-center justify-end pb-1">
                 <button
@@ -267,20 +314,17 @@ export function PayrollSettingsSection() {
         <CardHeader title="Payroll Run" />
         <div className="p-5 pt-3 space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Input label="Working days / month" type="number" min={1} max={31} value={form.workingDaysPerMonth ?? 26} onChange={(e) => setForm({ ...form, workingDaysPerMonth: Number(e.target.value) })} />
-            <Input label="Payroll run date (day of month)" type="number" min={1} max={28} value={form.runDate} onChange={(e) => setForm({ ...form, runDate: Number(e.target.value) })} />
-            <Input label="Auto-lock attendance (days after month end)" type="number" value={form.autoLockDays} onChange={(e) => setForm({ ...form, autoLockDays: Number(e.target.value) })} />
-            <Select label="Bank file format" options={['NEFT', 'RTGS', 'Bank-specific']} value={form.bankFileFormat} onChange={(e) => setForm({ ...form, bankFileFormat: e.target.value })} />
+            <Input label="Working days / month" type="number" min={1} max={31} value={form.workingDaysPerMonth ?? 26} onChange={(e) => setForm({ ...form, workingDaysPerMonth: Number(e.target.value) })} onBlur={saveNow} />
+            <Input label="Payroll run date (day of month)" type="number" min={1} max={28} value={form.runDate} onChange={(e) => setForm({ ...form, runDate: Number(e.target.value) })} onBlur={saveNow} />
+            <Input label="Auto-lock attendance (days after month end)" type="number" value={form.autoLockDays} onChange={(e) => setForm({ ...form, autoLockDays: Number(e.target.value) })} onBlur={saveNow} />
+            <Select label="Bank file format" options={['NEFT', 'RTGS', 'Bank-specific']} value={form.bankFileFormat} onChange={(e) => patch({ bankFileFormat: e.target.value })} />
           </div>
           <Toggle
             label="Auto-process payroll"
             hint="If on, draft payslips for the current month are generated automatically on the run date (server cron)."
             checked={form.autoProcess}
-            onChange={(v) => setForm({ ...form, autoProcess: v })}
+            onChange={(v) => patch({ autoProcess: v })}
           />
-        </div>
-        <div className="px-5 pb-5 flex justify-end">
-          <Button icon={Save} onClick={save} loading={saving}>Save Changes</Button>
         </div>
       </Card>
     </div>

@@ -47,6 +47,8 @@ const onboardingSendOtpRules = [
 const onboardingVerifyOtpRules = [
   body('email').isEmail().normalizeEmail(),
   body('otp').isLength({ min: 4, max: 10 }).withMessage('OTP is required'),
+  body('inviteToken').optional().isString().isLength({ min: 16, max: 128 }),
+  body('invite_token').optional().isString().isLength({ min: 16, max: 128 }),
 ];
 
 const changePasswordRules = [
