@@ -29,8 +29,13 @@ function AddMappingModal({ open, onClose }) {
       return toast.error('Device, employee, and device user ID are all required');
     }
     try {
-      await create.mutateAsync({ deviceUserId: resolvedDeviceUserId, employeeId, deviceSerial });
-      toast.success('Mapping created');
+      const result = await create.mutateAsync({ deviceUserId: resolvedDeviceUserId, employeeId, deviceSerial });
+      const backfilled = result?.backfill?.backfilled || 0;
+      toast.success(
+        backfilled > 0
+          ? `Mapping created — backfilled ${backfilled} past punch${backfilled === 1 ? '' : 'es'} across ${result.backfill.windowsRecomputed} day${result.backfill.windowsRecomputed === 1 ? '' : 's'}`
+          : 'Mapping created'
+      );
       setDeviceUserId('');
       setManualId('');
       setEmployeeId('');
