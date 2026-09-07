@@ -52,14 +52,6 @@ const successResponse = (res, message, data = null, meta = null, statusCode = 20
   return res.status(statusCode).json(response);
 };
 
-const errorResponse = (res, code, message, details = null, statusCode = 400) => {
-  return res.status(statusCode).json({
-    success: false,
-    error: { code, message, details },
-    timestamp: new Date().toISOString(),
-  });
-};
-
 const { BlockList, isIP } = require('net');
 
 const normalizeIp = (ip) => {
@@ -316,7 +308,6 @@ const isMissingColumnError = (message, columnName) => {
 
 module.exports = {
   successResponse,
-  errorResponse,
   isMissingColumnError,
   getClientIp,
   getClientIps,

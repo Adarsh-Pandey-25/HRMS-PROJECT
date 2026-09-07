@@ -19,6 +19,18 @@ const RAW_DB_ERROR_PATTERNS = [
   /relation .* does not exist/i,
   /invalid input syntax for/i,
   /permission denied for/i,
+  // Audit finding: enum CHECK-less columns (announcement priority/audience,
+  // holiday type, employment_type, gender) leaked the enum's own type name
+  // verbatim on an invalid value — a handful of call sites had already
+  // grown their own local guard for this exact message shape (reimbursement,
+  // attendance) instead of it living here once for every caller.
+  /invalid input value for enum/i,
+  // PostgREST's own "no rows / more than one row" error from a bare
+  // `.single()` call (code PGRST116) — distinct from a Postgres constraint
+  // violation, but equally raw/internal and was falling through the
+  // patterns above whenever a TOCTOU race (row deleted between an existence
+  // check and the write) turned it into a 400.
+  /JSON object requested, multiple \(or no\) rows returned/i,
 ];
 
 const looksLikeRawDbError = (message) => {

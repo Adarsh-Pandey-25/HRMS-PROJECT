@@ -1,6 +1,6 @@
 const { supabaseAdmin } = require('../config/supabase');
 const logger = require('../utils/logger');
-const { successResponse } = require('../utils/helpers');
+const { successResponse, isMissingColumnError } = require('../utils/helpers');
 const { ForbiddenError, BadRequestError, ConflictError, NotFoundError } = require('../utils/errors');
 const admsService = require('../services/adms.service');
 const featureOverrideService = require('../services/featureOverride.service');
@@ -151,13 +151,39 @@ const registerDevice = async (req, res, next) => {
       throw new ConflictError('This device is already registered to another company');
     }
 
+    // Security audit finding: a released device (company_id nulled by
+    // releaseDevice) being reclaimed here — by this same company or a
+    // different one, first-to-register — starts a NEW ownership window.
+    // claimed_at marks that boundary so deviceMapping.controller.js's
+    // punch/device-user queries never surface data from BEFORE this claim,
+    // whether that's another tenant's history on a resold unit or this same
+    // company's own stale pre-release data. Untouched when the row is
+    // already owned by this company (existing.company_id === companyId) —
+    // a plain name/location edit must not reset the claim boundary.
+    const isFreshClaim = !existing?.company_id;
+
+    // The claimed_at column (migration 20260907_device_heartbeats_claimed_at.sql)
+    // needs applying manually via the Supabase SQL editor. Retries without it
+    // on a missing-column error so registering/updating a device doesn't 500
+    // in the interim — same per-call fallback used in deviceMapping.controller.js
+    // for the read side of this same migration.
+    const claimedAtPatch = isFreshClaim ? { claimed_at: new Date().toISOString() } : {};
+
     if (existing) {
-      const { data: updated, error: updateError } = await supabaseAdmin
+      let { data: updated, error: updateError } = await supabaseAdmin
         .from('device_heartbeats')
-        .update({ name: name ?? null, location: location ?? null, company_id: companyId })
+        .update({ name: name ?? null, location: location ?? null, company_id: companyId, ...claimedAtPatch })
         .eq('device_serial', serial)
         .select('device_serial, last_seen_at, name, location')
         .single();
+      if (updateError && isMissingColumnError(updateError.message, 'claimed_at')) {
+        ({ data: updated, error: updateError } = await supabaseAdmin
+          .from('device_heartbeats')
+          .update({ name: name ?? null, location: location ?? null, company_id: companyId })
+          .eq('device_serial', serial)
+          .select('device_serial, last_seen_at, name, location')
+          .single());
+      }
       if (updateError) throw updateError;
       return successResponse(res, 'Device updated', {
         deviceSerial: updated.device_serial,
@@ -168,11 +194,18 @@ const registerDevice = async (req, res, next) => {
     }
 
     // Device hasn't pinged yet — pre-register it so it's claimed the moment it does.
-    const { data: created, error: insertError } = await supabaseAdmin
+    let { data: created, error: insertError } = await supabaseAdmin
       .from('device_heartbeats')
-      .insert({ device_serial: serial, name: name ?? null, location: location ?? null, company_id: companyId })
+      .insert({ device_serial: serial, name: name ?? null, location: location ?? null, company_id: companyId, ...claimedAtPatch })
       .select('device_serial, last_seen_at, name, location')
       .single();
+    if (insertError && isMissingColumnError(insertError.message, 'claimed_at')) {
+      ({ data: created, error: insertError } = await supabaseAdmin
+        .from('device_heartbeats')
+        .insert({ device_serial: serial, name: name ?? null, location: location ?? null, company_id: companyId })
+        .select('device_serial, last_seen_at, name, location')
+        .single());
+    }
     if (insertError) throw insertError;
 
     successResponse(res, 'Device registered', {

@@ -51,7 +51,12 @@ const assertSafeWebhookUrl = async (rawUrl) => {
     const results = await dns.lookup(hostname, { all: true, verbatim: true });
     addresses = results.map((r) => r.address);
   } catch (err) {
-    throw new BadRequestError(`Could not resolve webhook URL host: ${err.message}`);
+    // Audit finding: this wrapped Node's raw DNS error text (e.g. "getaddrinfo
+    // ENOTFOUND ...") straight into the client-facing message — not a
+    // Postgres/Supabase error, but the same "never show raw internal error
+    // text" principle applies. Logged server-side, generic message to the client.
+    logger.warn('[Webhook] DNS lookup failed for webhook URL', { hostname, error: err.message });
+    throw new BadRequestError('Could not resolve the webhook URL — check that the hostname is correct.');
   }
   if (!addresses.length) throw new BadRequestError('Webhook URL host does not resolve to any address');
   if (addresses.some((ip) => anyIpInCidr([ip], BLOCKED_RANGES))) {

@@ -1,30 +1,87 @@
 const moment = require('moment-timezone');
 const { supabaseAdmin } = require('../config/supabase');
-const { successResponse, getShiftDayWindow } = require('../utils/helpers');
+const { successResponse, getShiftDayWindow, isMissingColumnError } = require('../utils/helpers');
 const { TIMEZONE } = require('../utils/constants');
 const { BadRequestError, NotFoundError, ConflictError } = require('../utils/errors');
 const logger = require('../utils/logger');
 
-/** Confirm this device serial is registered to the requesting company (any make/model — nothing hardcoded). */
+/**
+ * device_heartbeats.claimed_at (migration 20260907_device_heartbeats_claimed_at.sql)
+ * needs to be applied manually via the Supabase SQL editor before it exists.
+ * Every read below retries without it on a missing-column error — same
+ * per-call fallback this codebase already uses for token_version in
+ * auth.middleware.js — so device mapping keeps working exactly as it did
+ * before this fix in the interim (no server restart needed once the
+ * migration lands; the very next call just starts succeeding with it).
+ * The cross-tenant protection itself only takes effect once the column
+ * actually exists — this fallback trades that protection for zero downtime,
+ * not the other way around, so the migration should still be applied
+ * promptly.
+ */
+const CLAIMED_AT_COL = 'claimed_at';
+
+/**
+ * Confirm this device serial is registered to the requesting company (any
+ * make/model — nothing hardcoded). Also returns claimed_at so callers can
+ * bound punch queries to this company's actual ownership window — see the
+ * cross-tenant leak this closes on companyDevices below.
+ */
 const assertOwnsDevice = async (deviceSerial, companyId) => {
-  const { data, error } = await supabaseAdmin
+  let { data, error } = await supabaseAdmin
     .from('device_heartbeats')
-    .select('device_serial')
+    .select('device_serial, claimed_at')
     .eq('device_serial', deviceSerial)
     .eq('company_id', companyId)
     .maybeSingle();
+  if (error && isMissingColumnError(error.message, CLAIMED_AT_COL)) {
+    ({ data, error } = await supabaseAdmin
+      .from('device_heartbeats')
+      .select('device_serial')
+      .eq('device_serial', deviceSerial)
+      .eq('company_id', companyId)
+      .maybeSingle());
+    if (data) data.claimed_at = null;
+  }
   if (error) throw error;
   if (!data) throw new NotFoundError('Device not found — register it under Settings > Attendance first');
+  return data;
 };
 
-/** This company's registered device serials — the scoping boundary for every punch-derived query below. */
-const companyDeviceSerials = async (companyId) => {
-  const { data, error } = await supabaseAdmin
+/**
+ * This company's registered devices, with each one's claimed_at — the
+ * scoping boundary for every punch-derived query below.
+ *
+ * Security audit finding: device_serial is a global primary key and
+ * releaseDevice() only clears device_heartbeats.company_id and this
+ * company's own device_employee_mapping rows — it never touches
+ * device_punches for that serial. A serial can be released by one company
+ * and later claimed by an entirely different one (a resold unit, or simply
+ * two companies typing the same string), and until claimed_at existed,
+ * every punch/device-user query below matched by device_serial membership
+ * ALONE, with no lower time bound — the new owner's "Unmapped Punches" and
+ * "Device Users" lists would show the previous owner's entire punch
+ * history, and mapping a "device user" that looked unmapped could backfill
+ * the previous owner's timestamps into this company's employee via
+ * backfillPunchesForMapping. Every caller must now pass claimed_at through
+ * to a `.gte('punch_time', claimedAt)` filter (skipped when null — a device
+ * that's only ever had one owner needs no boundary).
+ */
+const companyDevices = async (companyId) => {
+  let { data, error } = await supabaseAdmin
     .from('device_heartbeats')
-    .select('device_serial')
+    .select('device_serial, claimed_at')
     .eq('company_id', companyId);
+  if (error && isMissingColumnError(error.message, CLAIMED_AT_COL)) {
+    ({ data, error } = await supabaseAdmin
+      .from('device_heartbeats')
+      .select('device_serial')
+      .eq('company_id', companyId));
+    if (data) data = data.map((d) => ({ ...d, claimed_at: null }));
+  }
   if (error) throw error;
-  return [...new Set((data || []).map((d) => d.device_serial))];
+  const seen = new Map();
+  for (const d of data || []) seen.set(d.device_serial, d.claimed_at);
+  return [...seen.entries()].map(([deviceSerial, claimedAt]) => ({ deviceSerial, claimedAt }));
 };
 
 const withEmployeeName = (row) => {
@@ -63,7 +120,7 @@ const withEmployeeName = (row) => {
  */
 const BACKFILL_PAGE_SIZE = 1000;
 
-const backfillPunchesForMapping = async (deviceSerial, deviceUserId, employeeId, companyId) => {
+const backfillPunchesForMapping = async (deviceSerial, deviceUserId, employeeId, companyId, claimedAt) => {
   // Paginated: PostgREST caps an unbounded select at 1000 rows by default —
   // for anyone with more than ~1000 lifetime unmapped punches (any regular
   // biometric user over a year or so), a single unpaged fetch silently
@@ -73,12 +130,17 @@ const backfillPunchesForMapping = async (deviceSerial, deviceUserId, employeeId,
   const punches = [];
   for (;;) {
     // eslint-disable-next-line no-await-in-loop
-    const { data: page, error: punchesError } = await supabaseAdmin
+    let query = supabaseAdmin
       .from('device_punches')
       .select('id, punch_time')
       .eq('device_serial', deviceSerial)
       .eq('device_user_id', deviceUserId)
-      .is('employee_id', null)
+      .is('employee_id', null);
+    // Never backfill punches from BEFORE this company's current claim on the
+    // device — see companyDevices' doc comment for the cross-tenant leak
+    // this closes on a released-and-reclaimed serial.
+    if (claimedAt) query = query.gte('punch_time', claimedAt);
+    const { data: page, error: punchesError } = await query
       .order('id', { ascending: true })
       .range(0, BACKFILL_PAGE_SIZE - 1);
     if (punchesError) {
@@ -130,7 +192,7 @@ const create = async (req, res, next) => {
       throw new BadRequestError('device_user_id, employee_id and device_serial are required');
     }
     const serial = deviceSerial;
-    await assertOwnsDevice(serial, req.user.company_id);
+    const device = await assertOwnsDevice(serial, req.user.company_id);
 
     const { data: employee, error: employeeError } = await supabaseAdmin
       .from('employees')
@@ -152,7 +214,7 @@ const create = async (req, res, next) => {
       throw error;
     }
 
-    const backfill = await backfillPunchesForMapping(serial, String(deviceUserId), employeeId, req.user.company_id);
+    const backfill = await backfillPunchesForMapping(serial, String(deviceUserId), employeeId, req.user.company_id, device.claimed_at);
 
     successResponse(res, 'Mapping created', { ...withEmployeeName(data), backfill }, null, 201);
   } catch (err) { next(err); }
@@ -160,7 +222,8 @@ const create = async (req, res, next) => {
 
 const list = async (req, res, next) => {
   try {
-    const serials = await companyDeviceSerials(req.user.company_id);
+    const devices = await companyDevices(req.user.company_id);
+    const serials = devices.map((d) => d.deviceSerial);
     if (!serials.length) return successResponse(res, 'Mappings fetched', []);
 
     // Cross-tenant isolation: device_employee_mapping has no company_id of
@@ -207,22 +270,36 @@ const remove = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-/** Recent punches that arrived with no matching mapping, for this company's registered devices. */
+/**
+ * Recent punches that arrived with no matching mapping, for this company's
+ * registered devices — one query per device rather than a single
+ * `.in('device_serial', serials)` so each device's own claimed_at lower
+ * bound applies (a device_serial-only filter would surface a released and
+ * reclaimed serial's PREVIOUS owner's punches too — see companyDevices'
+ * doc comment). Per-device round trips are fine here: a company registers
+ * a handful of physical devices, not hundreds.
+ */
 const unmapped = async (req, res, next) => {
   try {
-    const serials = await companyDeviceSerials(req.user.company_id);
-    if (!serials.length) return successResponse(res, 'Unmapped punches', []);
+    const devices = await companyDevices(req.user.company_id);
+    if (!devices.length) return successResponse(res, 'Unmapped punches', []);
 
-    const { data, error } = await supabaseAdmin
-      .from('device_punches')
-      .select('id, device_user_id, punch_time, punch_type, verify_mode, device_serial')
-      .is('employee_id', null)
-      .in('device_serial', serials)
-      .order('punch_time', { ascending: false })
-      .limit(200);
-    if (error) throw error;
+    const pages = await Promise.all(devices.map(({ deviceSerial, claimedAt }) => {
+      let query = supabaseAdmin
+        .from('device_punches')
+        .select('id, device_user_id, punch_time, punch_type, verify_mode, device_serial')
+        .is('employee_id', null)
+        .eq('device_serial', deviceSerial);
+      if (claimedAt) query = query.gte('punch_time', claimedAt);
+      return query.order('punch_time', { ascending: false }).limit(200);
+    }));
+    for (const p of pages) if (p.error) throw p.error;
 
-    successResponse(res, 'Unmapped punches', data || []);
+    const merged = pages.flatMap((p) => p.data || [])
+      .sort((a, b) => new Date(b.punch_time) - new Date(a.punch_time))
+      .slice(0, 200);
+
+    successResponse(res, 'Unmapped punches', merged);
   } catch (err) { next(err); }
 };
 
@@ -233,24 +310,30 @@ const unmapped = async (req, res, next) => {
  */
 const deviceUsers = async (req, res, next) => {
   try {
-    const serials = await companyDeviceSerials(req.user.company_id);
-    if (!serials.length) return successResponse(res, 'Device users', { device_users: [] });
+    const devices = await companyDevices(req.user.company_id);
+    if (!devices.length) return successResponse(res, 'Device users', { device_users: [] });
+    const serials = devices.map((d) => d.deviceSerial);
 
-    const [{ data: punches, error: punchesError }, { data: mappings, error: mappingsError }] = await Promise.all([
-      supabaseAdmin
-        .from('device_punches')
-        .select('device_user_id, punch_time')
-        .in('device_serial', serials)
-        .order('punch_time', { ascending: false })
-        .limit(5000),
+    // Per-device so each one's claimed_at lower bound applies — same
+    // cross-tenant reasoning as unmapped() above.
+    const [punchPages, { data: mappings, error: mappingsError }] = await Promise.all([
+      Promise.all(devices.map(({ deviceSerial, claimedAt }) => {
+        let query = supabaseAdmin
+          .from('device_punches')
+          .select('device_user_id, punch_time')
+          .eq('device_serial', deviceSerial);
+        if (claimedAt) query = query.gte('punch_time', claimedAt);
+        return query.order('punch_time', { ascending: false }).limit(5000);
+      })),
       supabaseAdmin
         .from('device_employee_mapping')
         .select('device_user_id, employees!inner(company_id)')
         .in('device_serial', serials)
         .eq('employees.company_id', req.user.company_id),
     ]);
-    if (punchesError) throw punchesError;
+    for (const p of punchPages) if (p.error) throw p.error;
     if (mappingsError) throw mappingsError;
+    const punches = punchPages.flatMap((p) => p.data || []);
 
     const mappedIds = new Set((mappings || []).map((m) => m.device_user_id));
     const byDeviceUserId = new Map();

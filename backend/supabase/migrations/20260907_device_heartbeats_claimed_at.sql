@@ -1,0 +1,23 @@
+-- Security audit finding: releasing a biometric device (adms.controller.js's
+-- releaseDevice) purges device_employee_mapping rows for the serial and nulls
+-- device_heartbeats.company_id, but leaves device_punches rows for that
+-- serial untouched — some already attached to the releasing company's
+-- employees, some still unmapped (employee_id null). If a DIFFERENT company
+-- later registers the same physical serial (a resold/redistributed unit, or
+-- simply typing the same serial string), that company's "Unmapped Punches"
+-- and "Device Users" lists in Settings > Attendance Config leaked the prior
+-- company's historical punch data by device_serial membership alone, with no
+-- lower time bound — and mapping a "device user" that looked unmapped could
+-- backfill the prior company's punch timestamps into this company's own
+-- employee's attendance record via deviceMapping.controller.js's
+-- backfillPunchesForMapping.
+--
+-- claimed_at marks when the CURRENT owner's claim started. Every punch/
+-- device-user query in deviceMapping.controller.js now filters
+-- punch_time >= claimed_at per serial, so a reclaimed device only ever
+-- surfaces punches from its current ownership window. NULL (every row that
+-- existed before this migration) means "no lower bound" — preserves today's
+-- behavior for devices that have only ever had one owner; only a future
+-- release+reclaim cycle sets and enforces a real boundary.
+ALTER TABLE device_heartbeats
+  ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
