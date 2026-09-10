@@ -1,3 +1,4 @@
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { cn } from '../../lib/utils';
 
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -28,14 +29,38 @@ const LEGEND = [
  * statusByDay: { [dayNumber]: 'present' | 'absent' | ... }
  * month is 0-based.
  */
-export function AttendanceCalendar({ year, month, statusByDay = {}, today }) {
+export function AttendanceCalendar({ year, month, statusByDay = {}, today, onPrevMonth, onNextMonth, canGoNext = true }) {
   const firstDow = new Date(year, month, 1).getDay();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const cells = [...Array(firstDow).fill(null), ...Array.from({ length: daysInMonth }, (_, i) => i + 1)];
+  const showNav = Boolean(onPrevMonth || onNextMonth);
 
   return (
     <div>
-      <p className="text-sm font-semibold text-fg mb-3">{MONTHS[month]} {year}</p>
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-sm font-semibold text-fg">{MONTHS[month]} {year}</p>
+        {showNav && (
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={onPrevMonth}
+              aria-label="Previous month"
+              className="p-1.5 rounded-lg text-fg-subtle hover:text-fg hover:bg-muted transition-colors"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={onNextMonth}
+              disabled={!canGoNext}
+              aria-label="Next month"
+              className="p-1.5 rounded-lg text-fg-subtle hover:text-fg hover:bg-muted transition-colors disabled:opacity-30 disabled:pointer-events-none"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
+        )}
+      </div>
       <div className="grid grid-cols-7 gap-1.5">
         {DOW.map((d) => (
           <div key={d} className="text-[10px] font-semibold text-fg-subtle text-center pb-1">{d}</div>

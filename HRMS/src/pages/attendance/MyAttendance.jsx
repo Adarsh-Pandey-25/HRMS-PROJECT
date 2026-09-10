@@ -71,15 +71,34 @@ export default function MyAttendance() {
   // Use Asia/Kolkata for month bounds so they match attendance dates
   const todayStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(now);
   const [yStr, mStr] = todayStr.split('-');
-  const year = Number(yStr);
-  const month = Number(mStr);
-  const monthStart = `${yStr}-${mStr}-01`;
+  const currentYear = Number(yStr);
+  const currentMonth = Number(mStr);
+
+  const [viewYear, setViewYear] = useState(currentYear);
+  const [viewMonth, setViewMonth] = useState(currentMonth);
+  const isCurrentMonth = viewYear === currentYear && viewMonth === currentMonth;
+
+  const viewYStr = String(viewYear);
+  const viewMStr = String(viewMonth).padStart(2, '0');
+  const monthStart = `${viewYStr}-${viewMStr}-01`;
   const monthEnd = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(
-    new Date(Date.UTC(year, month, 0)) // day 0 of next month = last day of `month`
+    new Date(Date.UTC(viewYear, viewMonth, 0)) // day 0 of next month = last day of `viewMonth`
   );
 
+  const goPrevMonth = () => {
+    if (viewMonth === 1) { setViewYear((y) => y - 1); setViewMonth(12); }
+    else setViewMonth((m) => m - 1);
+  };
+  const goNextMonth = () => {
+    if (!isCurrentMonth) {
+      if (viewMonth === 12) { setViewYear((y) => y + 1); setViewMonth(1); }
+      else setViewMonth((m) => m + 1);
+    }
+  };
+  const viewMonthLabel = new Date(viewYear, viewMonth - 1, 1).toLocaleString('en-US', { month: 'long' });
+
   const { data: records = [], isLoading: loadingRecords, refetch: refetchMy } = useMyAttendance({ from: monthStart, to: monthEnd });
-  const { data: monthly, isLoading: loadingSummary } = useMonthlyAttendanceSummary({ month, year });
+  const { data: monthly, isLoading: loadingSummary } = useMonthlyAttendanceSummary({ month: viewMonth, year: viewYear });
   const { data: checkContext, refetch: refetchContext } = useCheckContext();
   const { checkIn, checkOut, requestWfh, cancelWfh } = useAttendanceMutations();
   const role = useAuthStore((s) => s.role);
@@ -311,7 +330,7 @@ export default function MyAttendance() {
           {isBiometricToday && checkoutStatus === 'pending' && (
             <p className="flex items-center gap-1.5 text-[11px] text-info mb-3">
               <Clock className="h-3 w-3 shrink-0" />
-              Checked in — still in progress. Checkout appears once your shift's grace period passes.
+              Checked in — awaiting checkout. Checkout appears once your shift's grace period passes.
             </p>
           )}
           {isBiometricToday && (checkoutStatus === 'provisional' || checkoutStatus === 'finalized') && todayRecord?.status && (
@@ -405,7 +424,9 @@ export default function MyAttendance() {
         </Card>
 
         <Card className="lg:col-span-2 p-5">
-          <p className="text-sm font-semibold text-fg mb-4">This month&apos;s summary</p>
+          <p className="text-sm font-semibold text-fg mb-4">
+            {isCurrentMonth ? "This month's summary" : `${viewMonthLabel} summary`}
+          </p>
           {isLoading ? (
             <Skeleton className="h-24 w-full rounded-xl" />
           ) : (
@@ -430,14 +451,22 @@ export default function MyAttendance() {
       </div>
 
       <Card className="p-5">
-        <AttendanceCalendar year={year} month={month - 1} statusByDay={statusByDay} today={now.getDate()} />
+        <AttendanceCalendar
+          year={viewYear}
+          month={viewMonth - 1}
+          statusByDay={statusByDay}
+          today={isCurrentMonth ? now.getDate() : undefined}
+          onPrevMonth={goPrevMonth}
+          onNextMonth={goNextMonth}
+          canGoNext={!isCurrentMonth}
+        />
       </Card>
 
       {activeStat && (() => {
         const stat = STAT_CARDS.find((s) => s.key === activeStat);
         const days = records.filter(stat.filter).sort(stat.sort || ((a, b) => a.date.localeCompare(b.date)));
         return (
-          <Modal open onClose={() => setActiveStat(null)} title={`${stat.label} — this month`} subtitle={`${days.length} day${days.length === 1 ? '' : 's'}`}>
+          <Modal open onClose={() => setActiveStat(null)} title={`${stat.label} — ${isCurrentMonth ? 'this month' : `${viewMonthLabel} ${viewYear}`}`} subtitle={`${days.length} day${days.length === 1 ? '' : 's'}`}>
             {days.length === 0 ? (
               <EmptyState icon={stat.icon} title={`No ${stat.label.toLowerCase()} days`} message="Nothing to show for this stat yet." />
             ) : (

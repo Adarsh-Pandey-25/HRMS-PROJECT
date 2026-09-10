@@ -470,7 +470,7 @@ const manualEntry = async (hrUserId, data) => {
  * records; erring toward including a little extra is the safer direction
  * for an admin review list than silently dropping legitimate rows.
  */
-const SHIFT_BOUNDARY_PADDING_HOURS = 6;
+const SHIFT_BOUNDARY_PADDING_HOURS = 2;
 
 const toRangeStart = (value) => {
   if (!value) return null;

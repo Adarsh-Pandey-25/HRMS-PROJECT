@@ -9,7 +9,7 @@ import { formatDate, cn } from '../../lib/utils';
 
 const KPI_CARDS = [
   { key: 'present', label: 'Present', tone: 'success', icon: UserCheck },
-  { key: 'inProgress', label: 'In Progress', tone: 'info', icon: Loader2 },
+  { key: 'inProgress', label: 'Awaiting Checkout', tone: 'info', icon: Loader2 },
   { key: 'wfh', label: 'WFH', tone: 'primary', icon: Home },
   { key: 'late', label: 'Late', tone: 'warning', icon: Clock },
   { key: 'absent', label: 'Absent', tone: 'danger', icon: UserX },
@@ -187,7 +187,7 @@ export default function TeamAttendance() {
         cell: ({ row }) => {
           const r = row.original;
           if (r.checkoutStatus === 'pending') {
-            return <span className="inline-flex items-center gap-1 text-xs text-info font-medium"><Loader2 className="h-3 w-3" />In progress</span>;
+            return <span className="inline-flex items-center gap-1 text-xs text-info font-medium"><Loader2 className="h-3 w-3" />Awaiting checkout</span>;
           }
           return (
             <div>
@@ -223,7 +223,7 @@ export default function TeamAttendance() {
         header: 'Status',
         cell: ({ row }) => {
           const r = row.original;
-          if (r.checkoutStatus === 'pending') return <Badge tone="info">In progress</Badge>;
+          if (r.checkoutStatus === 'pending') return <Badge tone="info">Awaiting checkout</Badge>;
           return (
             <div className="flex items-center gap-1.5">
               <StatusBadge status={r.status} />
@@ -252,7 +252,7 @@ export default function TeamAttendance() {
       checkOutIp: r.checkOutIp || '',
       totalHours: r.workHours ? Number(r.workHours).toFixed(2) : '',
       wfh: (r.isWfh || r.status === 'wfh') ? 'Yes' : 'No',
-      status: r.checkoutStatus === 'pending' ? 'in_progress' : r.checkoutStatus === 'provisional' ? `${r.status} (provisional)` : r.status,
+      status: r.checkoutStatus === 'pending' ? 'awaiting_checkout' : r.checkoutStatus === 'provisional' ? `${r.status} (provisional)` : r.status,
       method: r.checkInMethod || '',
     })),
     [filteredTeam, date]

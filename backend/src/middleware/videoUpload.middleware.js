@@ -2,8 +2,12 @@ const multer = require('multer');
 const { BadRequestError } = require('../utils/errors');
 
 const MB = 1024 * 1024;
-// Supabase Free tier max per file is 50 MB (Pro allows up to 500 GB)
-const TRAINING_VIDEO_MAX_MB = parseInt(process.env.TRAINING_VIDEO_MAX_MB, 10) || 50;
+// Supabase Free tier max per file is 50 MB (Pro allows up to 500 GB) — raise
+// TRAINING_VIDEO_MAX_MB via env if the bucket is on a Pro/Team plan. A 413
+// coming back before this limit is even reached usually means a reverse
+// proxy in front of the app (nginx client_max_body_size, etc.) is rejecting
+// the body first — that ceiling has to be raised server-side too.
+const TRAINING_VIDEO_MAX_MB = parseInt(process.env.TRAINING_VIDEO_MAX_MB, 10) || 200;
 
 const VIDEO_TYPES = ['mp4', 'webm', 'mov', 'm4v'];
 const IMAGE_TYPES = ['jpg', 'jpeg', 'png', 'webp'];
