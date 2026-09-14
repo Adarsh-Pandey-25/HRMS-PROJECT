@@ -520,7 +520,34 @@ const getAttendance = async (filters, query) => {
     };
   });
 
-  return { data: rows, meta: buildMeta(page, limit, count) };
+  // Attach approved leave info so the team view can show "On Leave + Present/Late"
+ const employeeIdsInRows = [...new Set(rows.map((r) => r.employee_id).filter(Boolean))];
+ let approvedLeaveMap = {};
+ if (employeeIdsInRows.length && fromIso && toIso) {
+ const fromDateStr = moment(fromIso).tz(TIMEZONE).format('YYYY-MM-DD');
+ const toDateStr = moment(toIso).tz(TIMEZONE).format('YYYY-MM-DD');
+ const { data: approvedLeaves } = await supabaseAdmin
+ .from('leaves')
+ .select('employee_id, from_date, to_date, leave_type')
+ .in('employee_id', employeeIdsInRows)
+ .eq('status', 'approved')
+ .lte('from_date', toDateStr)
+ .gte('to_date', fromDateStr);
+ for (const lv of approvedLeaves || []) {
+ if (!approvedLeaveMap[lv.employee_id]) approvedLeaveMap[lv.employee_id] = [];
+ approvedLeaveMap[lv.employee_id].push({ from: lv.from_date, to: lv.to_date, type: lv.leave_type });
+ }
+ }
+
+ const enrichedRows = rows.map((row) => {
+ const checkInDate = row.check_in_time ? moment(row.check_in_time).tz(TIMEZONE).format('YYYY-MM-DD') : '';
+ const myLeaves = (approvedLeaveMap[row.employee_id] || []).filter(
+ (lv) => checkInDate >= lv.from && checkInDate <= lv.to
+ );
+ return { ...row, approved_leave: myLeaves[0] || null };
+ });
+
+ return { data: enrichedRows, meta: buildMeta(page, limit, count) };
 };
 
 const getMonthlySummary = async (employeeId, month, year) => {

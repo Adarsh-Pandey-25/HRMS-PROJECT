@@ -6,7 +6,7 @@ const morgan = require('morgan');
 const cookieParser = require('cookie-parser');
 const config = require('./config/database');
 const { supabaseAdmin } = require('./config/supabase');
-const { generalLimiter, admsLimiter } = require('./middleware/rateLimiter.middleware');
+const { generalLimiter, settingsLimiter, admsLimiter } = require('./middleware/rateLimiter.middleware');
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler.middleware');
 const { handleMulterError } = require('./middleware/upload.middleware');
 const { resolveTenantSubdomain } = require('./middleware/tenantSubdomain.middleware');
@@ -78,7 +78,7 @@ app.use(morgan(config.env === 'production' ? 'combined' : 'dev'));
 // eSSL ADMS device endpoints: no auth, raw text body — must sit before the
 // JSON/urlencoded parsers below or the device's tab-separated body gets mangled.
 // generalLimiter (below) never reaches this router since it fully handles and
-// returns before that point, so it gets its own dedicated per-IP limiter here.
+// returns before that point, so it gets its own dedicated per-device limiter here.
 app.use('/iclock', admsLimiter, admsRoutes);
 
 app.use(express.json({ limit: '1mb', strict: true }));
@@ -147,7 +147,7 @@ app.use('/api/announcements', announcementRoutes);
 app.use('/api/holidays', holidayRoutes);
 app.use('/api/documents', documentRoutes);
 app.use('/api/employees', employeeRoutes);
-app.use('/api/settings', settingsRoutes);
+app.use('/api/settings', settingsLimiter, settingsRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/dashboard', dashboardRoutes);

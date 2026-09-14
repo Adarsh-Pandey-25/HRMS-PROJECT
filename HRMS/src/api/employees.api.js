@@ -2,9 +2,22 @@ import { apiRequest, apiUpload } from './client';
 import { mapEmployeeFromApi, toSnakeCase } from '../lib/case';
 
 export async function fetchAllEmployeesApi(params = {}) {
-  const rows = await apiRequest({ method: 'GET', url: '/employees/all', params });
-  return (Array.isArray(rows) ? rows : []).map(mapEmployeeFromApi);
+ const all = [];
+ let page = 1;
+ let totalPages = Infinity;
+ while (page <= totalPages) {
+ const { items, meta } = await apiRequestPaginated({
+ method: 'GET',
+ url: '/employees/all',
+ params: { ...params, page },
+ });
+ all.push(...items);
+ if (meta?.totalPages) totalPages = meta.totalPages;
+ page += 1;
+ }
+ return all.map(mapEmployeeFromApi);
 }
+
 
 export async function fetchTeamEmployeesApi(managerId) {
   const rows = await apiRequest({ method: 'GET', url: `/employees/team/${managerId}` });
