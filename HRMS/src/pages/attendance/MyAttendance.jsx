@@ -259,7 +259,8 @@ export default function MyAttendance() {
       }
 
       if (clockedIn) {
-        await checkOut.mutateAsync({ method: 'web', location });
+        const checkoutMethod = checkInMethod === 'biometric' ? 'biometric' : 'web';
+ await checkOut.mutateAsync({ method: checkoutMethod, location });
         toast.success('Clocked out successfully');
       } else {
         if (!canClockIn) {

@@ -192,7 +192,7 @@ const determineAttendanceStatus = (checkIn, totalHours, isLateThreshold = 30, st
  const { windowStart } = getShiftDayWindow(checkInMoment, standardStartTime);
  const isLate = checkInMoment.isAfter(windowStart.clone().add(isLateThreshold, 'minutes'));
 
- if (isLate) return 'late';
+ if (isLate && totalHours < WORK_HOURS) return 'late';
  if (totalHours < WORK_HOURS / 2) return 'half_day';
  if (totalHours < WORK_HOURS) return 'early_departure';
  return 'present';
