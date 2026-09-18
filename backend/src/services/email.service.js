@@ -1119,6 +1119,65 @@ const offerRejectedEmail = (recipient, candidate, { role, reason }) =>
   });
 
 // ============================================================================
+// CELEBRATIONS — birthday & work anniversary wishes
+// ============================================================================
+
+/** Sent on an employee's birthday. Cron: birthdayAnniversary.cron.js at 8:00 AM company timezone. */
+const birthdayWishEmail = (employee) => {
+  const fullName = `${employee.first_name || ''} ${employee.last_name || ''}`.trim() || 'there';
+  return sendEmail({
+    to: employee.email,
+    subject: `Happy Birthday, ${employee.first_name || 'team'}!`,
+    html: etDocument({
+      preheader: `Wishing you a wonderful birthday, ${employee.first_name || 'team'}!`,
+      gradient: GRADIENT.violetRoll,
+      eyebrow: 'Birthday wishes',
+      titleHtml: `Happy Birthday,<br><em style="font-style:italic;">${escapeHtml(fullName)}.</em>`,
+      icon: '🎂',
+      bodyHtml: `
+        ${etP(`Hi ${escapeHtml(fullName)}, the entire team wishes you a day as bright as you are.`)}
+        ${etP('Thank you for being a wonderful part of our workplace. May your year ahead be filled with joy, success, and great moments with the people who matter.')}
+        ${etStats([
+          { num: '🎉', label: 'Cheers to you', color: COLOR.violet },
+          { num: '🎁', label: 'Wishes from the team', color: COLOR.violet },
+          { num: '🌟', label: 'Another great year', color: COLOR.violet },
+        ])}
+        ${etCta(`${getAppUrl()}/dashboard`, 'Open HRMS', COLOR.violet)}
+        ${etP('With warm wishes,<br/><strong>The team</strong>', { color: COLOR.slateSoft })}
+      `,
+    }),
+  });
+};
+
+/** Sent on an employee's work anniversary. Cron: birthdayAnniversary.cron.js. */
+const workAnniversaryEmail = (employee, yearsOfService) => {
+  const fullName = `${employee.first_name || ''} ${employee.last_name || ''}`.trim() || 'there';
+  const years = Number(yearsOfService) || 1;
+  return sendEmail({
+    to: employee.email,
+    subject: `Happy ${years}-year work anniversary, ${employee.first_name || 'team'}!`,
+    html: etDocument({
+      preheader: `Celebrating ${years} year${years > 1 ? 's' : ''} with us — thank you, ${employee.first_name || 'team'}!`,
+      gradient: GRADIENT.emeraldSolid,
+      eyebrow: 'Work anniversary',
+      titleHtml: `${years} year${years > 1 ? 's' : ''} together.<br><em style="font-style:italic;">Thank you, ${escapeHtml(fullName)}.</em>`,
+      icon: '🏆',
+      bodyHtml: `
+        ${etP(`Hi ${escapeHtml(fullName)}, today marks ${years} year${years > 1 ? 's' : ''} since you joined the team. We're grateful for everything you've brought to the company.`)}
+        ${etP('Your work, your spirit, and the way you show up for your teammates make this place better every day. We&rsquo;re proud to have you on the journey with us.')}
+        ${etStats([
+          { num: years, label: 'Years with us', color: COLOR.emerald },
+          { num: '∞', label: 'Impact made', color: COLOR.emerald },
+          { num: '🎉', label: 'Cheers to many more', color: COLOR.emerald },
+        ])}
+        ${etCta(`${getAppUrl()}/dashboard`, 'Open HRMS', COLOR.emerald)}
+        ${etP('With gratitude,<br/><strong>The team</strong>', { color: COLOR.slateSoft })}
+      `,
+    }),
+  });
+};
+
+// ============================================================================
 // PRE-EXISTING TEMPLATES (not in the 31, kept and restyled to match)
 // ============================================================================
 
@@ -1470,6 +1529,9 @@ module.exports = {
   offerLetterEmail,
   offerAcceptedEmail,
   offerRejectedEmail,
+  // Celebrations
+  birthdayWishEmail,
+  workAnniversaryEmail,
   // Pre-existing, not part of the 31
   autoCheckoutEmail,
   announcementEmail,

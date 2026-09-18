@@ -1,4 +1,4 @@
-import { apiRequest, apiUpload } from './client';
+import { apiRequest, apiRequestPaginated, apiUpload } from './client';
 import { mapEmployeeFromApi, toSnakeCase } from '../lib/case';
 
 export async function fetchAllEmployeesApi(params = {}) {

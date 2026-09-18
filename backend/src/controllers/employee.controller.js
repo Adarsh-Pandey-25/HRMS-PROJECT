@@ -404,7 +404,11 @@ const update = async (req, res, next) => {
     const allowedFields = isPrivileged
       ? pickEmployeeFields(req.body)
       : {
+          first_name: req.body.first_name,
+          last_name: req.body.last_name,
           phone: req.body.phone,
+          date_of_birth: req.body.date_of_birth,
+          gender: req.body.gender,
           address: req.body.address,
           emergency_contact: req.body.emergency_contact,
           profile_picture: req.body.profile_picture,

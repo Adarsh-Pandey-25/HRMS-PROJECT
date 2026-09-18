@@ -100,8 +100,21 @@ export default function EmployeeProfile() {
   const user = useAuthStore((s) => s.user);
   const isHrAdmin = role === 'admin' || role === 'hr';
   const employeeMap = useEmployeeMap();
-  const id = useMemo(() => resolveEmployeeId(slug, employeeMap), [slug, employeeMap]);
-  const isOwnProfile = isOwnEmployeeProfileSlug(slug, user)
+  // A regular employee never loads the directory roster, so `employeeMap` is
+  // empty and an employee-code slug (e.g. "EMP001") can't be mapped to the
+  // UUID the stricter API endpoints (career events, update) require — leaving
+  // `id` as the raw code, which those endpoints reject with "Invalid id".
+  // When the profile is the logged-in user's own, resolve directly to their
+  // UUID so every downstream call uses a real id.
+  const ownProfileUuid = isOwnEmployeeProfileSlug(slug, user) && user?.id
+    ? String(user.id)
+    : null;
+  const id = useMemo(
+    () => ownProfileUuid || resolveEmployeeId(slug, employeeMap),
+    [ownProfileUuid, slug, employeeMap],
+  );
+  const isOwnProfile = Boolean(ownProfileUuid)
+    || isOwnEmployeeProfileSlug(slug, user)
     || Boolean(user?.id && id && String(user.id) === String(id));
   const tabFromUrl = searchParams.get('tab');
   const validTab = TABS.some((t) => t.id === tabFromUrl) ? tabFromUrl : 'overview';
@@ -169,6 +182,10 @@ export default function EmployeeProfile() {
     const addr = emp?.addressRaw || {};
     const ec = emp?.emergencyContact || {};
     return {
+      firstName: emp?.firstName || '',
+      lastName: emp?.lastName || '',
+      dob: emp?.dob || '',
+      gender: emp?.gender || '',
       phone: emp?.phone || '',
       personalEmail: emp?.personalEmail || addr.personalEmail || '',
       addressLine1: addr.line1 || '',
@@ -212,6 +229,10 @@ export default function EmployeeProfile() {
         personalEmail: editForm.personalEmail.trim(),
       };
       const payload = {
+        first_name: editForm.firstName.trim(),
+        last_name: editForm.lastName.trim(),
+        date_of_birth: editForm.dob.trim() || undefined,
+        gender: editForm.gender.trim() || undefined,
         phone: editForm.phone.trim(),
         address: mergedAddress,
         emergencyContact: {
@@ -433,6 +454,7 @@ export default function EmployeeProfile() {
         onClose={() => setEditOpen(false)}
         title={editStep === 'warning' ? 'Before you continue' : (editLocked ? 'Your profile (locked)' : 'Edit my info')}
         subtitle={editStep === 'form' && !editLocked ? 'Contact info, address, emergency contact, and bank details — for anything else, ask HR.' : undefined}
+        size="xl"
         footer={editStep === 'warning' ? (
           <>
             <Button variant="outline" onClick={() => setEditOpen(false)}>Cancel</Button>
@@ -467,40 +489,54 @@ export default function EmployeeProfile() {
             </label>
           </div>
         ) : editForm && (
-          <fieldset disabled={editLocked} className="space-y-4">
+          <fieldset disabled={editLocked} className="space-y-6">
             {editLocked && (
               <p className="text-sm text-fg-muted rounded-xl bg-muted/50 p-3">
                 You've used your one-time profile edit. Contact HR to make changes.
               </p>
             )}
-            <Input label="Phone" value={editForm.phone} onChange={(e) => setEditForm((f) => ({ ...f, phone: e.target.value }))} />
-            <Input label="Personal email" type="email" value={editForm.personalEmail} onChange={(e) => setEditForm((f) => ({ ...f, personalEmail: e.target.value }))} />
-            <div className="grid grid-cols-2 gap-3">
-              <Input label="Address line 1" value={editForm.addressLine1} onChange={(e) => setEditForm((f) => ({ ...f, addressLine1: e.target.value }))} />
-              <Input label="Address line 2" value={editForm.addressLine2} onChange={(e) => setEditForm((f) => ({ ...f, addressLine2: e.target.value }))} />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <Input label="First name" value={editForm.firstName} onChange={(e) => setEditForm((f) => ({ ...f, firstName: e.target.value.replace(/[^A-Za-z\s.'-]/g, '') }))} />
+              <Input label="Last name" value={editForm.lastName} onChange={(e) => setEditForm((f) => ({ ...f, lastName: e.target.value.replace(/[^A-Za-z\s.'-]/g, '') }))} />
+              <Input label="Date of birth" type="date" value={editForm.dob} onChange={(e) => setEditForm((f) => ({ ...f, dob: e.target.value }))} max={new Date().toISOString().slice(0, 10)} />
+              <Select label="Gender" value={editForm.gender} onChange={(e) => setEditForm((f) => ({ ...f, gender: e.target.value }))} placeholder="Select gender" options={['male', 'female', 'other']} />
+              <Input label="Phone" value={editForm.phone} onChange={(e) => setEditForm((f) => ({ ...f, phone: e.target.value.replace(/\D/g, '').slice(0, 10) }))} />
+              <Input label="Personal email" type="email" value={editForm.personalEmail} onChange={(e) => setEditForm((f) => ({ ...f, personalEmail: e.target.value }))} />
             </div>
-            <div className="grid grid-cols-3 gap-3">
-              <Input label="City" value={editForm.city} onChange={(e) => setEditForm((f) => ({ ...f, city: e.target.value }))} />
-              <Input label="State" value={editForm.state} onChange={(e) => setEditForm((f) => ({ ...f, state: e.target.value }))} />
-              <Input label="Pincode" value={editForm.pincode} onChange={(e) => setEditForm((f) => ({ ...f, pincode: e.target.value }))} />
+            <div className="pt-2 border-t border-border/60 space-y-4">
+              <div>
+                <h3 className="text-sm font-semibold text-fg">Address</h3>
+                <p className="text-xs text-fg-subtle mt-0.5">Same layout as company workspace contact details.</p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <Input label="Address line 1" value={editForm.addressLine1} onChange={(e) => setEditForm((f) => ({ ...f, addressLine1: e.target.value }))} />
+                <Input label="Address line 2" value={editForm.addressLine2} onChange={(e) => setEditForm((f) => ({ ...f, addressLine2: e.target.value }))} />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <Input label="City" value={editForm.city} onChange={(e) => setEditForm((f) => ({ ...f, city: e.target.value }))} />
+                <Input label="State" value={editForm.state} onChange={(e) => setEditForm((f) => ({ ...f, state: e.target.value }))} />
+                <Input label="Pincode" value={editForm.pincode} onChange={(e) => setEditForm((f) => ({ ...f, pincode: e.target.value }))} />
+              </div>
+              <Input label="Country" value={editForm.country} onChange={(e) => setEditForm((f) => ({ ...f, country: e.target.value }))} />
             </div>
-            <Input label="Country" value={editForm.country} onChange={(e) => setEditForm((f) => ({ ...f, country: e.target.value }))} />
             <div className="pt-2 border-t border-border/60">
               <p className="text-xs font-medium text-fg-muted mb-3">Emergency contact</p>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <Input label="Name" value={editForm.emergencyName} onChange={(e) => setEditForm((f) => ({ ...f, emergencyName: e.target.value }))} />
                 <Input label="Phone" value={editForm.emergencyPhone} onChange={(e) => setEditForm((f) => ({ ...f, emergencyPhone: e.target.value }))} />
                 <Input label="Relation" value={editForm.emergencyRelation} onChange={(e) => setEditForm((f) => ({ ...f, emergencyRelation: e.target.value }))} />
               </div>
             </div>
             <div className="pt-2 border-t border-border/60">
-              <p className="text-xs font-medium text-fg-muted mb-1">Bank details</p>
+              <div className="mb-3">
+                <p className="text-xs font-medium text-fg-muted">Bank details</p>
+              </div>
               {hasBankDetails ? (
                 <p className="text-sm text-fg-subtle">
                   Already on file ({emp?.bank?.name || 'bank'} ····{String(emp?.bank?.account || '').slice(-4)}). Changing it requires HR/Admin.
                 </p>
               ) : (
-                <div className="grid grid-cols-3 gap-3 mt-2">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <Input label="Bank name" value={editForm.bankName} onChange={(e) => setEditForm((f) => ({ ...f, bankName: e.target.value }))} />
                   <Input label="Account number" value={editForm.bankAccount} onChange={(e) => setEditForm((f) => ({ ...f, bankAccount: e.target.value }))} />
                   <Input label="IFSC" value={editForm.bankIfsc} onChange={(e) => setEditForm((f) => ({ ...f, bankIfsc: e.target.value }))} />

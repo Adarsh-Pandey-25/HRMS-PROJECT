@@ -8,6 +8,7 @@ const { startSubscriptionBillingCron } = require('./cron/subscriptionBilling.cro
 const { startAttendanceAnomalyCron } = require('./cron/attendanceAnomaly.cron');
 const { startBackupCron } = require('./cron/backup.cron');
 const { startBiometricWindowTransitionCron } = require('./cron/biometricWindowTransition.cron');
+const { startBirthdayAnniversaryCron } = require('./cron/birthdayAnniversary.cron');
 
 const PORT = config.port;
 
@@ -33,6 +34,7 @@ const server = app.listen(PORT, config.host, () => {
   startAttendanceAnomalyCron();
   startBackupCron();
   startBiometricWindowTransitionCron();
+  startBirthdayAnniversaryCron();
   // Tag legacy employees under the default company so new workspaces stay empty
   require('./services/tenant.service').ensureTenantBackfill()
     .then(() => require('./services/settings.service').migrateLegacySettingsToDefaultCompany())
