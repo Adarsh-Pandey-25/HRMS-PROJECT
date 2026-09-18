@@ -4,7 +4,7 @@ const { supabaseAdmin } = require('../config/supabase');
 const { uploadCompanyLogo, uploadCompanyBrandIcon, getSignedUrl, STORAGE_BUCKETS } = require('../services/storage.service');
 const { successResponse } = require('../utils/helpers');
 const { BadRequestError, NotFoundError } = require('../utils/errors');
-const { LEAVE_TYPES } = require('../utils/constants');
+const { LEAVE_CODE_PATTERN, normalizeLeaveCode } = require('../utils/constants');
 const { getCompanyId } = require('../utils/tenant');
 const logger = require('../utils/logger');
 
@@ -56,11 +56,11 @@ const normalizeLeavePolicy = (policy) => {
 
   const seen = new Set();
   return policy.map((item, idx) => {
-    const code = String(item?.code || '').trim().toUpperCase();
+    const code = normalizeLeaveCode(item?.code);
     if (!code) throw new BadRequestError(`policy[${idx}].code is required`);
-    if (!LEAVE_TYPES.includes(code)) {
+    if (!LEAVE_CODE_PATTERN.test(code)) {
       throw new BadRequestError(
-        `Invalid leave code "${code}". Allowed: ${LEAVE_TYPES.join(', ')}`
+        `Invalid leave code "${item?.code}". Use letters, numbers, and underscores (e.g. BEREAVEMENT, MARRIAGE)`
       );
     }
     if (seen.has(code)) throw new BadRequestError(`Duplicate leave code "${code}"`);
@@ -404,7 +404,12 @@ const applyLeavePolicyToAll = async (req, res, next) => {
           encashed: 0,
         }));
         const { error: insErr } = await supabaseAdmin.from('leave_balances').insert(rows);
-        if (insErr) throw new BadRequestError(insErr.message);
+        if (insErr) {
+          if (/invalid input value for enum/i.test(insErr.message)) {
+            throw new BadRequestError('Custom leave codes need leave_type stored as text. Run the leave_types_v2 SQL in Supabase.');
+          }
+          throw new BadRequestError(insErr.message);
+        }
       }
 
       if (employeeIds.length) {

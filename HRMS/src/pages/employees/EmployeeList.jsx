@@ -7,7 +7,6 @@ import {
 import {
   Card, Button, Avatar, StatusBadge, Select, Tabs, DataTable, EmptyState, ConfirmDialog, Skeleton, Badge, Modal, Input,
 } from '../../components/ui';
-import { DEPARTMENTS } from '../../lib/constants';
 import { useEmployees, useEmployeeMutations } from '../../hooks/useEmployees';
 import { useAccessibleCompanies } from '../../hooks/useCompanies';
 import { useSettingsStore } from '../../store/settingsStore';
@@ -279,6 +278,7 @@ export default function EmployeeList() {
 
   const locations = useSettingsStore((s) => s.locations);
   const addLocation = useSettingsStore((s) => s.addLocation);
+  const departments = useSettingsStore((s) => s.departments);
 
   const tabFromUrl = searchParams.get('tab');
   const validTab = TABS.some((t) => t.id === tabFromUrl) ? tabFromUrl : 'directory';
@@ -562,7 +562,7 @@ export default function EmployeeList() {
 
           {showFilters && (
             <div className="mt-4 flex flex-col gap-2 border-t border-border/60 pt-4 sm:flex-row sm:flex-wrap sm:items-center">
-              <Select value={dept} onChange={(e) => setDept(e.target.value)} options={DEPARTMENTS} placeholder="All departments" className="sm:w-44" />
+              <Select value={dept} onChange={(e) => setDept(e.target.value)} options={departments} placeholder="All departments" className="sm:w-44" />
               <Select value={status} onChange={(e) => setStatus(e.target.value)} options={['active', 'probation', 'on-leave', 'resigned', 'pending-setup']} placeholder="All statuses" className="sm:w-40" />
               {addingLocation ? (
                 <div className="flex items-center gap-1 sm:w-56">

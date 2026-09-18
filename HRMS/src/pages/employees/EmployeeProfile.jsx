@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import {
@@ -23,9 +23,11 @@ import { useAllPayslipsForYear, downloadPayslipApi } from '../../hooks/usePayrol
 import { PayslipPreviewModal } from '../../components/payroll/PayslipPreviewModal';
 import { useCompanyStore } from '../../store/companyStore';
 import { useAuthStore } from '../../store/authStore';
+import { useSettingsStore } from '../../store/settingsStore';
 import { useCan } from '../../hooks/useCan';
 import { formatDate, formatCurrency, humanize } from '../../lib/utils';
-import { employeeEditPath, employeeProfilePath, isOwnEmployeeProfileSlug, resolveEmployeeId } from '../../lib/employeeRoutes';
+import { employeeEditPath, employeeProfilePath, isOwnEmployeeProfileSlug, isUuid, resolveEmployeeId } from '../../lib/employeeRoutes';
+import { mapWizardDocType } from '../../lib/documentTypeMap';
 
 const TABS = [
   { id: 'overview', label: 'Overview', icon: User },
@@ -90,6 +92,62 @@ function InfoRow({ icon: Icon, label, value }) {
   );
 }
 
+/**
+ * A single document type row inside the "Edit my info" Documents section.
+ * Uploads immediately on file selection (the employee id already exists here,
+ * unlike the Add Employee wizard, so there's no need to stage files locally).
+ */
+function SelfDocRow({ docType, existingDoc, uploading, disabled, onUpload, onView }) {
+  const inputRef = useRef(null);
+  const accept = (docType.acceptedFormats || ['pdf', 'jpg', 'png']).map((f) => `.${f}`).join(',');
+
+  return (
+    <div className="flex items-center gap-3 rounded-input border border-border p-3">
+      <div className="h-9 w-9 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
+        <FileText className="h-4 w-4" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-medium text-fg truncate">
+          {docType.name}
+          {docType.isRequired && <span className="text-danger"> *</span>}
+        </p>
+        {existingDoc ? (
+          <p className="text-xs text-fg-subtle truncate">
+            {existingDoc.isVerified ? 'Verified' : 'Pending verification'} · {existingDoc.name}
+          </p>
+        ) : (
+          <p className="text-xs text-fg-subtle">Not uploaded yet</p>
+        )}
+      </div>
+      {existingDoc && (
+        <Button variant="ghost" size="sm" icon={Eye} title="View" onClick={onView} />
+      )}
+      <Button
+        variant="outline"
+        size="sm"
+        icon={Upload}
+        loading={uploading}
+        disabled={disabled}
+        onClick={() => inputRef.current?.click()}
+      >
+        {existingDoc ? 'Replace' : 'Upload'}
+      </Button>
+      <input
+        ref={inputRef}
+        type="file"
+        accept={accept}
+        className="hidden"
+        disabled={disabled}
+        onChange={(e) => {
+          const file = e.target.files?.[0] || null;
+          e.target.value = '';
+          onUpload(file);
+        }}
+      />
+    </div>
+  );
+}
+
 export default function EmployeeProfile() {
   const { id: slug } = useParams();
   const navigate = useNavigate();
@@ -121,6 +179,14 @@ export default function EmployeeProfile() {
   const [tab, setTab] = useState(validTab);
   const now = new Date();
   const { data: emp, isLoading } = useEmployee(id);
+  // `id` may still be an employee-code slug (e.g. "EMP006") when the directory
+  // roster hasn't loaded, since resolveEmployeeId falls back to the raw slug.
+  // Only GET /employees/:id tolerates a code — the dependent endpoints
+  // (attendance report, employee documents, career events) validate a strict
+  // UUID and reject a code with 400, and the client-side row filters below
+  // compare against UUIDs so a code silently matches nothing. `emp` comes back
+  // from the code-tolerant lookup, so `emp.id` is always the real UUID.
+  const resolvedId = emp?.id || (isUuid(id) ? id : undefined);
   const { data: accessibleCompanies = [] } = useAccessibleCompanies(Boolean(isHrAdmin));
   const brandedCompany = useCompanyStore((s) => s.company);
   const brandedHomeName = brandedCompany?.name?.trim();
@@ -135,7 +201,7 @@ export default function EmployeeProfile() {
     if (!cid) return '';
     return accessible?.name || '';
   }, [emp, accessibleCompanies, brandedHomeId, brandedHomeName]);
-  const { data: attendanceReport, isLoading: attendanceLoading } = useEmployeeAttendanceReport(id, {
+  const { data: attendanceReport, isLoading: attendanceLoading } = useEmployeeAttendanceReport(resolvedId, {
     month: now.getMonth() + 1,
     year: now.getFullYear(),
   });
@@ -149,11 +215,11 @@ export default function EmployeeProfile() {
   const { data: teamLeavesData = [] } = useTeamLeaves({ enabled: !isHrAdmin && !isOwnProfile });
   const { data: allAssets = [] } = useAssets();
   const { data: myAssetsData = [] } = useMyAssets({ enabled: !isHrAdmin && isOwnProfile });
-  const { data: documents = [], isLoading: docsLoading } = useEmployeeDocuments(id);
+  const { data: documents = [], isLoading: docsLoading } = useEmployeeDocuments(resolvedId);
   const { upload, verify, remove } = useDocumentMutations();
   const { data: payslips = [] } = useAllPayslipsForYear(now.getFullYear());
-  const { data: careerEvents = [], isLoading: careerLoading } = useCareerEvents(id);
-  const { addNote } = useCareerEventMutations(id);
+  const { data: careerEvents = [], isLoading: careerLoading } = useCareerEvents(resolvedId);
+  const { addNote } = useCareerEventMutations(resolvedId);
   const { update: updateEmployee, uploadPhoto } = useEmployeeMutations();
   const companyName = brandedHomeName;
 
@@ -168,7 +234,11 @@ export default function EmployeeProfile() {
   // form renders read-only instead of just silently rejecting a submit on
   // a form that still looks editable.
   const editLocked = Boolean(emp?.profileSelfEditUsed);
-  const hasBankDetails = Boolean(emp?.bank?.account || emp?.bank?.name || emp?.bank?.ifsc);
+  // Self-upload from the Documents TAB (separate from the "Edit my info"
+  // modal) must respect the same one-time lock — otherwise an employee
+  // could bypass the modal's locked Documents section just by switching
+  // tabs. HR/Admin uploads are unaffected either way.
+  const canSelfUploadDocs = isOwnProfile && !editLocked;
   const [editOpen, setEditOpen] = useState(false);
   const [editStep, setEditStep] = useState('warning'); // 'warning' | 'form'
   const [ackChecked, setAckChecked] = useState(false);
@@ -177,6 +247,73 @@ export default function EmployeeProfile() {
   const [photoUploading, setPhotoUploading] = useState(false);
   const { resetSelfEditLock } = useEmployeeMutations();
   const [resettingLock, setResettingLock] = useState(false);
+
+  // Documents inside "Edit my info" — upload immediately on file selection
+  // (the employee id already exists here). Product decision: gated by the
+  // same one-time editLocked profile-field lock as the rest of the form —
+  // once the employee's one-time edit is used, document upload also stops
+  // until HR/Admin resets it. Viewing an already-uploaded document stays
+  // available either way — only new uploads/replacements are locked.
+  const allDocumentTypes = useSettingsStore((s) => s.documentTypes);
+  const selfDocumentTypes = useMemo(
+    () => (allDocumentTypes || []).filter((d) => d.isActive && d.name !== 'Employee Photo'),
+    [allDocumentTypes],
+  );
+  const matchedDocByType = useMemo(() => {
+    const map = {};
+    for (const dt of selfDocumentTypes) {
+      const mappedType = mapWizardDocType(dt.name);
+      const matches = (documents || []).filter((d) => d.type === mappedType);
+      if (matches.length) {
+        map[dt.id] = [...matches].sort(
+          (a, b) => new Date(b.uploadedAt || 0) - new Date(a.uploadedAt || 0),
+        )[0];
+      }
+    }
+    return map;
+  }, [selfDocumentTypes, documents]);
+  const [uploadingDocTypeId, setUploadingDocTypeId] = useState(null);
+
+  const handleSelfDocUpload = async (docType, file) => {
+    if (!file) return;
+    if (editLocked) {
+      toast.error("You've used your one-time profile edit. Contact HR/Admin to upload more documents.");
+      return;
+    }
+    const ext = `.${file.name.split('.').pop().toLowerCase()}`;
+    const accepted = (docType.acceptedFormats || []).map((f) => `.${f}`);
+    if (accepted.length && !accepted.includes(ext)) {
+      toast.error(`"${file.name}" must be ${(docType.acceptedFormats || []).join('/').toUpperCase()}`);
+      return;
+    }
+    const maxBytes = (docType.maxSizeMB || 5) * 1024 * 1024;
+    if (file.size > maxBytes) {
+      toast.error(`"${file.name}" exceeds ${docType.maxSizeMB || 5}MB`);
+      return;
+    }
+    setUploadingDocTypeId(docType.id);
+    try {
+      await upload.mutateAsync({
+        file,
+        documentType: mapWizardDocType(docType.name),
+        documentName: docType.name,
+        employeeId: resolvedId,
+      });
+      toast.success(`${docType.name} uploaded`);
+    } catch (err) {
+      toast.error(err.message || `Failed to upload ${docType.name}`);
+    } finally {
+      setUploadingDocTypeId(null);
+    }
+  };
+
+  const viewSelfDoc = async (docId) => {
+    try {
+      await openDocumentApi(docId);
+    } catch (err) {
+      toast.error(err.message || 'Could not open document');
+    }
+  };
 
   const buildEditForm = () => {
     const addr = emp?.addressRaw || {};
@@ -197,9 +334,9 @@ export default function EmployeeProfile() {
       emergencyName: ec.name || '',
       emergencyPhone: ec.phone || '',
       emergencyRelation: ec.relation || '',
-      bankName: '',
-      bankAccount: '',
-      bankIfsc: '',
+      bankName: emp?.bank?.name || '',
+      bankAccount: emp?.bank?.account || '',
+      bankIfsc: emp?.bank?.ifsc || '',
     };
   };
 
@@ -241,14 +378,14 @@ export default function EmployeeProfile() {
           relation: editForm.emergencyRelation.trim(),
         },
       };
-      if (!hasBankDetails && (editForm.bankName || editForm.bankAccount || editForm.bankIfsc)) {
+      if (editForm.bankName || editForm.bankAccount || editForm.bankIfsc) {
         payload.bankDetails = {
           bankName: editForm.bankName.trim(),
           accountNumber: editForm.bankAccount.trim(),
           ifsc: editForm.bankIfsc.trim().toUpperCase(),
         };
       }
-      await updateEmployee.mutateAsync({ id, payload });
+      await updateEmployee.mutateAsync({ id: resolvedId, payload });
       toast.success('Profile updated — this was your one-time self-edit.');
       setEditOpen(false);
     } catch (err) {
@@ -261,7 +398,7 @@ export default function EmployeeProfile() {
   const doResetSelfEditLock = async () => {
     setResettingLock(true);
     try {
-      await resetSelfEditLock.mutateAsync({ id, reason: 'Reset by HR/Admin from employee profile' });
+      await resetSelfEditLock.mutateAsync({ id: resolvedId, reason: 'Reset by HR/Admin from employee profile' });
       toast.success('Self-edit lock reset — employee can edit their profile once more');
     } catch (err) {
       toast.error(err.message || 'Reset failed');
@@ -289,7 +426,7 @@ export default function EmployeeProfile() {
     if (!file) return;
     setPhotoUploading(true);
     try {
-      await uploadPhoto.mutateAsync({ id, file });
+      await uploadPhoto.mutateAsync({ id: resolvedId, file });
       toast.success('Photo updated');
     } catch (err) {
       toast.error(err.message || 'Photo upload failed');
@@ -344,13 +481,13 @@ export default function EmployeeProfile() {
 
   const empLeaves = useMemo(() => {
     const source = isHrAdmin ? allLeavesAdmin : (isOwnProfile ? myLeavesData : teamLeavesData);
-    return source.filter((l) => l.employeeId === id);
-  }, [isHrAdmin, isOwnProfile, allLeavesAdmin, myLeavesData, teamLeavesData, id]);
+    return source.filter((l) => l.employeeId === resolvedId);
+  }, [isHrAdmin, isOwnProfile, allLeavesAdmin, myLeavesData, teamLeavesData, resolvedId]);
   const empAssets = useMemo(() => {
     const source = isHrAdmin ? allAssets : (isOwnProfile ? myAssetsData : []);
-    return source.filter((a) => a.assignedTo === id);
-  }, [isHrAdmin, isOwnProfile, allAssets, myAssetsData, id]);
-  const empPayslips = useMemo(() => payslips.filter((p) => p.employeeId === id), [payslips, id]);
+    return source.filter((a) => a.assignedTo === resolvedId);
+  }, [isHrAdmin, isOwnProfile, allAssets, myAssetsData, resolvedId]);
+  const empPayslips = useMemo(() => payslips.filter((p) => p.employeeId === resolvedId), [payslips, resolvedId]);
 
   if (isLoading) {
     return <Card className="p-8"><Skeleton className="h-32 rounded-xl" /></Card>;
@@ -434,7 +571,7 @@ export default function EmployeeProfile() {
           <div className="flex items-center gap-2">
             {isOwnProfile && (
               <Button variant="outline" icon={Pencil} onClick={openEditModal}>
-                {editLocked ? 'View my info (locked)' : 'Edit my info'}
+                {editLocked ? 'View my info' : 'Edit my info'}
               </Button>
             )}
             {canManage && editLocked && (
@@ -452,8 +589,8 @@ export default function EmployeeProfile() {
       <Modal
         open={editOpen}
         onClose={() => setEditOpen(false)}
-        title={editStep === 'warning' ? 'Before you continue' : (editLocked ? 'Your profile (locked)' : 'Edit my info')}
-        subtitle={editStep === 'form' && !editLocked ? 'Contact info, address, emergency contact, and bank details — for anything else, ask HR.' : undefined}
+        title={editStep === 'warning' ? 'Before you continue' : (editLocked ? 'Your profile' : 'Edit my info')}
+        subtitle={editStep === 'form' && !editLocked ? 'Contact info, address, emergency contact, bank details, and documents — for anything else, ask HR.' : undefined}
         size="xl"
         footer={editStep === 'warning' ? (
           <>
@@ -474,7 +611,7 @@ export default function EmployeeProfile() {
             <div className="rounded-xl border border-warning/40 bg-warning/10 p-4">
               <p className="text-sm font-semibold text-fg">This is the only time you can edit your profile yourself.</p>
               <p className="mt-1.5 text-sm text-fg-muted">
-                After saving, any further changes — including to bank details — will need to be made by HR/Admin.
+                After saving, any further changes — including to bank details and document uploads — will need to be made by HR/Admin.
                 Please review your details carefully before submitting.
               </p>
             </div>
@@ -489,10 +626,11 @@ export default function EmployeeProfile() {
             </label>
           </div>
         ) : editForm && (
+          <div className="space-y-6">
           <fieldset disabled={editLocked} className="space-y-6">
             {editLocked && (
               <p className="text-sm text-fg-muted rounded-xl bg-muted/50 p-3">
-                You've used your one-time profile edit. Contact HR to make changes.
+                Need to update something below? Contact HR or Admin to edit your profile again.
               </p>
             )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -529,21 +667,60 @@ export default function EmployeeProfile() {
             </div>
             <div className="pt-2 border-t border-border/60">
               <div className="mb-3">
-                <p className="text-xs font-medium text-fg-muted">Bank details</p>
+                <h3 className="text-sm font-semibold text-fg">Bank details</h3>
+                <p className="text-xs text-fg-subtle mt-0.5">Used for payroll disbursement. You can update this any time.</p>
               </div>
-              {hasBankDetails ? (
-                <p className="text-sm text-fg-subtle">
-                  Already on file ({emp?.bank?.name || 'bank'} ····{String(emp?.bank?.account || '').slice(-4)}). Changing it requires HR/Admin.
-                </p>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                  <Input label="Bank name" value={editForm.bankName} onChange={(e) => setEditForm((f) => ({ ...f, bankName: e.target.value }))} />
-                  <Input label="Account number" value={editForm.bankAccount} onChange={(e) => setEditForm((f) => ({ ...f, bankAccount: e.target.value }))} />
-                  <Input label="IFSC" value={editForm.bankIfsc} onChange={(e) => setEditForm((f) => ({ ...f, bankIfsc: e.target.value }))} />
-                </div>
-              )}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <Input
+                  label="Bank name"
+                  placeholder="e.g. HDFC Bank"
+                  value={editForm.bankName}
+                  onChange={(e) => setEditForm((f) => ({ ...f, bankName: e.target.value.replace(/[^A-Za-z\s.'&-]/g, '') }))}
+                />
+                <Input
+                  label="Account number"
+                  placeholder="e.g. 50100123456789"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  value={editForm.bankAccount}
+                  onChange={(e) => setEditForm((f) => ({ ...f, bankAccount: e.target.value.replace(/\D/g, '') }))}
+                />
+                <Input
+                  label="IFSC"
+                  placeholder="e.g. HDFC0001234"
+                  value={editForm.bankIfsc}
+                  onChange={(e) => setEditForm((f) => ({ ...f, bankIfsc: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 11) }))}
+                />
+              </div>
             </div>
           </fieldset>
+
+          <div className="pt-2 border-t border-border/60">
+            <div className="mb-3">
+              <h3 className="text-sm font-semibold text-fg">Documents</h3>
+              <p className="text-xs text-fg-subtle mt-0.5">
+                {editLocked
+                  ? "You've used your one-time profile edit — contact HR/Admin to upload more documents. You can still view what's already on file."
+                  : 'Identity proofs and other documents. Uploading is part of your one-time profile edit, same as the fields above.'}
+              </p>
+            </div>
+            <div className="space-y-2">
+              {selfDocumentTypes.length === 0 ? (
+                <p className="text-sm text-fg-subtle">No document types configured yet.</p>
+              ) : selfDocumentTypes.map((dt) => (
+                <SelfDocRow
+                  key={dt.id}
+                  docType={dt}
+                  existingDoc={matchedDocByType[dt.id]}
+                  uploading={uploadingDocTypeId === dt.id}
+                  disabled={editLocked}
+                  onUpload={(file) => handleSelfDocUpload(dt, file)}
+                  onView={() => matchedDocByType[dt.id] && viewSelfDoc(matchedDocByType[dt.id].id)}
+                />
+              ))}
+            </div>
+          </div>
+          </div>
         )}
       </Modal>
 
@@ -756,7 +933,7 @@ export default function EmployeeProfile() {
           <CardHeader
             title="Documents"
             subtitle="Offer letters, contracts & ID proofs"
-            action={isHrAdmin ? (
+            action={(isHrAdmin || canSelfUploadDocs) ? (
               <Button size="sm" icon={Upload} onClick={() => {
                 setUploadForm({ documentType: 'aadhar', documentName: '', file: null });
                 setUploadOpen(true);
@@ -773,8 +950,8 @@ export default function EmployeeProfile() {
               <EmptyState
                 icon={FileText}
                 title="No documents"
-                message={isHrAdmin ? 'Upload offer letters, ID proofs or certificates for this employee.' : 'No documents uploaded for this employee.'}
-                action={isHrAdmin ? (
+                message={isHrAdmin ? 'Upload offer letters, ID proofs or certificates for this employee.' : (canSelfUploadDocs ? 'Upload your ID proofs or certificates.' : (isOwnProfile ? "You've used your one-time profile edit — contact HR/Admin to upload more documents." : 'No documents uploaded for this employee.'))}
+                action={(isHrAdmin || canSelfUploadDocs) ? (
                   <Button size="sm" icon={Upload} onClick={() => setUploadOpen(true)}>Upload document</Button>
                 ) : undefined}
               />
@@ -876,7 +1053,7 @@ export default function EmployeeProfile() {
                         file: uploadForm.file,
                         documentType: uploadForm.documentType,
                         documentName: uploadForm.documentName || uploadForm.file.name,
-                        employeeId: id,
+                        employeeId: resolvedId,
                       });
                       toast.success('Document uploaded');
                       setUploadOpen(false);

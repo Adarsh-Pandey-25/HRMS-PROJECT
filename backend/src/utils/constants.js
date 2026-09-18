@@ -10,10 +10,23 @@ const ROLES = {
   EMPLOYEE: 'employee',
 };
 
+/** Built-in leave codes shown as presets. Custom codes are allowed if they match LEAVE_CODE_PATTERN. */
 const LEAVE_TYPES = [
   'CL', 'SL', 'EL', 'WFH', 'COMP_OFF',
   'MATERNITY', 'PATERNITY', 'UNPAID',
 ];
+
+/** Starts with a letter; letters, digits, underscores; max 40 chars (leave_balances.leave_type VARCHAR). */
+const LEAVE_CODE_PATTERN = /^[A-Z][A-Z0-9_]{0,39}$/;
+
+const normalizeLeaveCode = (raw) => String(raw || '')
+  .trim()
+  .toUpperCase()
+  .replace(/[\s-]+/g, '_')
+  .replace(/[^A-Z0-9_]/g, '')
+  .replace(/_+/g, '_')
+  .replace(/^_|_$/g, '')
+  .slice(0, 40);
 
 const LEAVE_STATUS = ['pending', 'approved', 'rejected', 'cancelled'];
 
@@ -62,6 +75,8 @@ const STORAGE_BUCKETS = {
 module.exports = {
   ROLES,
   LEAVE_TYPES,
+  LEAVE_CODE_PATTERN,
+  normalizeLeaveCode,
   LEAVE_STATUS,
   ATTENDANCE_STATUS,
   CHECK_IN_METHODS,

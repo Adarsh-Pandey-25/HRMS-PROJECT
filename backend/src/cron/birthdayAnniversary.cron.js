@@ -1,17 +1,31 @@
+const cron = require('node-cron');
+const moment = require('moment-timezone');
 const { supabaseAdmin } = require('../config/supabase');
 const { birthdayWishEmail, workAnniversaryEmail } = require('../services/email.service');
 const notificationService = require('../services/notification.service');
 const logger = require('../utils/logger');
-const cron = require('node-cron');
-const moment = require('moment-timezone');
+const config = require('../config/database');
 const { withCronLock } = require('../utils/cronLock');
 const { alertOnCronFailure } = require('../utils/cronAlert');
-const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
+const { DEFAULT_COMPANY_ID } = require('../utils/tenant');
 const { TIMEZONE } = require('../utils/constants');
 
+/** Canonical notification types — these exact strings are what
+ *  notification.service.js's resolveTriggerEvent() maps to the
+ *  "Birthday reminder" / "Work anniversary reminder" Settings triggers. */
+const TYPE_BIRTHDAY = 'BIRTHDAY';
+const TYPE_ANNIVERSARY = 'ANNIVERSARY';
+
+const displayName = (e) => `${e?.first_name || ''} ${e?.last_name || ''}`.trim();
+const plural = (n) => (Number(n) === 1 ? '' : 's');
+
 /**
- * Find active employees whose birthday or work anniversary falls on the given
- * date (month-day match, year-independent for birthdays; year-count for anniversaries).
+ * Active employees whose birthday and/or work anniversary falls on `dateStr`,
+ * matched on month-day so it is year-independent.
+ *
+ * An employee's own joining day is deliberately NOT an anniversary — that is
+ * 0 years of service, and they already receive the welcome email. Only the
+ * first and subsequent yearly repeats count.
  */
 async function findCelebrants(dateStr) {
   const m = moment(dateStr);
@@ -20,137 +34,136 @@ async function findCelebrants(dateStr) {
 
   const { data, error } = await supabaseAdmin
     .from('employees')
-    .select('id, first_name, last_name, email, date_of_birth, date_of_joining, company_id, role, department, is_active')
-    .neq('is_active', false);
+    .select('id, first_name, last_name, email, date_of_birth, date_of_joining, company_id')
+    .eq('is_active', true);
 
   if (error) {
-    logger.error('[BirthdayAnniversary] Query failed', { error: error.message });
+    logger.error('[BirthdayAnniversary] Employee query failed', { error: error.message });
     return [];
   }
 
   const celebrants = [];
-  for (const emp of (data || [])) {
-    const dob = emp.date_of_birth || emp.dateOfBirth;
-    const doj = emp.date_of_joining || emp.dateOfJoining;
+  for (const emp of data || []) {
+    const dob = emp.date_of_birth;
+    const doj = emp.date_of_joining;
 
-    const birthdayMatch = dob && moment(dob).format('MM-DD') === monthDay;
-    const anniversaryMatch = doj && moment(doj).format('MM-DD') === monthDay;
+    const isBirthday = Boolean(dob) && moment(dob).format('MM-DD') === monthDay;
+    const joinDayMatches = Boolean(doj) && moment(doj).format('MM-DD') === monthDay;
+    const yearsOfService = joinDayMatches ? currentYear - moment(doj).year() : 0;
+    const isAnniversary = joinDayMatches && yearsOfService >= 1;
 
-    if (birthdayMatch || anniversaryMatch) {
-      const anniversaryYear = doj ? moment(doj).year() : null;
-      const yearsOfService = anniversaryYear ? currentYear - anniversaryYear : null;
-
-      celebrants.push({
-        ...emp,
-        isBirthday: Boolean(birthdayMatch),
-        isAnniversary: Boolean(anniversaryMatch),
-        yearsOfService,
-      });
+    if (isBirthday || isAnniversary) {
+      celebrants.push({ ...emp, isBirthday, isAnniversary, yearsOfService });
     }
   }
   return celebrants;
 }
 
 /**
- * Send birthday/anniversary wishes to the employee and notify all company staff.
+ * Wish the celebrant directly: a dedicated branded email plus one in-app
+ * notification. The notification is created with skipEmail because the
+ * branded email above is already this event's email — without it the
+ * notification service would send a second, generic copy of the same news.
  */
-async function celebrate(celebrant, companyId) {
-  const fullName = `${celebrant.first_name || ''} ${celebrant.last_name || ''}`.trim();
+async function celebrate(celebrant) {
+  const name = displayName(celebrant);
+  const years = celebrant.yearsOfService;
 
-  if (celebrant.isBirthday) {
+  if (celebrant.isBirthday && celebrant.email) {
     await birthdayWishEmail(celebrant).catch((err) =>
-      logger.warn('[BirthdayAnniversary] Birthday email failed', { employeeId: celebrant.id, error: err.message }),
-    );
+      logger.warn('[BirthdayAnniversary] Birthday email failed', { employeeId: celebrant.id, error: err.message }));
+  }
+  if (celebrant.isAnniversary && celebrant.email) {
+    await workAnniversaryEmail(celebrant, years).catch((err) =>
+      logger.warn('[BirthdayAnniversary] Anniversary email failed', { employeeId: celebrant.id, error: err.message }));
   }
 
-  if (celebrant.isAnniversary && celebrant.yearsOfService > 0) {
-    await workAnniversaryEmail(celebrant, celebrant.yearsOfService).catch((err) =>
-      logger.warn('[BirthdayAnniversary] Anniversary email failed', { employeeId: celebrant.id, error: err.message }),
-    );
+  let title;
+  let message;
+  if (celebrant.isBirthday && celebrant.isAnniversary) {
+    title = 'Happy Birthday & Work Anniversary!';
+    message = `Wishing you a wonderful birthday — and celebrating ${years} year${plural(years)} with us today!`;
+  } else if (celebrant.isBirthday) {
+    title = 'Happy Birthday!';
+    message = `Wishing you a wonderful birthday, ${celebrant.first_name || name}!`;
+  } else {
+    title = 'Happy Work Anniversary!';
+    message = `Celebrating ${years} year${plural(years)} with us today — thank you for everything you bring to the team.`;
   }
-
-  // In-app notification to the celebrant
-  const notifType = celebrant.isBirthday && celebrant.isAnniversary ? 'birthday_anniversary' : celebrant.isBirthday ? 'birthday' : 'work_anniversary';
-  const notifTitle = celebrant.isBirthday && celebrant.isAnniversary
-    ? 'Happy Birthday & Work Anniversary!'
-    : celebrant.isBirthday
-      ? 'Happy Birthday!'
-      : 'Happy Work Anniversary!';
-  const yearsText = celebrant.yearsOfService ? ` (${celebrant.yearsOfService} year${celebrant.yearsOfService > 1 ? 's' : ''})` : '';
-
-  const notifMessage = celebrant.isBirthday && celebrant.isAnniversary
-    ? `Wishing you a wonderful birthday and celebrating your ${celebrant.yearsOfService || 'first'} year${(celebrant.yearsOfService || 1) > 1 ? 's' : ''} with us!`
-    : celebrant.isBirthday
-      ? 'Wishing you a wonderful birthday!'
-      : `Celebrating ${yearsText} with us today — thank you for your contribution!`;
 
   try {
     await notificationService.createNotification({
       user_id: celebrant.id,
-      type: notifType.toUpperCase(),
-      title: notifTitle,
-      message: notifMessage,
+      type: celebrant.isBirthday ? TYPE_BIRTHDAY : TYPE_ANNIVERSARY,
+      title,
+      message,
       link: '/dashboard',
       meta: {
         employee_id: celebrant.id,
         is_birthday: celebrant.isBirthday,
         is_anniversary: celebrant.isAnniversary,
-        years_of_service: celebrant.yearsOfService,
+        years_of_service: years,
       },
+      skipEmail: true,
     });
   } catch (err) {
-    logger.warn('[BirthdayAnniversary] Notification failed', { employeeId: celebrant.id, error: err.message });
+    logger.warn('[BirthdayAnniversary] Celebrant notification failed', { employeeId: celebrant.id, error: err.message });
   }
 }
 
 /**
- * Broadcast a notification to all employees in the company about a colleague's
- * birthday or work anniversary, so the whole team can send wishes.
+ * Tell the rest of the company so colleagues can send wishes. In-app only
+ * (skipEmail) — emailing every employee about every birthday would be spam;
+ * the celebrant themselves still gets the branded email in celebrate().
  */
 async function broadcastToCompany(celebrant, companyId) {
-  const fullName = `${celebrant.first_name || ''} ${celebrant.last_name || ''}`.trim();
+  const name = displayName(celebrant);
+  const years = celebrant.yearsOfService;
 
-  let title, message;
+  let title;
+  let message;
   if (celebrant.isBirthday && celebrant.isAnniversary) {
-    title = `${fullName} — Birthday & Work Anniversary today`;
-    message = `Celebrate ${fullName}'s birthday and ${celebrant.yearsOfService || 'first'} year${(celebrant.yearsOfService || 1) > 1 ? 's' : ''} in the company!`;
+    title = `${name} — birthday & work anniversary today`;
+    message = `It's ${name}'s birthday, and they're celebrating ${years} year${plural(years)} with us. Send them your wishes!`;
   } else if (celebrant.isBirthday) {
-    title = `${fullName}'s birthday today`;
-    message = `It's ${fullName}'s birthday today — send them your best wishes!`;
+    title = `${name}'s birthday today`;
+    message = `It's ${name}'s birthday today — send them your best wishes!`;
   } else {
-    title = `${fullName}'s work anniversary today`;
-    message = `${fullName} is celebrating ${celebrant.yearsOfService} year${celebrant.yearsOfService > 1 ? 's' : ''} with us today!`;
+    title = `${name}'s work anniversary today`;
+    message = `${name} is celebrating ${years} year${plural(years)} with us today!`;
   }
 
   try {
-    const { data: employees } = await supabaseAdmin
+    const { data: employees, error } = await supabaseAdmin
       .from('employees')
-      .select('id, email, is_active')
+      .select('id')
       .eq('company_id', companyId)
-      .neq('is_active', false);
+      .eq('is_active', true);
+    if (error) throw new Error(error.message);
 
-    const recipients = (employees || []).filter((e) => e.id !== celebrant.id && e.email);
-    const notificationRows = recipients.map((e) => ({
-      user_id: e.id,
-      type: celebrant.isAnniversary ? 'WORK_ANNIVERSARY' : 'BIRTHDAY',
-      title,
-      message,
-      link: `/employees/${celebrant.id}`,
-      meta: {
-        celebrant_id: celebrant.id,
-        celebrant_name: fullName,
-        is_birthday: celebrant.isBirthday,
-        is_anniversary: celebrant.isAnniversary,
-        years_of_service: celebrant.yearsOfService,
-      },
-      is_read: false,
-    }));
+    const rows = (employees || [])
+      .filter((e) => e.id !== celebrant.id)
+      .map((e) => ({
+        user_id: e.id,
+        type: celebrant.isBirthday ? TYPE_BIRTHDAY : TYPE_ANNIVERSARY,
+        title,
+        message,
+        link: `/employees/${celebrant.id}`,
+        meta: {
+          celebrant_id: celebrant.id,
+          celebrant_name: name,
+          is_birthday: celebrant.isBirthday,
+          is_anniversary: celebrant.isAnniversary,
+          years_of_service: years,
+        },
+        skipEmail: true,
+      }));
 
-    if (notificationRows.length > 0) {
-      await supabaseAdmin.from('notifications').insert(notificationRows);
-    }
+    if (rows.length) await notificationService.createNotifications(rows);
   } catch (err) {
-    logger.warn('[BirthdayAnniversary] Broadcast failed', { companyId, employeeId: celebrant.id, error: err.message });
+    logger.warn('[BirthdayAnniversary] Company broadcast failed', {
+      companyId, employeeId: celebrant.id, error: err.message,
+    });
   }
 }
 
@@ -158,43 +171,59 @@ const runBirthdayAnniversaryCheck = withCronLock('birthday_anniversary', 5 * 60 
   logger.info(`Running birthday/anniversary check (${reason})`);
 
   const today = moment().tz(TIMEZONE).format('YYYY-MM-DD');
-  const celebrants = await findCelebrants(today);
+  const summary = { reason, date: today, celebrants: 0, errors: 0 };
 
-  if (!celebrants.length) {
-    logger.info('Birthday/anniversary check: no celebrants today');
-    return { date: today, celebrants: 0 };
+  try {
+    const celebrants = await findCelebrants(today);
+    if (!celebrants.length) {
+      logger.info('Birthday/anniversary check: no celebrants today', summary);
+      return summary;
+    }
+
+    const tenantService = require('../services/tenant.service');
+    const companies = await tenantService.listActiveCompanies();
+    const activeCompanyIds = new Set((companies || []).map((c) => String(c.id)));
+
+    for (const c of celebrants) {
+      const companyId = String(c.company_id || DEFAULT_COMPANY_ID);
+      if (!activeCompanyIds.has(companyId)) continue;
+      try {
+        await celebrate(c);
+        await broadcastToCompany(c, companyId);
+        summary.celebrants += 1;
+      } catch (err) {
+        summary.errors += 1;
+        logger.error('[BirthdayAnniversary] Failed for employee', { employeeId: c.id, error: err.message });
+      }
+    }
+  } catch (err) {
+    summary.errors += 1;
+    logger.error('Birthday/anniversary check failed', { reason, error: err.message });
+    await alertOnCronFailure('birthdayAnniversary', err.message).catch((e) => {
+      logger.error('[CRON] alertOnCronFailure itself failed', { job: 'birthdayAnniversary', error: e.message });
+    });
   }
 
-  const tenantService = require('../services/tenant.service');
-  const companies = await tenantService.listActiveCompanies();
-  const companyMap = new Map((companies || []).map((c) => [c.id, c.id]));
-
-  let processed = 0;
-  for (const c of celebrants) {
-    const companyId = String(c.company_id || DEFAULT_COMPANY_ID);
-    if (!companyMap.has(companyId)) continue;
-
-    await celebrate(c, companyId);
-    await broadcastToCompany(c, companyId);
-    processed += 1;
-  }
-
-  logger.info('Birthday/anniversary check completed', { date: today, celebrants: processed });
-  return { date: today, celebrants: processed };
+  logger.info('Birthday/anniversary check completed', summary);
+  return summary;
 });
 
 const startBirthdayAnniversaryCron = () => {
-  // Run on startup to catch up (if server was down at 8 AM)
+  // Catch up on server start, in case the process was down at 8:00 AM.
   runBirthdayAnniversaryCheck('startup').catch(() => {});
 
-  // Every day at 8:00 AM company timezone
-  cron.schedule('0 8 * * *', () => runBirthdayAnniversaryCheck('cron').catch(() => {}), { timezone: require('../config/database').timezone });
+  cron.schedule(
+    '0 8 * * *',
+    () => runBirthdayAnniversaryCheck('cron').catch(() => {}),
+    { timezone: config.timezone },
+  );
 
-  // Fallback re-check every 4 hours — wrapped to prevent unhandled rejections
-  // from the distributed cronLock's fetch-based mechanism killing the process.
-  const intervalId = setInterval(() => runBirthdayAnniversaryCheck('interval').catch(() => {}), 4 * 60 * 60 * 1000);
+  // Fallback sweep: node-cron can miss a fire on Windows/sleep. Wrapped so a
+  // rejection here can never surface as an unhandled rejection (which this
+  // process treats as fatal — see server.js).
+  setInterval(() => runBirthdayAnniversaryCheck('interval').catch(() => {}), 4 * 60 * 60 * 1000);
 
-  logger.info(`Birthday/anniversary cron scheduled for 8:00 AM ${require('../config/database').timezone}`);
+  logger.info(`Birthday/anniversary cron scheduled for 8:00 AM ${config.timezone}`);
 };
 
 module.exports = { startBirthdayAnniversaryCron, runBirthdayAnniversaryCheck };

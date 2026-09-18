@@ -219,6 +219,21 @@ function normalizeAttendanceType(value) {
   return ['office', 'wfh', 'hybrid'].includes(v) ? v : 'office';
 }
 
+/**
+ * Backend only accepts the exact lowercase enum ['male','female','other']
+ * (express-validator's isIn is case-sensitive) — spreadsheets routinely
+ * arrive with "Male"/"FEMALE"/"M"/"F" etc., which previously passed straight
+ * through and failed at import time with "Invalid gender". Normalize case
+ * and common shorthands here instead; returns undefined (left unset, same
+ * as blank) for anything unrecognized rather than guessing.
+ */
+function normalizeGender(value) {
+  const v = String(value || '').trim().toLowerCase();
+  if (v === 'm') return 'male';
+  if (v === 'f') return 'female';
+  return ['male', 'female', 'other'].includes(v) ? v : undefined;
+}
+
 function normalizeSalaryPeriod(value) {
   return String(value || 'monthly').trim().toLowerCase() === 'annual' ? 'annual' : 'monthly';
 }
@@ -263,6 +278,7 @@ function validateRows(rows, existingEmails, managerDirectory) {
     if (joinRaw !== '' && joinRaw != null && !joinIso) errors.push('Join date must be DD-MM-YYYY');
     if (!designation) errors.push('Designation missing');
     if (!department) errors.push('Department missing');
+    if (row.Gender && !normalizeGender(row.Gender)) errors.push('Gender must be male, female, or other');
     if (managerEmail && !managerDirectory.has(managerEmail)) errors.push('Reporting manager email not found');
     if (deviceUserId && seenDeviceIds.has(deviceUserId)) errors.push('Duplicate biometric device ID in file');
     else if (deviceUserId) seenDeviceIds.add(deviceUserId);
@@ -345,7 +361,7 @@ export function BulkImportPanel({ onSkip, onImported }) {
           email: row._email,
           designation: row.Designation || row.designation,
           department: row.Department || row.department,
-          gender: row.Gender || undefined,
+          gender: normalizeGender(row.Gender),
           phone: String(row.Phone || row.phone || '').replace(/\D/g, '') || undefined,
           dateOfBirth: row._dateOfBirth,
           dateOfJoining: row._dateOfJoining,

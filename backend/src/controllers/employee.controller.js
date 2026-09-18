@@ -414,17 +414,18 @@ const update = async (req, res, next) => {
           profile_picture: req.body.profile_picture,
         };
 
-    // Item 2: bank_details may be SET by the employee themselves only
-    // while currently null/unset (first-time entry during onboarding) —
-    // once a value exists, changing it is HR/Admin-only (N-01's original
-    // reasoning: redirecting your own salary payments). Silently dropped
-    // rather than erroring the whole request, so other fields in the same
-    // submission still go through.
+    // Item 2 (revised by product decision): bank_details may be set by the
+    // employee themselves via the narrow self-edit path regardless of
+    // whether a value already exists — the earlier "only while unset"
+    // restriction (N-01's original reasoning: redirecting your own salary
+    // payments) is relaxed here in favor of letting employees correct their
+    // own bank details any time. This is still scoped to isNarrowSelfEdit
+    // (not available to a privileged self-editor via the branch below) and
+    // still gated by the same one-time profile_self_edit_used lock as every
+    // other field in this whitelist — once that lock is set, this whole
+    // branch is unreachable regardless of bank_details' prior state.
     if (isNarrowSelfEdit && req.body.bank_details !== undefined) {
-      const hasExistingBank = existing.bank_details && Object.keys(existing.bank_details).length > 0;
-      if (!hasExistingBank) {
-        allowedFields.bank_details = req.body.bank_details;
-      }
+      allowedFields.bank_details = req.body.bank_details;
     }
 
     if (isPrivileged && req.body.role !== undefined) {
@@ -447,9 +448,10 @@ const update = async (req, res, next) => {
     // reassign their own role, via this same isSelf path.
     if (isSelf) {
       delete allowedFields.salary_details;
-      // bank_details: left alone here when the item 2 first-time-set branch
-      // above already populated it (isNarrowSelfEdit + no existing value) —
-      // otherwise stripped exactly as before.
+      // bank_details: left alone here when the item 2 branch above already
+      // populated it (isNarrowSelfEdit path) — otherwise (a privileged
+      // self-editor, i.e. HR/Admin editing their own record) stripped, same
+      // as salary_details/role/etc. below.
       if (!(isNarrowSelfEdit && allowedFields.bank_details !== undefined)) {
         delete allowedFields.bank_details;
       }

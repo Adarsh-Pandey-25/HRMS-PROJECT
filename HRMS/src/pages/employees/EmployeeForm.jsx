@@ -3,9 +3,9 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { ArrowLeft, ArrowRight, Check, Sparkles } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, Sparkles, Plus, X } from 'lucide-react';
 import { Card, Button, Input, Select, Stepper, Toggle } from '../../components/ui';
-import { DEPARTMENTS, EMPLOYMENT_TYPES, ROLES } from '../../lib/constants';
+import { EMPLOYMENT_TYPES, ROLES } from '../../lib/constants';
 import { useSettingsStore } from '../../store/settingsStore';
 import { useEmployees, useEmployeeMutations, useEmployee, useEmployeeMap } from '../../hooks/useEmployees';
 import { useAccessibleCompanies } from '../../hooks/useCompanies';
@@ -17,6 +17,7 @@ import { formatCurrency, humanize } from '../../lib/utils';
 import { recalculatePayslipsFromSettingsApi } from '../../api/payroll.api';
 import { uploadDocumentApi } from '../../api/documents.api';
 import { uploadEmployeePhotoApi } from '../../api/employees.api';
+import { mapWizardDocType } from '../../lib/documentTypeMap';
 import { StepDocuments } from './wizard/StepDocuments';
 import { StepEducation } from './wizard/StepEducation';
 import { StepAdditionalDocuments } from './wizard/StepAdditionalDocuments';
@@ -375,20 +376,6 @@ function employeeContactDefaults(employee = {}) {
   };
 }
 
-/** Map Settings document type name → backend document_type enum */
-function mapWizardDocType(name = '') {
-  const n = String(name).toLowerCase();
-  if (n.includes('aadhaar') || n.includes('aadhar')) return 'aadhar';
-  if (n.includes('pan')) return 'pan';
-  if (n.includes('offer')) return 'offer_letter';
-  if (n.includes('join')) return 'joining_letter';
-  if (n.includes('reliev')) return 'relieving_letter';
-  if (n.includes('experience')) return 'experience_letter';
-  if (n.includes('resign')) return 'resignation_letter';
-  if (n.includes('form 16') || n.includes('form16')) return 'form_16';
-  if (n.includes('payslip')) return 'payslip';
-  return 'educational_certificate';
-}
 
 function SalaryPreview({ basic, hra, da, special, transport, medical, payrollConfig, overrides, salaryPeriod = 'monthly' }) {
   const scale = salaryPeriod === 'annual' ? 12 : 1;
@@ -620,6 +607,7 @@ function PersonalStep({ register, errors, photoFile, setPhotoFile, watch, setVal
 function JobStep({
   register,
   errors,
+  setValue,
   managerOptions,
   locations,
   employeeIdDisabled,
@@ -628,6 +616,25 @@ function JobStep({
   companyOptions,
   isAdd = false,
 }) {
+  const departments = useSettingsStore((s) => s.departments);
+  const addDepartment = useSettingsStore((s) => s.addDepartment);
+  const [addingDept, setAddingDept] = useState(false);
+  const [newDept, setNewDept] = useState('');
+
+  const saveNewDept = () => {
+    const name = newDept.trim();
+    if (!name) { setAddingDept(false); return; }
+    if (departments.some((d) => d.toLowerCase() === name.toLowerCase())) {
+      toast.error(`"${name}" already exists`);
+      return;
+    }
+    addDepartment(name);
+    setValue('department', name, { shouldValidate: true });
+    toast.success(`"${name}" added to departments`);
+    setNewDept('');
+    setAddingDept(false);
+  };
+
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
       {companyOptions?.length > 0 && (
@@ -661,7 +668,29 @@ function JobStep({
         {...register('designation')}
         error={errors.designation?.message}
       />
-      <Select label="Department" required {...register('department')} placeholder="Select department" options={DEPARTMENTS} error={errors.department?.message} />
+      {addingDept ? (
+        <div className="flex items-start gap-2">
+          <Input
+            label="New department"
+            autoFocus
+            containerClass="flex-1 min-w-0"
+            placeholder="e.g. Legal, R&D"
+            value={newDept}
+            onChange={(e) => setNewDept(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') { e.preventDefault(); saveNewDept(); }
+              if (e.key === 'Escape') { e.preventDefault(); setAddingDept(false); setNewDept(''); }
+            }}
+          />
+          <Button type="button" variant="outline" size="icon" icon={Check} onClick={saveNewDept} className="shrink-0 mt-[1.375rem]" aria-label="Save new department" title="Save" />
+          <Button type="button" variant="ghost" size="icon" icon={X} onClick={() => { setAddingDept(false); setNewDept(''); }} className="shrink-0 mt-[1.375rem]" aria-label="Cancel adding department" title="Cancel" />
+        </div>
+      ) : (
+        <div className="flex items-start gap-2">
+          <Select label="Department" required containerClass="flex-1 min-w-0" {...register('department')} placeholder="Select department" options={departments} error={errors.department?.message} />
+          <Button type="button" variant="outline" size="icon" icon={Plus} onClick={() => setAddingDept(true)} className="shrink-0 mt-[1.375rem]" aria-label="Add a new department" title="Add a new department" />
+        </div>
+      )}
       <Select label="Employment type" required placeholder="Select type" {...register('employmentType')} options={EMPLOYMENT_TYPES.map((t) => ({ value: t, label: humanize(t) }))} error={errors.employmentType?.message} />
       <Input label="Join date" type="date" required {...register('joinDate')} error={errors.joinDate?.message} />
       <Select label="Reporting manager" {...register('reportingTo')} placeholder="Select manager" options={managerOptions} />
@@ -1158,6 +1187,7 @@ function AddEmployeeForm({ navigate }) {
             <JobStep
               register={register}
               errors={errors}
+              setValue={setValue}
               managerOptions={managerOptions}
               locations={locations}
               shiftOptions={shiftOptions}
@@ -1356,6 +1386,7 @@ function EditEmployeeForm({ navigate, existing }) {
             <JobStep
               register={register}
               errors={errors}
+              setValue={setValue}
               managerOptions={managerOptions}
               locations={locations}
               employeeIdDisabled

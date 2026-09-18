@@ -16,11 +16,22 @@ const HOLIDAY_TYPE_OPTIONS = [
   { value: 'restricted', label: 'Restricted' },
 ];
 
-/** Must match Postgres leave_type ENUM — custom codes cannot be stored in leave_balances. */
-const ALLOWED_LEAVE_CODES = [
+const SUGGESTED_LEAVE_CODES = [
   'CL', 'SL', 'EL', 'WFH', 'COMP_OFF', 'MATERNITY', 'PATERNITY', 'UNPAID',
 ];
-const LEAVE_CODE_OPTIONS = ALLOWED_LEAVE_CODES.map((c) => ({ value: c, label: c }));
+const CUSTOM_CODE_VALUE = '__custom__';
+const LEAVE_CODE_PATTERN = /^[A-Z][A-Z0-9_]{0,39}$/;
+
+const normalizeLeaveCode = (raw) => String(raw || '')
+  .trim()
+  .toUpperCase()
+  .replace(/[\s-]+/g, '_')
+  .replace(/[^A-Z0-9_]/g, '')
+  .replace(/_+/g, '_')
+  .replace(/^_|_$/g, '')
+  .slice(0, 40);
+
+const SUGGESTED_LEAVE_CODE_OPTIONS = SUGGESTED_LEAVE_CODES.map((c) => ({ value: c, label: c }));
 
 function mapApiPolicyToUi(policy) {
   if (!Array.isArray(policy) || !policy.length) return null;
@@ -38,17 +49,24 @@ function mapApiPolicyToUi(policy) {
 }
 
 function AddLeaveTypeModal({ open, onClose, onAdd, usedCodes = [] }) {
-  const available = LEAVE_CODE_OPTIONS.filter((o) => !usedCodes.includes(o.value));
+  const available = SUGGESTED_LEAVE_CODE_OPTIONS.filter((o) => !usedCodes.includes(o.value));
+  const codeOptions = [
+    ...available,
+    { value: CUSTOM_CODE_VALUE, label: 'Other (enter manually)' },
+  ];
   const [form, setForm] = useState({
-    name: '', code: available[0]?.value || 'CL', daysPerYear: '12', paid: true, carryForward: false, maxCarry: '0', encashment: false, active: true,
+    name: '', code: available[0]?.value || CUSTOM_CODE_VALUE, customCode: '', daysPerYear: '12', paid: true, carryForward: false, maxCarry: '0', encashment: false, active: true,
   });
 
+  const usedKey = usedCodes.join('|');
   useEffect(() => {
     if (!open) return;
-    const next = LEAVE_CODE_OPTIONS.filter((o) => !usedCodes.includes(o.value));
+    const used = usedKey ? usedKey.split('|') : [];
+    const next = SUGGESTED_LEAVE_CODE_OPTIONS.filter((o) => !used.includes(o.value));
     setForm({
       name: '',
-      code: next[0]?.value || 'CL',
+      code: next[0]?.value || CUSTOM_CODE_VALUE,
+      customCode: '',
       daysPerYear: '12',
       paid: true,
       carryForward: false,
@@ -56,19 +74,22 @@ function AddLeaveTypeModal({ open, onClose, onAdd, usedCodes = [] }) {
       encashment: false,
       active: true,
     });
-  }, [open, usedCodes]);
+  }, [open, usedKey]);
 
   const save = () => {
     if (!form.name.trim()) return toast.error('Leave type name is required');
-    if (!ALLOWED_LEAVE_CODES.includes(form.code)) {
-      return toast.error(`Code must be one of: ${ALLOWED_LEAVE_CODES.join(', ')}`);
+    const code = form.code === CUSTOM_CODE_VALUE
+      ? normalizeLeaveCode(form.customCode)
+      : normalizeLeaveCode(form.code);
+    if (!LEAVE_CODE_PATTERN.test(code)) {
+      return toast.error('Enter a leave code like BEREAVEMENT or MARRIAGE (letters, numbers, underscores)');
     }
-    if (usedCodes.includes(form.code)) {
-      return toast.error(`Leave code ${form.code} is already in the policy`);
+    if (usedCodes.includes(code)) {
+      return toast.error(`Leave code ${code} is already in the policy`);
     }
     onAdd({
       ...form,
-      code: form.code,
+      code,
       name: form.name.trim(),
       daysPerYear: Number(form.daysPerYear) || 0,
       maxCarry: Number(form.maxCarry) || 0,
@@ -77,22 +98,31 @@ function AddLeaveTypeModal({ open, onClose, onAdd, usedCodes = [] }) {
   };
 
   return (
-    <Modal open={open} onClose={onClose} title="Add Leave Type" footer={<><Button variant="outline" onClick={onClose}>Cancel</Button><Button onClick={save} disabled={!available.length}>Add Leave Type</Button></>}>
+    <Modal open={open} onClose={onClose} title="Add Leave Type" footer={<><Button variant="outline" onClick={onClose}>Cancel</Button><Button onClick={save}>Add Leave Type</Button></>}>
       <div className="space-y-4">
-        {!available.length ? (
-          <p className="text-sm text-fg-muted">All supported leave codes are already in the policy.</p>
-        ) : (
-          <>
-            <Input label="Name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-            <Select label="Code" hint="Must match database leave types" options={available} value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} />
-            <Input label="Days per year" type="number" value={form.daysPerYear} onChange={(e) => setForm({ ...form, daysPerYear: e.target.value })} />
-            <Toggle label="Active" checked={form.active} onChange={(v) => setForm({ ...form, active: v })} />
-            <Toggle label="Paid" checked={form.paid} onChange={(v) => setForm({ ...form, paid: v })} />
-            <Toggle label="Allow carry forward" checked={form.carryForward} onChange={(v) => setForm({ ...form, carryForward: v })} />
-            {form.carryForward && <Input label="Max carry-forward days" type="number" value={form.maxCarry} onChange={(e) => setForm({ ...form, maxCarry: e.target.value })} />}
-            <Toggle label="Allow encashment" checked={form.encashment} onChange={(v) => setForm({ ...form, encashment: v })} />
-          </>
+        <Input label="Name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+        <Select
+          label="Code"
+          hint="Pick a standard code, or Other to type your own"
+          options={codeOptions}
+          value={form.code}
+          onChange={(e) => setForm({ ...form, code: e.target.value })}
+        />
+        {form.code === CUSTOM_CODE_VALUE && (
+          <Input
+            label="Custom code"
+            placeholder="e.g. BEREAVEMENT"
+            value={form.customCode}
+            onChange={(e) => setForm({ ...form, customCode: normalizeLeaveCode(e.target.value) })}
+            hint="Letters, numbers, and underscores only"
+          />
         )}
+        <Input label="Days per year" type="number" value={form.daysPerYear} onChange={(e) => setForm({ ...form, daysPerYear: e.target.value })} />
+        <Toggle label="Active" checked={form.active} onChange={(v) => setForm({ ...form, active: v })} />
+        <Toggle label="Paid" checked={form.paid} onChange={(v) => setForm({ ...form, paid: v })} />
+        <Toggle label="Allow carry forward" checked={form.carryForward} onChange={(v) => setForm({ ...form, carryForward: v })} />
+        {form.carryForward && <Input label="Max carry-forward days" type="number" value={form.maxCarry} onChange={(e) => setForm({ ...form, maxCarry: e.target.value })} />}
+        <Toggle label="Allow encashment" checked={form.encashment} onChange={(v) => setForm({ ...form, encashment: v })} />
       </div>
     </Modal>
   );
@@ -198,13 +228,13 @@ export function LeavePolicySection() {
    * keystroke).
    */
   const doSaveConfig = useCallback(async (types, meta) => {
-    const missingCode = types.find((t) => !t.code);
+    const missingCode = types.find((t) => !normalizeLeaveCode(t.code));
     if (missingCode) throw new Error(`Leave type "${missingCode.name}" needs a code`);
-    const invalid = types.find((t) => !ALLOWED_LEAVE_CODES.includes(String(t.code).toUpperCase()));
-    if (invalid) throw new Error(`Invalid code "${invalid.code}". Allowed: ${ALLOWED_LEAVE_CODES.join(', ')}`);
+    const invalid = types.find((t) => !LEAVE_CODE_PATTERN.test(normalizeLeaveCode(t.code)));
+    if (invalid) throw new Error(`Invalid code "${invalid.code}". Use letters, numbers, and underscores`);
 
     const policy = types.map((t) => ({
-      code: String(t.code).trim().toUpperCase(),
+      code: normalizeLeaveCode(t.code),
       name: t.name,
       allocation: Number(t.daysPerYear) || 0,
       active: t.active !== false,
@@ -222,7 +252,7 @@ export function LeavePolicySection() {
     });
 
     syncStore({
-      leaveTypes: types.map((t) => ({ ...t, code: String(t.code).trim().toUpperCase() })),
+      leaveTypes: types.map((t) => ({ ...t, code: normalizeLeaveCode(t.code) })),
       approvalLevel: meta.approvalLevel,
       accrualMethod: meta.accrualMethod,
       autoDeduct: meta.autoDeduct,

@@ -33,20 +33,31 @@ const upload = async (req, res, next) => {
 
     const employeeId = req.body.employee_id || req.user.id;
     const isHrAdmin = ['hr', 'admin'].includes(req.user.role);
-    if (employeeId !== req.user.id && !isHrAdmin) {
+    const isSelfUpload = employeeId === req.user.id;
+    if (!isSelfUpload && !isHrAdmin) {
       throw new ForbiddenError('Not authorized to upload for another employee');
     }
     if (!(await companyEmployeeIds(req)).includes(employeeId)) {
       throw new NotFoundError('Employee not found');
     }
 
-    const { path } = await uploadDocument(req.file, employeeId);
-
     const { data: targetEmployee } = await supabaseAdmin
       .from('employees')
-      .select('company_id')
+      .select('company_id, profile_self_edit_used')
       .eq('id', employeeId)
       .maybeSingle();
+
+    // Uploading a document for one's own profile is part of the same
+    // one-time self-edit window as the profile-field edit itself
+    // (employee.controller.js update()) — once that one-time edit has been
+    // used, self-uploads are blocked here too, so this endpoint can't be
+    // called directly to bypass the "Edit my info" modal's locked Documents
+    // section. HR/Admin uploads (for themselves or anyone else) are unaffected.
+    if (isSelfUpload && !isHrAdmin && targetEmployee?.profile_self_edit_used) {
+      throw new ForbiddenError("You've already used your one-time profile edit. Contact HR/Admin to upload more documents.");
+    }
+
+    const { path } = await uploadDocument(req.file, employeeId);
 
     const basePayload = {
       employee_id: employeeId,

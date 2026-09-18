@@ -1,6 +1,6 @@
 const moment = require('moment-timezone');
 const { supabaseAdmin } = require('../config/supabase');
-const { TIMEZONE } = require('../utils/constants');
+const { TIMEZONE, normalizeLeaveCode } = require('../utils/constants');
 const {
   BadRequestError, NotFoundError, ForbiddenError, ConflictError,
 } = require('../utils/errors');
@@ -9,7 +9,6 @@ const { getTeamEmployeeIds } = require('./attendance.service');
 const logger = require('../utils/logger');
 const settingsService = require('./settings.service');
 const config = require('../config/database');
-const { LEAVE_TYPES } = require('../utils/constants');
 const notificationService = require('./notification.service');
 const emailService = require('./email.service');
 const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
@@ -63,7 +62,8 @@ const getEffectiveLeavePolicy = async (year, companyId = null) => {
 };
 
 const applyLeave = async (employeeId, data) => {
-  const { leave_type, from_date, to_date, is_half_day, reason } = data;
+  const { from_date, to_date, is_half_day, reason } = data;
+  const leave_type = normalizeLeaveCode(data.leave_type);
 
   if (moment(to_date).isBefore(from_date)) {
     throw new BadRequestError('To date must be after from date');
@@ -95,7 +95,10 @@ const applyLeave = async (employeeId, data) => {
   const year = moment(from_date).year();
   const policy = await getEffectiveLeavePolicy(year, companyId);
   const found = (policy || []).find((p) => p.code === leave_type);
-  if (found && found.active === false) {
+  if (!found) {
+    throw new BadRequestError(`${leave_type} is not a configured leave type`);
+  }
+  if (found.active === false) {
     throw new BadRequestError(`${leave_type} is disabled by Admin`);
   }
 
@@ -133,7 +136,12 @@ const applyLeave = async (employeeId, data) => {
     .select()
     .single();
 
-  if (error) throw new BadRequestError(error.message);
+  if (error) {
+    if (/invalid input value for enum/i.test(error.message)) {
+      throw new BadRequestError('Custom leave codes need leave_type stored as text. Run the leave_types_v2 SQL in Supabase.');
+    }
+    throw new BadRequestError(error.message);
+  }
 
   // Notify manager (if any) else HR/Admin
   const { data: employee } = await supabaseAdmin

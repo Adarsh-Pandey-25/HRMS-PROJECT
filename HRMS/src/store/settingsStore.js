@@ -11,6 +11,15 @@ import { buildDefaultRolePermissions, mergeRolePermissions, PERMISSION_ACTIONS }
 // extensible so an Admin/HR user can add a new city without a code change.
 const DEFAULT_LOCATIONS = ['Bangalore HQ', 'Mumbai', 'Delhi NCR', 'Gurugram', 'Hyderabad', 'Remote'];
 
+// Departments — shown wherever a department picker appears (Employee
+// Directory filter, Add/Edit Employee), and extensible the same way
+// locations are, so an Admin/HR user can add a new department by name
+// without a code change.
+const DEFAULT_DEPARTMENTS = [
+  'Engineering', 'Product', 'Design', 'Marketing', 'Sales',
+  'Human Resources', 'Finance', 'Operations', 'Customer Success',
+];
+
 const DEFAULT_DOCUMENT_TYPES = [
   { id: 'DOC-TYPE-001', name: 'Aadhaar Card', category: 'identity', isDefault: true, isRequired: false, acceptedFormats: ['pdf', 'jpg', 'png'], maxSizeMB: 5, isActive: true },
   { id: 'DOC-TYPE-002', name: 'PAN Card', category: 'identity', isDefault: true, isRequired: false, acceptedFormats: ['pdf', 'jpg', 'png'], maxSizeMB: 5, isActive: true },
@@ -214,6 +223,7 @@ export const useSettingsStore = create(
   persist(
     (set, get) => ({
       locations: DEFAULT_LOCATIONS,
+      departments: DEFAULT_DEPARTMENTS,
       rolePermissions: buildDefaultRolePermissions(),
       documentTypes: DEFAULT_DOCUMENT_TYPES,
       attendanceConfig: DEFAULT_ATTENDANCE_CONFIG,
@@ -262,6 +272,11 @@ export const useSettingsStore = create(
       addLocation: (name) =>
         set((s) => (s.locations.some((l) => l.toLowerCase() === name.toLowerCase()) ? s : { locations: [...s.locations, name] })),
       removeLocation: (name) => set((s) => ({ locations: s.locations.filter((l) => l !== name) })),
+
+      // -- Departments --
+      addDepartment: (name) =>
+        set((s) => (s.departments.some((d) => d.toLowerCase() === name.toLowerCase()) ? s : { departments: [...s.departments, name] })),
+      removeDepartment: (name) => set((s) => ({ departments: s.departments.filter((d) => d !== name) })),
 
       // -- Document types --
       addDocumentType: (type) =>
@@ -401,7 +416,7 @@ export const useSettingsStore = create(
     }),
     {
       name: 'zenith-settings',
-      version: 5,
+      version: 6,
       migrate: (persisted, fromVersion) => {
         let next = persisted && typeof persisted === 'object' ? { ...persisted } : {};
         // v1 stored experimental matrix toggles that hid most Employee modules.
@@ -454,6 +469,12 @@ export const useSettingsStore = create(
             };
           }
         }
+        // v6: introduce extensible departments, seeded from the previously
+        // hardcoded DEPARTMENTS constant, for any state persisted before
+        // this feature existed.
+        if (fromVersion < 6 && !Array.isArray(next.departments)) {
+          next = { ...next, departments: DEFAULT_DEPARTMENTS };
+        }
         return next;
       },
       merge: (persisted, current) => {
@@ -470,6 +491,14 @@ export const useSettingsStore = create(
           }
         }
         merged.locations = locList;
+        // Always keep shipped default departments available (even if an older persist list omitted them).
+        const deptList = Array.isArray(merged.departments) ? [...merged.departments] : [...DEFAULT_DEPARTMENTS];
+        for (const dept of DEFAULT_DEPARTMENTS) {
+          if (!deptList.some((d) => String(d).toLowerCase() === dept.toLowerCase())) {
+            deptList.push(dept);
+          }
+        }
+        merged.departments = deptList;
         if (merged.notificationConfig?.smtp) {
           merged.notificationConfig = {
             ...merged.notificationConfig,

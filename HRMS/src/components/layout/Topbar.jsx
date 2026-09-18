@@ -90,12 +90,20 @@ export function Topbar() {
               id="announcements-menu"
               role="menu"
               onKeyDown={(e) => handleMenuArrowKeys(e, ann.containerRef)}
-              className="absolute right-0 mt-2 w-80 rounded-card bg-card border border-border shadow-card-hover animate-scale-in z-50 overflow-hidden"
+              className={cn(
+                'rounded-card bg-card border border-border shadow-card-hover animate-scale-in z-50 overflow-hidden',
+                // Mobile: this trigger sits mid-header, so a right-anchored
+                // 20rem panel runs off the left edge of the screen. Pin the
+                // panel to the viewport instead (header is h-16 = 4rem).
+                'fixed inset-x-3 top-[4.5rem]',
+                // sm+: enough room to hang it under the trigger as before.
+                'sm:absolute sm:inset-x-auto sm:right-0 sm:top-auto sm:mt-2 sm:w-80',
+              )}
             >
               <div className="px-4 py-3 border-b border-border/60">
                 <p className="text-sm font-semibold text-fg">Announcements</p>
               </div>
-              <div className="max-h-80 overflow-y-auto no-scrollbar">
+              <div className="max-h-[60vh] sm:max-h-80 overflow-y-auto no-scrollbar">
                 {annPreview.length === 0 ? (
                   <p className="px-4 py-6 text-sm text-fg-subtle text-center">No announcements yet.</p>
                 ) : (
