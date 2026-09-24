@@ -4,6 +4,7 @@ const logger = require('../utils/logger');
 const { TIMEZONE, WORK_HOURS } = require('../utils/constants');
 const emailService = require('./email.service');
 const { isFeatureEmailSuppressed } = require('./emailSuppression.service');
+const emailPreferencesService = require('./emailPreferences.service');
 
 /**
  * Item 4 thresholds — stated explicitly since neither was already defined
@@ -191,13 +192,14 @@ const alreadyAlerted = async (employeeId, dateStr) => {
 };
 
 const sendAnomalyAlert = async (companyId, dateStr, dateLabel, anomaly, biometricSuppressed) => {
+  const emailEnabled = await emailPreferencesService.isEmailEnabled(companyId, 'attendance_anomaly_alerts');
   const { employee, type } = anomaly;
   // Section G1: HARD RULE — biometric-sourced late/short-hours alerts are
   // absolutely blocked while biometric_adms visibility is off, regardless
   // of data_collection_mode. The anomaly is still logged below (internal
   // record-keeping, never an email) so re-runs stay correctly deduped.
   const suppressed = Boolean(anomaly.sourceIsBiometric) && biometricSuppressed;
-  if (!suppressed) {
+  if (!suppressed && emailEnabled) {
     try {
       if (type === 'absent') {
         await emailService.attendanceAbsentAlertEmail(employee, dateLabel);
@@ -227,6 +229,7 @@ const sendAnomalyAlert = async (companyId, dateStr, dateLabel, anomaly, biometri
 };
 
 const sendHrDigest = async (companyId, dateLabel, anomalies, biometricSuppressed) => {
+  if (!await emailPreferencesService.isEmailEnabled(companyId, 'attendance_anomaly_digest')) return;
   // Section G1: "any HR digest line referencing biometric-sourced anomalies"
   // is gated the same as the individual alert — filtered out of the digest
   // entirely, not just relabeled, while non-biometric lines in the same

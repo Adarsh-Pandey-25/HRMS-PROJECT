@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const moment = require('moment-timezone');
 const { supabaseAdmin } = require('../config/supabase');
 const { birthdayWishEmail, workAnniversaryEmail } = require('../services/email.service');
+const emailPreferencesService = require('../services/emailPreferences.service');
 const notificationService = require('../services/notification.service');
 const logger = require('../utils/logger');
 const config = require('../config/database');
@@ -68,14 +69,19 @@ async function findCelebrants(dateStr) {
 async function celebrate(celebrant) {
   const name = displayName(celebrant);
   const years = celebrant.yearsOfService;
+  const companyId = String(celebrant.company_id || DEFAULT_COMPANY_ID);
 
   if (celebrant.isBirthday && celebrant.email) {
-    await birthdayWishEmail(celebrant).catch((err) =>
-      logger.warn('[BirthdayAnniversary] Birthday email failed', { employeeId: celebrant.id, error: err.message }));
+    if (await emailPreferencesService.isEmailEnabled(companyId, 'birthday_wishes')) {
+      await birthdayWishEmail(celebrant).catch((err) =>
+        logger.warn('[BirthdayAnniversary] Birthday email failed', { employeeId: celebrant.id, error: err.message }));
+    }
   }
   if (celebrant.isAnniversary && celebrant.email) {
-    await workAnniversaryEmail(celebrant, years).catch((err) =>
-      logger.warn('[BirthdayAnniversary] Anniversary email failed', { employeeId: celebrant.id, error: err.message }));
+    if (await emailPreferencesService.isEmailEnabled(companyId, 'work_anniversary_wishes')) {
+      await workAnniversaryEmail(celebrant, years).catch((err) =>
+        logger.warn('[BirthdayAnniversary] Anniversary email failed', { employeeId: celebrant.id, error: err.message }));
+    }
   }
 
   let title;

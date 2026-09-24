@@ -203,7 +203,10 @@ const create = async (req, res, next) => {
 
     if (existing) throw new ConflictError('An employee with this email already exists at this company');
 
-    const fields = pickEmployeeFields(req.body);
+    const isOnboardingMode = req.body.onboarding_mode === true || req.body.onboardingMode === true;
+    const fields = isOnboardingMode
+      ? pickEmployeeFields(req.body)
+      : pickEmployeeFields(req.body);
     fields.role = resolveAssignableRole(req.user.role, fields.role || req.body.role, 'employee');
     const employeeCode = await allocateNextEmployeeCode(companyId);
     // `source: 'bulk_import'` is set by the frontend's CSV-import loop
@@ -213,7 +216,7 @@ const create = async (req, res, next) => {
     // else (including the normal Add Employee form, which never sends it)
     // falls through to the regular welcome email.
     const isBulkImport = req.body.source === 'bulk_import';
-    const expiryHours = 48;
+    const expiryHours = isOnboardingMode ? 72 : 48;
     const insertFields = {
       ...fields,
       email: req.body.email,
@@ -242,22 +245,42 @@ const create = async (req, res, next) => {
     }
 
     const employee = omitSensitive(data, ['password_hash']);
-    try {
-      const { welcomeEmail, bulkImportEmail } = require('../services/email.service');
-      if (isBulkImport) {
-        await bulkImportEmail(employee, tempPassword, { expiryHours });
-      } else {
-        await welcomeEmail(employee, tempPassword);
+    let onboardingLink = null;
+    if (isOnboardingMode) {
+      try {
+        const { onboardingInviteEmail } = require('../services/email.service');
+        const onboardingToken = authService.generateOnboardingToken(employee);
+        const frontendBase = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+        onboardingLink = `${frontendBase}/onboarding?token=${onboardingToken}`;
+        const settingsService = require('../services/settings.service');
+        const profile = await settingsService.getSetting('company_profile', {}, companyId);
+        const companyName = profile?.name || '';
+        await onboardingInviteEmail(employee, tempPassword, onboardingLink, { companyName, expiryHours: 72 });
+      } catch (emailErr) {
+        /* email is best-effort */
+        console.warn('Onboarding invite email failed', { employeeId: employee.id, error: emailErr.message });
       }
-    } catch {
-      /* email is best-effort; do not fail create */
+    } else {
+      try {
+        const { welcomeEmail, bulkImportEmail } = require('../services/email.service');
+        if (isBulkImport) {
+          await bulkImportEmail(employee, tempPassword, { expiryHours });
+        } else {
+          await welcomeEmail(employee, tempPassword);
+        }
+      } catch {
+        /* email is best-effort; do not fail create */
+      }
     }
     require('../services/webhook.service').dispatchWebhookEvent(companyId, 'employee.created', {
       employeeId: employee.id, employeeCode: employee.employee_code, firstName: employee.first_name,
       lastName: employee.last_name, email: employee.email, role: employee.role, department: employee.department,
     });
+    // For onboarding mode, return the link so HR can share manually if email fails.
     // Never return tempPassword in the API body — credentials go by email only.
-    successResponse(res, 'Employee created. Temporary password sent by email.', { employee }, null, 201);
+    const responseBody = { employee };
+    if (onboardingLink) responseBody.onboardingLink = onboardingLink;
+    successResponse(res, 'Employee created. Temporary password sent by email.', responseBody, null, 201);
   } catch (err) { next(err); }
 };
 

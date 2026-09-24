@@ -1,7 +1,9 @@
+const { validatePassword } = require('../utils/passwordStrength');
 const authService = require('../services/auth.service');
 const impersonationService = require('../services/impersonation.service');
 const { successResponse } = require('../utils/helpers');
-const { BadRequestError } = require('../utils/errors');
+const { BadRequestError, UnauthorizedError } = require('../utils/errors');
+const employee2faService = require('../services/employee2fa.service');
 
 /**
  * SameSite is a deliberate security decision, not something to infer from request
@@ -60,27 +62,82 @@ const issueSessionCookies = (req, res, accessToken, refreshToken) => {
 
 const login = async (req, res, next) => {
   try {
-    const { employee, accessToken, refreshToken } = await authService.login(req.body.email, req.body.password);
-    issueSessionCookies(req, res, accessToken, refreshToken);
-    // Tokens stay in HttpOnly cookies and are never exposed to frontend JavaScript.
-    successResponse(res, 'Login successful', { employee });
+    const result = await authService.login(req.body.email, req.body.password);
+    if (result.requires2FA) {
+      return successResponse(res, 'Two-factor authentication required', {
+        requires2FA: true,
+        twoFaToken: result.twoFaToken,
+        employee: result.employee,
+      });
+    }
+    issueSessionCookies(req, res, result.accessToken, result.refreshToken);
+    successResponse(res, 'Login successful', { employee: result.employee });
   } catch (err) { next(err); }
 };
 
 /** One handler for all three portal-scoped logins — `portal` is fixed per route, never client-supplied. */
 const loginToPortal = (portal) => async (req, res, next) => {
   try {
-    const { employee, accessToken, refreshToken } = await authService.loginToPortal(
+    const result = await authService.loginToPortal(
       portal, req.body.email, req.body.password, req.tenantCompany?.id || null
     );
-    issueSessionCookies(req, res, accessToken, refreshToken);
-    successResponse(res, 'Login successful', { employee });
+    if (result.requires2FA) {
+      return successResponse(res, 'Two-factor authentication required', {
+        requires2FA: true,
+        twoFaToken: result.twoFaToken,
+        employee: result.employee,
+      });
+    }
+    issueSessionCookies(req, res, result.accessToken, result.refreshToken);
+    successResponse(res, 'Login successful', { employee: result.employee });
   } catch (err) { next(err); }
 };
 
 const loginAdmin = loginToPortal('admin');
 const loginHr = loginToPortal('hr');
 const loginEmployee = loginToPortal('employee');
+
+const startEmployeeTwoFactor = async (req, res, next) => {
+  try {
+    successResponse(res, 'TOTP secret generated', await employee2faService.generateTotpSecret(req.user.id));
+  } catch (err) { next(err); }
+};
+
+const confirmEmployeeTwoFactor = async (req, res, next) => {
+  try {
+    await employee2faService.verifyAndEnableTotpFor(req.user.id, req.body.code);
+    successResponse(res, 'Two-factor authentication enabled');
+  } catch (err) { next(err); }
+};
+
+const disableEmployeeTwoFactor = async (req, res, next) => {
+  try {
+    const result = await employee2faService.disableTotp(req.user.id, req.body.code);
+    successResponse(res, result.alreadyDisabled ? '2FA was already disabled' : 'Two-factor authentication disabled', result);
+  } catch (err) { next(err); }
+};
+
+const verifyTwoFaAndLogin = async (req, res, next) => {
+  try {
+    const { twoFaToken } = req.body;
+    if (!twoFaToken) throw new BadRequestError('twoFaToken is required');
+
+    let decoded;
+    try {
+      decoded = jwt.verify(twoFaToken, process.env.JWT_SECRET);
+    } catch {
+      throw new BadRequestError('Invalid or expired twoFaToken');
+    }
+    if (decoded.scope !== 'two_fa_pending') throw new BadRequestError('Invalid token scope');
+
+    const isValid = await employee2faService.verifyTotpCode(decoded.id, req.body.code);
+    if (!isValid) throw new UnauthorizedError('Invalid authentication code');
+
+    const result = await authService.completeTwoFaLogin(decoded.id);
+    issueSessionCookies(req, res, result.accessToken, result.refreshToken);
+    successResponse(res, 'Login successful', { employee: result.employee });
+  } catch (err) { next(err); }
+};
 
 /**
  * Public — safe fields only, used to brand a tenant's login pages before
@@ -172,7 +229,12 @@ const markInstallPromptSeen = async (req, res, next) => {
 
 const changePassword = async (req, res, next) => {
   try {
-    await authService.changePassword(req.user.id, req.body.currentPassword, req.body.newPassword);
+    const { currentPassword, newPassword } = req.body || {};
+    if (!currentPassword || !newPassword) {
+      return next(new BadRequestError('Current password and new password are required'));
+    }
+    validatePassword(newPassword, BadRequestError);
+    await authService.changePassword(req.user.id, currentPassword, newPassword);
     successResponse(res, 'Password changed successfully');
   } catch (err) { next(err); }
 };
@@ -228,6 +290,13 @@ const bootstrapAdmin = async (req, res, next) => {
     const first_name = body.first_name || parts[0] || 'Admin';
     const last_name = body.last_name || (parts.length > 1 ? parts.slice(1).join(' ') : 'User');
 
+    if (body.password) {
+      // Only enforce the complexity policy when the user is actually setting
+      // a password themselves. The invite-token path may auto-generate a
+      // temporary password server-side, in which case body.password is empty.
+      validatePassword(body.password, BadRequestError);
+    }
+
     const employee = await authService.bootstrapAdmin({
       email: body.email || body.admin_email || body.adminEmail,
       password: body.password,
@@ -256,4 +325,5 @@ module.exports = {
   logout, refreshToken, getMe, changePassword, forgotPassword, resetPassword,
   sendOnboardingOtp, verifyOnboardingOtp, bootstrapAdmin, peekOnboardingInvite,
   markInstallPromptSeen, endImpersonation,
+  startEmployeeTwoFactor, confirmEmployeeTwoFactor, disableEmployeeTwoFactor, verifyTwoFaAndLogin,
 };

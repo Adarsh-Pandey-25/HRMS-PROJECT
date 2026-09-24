@@ -6,6 +6,7 @@ const { TIMEZONE } = require('../utils/constants');
 const { withCronLock } = require('../utils/cronLock');
 const { alertOnCronFailure } = require('../utils/cronAlert');
 const attendanceAnomalyService = require('../services/attendanceAnomaly.service');
+const emailPreferencesService = require('../services/emailPreferences.service');
 
 /**
  * Item 4: runs early morning, covering the PRIOR calendar day — by then

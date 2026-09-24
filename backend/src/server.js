@@ -9,6 +9,8 @@ const { startAttendanceAnomalyCron } = require('./cron/attendanceAnomaly.cron');
 const { startBackupCron } = require('./cron/backup.cron');
 const { startBiometricWindowTransitionCron } = require('./cron/biometricWindowTransition.cron');
 const { startBirthdayAnniversaryCron } = require('./cron/birthdayAnniversary.cron');
+const { startOnboardingCron } = require('./cron/onboarding.cron');
+const { startWeeklyDigestCrons } = require('./cron/weeklyDigest.cron');
 
 const PORT = config.port;
 
@@ -35,6 +37,8 @@ const server = app.listen(PORT, config.host, () => {
   startBackupCron();
   startBiometricWindowTransitionCron();
   startBirthdayAnniversaryCron();
+  startOnboardingCron();
+  startWeeklyDigestCrons();
   // Tag legacy employees under the default company so new workspaces stay empty
   require('./services/tenant.service').ensureTenantBackfill()
     .then(() => require('./services/settings.service').migrateLegacySettingsToDefaultCompany())
@@ -44,6 +48,12 @@ const server = app.listen(PORT, config.host, () => {
       process.exit(1);
     });
 });
+
+// Slow-loris / hung-connection defenses — kill idle keep-alive and
+// any request that has not finished receiving headers within 31 s.
+server.requestTimeout  = 30_000;
+server.headersTimeout  = 31_000;
+server.keepAliveTimeout = 5_000;
 
 process.on('unhandledRejection', (err) => {
   // Matches uncaughtException's policy below: an unhandled rejection can

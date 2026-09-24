@@ -17,19 +17,25 @@ let backfillDone = false;
 const ensureTenantBackfill = async () => {
   if (backfillDone) return;
   try {
-    const { data: rows, error } = await supabaseAdmin
-      .from('employees')
-      .select('id, address, company_id')
-      .limit(5000);
-
-    if (error) {
-      logger.warn('Tenant backfill skipped', { error: error.message });
-      return;
+    const allIds = [];
+    let offset = 0;
+    const MAX_PAGES = 200;
+    for (let page = 0; page < MAX_PAGES; page += 1) {
+      const { data: rows, error } = await supabaseAdmin
+        .from('employees')
+        .select('id, address, company_id')
+        .range(offset, offset + PAGE_SIZE - 1);
+      if (error) {
+        logger.warn('Tenant backfill skipped', { error: error.message });
+        return;
+      }
+      for (const row of (rows || [])) allIds.push(row);
+      if (!rows || rows.length < PAGE_SIZE) break;
+      offset += PAGE_SIZE;
     }
-
-    const need = (rows || []).filter((e) => {
+    const need = allIds.filter((e) => {
       if (e.company_id) return false;
-      const addr = (e.address && typeof e.address === 'object') ? e.address : {};
+      const addr = e.address && typeof e.address === 'object' ? e.address : {};
       return !addr.company_id && !addr.companyId;
     });
 
@@ -284,25 +290,42 @@ const assertHierarchyReady = () => {
   }
 };
 
-/** All employee ids belonging to a company (uses real column when present). */
+/** Cap that previously truncated results to 5K rows; pagination now fetches all. */
+const PAGE_SIZE = 1000;
+
+/** All employee ids belonging to a company. Iterates with .range() so any
+ *  company size is returned in full instead of being silently truncated to
+ *  the 5K LIMIT of the previous version. */
 const getCompanyEmployeeIds = async (companyId) => {
   const cid = companyId || DEFAULT_COMPANY_ID;
-  const { data, error } = await supabaseAdmin
-    .from('employees')
-    .select('id, company_id, address')
-    .eq('company_id', cid)
-    .limit(5000);
-
-  // Fail loud rather than falling back to an unscoped, platform-wide fetch —
-  // that fallback used to fetch up to 5000 employees across every tenant on
-  // the query error path, which both risked truncating this company's own
-  // rows out of the window on a large platform and pulled other tenants'
-  // employee data into memory in the meantime. company_id has been a real,
-  // stable column since the original multi-tenant migration, so there's no
-  // legitimate "column missing mid-deploy" case left to fall back for.
-  if (error) throw error;
-
-  return (data || []).map((e) => e.id);
+  const ids = [];
+  let offset = 0;
+  // Hard ceiling so a pathological platform doesn't loop forever;
+  // 200 pages × 1K = 200,000 employees, well beyond a sane HRMS tenant.
+  const MAX_PAGES = 200;
+  for (let page = 0; page < MAX_PAGES; page += 1) {
+    const { data, error } = await supabaseAdmin
+      .from('employees')
+      .select('id, company_id, address')
+      .eq('company_id', cid)
+      .range(offset, offset + PAGE_SIZE - 1);
+    if (error) {
+      // Fail loud rather than falling back to an unscoped, platform-wide
+      // fetch — that fallback used to fetch up to 5000 employees across
+      // every tenant on the query error path, which risked truncating
+      // this company's own rows out of the window on a large platform and
+      // pulled other tenants' employee data into memory in the meantime.
+      // company_id has been a real, stable column since the original
+      // multi-tenant migration, so there's no legitimate "column missing
+      // mid-deploy" case left to fall back for.
+      throw error;
+    }
+    const rows = data || [];
+    for (const row of rows) ids.push(row.id);
+    if (rows.length < PAGE_SIZE) break;
+    offset += PAGE_SIZE;
+  }
+  return ids;
 };
 
 /**
@@ -312,16 +335,22 @@ const getCompanyEmployeeIds = async (companyId) => {
 const getOrgEmployeeIds = async (actorCompanyId) => {
   const companyIds = await getOrgCompanyIds(actorCompanyId);
   if (!companyIds.length) return [];
-  if (companyIds.length === 1) {
-    return getCompanyEmployeeIds(companyIds[0]);
+  const ids = [];
+  let offset = 0;
+  const MAX_PAGES = 200;
+  for (let page = 0; page < MAX_PAGES; page += 1) {
+    const { data, error } = await supabaseAdmin
+      .from('employees')
+      .select('id')
+      .in('company_id', companyIds)
+      .range(offset, offset + PAGE_SIZE - 1);
+    if (error) throw error;
+    const rows = data || [];
+    for (const row of rows) ids.push(row.id);
+    if (rows.length < PAGE_SIZE) break;
+    offset += PAGE_SIZE;
   }
-  const { data, error } = await supabaseAdmin
-    .from('employees')
-    .select('id')
-    .in('company_id', companyIds)
-    .limit(10000);
-  if (error) throw error;
-  return (data || []).map((e) => e.id);
+  return ids;
 };
 
 const employeeBelongsToCompany = (employee, companyId) =>
@@ -330,18 +359,24 @@ const employeeBelongsToCompany = (employee, companyId) =>
 /** Active HR/Admin ids for one company (notifications / approval fan-out). */
 const getCompanyHrAdminIds = async (companyId) => {
   const cid = companyId || DEFAULT_COMPANY_ID;
-  const { data, error } = await supabaseAdmin
-    .from('employees')
-    .select('id, company_id, address, role')
-    .in('role', ['hr', 'admin'])
-    .eq('is_active', true)
-    .eq('company_id', cid)
-    .limit(500);
-
-  // Same reasoning as getCompanyEmployeeIds above — fail loud instead of an
-  // unscoped, platform-wide fallback fetch.
-  if (error) throw error;
-  return (data || []).map((e) => e.id);
+  const ids = [];
+  let offset = 0;
+  const MAX_PAGES = 200;
+  for (let page = 0; page < MAX_PAGES; page += 1) {
+    const { data, error } = await supabaseAdmin
+      .from('employees')
+      .select('id, company_id, address, role')
+      .in('role', ['hr', 'admin'])
+      .eq('is_active', true)
+      .eq('company_id', cid)
+      .range(offset, offset + PAGE_SIZE - 1);
+    if (error) throw error;
+    const rows = data || [];
+    for (const row of rows) ids.push(row.id);
+    if (rows.length < PAGE_SIZE) break;
+    offset += PAGE_SIZE;
+  }
+  return ids;
 };
 
 /** Active tenant workspaces for platform jobs (e.g. auto payroll). */

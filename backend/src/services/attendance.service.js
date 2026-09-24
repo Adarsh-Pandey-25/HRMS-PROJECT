@@ -540,11 +540,19 @@ const getAttendance = async (filters, query) => {
  }
 
  const enrichedRows = rows.map((row) => {
- const checkInDate = row.check_in_time ? moment(row.check_in_time).tz(TIMEZONE).format('YYYY-MM-DD') : '';
- const myLeaves = (approvedLeaveMap[row.employee_id] || []).filter(
- (lv) => checkInDate >= lv.from && checkInDate <= lv.to
- );
- return { ...row, approved_leave: myLeaves[0] || null };
+  const checkInDate = row.check_in_time ? moment(row.check_in_time).tz(TIMEZONE).format('YYYY-MM-DD') : '';
+  const myLeaves = (approvedLeaveMap[row.employee_id] || []).filter(
+    (lv) => checkInDate >= lv.from && checkInDate <= lv.to,
+  );
+  const checkInFormatted = row.check_in_time ? moment(row.check_in_time).tz(TIMEZONE).format('HH:mm') : null;
+  const checkOutFormatted = row.check_out_time ? moment(row.check_out_time).tz(TIMEZONE).format('HH:mm') : null;
+  let duration = null;
+  if (row.check_in_time && row.check_out_time) {
+    const diffMs = moment(row.check_out_time).tz(TIMEZONE).diff(moment(row.check_in_time).tz(TIMEZONE));
+    const diffMin = Math.floor(diffMs / 60000);
+    duration = `${Math.floor(diffMin / 60)}h ${diffMin % 60}m`;
+  }
+  return { ...row, check_in_time: checkInFormatted, check_out_time: checkOutFormatted, duration, approved_leave: myLeaves[0] || null };
  });
 
  return { data: enrichedRows, meta: buildMeta(page, limit, count) };
@@ -656,7 +664,19 @@ const getMonthlySummary = async (employeeId, month, year) => {
     incomplete,
   };
 
-  return { records: rows, summary };
+  const formattedRows = rows.map((a) => {
+    const checkInFormatted = a.check_in_time ? moment(a.check_in_time).tz(TIMEZONE).format('HH:mm') : null;
+    const checkOutFormatted = a.check_out_time ? moment(a.check_out_time).tz(TIMEZONE).format('HH:mm') : null;
+    let duration = null;
+    if (a.check_in_time && a.check_out_time) {
+      const diffMs = moment(a.check_out_time).tz(TIMEZONE).diff(moment(a.check_in_time).tz(TIMEZONE));
+      const diffMin = Math.floor(diffMs / 60000);
+      duration = `${Math.floor(diffMin / 60)}h ${diffMin % 60}m`;
+    }
+    return { ...a, check_in_time: checkInFormatted, check_out_time: checkOutFormatted, duration };
+  });
+
+  return { records: formattedRows, summary };
 };
 
 /**

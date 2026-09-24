@@ -1,4 +1,5 @@
 const express = require('express');
+const { body } = require('express-validator');
 const authController = require('../controllers/auth.controller');
 const { authenticate } = require('../middleware/auth.middleware');
 const { validate } = require('../middleware/validation.middleware');
@@ -69,5 +70,29 @@ router.post('/impersonation/end', authenticate, authController.endImpersonation)
 router.put('/change-password', authenticate, changePasswordRules, validate, authController.changePassword);
 router.post('/forgot-password', authLimiter, forgotPasswordRules, validate, authController.forgotPassword);
 router.post('/reset-password', authLimiter, resetPasswordRules, validate, authController.resetPassword);
+
+// ── Employee self-service 2FA (opt-in) ──────────────────────────────────────
+// Step 1: after password login — server returns requires2FA=true with a
+// short-lived twoFaToken; client redirects to TOTP input screen.
+router.post('/2fa/verify-login', authLimiter,
+  body('twoFaToken').notEmpty(),
+  body('code').isLength({ min: 6, max: 6 }),
+  validate,
+  authController.verifyTwoFaAndLogin,
+);
+// Step 2: enroll — requires an existing session
+router.post('/2fa/enroll', authenticate, authController.startEmployeeTwoFactor);
+// Step 3: confirm enrollment with a valid TOTP code
+router.post('/2fa/confirm', authenticate,
+  body('code').isLength({ min: 6, max: 6 }),
+  validate,
+  authController.confirmEmployeeTwoFactor,
+);
+// Step 4: disable (requires a valid code to prove device possession)
+router.post('/2fa/disable', authenticate,
+  body('code').isLength({ min: 6, max: 6 }),
+  validate,
+  authController.disableEmployeeTwoFactor,
+);
 
 module.exports = router;

@@ -4,6 +4,7 @@ const { supabaseAdmin } = require('../config/supabase');
 const logger = require('../utils/logger');
 const { BadRequestError, NotFoundError, ConflictError } = require('../utils/errors');
 const config = require('../config/database');
+const { getInvoiceNumber } = require('./invoiceNumber.service');
 
 const LIVE_STATUSES = ['trialing', 'active', 'past_due', 'grace_period'];
 
@@ -54,11 +55,7 @@ const cyclePeriodEnd = (start, billingCycle) => {
   throw new BadRequestError('Invalid billing cycle');
 };
 
-const nextInvoiceNumber = () => {
-  const datePart = moment().format('YYYYMMDD');
-  const randomPart = crypto.randomBytes(3).toString('hex').toUpperCase();
-  return `INV-${datePart}-${randomPart}`;
-};
+const nextInvoiceNumber = async () => getInvoiceNumber('INV');
 
 const logSubscriptionEvent = async (subscriptionId, eventType, triggeredBy, triggeredByUserId, metadata = {}) => {
   const { error } = await supabaseAdmin.from('subscription_events').insert({
@@ -104,7 +101,7 @@ const appendDraftInvoiceLineItem = async (subscription, lineItem) => {
     .insert({
       company_subscription_id: subscription.id,
       company_id: subscription.company_id,
-      invoice_number: nextInvoiceNumber(),
+      invoice_number: await nextInvoiceNumber(),
       amount: Number(lineItem.amount),
       currency: 'INR',
       billing_cycle: subscription.billing_cycle,
@@ -195,7 +192,7 @@ const createSubscription = async (companyId, planId, billingCycle, seatCount, ac
       .insert({
         company_subscription_id: subscription.id,
         company_id: companyId,
-        invoice_number: nextInvoiceNumber(),
+        invoice_number: await nextInvoiceNumber(),
         amount: price,
         currency: 'INR',
         billing_cycle: billingCycle,
@@ -368,7 +365,7 @@ const performRenewal = async (subscription, { triggeredBy, actorId }) => {
       .insert({
         company_subscription_id: subscription.id,
         company_id: subscription.company_id,
-        invoice_number: nextInvoiceNumber(),
+        invoice_number: await nextInvoiceNumber(),
         amount: price,
         currency: 'INR',
         billing_cycle: subscription.billing_cycle,

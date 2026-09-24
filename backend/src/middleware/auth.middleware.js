@@ -113,6 +113,12 @@ const authenticate = async (req, res, next) => {
       throw new UnauthorizedError('Session has been revoked. Please log in again.');
     }
 
+    if (decoded.scope === 'two_fa_pending') {
+      return next(new UnauthorizedError(
+        'Two-factor authentication required. Complete 2FA verification first.'
+      ));
+    }
+
     if (await isCompanySuspended(employee.company_id)) {
       throw new ForbiddenError('Your company\'s subscription is suspended. Please contact billing.');
     }

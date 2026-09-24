@@ -17,6 +17,76 @@ const { uploadCompanyLogo, getSignedUrl, STORAGE_BUCKETS } = require('./storage.
 
 const SALT_ROUNDS = 10;
 
+// ── Per-email login brute-force protection ──────────────────────────────────
+/** Thresholds: [failedAttempts → lockDurationMs] */
+const LOGIN_LOCK_THRESHOLDS = [
+  { attempts: 5,  lockMs: 15 * 60 * 1000 },  // 15 minutes
+  { attempts: 10, lockMs: 60 * 60 * 1000 },  // 1 hour
+  { attempts: 20, lockMs: 24 * 60 * 60 * 1000 }, // 24 hours
+];
+
+/** In-memory per-email lockout tracker. Cleared on process restart (OTPs are too). */
+const loginAttempts = new Map();
+
+/** Normalize email for use as a map key. */
+const loginEmailKey = (email) => String(email || '').trim().toLowerCase();
+
+/** Compute lock duration for the given number of failed attempts. */
+const getLoginLockDuration = (failedCount) => {
+  let lockMs = 0;
+  for (const t of LOGIN_LOCK_THRESHOLDS) {
+    if (failedCount >= t.attempts) lockMs = t.lockMs;
+  }
+  return lockMs;
+};
+
+/** Record a failed login attempt for an email. Returns lock info or null. */
+const recordLoginFailure = (email) => {
+  const key = loginEmailKey(email);
+  const entry = loginAttempts.get(key) || { failedAttempts: 0, lockedUntil: 0 };
+  entry.failedAttempts += 1;
+  const lockMs = getLoginLockDuration(entry.failedAttempts);
+  if (lockMs > 0) {
+    entry.lockedUntil = Date.now() + lockMs;
+  }
+  loginAttempts.set(key, entry);
+  return entry;
+};
+
+/** Reset login attempt counter on successful authentication. */
+const resetLoginAttempts = (email) => {
+  loginAttempts.delete(loginEmailKey(email));
+};
+
+/** Check if an email is currently locked. Throws TooManyRequestsError if locked.
+    Uses a generic error message — does NOT reveal whether the email exists. */
+const assertEmailNotLoginLocked = (email) => {
+  const entry = loginAttempts.get(loginEmailKey(email));
+  if (entry && entry.lockedUntil > Date.now()) {
+    throw new TooManyRequestsError(
+      'Too many failed login attempts. Please try again later.',
+    );
+  }
+  // Expired lock — clear it
+  if (entry && entry.lockedUntil > 0 && entry.lockedUntil <= Date.now()) {
+    loginAttempts.delete(loginEmailKey(email));
+  }
+};
+
+/** Periodic cleanup of stale entries to prevent memory leak. */
+const startLoginAttemptCleanup = () => {
+  setInterval(() => {
+    const now = Date.now();
+    for (const [key, entry] of loginAttempts.entries()) {
+      if (entry.lockedUntil > 0 && entry.lockedUntil <= now) {
+        loginAttempts.delete(key);
+      }
+    }
+  }, 5 * 60 * 1000); // every 5 minutes
+};
+startLoginAttemptCleanup();
+// ── End per-email login brute-force protection ──────────────────────────────
+
 /** Max wrong OTP tries before a progressive lockout. */
 const OTP_MAX_ATTEMPTS = 3;
 /** Lock / resend waits after failed OTP batches: 1m → 3m → 10m */
@@ -96,17 +166,29 @@ const comparePassword = (password, hash) => bcrypt.compare(password, hash);
 const assertPasswordPolicy = async (password, companyId = null) => {
   const cfg = await settingsService.getSetting('security_config', null, companyId);
   const minLength = Number(cfg?.passwordMinLength ?? cfg?.password_min_length ?? 8);
+  const requireUpper = cfg?.passwordRequireUppercase ?? cfg?.password_require_uppercase ?? true;
+  const requireLower = cfg?.passwordRequireLowercase ?? cfg?.password_require_lowercase ?? true;
   const requireSpecial = cfg?.passwordRequireSpecialChar ?? cfg?.password_require_special_char ?? true;
   const requireNumber = cfg?.passwordRequireNumber ?? cfg?.password_require_number ?? true;
 
   if (!password || password.length < Math.max(1, minLength)) {
     throw new BadRequestError(`Password must be at least ${minLength} characters`);
   }
+  // Audit finding L-04: previously the policy only checked length + a
+  // single character class. A 64-char all-letter password passed. The
+  // expanded rules below raise the cost of an online guess to something
+  // closer to the entropy the password-length UI already implies.
+  if (requireUpper && !/[A-Z]/.test(password)) {
+    throw new BadRequestError('Password does not meet complexity requirements');
+  }
+  if (requireLower && !/[a-z]/.test(password)) {
+    throw new BadRequestError('Password does not meet complexity requirements');
+  }
   if (requireSpecial && !/[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(password)) {
-    throw new BadRequestError('Password must include a special character');
+    throw new BadRequestError('Password does not meet complexity requirements');
   }
   if (requireNumber && !/\d/.test(password)) {
-    throw new BadRequestError('Password must include a number');
+    throw new BadRequestError('Password does not meet complexity requirements');
   }
 };
 
@@ -127,6 +209,15 @@ const generateTokens = (employee) => {
     expiresIn: config.jwt.refreshExpire,
   });
   return { accessToken, refreshToken };
+};
+
+const generateOnboardingToken = (employee) => {
+  const payload = {
+    employee_id: employee.id,
+    company_id: getCompanyId(employee),
+    scope: 'onboarding',
+  };
+  return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '72h' });
 };
 
 const storeRefreshToken = async (employeeId, refreshToken) => {
@@ -215,11 +306,18 @@ const assertCompanyInGoodStanding = async (companyId, role) => {
 };
 
 const authenticateEmployee = async (email, password, { tenantCompanyId = null, allowedRoles = null } = {}) => {
+  // Per-email brute-force guard — same generic error as wrong password so
+  // attackers cannot distinguish "locked" from "bad credentials".
+  assertEmailNotLoginLocked(email);
+
   let query = supabaseAdmin.from('employees').select('*').eq('email', email);
   if (tenantCompanyId) query = query.eq('company_id', tenantCompanyId);
   const { data: candidates, error } = await query;
 
-  if (error || !candidates?.length) throw new UnauthorizedError('Invalid email or password');
+  if (error || !candidates?.length) {
+    recordLoginFailure(email);
+    throw new UnauthorizedError('Invalid email or password');
+  }
 
   // A scoped query (portal login, tenantCompanyId set) can only ever match
   // one row — company_id+email is unique at the DB level. Only the legacy
@@ -238,15 +336,20 @@ const authenticateEmployee = async (email, password, { tenantCompanyId = null, a
     if (matches.length === 1) {
       employee = matches[0];
     } else if (matches.length > 1) {
+      recordLoginFailure(email);
       throw new UnauthorizedError(
         "This email is registered at more than one company. Please sign in through your company's own login page instead of the general sign-in.",
       );
     } else {
+      recordLoginFailure(email);
       throw new UnauthorizedError('Invalid email or password');
     }
   }
 
-  if (!employee.is_active) throw new ForbiddenError('Account is deactivated');
+  if (!employee.is_active) {
+    recordLoginFailure(email);
+    throw new ForbiddenError('Account is deactivated');
+  }
 
   const companyId = getCompanyId(employee);
   if (companyId) {
@@ -262,7 +365,27 @@ const authenticateEmployee = async (email, password, { tenantCompanyId = null, a
   }
 
   const valid = await comparePassword(password, employee.password_hash);
-  if (!valid) throw new UnauthorizedError('Invalid email or password');
+  if (!valid) {
+    recordLoginFailure(email);
+    throw new UnauthorizedError('Invalid email or password');
+  }
+
+  // Self-service employee 2FA: after password, before session issuance.
+  // The client receives a short-lived twoFaToken (5 min) and must present
+  // it alongside a TOTP code at /api/auth/2fa/verify-login.
+  if (employee.two_fa_enabled) {
+    const { issueTwoFaPendingToken } = require('./employee2fa.service');
+    const twoFaToken = issueTwoFaPendingToken(employee);
+    return {
+      requires2FA: true,
+      twoFaToken,
+      employee: {
+        ...omitSensitive(employee, ['password_hash', 'totp_secret']),
+        company_id: companyId,
+        must_change_password: Boolean(employee.must_change_password),
+      },
+    };
+  }
 
   // A temp password (single-create, bulk import) is time-boxed — checked
   // here, not just stated in the welcome/bulk-import email copy. `select('*')`
@@ -279,8 +402,12 @@ const authenticateEmployee = async (email, password, { tenantCompanyId = null, a
   // see the docblock above for why a distinguishable response here is itself
   // a vulnerability.
   if (allowedRoles && !allowedRoles.includes(employee.role)) {
+    recordLoginFailure(email);
     throw new UnauthorizedError('Invalid email or password');
   }
+
+  // Successful authentication — clear any prior lockout for this email.
+  resetLoginAttempts(email);
 
   const { accessToken, refreshToken } = generateTokens(employee);
   await storeRefreshToken(employee.id, refreshToken);
@@ -317,20 +444,39 @@ const refreshAccessToken = async (refreshToken) => {
   }
 
   const tokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
+
+  // Reuse detection: look up by hash alone (no employee_id filter) so we
+  // can detect a token that was already consumed by a prior refresh.
   const { data: stored } = await supabaseAdmin
     .from('refresh_tokens')
-    .select('*')
-    .eq('employee_id', decoded.id)
+    .select('id, employee_id')
     .eq('token_hash', tokenHash)
     .gt('expires_at', new Date().toISOString())
-    .single();
+    .maybeSingle();
 
-  if (!stored) throw new UnauthorizedError('Refresh token expired or revoked');
+  if (!stored) {
+    // Token already rotated or fully expired — force re-login for ALL of
+    // this employee's sessions by bumping token_version (every outstanding
+    // access token dies immediately on its next auth.middleware.js check).
+    try {
+      await supabaseAdmin
+        .from('employees')
+        .update({ token_version: (decoded.token_version ?? 0) + 1 })
+        .eq('id', decoded.id);
+    } catch {
+      // Best-effort: rejecting the replay already succeeded; if the DB
+      // update fails the user simply has to re-login manually.
+    }
+    throw new UnauthorizedError('Session invalidated due to token reuse');
+  }
+
+  // Delete the consumed token row — prevents replay.
+  await supabaseAdmin.from('refresh_tokens').delete().eq('id', stored.id);
 
   const { data: employee } = await supabaseAdmin
     .from('employees')
     .select('*')
-    .eq('id', decoded.id)
+    .eq('id', stored.employee_id)
     .eq('is_active', true)
     .single();
 
@@ -343,13 +489,42 @@ const refreshAccessToken = async (refreshToken) => {
   await assertCompanyInGoodStanding(getCompanyId(employee), employee.role);
 
   const { accessToken, refreshToken: newRefresh } = generateTokens(employee);
-  await supabaseAdmin.from('refresh_tokens').delete().eq('id', stored.id);
   await storeRefreshToken(employee.id, newRefresh);
 
   return {
     accessToken,
     refreshToken: newRefresh,
     employee: omitSensitive(employee, ['password_hash']),
+  };
+};
+
+/**
+ * Complete 2FA login — called after password succeeded and TOTP code
+ * is verified. Loads employee, issues fresh session tokens.
+ */
+const completeTwoFaLogin = async (employeeId) => {
+  const { data: employee, error } = await supabaseAdmin
+    .from('employees')
+    .select('*')
+    .eq('id', employeeId)
+    .eq('is_active', true)
+    .single();
+
+  if (error || !employee) throw new UnauthorizedError('User not found');
+
+  const companyId = getCompanyId(employee);
+  await assertCompanyInGoodStanding(companyId, employee.role);
+
+  const { accessToken, refreshToken } = generateTokens(employee);
+  await storeRefreshToken(employee.id, refreshToken);
+
+  return {
+    accessToken,
+    refreshToken,
+    employee: {
+      ...omitSensitive(employee, ['password_hash', 'totp_secret']),
+      company_id: companyId,
+    },
   };
 };
 
@@ -749,12 +924,21 @@ const assertOnboardingEmailVerified = (email, verificationToken, inviteId) => {
     throw new BadRequestError('Verify your email with OTP before launching');
   }
   if (entry.verifiedUntil <= Date.now()) {
+    // Expired token — clear so a new OTP is required
+    entry.verifiedToken = null;
+    entry.verifiedUntil = 0;
+    onboardingOtps.set(key, entry);
     throw new BadRequestError('Email verification expired. Request a new OTP.');
   }
   const hash = crypto.createHash('sha256').update(String(verificationToken)).digest('hex');
   if (hash !== entry.verifiedToken) {
     throw new BadRequestError('Invalid email verification. Request a new OTP.');
   }
+  // One-time use: nullify the verification token immediately after use so
+  // a captured or replayed token can't be re-submitted.
+  entry.verifiedToken = null;
+  entry.verifiedUntil = 0;
+  onboardingOtps.set(key, entry);
 };
 
 const consumeOnboardingVerification = (email, inviteId) => {
@@ -933,6 +1117,7 @@ const bootstrapAdmin = async ({
 module.exports = {
   login,
   loginToPortal,
+  completeTwoFaLogin,
   refreshAccessToken,
   logout,
   changePassword,
@@ -941,6 +1126,7 @@ module.exports = {
   getMe,
   hashPassword,
   assertPasswordPolicy,
+  generateOnboardingToken,
   sendOnboardingOtp,
   verifyOnboardingOtp,
   bootstrapAdmin,

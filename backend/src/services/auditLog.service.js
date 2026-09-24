@@ -1,5 +1,6 @@
 const { supabaseAdmin } = require('../config/supabase');
 const logger = require('../utils/logger');
+const { signPayload } = require('../utils/auditIntegrity');
 
 /**
  * Item 5: no central write chokepoint exists in this codebase to hook
@@ -14,7 +15,7 @@ const logAudit = async ({ companyId, actorId, actorRole, actionType, targetType,
     logger.warn('[AuditLog] Skipped — no companyId', { actionType, targetType, targetId });
     return;
   }
-  const { error } = await supabaseAdmin.from('employee_audit_logs').insert({
+  const rowPayload = {
     company_id: companyId,
     actor_id: actorId || null,
     actor_role: actorRole || 'system',
@@ -25,6 +26,11 @@ const logAudit = async ({ companyId, actorId, actorRole, actionType, targetType,
     before_state: beforeState ?? null,
     after_state: afterState ?? null,
     ip_address: ipAddress || null,
+    is_impersonated: false,
+  };
+  const { error } = await supabaseAdmin.from('employee_audit_logs').insert({
+    ...rowPayload,
+    signature: signPayload(rowPayload),
   });
   if (error) {
     logger.error('[AuditLog] Failed to write audit log', { actionType, targetType, targetId, error: error.message });
@@ -46,7 +52,7 @@ const logSuperAdminAudit = async ({
     logger.warn('[AuditLog] Skipped super-admin log — no companyId', { actionType, targetType, targetId });
     return;
   }
-  const { error } = await supabaseAdmin.from('employee_audit_logs').insert({
+  const rowPayload = {
     company_id: companyId,
     actor_id: null,
     actor_role: 'super_admin',
@@ -59,6 +65,10 @@ const logSuperAdminAudit = async ({
     before_state: beforeState ?? null,
     after_state: afterState ?? null,
     ip_address: ipAddress || null,
+  };
+  const { error } = await supabaseAdmin.from('employee_audit_logs').insert({
+    ...rowPayload,
+    signature: signPayload(rowPayload),
   });
   if (error) {
     logger.error('[AuditLog] Failed to write super-admin audit log', { actionType, targetType, targetId, error: error.message });
@@ -95,18 +105,23 @@ const listAuditLogs = async (companyId, { page = 1, limit = 20, actorId, actionT
  * company-scoped call site.
  */
 const logPlatformAudit = async ({ superAdminId, actionType, targetType, targetId, beforeState, afterState, ipAddress }) => {
-  const { error } = await supabaseAdmin.from('employee_audit_logs').insert({
+  const rowPayload = {
     company_id: null,
     actor_id: null,
     actor_role: 'super_admin',
     actor_type: 'super_admin',
     super_admin_actor_id: superAdminId || null,
+    is_impersonated: false,
     action_type: actionType,
     target_type: targetType,
     target_id: targetId || null,
     before_state: beforeState ?? null,
     after_state: afterState ?? null,
     ip_address: ipAddress || null,
+  };
+  const { error } = await supabaseAdmin.from('employee_audit_logs').insert({
+    ...rowPayload,
+    signature: signPayload(rowPayload),
   });
   if (error) {
     logger.error('[AuditLog] Failed to write platform audit log', { actionType, targetType, targetId, error: error.message });

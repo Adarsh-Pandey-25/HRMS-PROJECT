@@ -42,6 +42,7 @@ const beaconRoutes = require('./routes/ipBeacon.routes');
 const beaconPingRoutes = require('./routes/ipBeaconPing.routes');
 const billingRoutes = require('./routes/tenantBilling.routes');
 const onboardingChecklistRoutes = require('./routes/onboardingChecklist.routes');
+const onboardingRoutes = require('./routes/onboarding.routes');
 const webhookRoutes = require('./routes/webhook.routes');
 const auditLogRoutes = require('./routes/auditLog.routes');
 
@@ -71,6 +72,19 @@ app.use(helmet({
     },
   },
 }));
+
+// Explicit X-Frame-Options: DENY for legacy browsers that ignore CSP frameAncestors.
+app.use(helmet.frameguard({ action: 'deny' }));
+
+// HSTS: only in production — on localhost it breaks dev workflows.
+if (process.env.NODE_ENV === 'production') {
+  app.use(helmet.hsts({
+    maxAge: 31536000,
+    includeSubDomains: true,
+    preload: true,
+  }));
+}
+
 app.use(compression());
 app.use(cors(config.cors));
 app.use(morgan(config.env === 'production' ? 'combined' : 'dev'));
@@ -86,6 +100,15 @@ app.use(express.urlencoded({ extended: false, limit: '100kb' }));
 app.use(cookieParser());
 app.use(generalLimiter);
 app.use(resolveTenantSubdomain);
+
+// Kill any request that has been open longer than 25 s — prevents
+// slow-loris and hung upstreams from holding connections indefinitely.
+app.use((req, res, next) => {
+  req.setTimeout(25_000, () => {
+    if (!res.headersSent) res.status(408).json({ error: 'Request timeout' });
+  });
+  next();
+});
 
 const HEALTH_CHECK_TIMEOUT_MS = 3000;
 
@@ -170,6 +193,7 @@ app.use('/api/attendance/ip-beacon', beaconPingRoutes);
 app.use('/api/billing', billingRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/onboarding-checklist-templates', onboardingChecklistRoutes);
+app.use('/api/onboarding', onboardingRoutes);
 app.use('/api/audit-logs', auditLogRoutes);
 
 app.use(notFoundHandler);

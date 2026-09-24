@@ -390,6 +390,36 @@ const checklistReminderEmail = (employee, pendingItems) =>
     }),
   });
 
+/** Self-service onboarding invitation — sent by HR when creating an employee with onboarding_mode.
+ *  Carries the magic link + temp password. Token is one-time-use and 72h-scoped. */
+const onboardingInviteEmail = (employee, tempPassword, onboardingLink, { companyName = '', expiryHours = 72 } = {}) => {
+  const rows = [
+    { label: 'Employee ID', value: employee.employee_code },
+    { label: 'Joining date', value: formatDate(employee.date_of_joining) },
+    { label: 'Login email', value: employee.email },
+    { label: 'Temporary password', valueHtml: `<span style="font-family:${FONT_MONO};letter-spacing:0.06em;font-size:12px;">${escapeHtml(tempPassword)}</span>` },
+  ];
+  return sendEmail({
+    to: employee.email,
+    subject: `Welcome to ${escapeHtml(companyName || 'the team')} — complete your profile`,
+    html: etDocument({
+      preheader: `Complete your profile to get started, ${escapeHtml(employee.first_name || '')}.`,
+      gradient: GRADIENT.emerald,
+      eyebrow: escapeHtml(companyName || 'HRMS'),
+      titleHtml: `Welcome, <em style="font-style:italic;">${escapeHtml(employee.first_name)}.</em><br>Complete your profile to begin.`,
+      icon: '🎉',
+      bodyHtml: `
+        ${etP(`Your manager has created your account. To get started, please complete your profile — phone, address, ID numbers, and bank details — and set your own password.`)}
+        ${etP(`You can change your temporary password to one of your choice during onboarding.`)}
+        ${etInfo(rows)}
+        ${etAlert(`This invitation link expires in <strong>${expiryHours} hours</strong>. Please complete onboarding before then.`, { bg: COLOR.amberBg, color: COLOR.amberDeep })}
+        ${etCta(onboardingLink, 'Complete My Profile', COLOR.emerald)}
+        ${etSublink(`Or copy this link: ${escapeHtml(onboardingLink)}`)}
+      `,
+    }),
+  });
+};
+
 /** No real trigger exists — nothing currently fires when the last onboarding_checklist item completes. */
 const onboardingCompleteEmail = (employee, { tasksDone, daysTaken } = {}) =>
   sendEmail({
@@ -1493,6 +1523,7 @@ module.exports = {
   dayOneEmail,
   checklistReminderEmail,
   onboardingCompleteEmail,
+  onboardingInviteEmail,
   // Bulk import
   bulkImportEmail,
   // Offboarding

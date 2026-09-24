@@ -1,5 +1,5 @@
 const express = require('express');
-const { body, param } = require('express-validator');
+const { body, param, query } = require('express-validator');
 const superAdminController = require('../controllers/superAdmin.controller');
 const planAdminController = require('../controllers/planAdmin.controller');
 const subscriptionAdminController = require('../controllers/subscriptionAdmin.controller');
@@ -8,6 +8,8 @@ const companyDetailController = require('../controllers/companyDetail.controller
 const featureOverrideController = require('../controllers/featureOverride.controller');
 const couponController = require('../controllers/coupon.controller');
 const systemHealthController = require('../controllers/systemHealth.controller');
+const emailPreferencesController = require('../controllers/emailPreferences.controller');
+const { ALLOWED_CATEGORIES } = require('../services/emailPreferences.service');
 const { authenticateSuperAdmin, requireSuperAdminRole } = require('../middleware/superAdmin.middleware');
 const { validate } = require('../middleware/validation.middleware');
 const { authLimiter } = require('../middleware/rateLimiter.middleware');
@@ -290,5 +292,36 @@ router.get('/system/email-failures', authenticateSuperAdmin, requireSuperAdminRo
 
 // Item 5: company_id required — never a global unscoped dump across tenants.
 router.get('/audit-logs', authenticateSuperAdmin, superAdminController.listAuditLogs);
+
+// ── Per-org email preferences (full_admin + billing_admin) ────────────────
+router.get(
+  '/email-preferences',
+  authenticateSuperAdmin,
+  requireSuperAdminRole(),
+  query('company_id').isUUID(),
+  validate,
+  emailPreferencesController.getCompanyEmailPreferences,
+);
+router.patch(
+  '/email-preferences/:companyId/:category',
+  authenticateSuperAdmin,
+  requireSuperAdminRole(),
+  param('companyId').isUUID(),
+  param('category').isIn(Array.from(ALLOWED_CATEGORIES)),
+  body('enabled').isBoolean(),
+  validate,
+  emailPreferencesController.setSingleEmailPreference,
+);
+router.patch(
+  '/email-preferences/:companyId',
+  authenticateSuperAdmin,
+  requireSuperAdminRole(),
+  param('companyId').isUUID(),
+  body('preferences').isArray({ min: 1 }),
+  body('preferences.*.category').isIn(Array.from(ALLOWED_CATEGORIES)),
+  body('preferences.*.enabled').isBoolean(),
+  validate,
+  emailPreferencesController.setBulkEmailPreferences,
+);
 
 module.exports = router;

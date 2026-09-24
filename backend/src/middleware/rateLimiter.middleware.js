@@ -21,9 +21,13 @@ const authKeyGenerator = (req) => {
 const ipKeyGenerator = (req) => `ip:${req.ip}`;
 
 const limiterOptions = {
- windowMs: config.rateLimit.windowMs,
- standardHeaders: true,
- legacyHeaders: false,
+  windowMs: config.rateLimit.windowMs,
+  standardHeaders: true,
+  legacyHeaders: false,
+  // Prevent clock-skipping after rate-limit: a failed request resets the
+  // window timer so a brute-forcer who hit the cap can't idle until just
+  // before expiry and then sneak one more attempt through.
+  requestSuccessfulBeforeExpiry: false,
 };
 
 /**

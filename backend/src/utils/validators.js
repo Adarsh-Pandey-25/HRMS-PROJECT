@@ -20,8 +20,8 @@ const registerRules = [
 ];
 
 const loginRules = [
-  body('email').isEmail().normalizeEmail(),
-  body('password').notEmpty(),
+  body('email').isString().isEmail().normalizeEmail(),
+  body('password').isString().notEmpty().isLength({ max: 1024 }),
 ];
 
 const bootstrapRules = [
@@ -52,8 +52,8 @@ const onboardingVerifyOtpRules = [
 ];
 
 const changePasswordRules = [
-  body('currentPassword').optional(),
-  body('newPassword').isLength({ min: 1 }).withMessage('Password is required'),
+  body('currentPassword').optional().isString().isLength({ max: 1024 }),
+  body('newPassword').isString().isLength({ min: 1, max: 1024 }).withMessage('Password is required'),
 ];
 
 const forgotPasswordRules = [body('email').isEmail().normalizeEmail()];
@@ -62,9 +62,9 @@ const forgotPasswordRules = [body('email').isEmail().normalizeEmail()];
 // 1) POST /auth/forgot-password -> sends OTP to email
 // 2) POST /auth/reset-password -> { email, otp, newPassword }
 const resetPasswordRules = [
-  body('email').isEmail().normalizeEmail(),
-  body('otp').isLength({ min: 4, max: 10 }).withMessage('OTP is required'),
-  body('newPassword').isLength({ min: 1 }).withMessage('Password is required'),
+  body('email').isString().isEmail().normalizeEmail(),
+  body('otp').isString().isLength({ min: 4, max: 10 }).withMessage('OTP is required'),
+  body('newPassword').isString().isLength({ min: 1, max: 1024 }).withMessage('Password is required'),
 ];
 
 const employeeCreateRules = [
