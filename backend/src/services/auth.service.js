@@ -4,9 +4,10 @@ const crypto = require('crypto');
 const { supabaseAdmin } = require('../config/supabase');
 const config = require('../config/database');
 const {
-  BadRequestError, UnauthorizedError, NotFoundError, ForbiddenError, TooManyRequestsError,
+  BadRequestError, UnauthorizedError, NotFoundError, ForbiddenError, TooManyRequestsError, ConflictError,
 } = require('../utils/errors');
 const { omitSensitive, generateDefaultPassword, isMissingColumnError } = require('../utils/helpers');
+const { checkSlugAvailability } = require('../utils/slug');
 const { allocateNextEmployeeCode } = require('./employeeCode.service');
 const { welcomeEmail, passwordResetEmail, onboardingOtpEmail } = require('./email.service');
 const settingsService = require('./settings.service');
@@ -424,7 +425,7 @@ const authenticateEmployee = async (email, password, { tenantCompanyId = null, a
 };
 
 /** Legacy unscoped login — any role, no tenant scoping. Kept for any existing caller. */
-const login = async (email, password) => authenticateEmployee(email, password);
+const login = async (email, password, tenantCompanyId = null) => authenticateEmployee(email, password, { tenantCompanyId });
 
 /** Portal-specific logins: role is enforced server-side, company is scoped from the resolved subdomain when present. */
 const loginToPortal = async (portal, email, password, tenantCompanyId = null) => {
@@ -433,7 +434,7 @@ const loginToPortal = async (portal, email, password, tenantCompanyId = null) =>
   return authenticateEmployee(email, password, { tenantCompanyId, allowedRoles });
 };
 
-const refreshAccessToken = async (refreshToken) => {
+const refreshAccessToken = async (refreshToken, tenantCompanyId = null) => {
   if (!refreshToken) throw new UnauthorizedError('Refresh token required');
 
   let decoded;
@@ -481,6 +482,9 @@ const refreshAccessToken = async (refreshToken) => {
     .single();
 
   if (!employee) throw new UnauthorizedError('User not found');
+  if (tenantCompanyId && String(getCompanyId(employee)) !== String(tenantCompanyId)) {
+    throw new UnauthorizedError('Invalid refresh token');
+  }
 
   // Item 4: same fail-closed check as login, run again here so "blocked on
   // next login/refresh" actually means refresh too — a long-lived refresh
@@ -777,8 +781,18 @@ const getMe = async (employeeId) => {
     .single();
 
   if (error || !employee) throw new NotFoundError('Employee not found');
+
+  let profilePictureUrl = null;
+  if (employee.profile_picture) {
+    try {
+      profilePictureUrl = await getSignedUrl(STORAGE_BUCKETS.profilePictures, employee.profile_picture, 86400);
+    } catch {
+      /* missing file — topbar falls back to initials */
+    }
+  }
   return {
     ...omitSensitive(employee, ['password_hash']),
+    profile_picture_url: profilePictureUrl,
     company_id: getCompanyId(employee),
   };
 };
@@ -993,6 +1007,7 @@ const bootstrapAdmin = async ({
   verificationToken = null,
   inviteToken = null,
   logoFile = null,
+  workspaceSlug = null,
 }) => {
   if (!email) throw new BadRequestError('email is required');
   if (!first_name) throw new BadRequestError('first_name is required');
@@ -1006,6 +1021,19 @@ const bootstrapAdmin = async ({
   const submittedCompanyName = String(company_profile?.name || '').trim();
   if (submittedCompanyName !== invite.companyNameHint) {
     throw new ForbiddenError('The company name must match the onboarding invitation');
+  }
+
+  // The person onboarding may edit the subdomain the invite suggested.
+  // Re-checked here at submit time (not only by the live availability
+  // check in the UI) so two onboardings can't both claim the same slug.
+  let companySlug = invite.companySlug;
+  if (workspaceSlug && String(workspaceSlug).trim().toLowerCase() !== invite.companySlug) {
+    const { slug: requested, status } = await checkSlugAvailability(workspaceSlug, { excludeInviteId: invite.inviteId });
+    if (status === 'taken') throw new ConflictError('That workspace address is already taken. Choose another.');
+    if (status !== 'available') {
+      throw new BadRequestError('That workspace address is not available — use lowercase letters, numbers, and hyphens only.');
+    }
+    companySlug = requested;
   }
 
   assertOnboardingEmailVerified(email, verificationToken, invite.inviteId);
@@ -1026,7 +1054,7 @@ const bootstrapAdmin = async ({
   await tenantService.ensureCompanyRow({
     id: companyId,
     name: companyName,
-    slug: invite.companySlug,
+    slug: companySlug,
   });
 
   const profile = {
@@ -1107,6 +1135,7 @@ const bootstrapAdmin = async ({
   return {
     ...omitSensitive(data, ['password_hash']),
     company_id: companyId,
+    company_slug: companySlug,
     logoPath: profile.logoPath || null,
     logoName: profile.logoName || null,
     logoUrl,

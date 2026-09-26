@@ -212,7 +212,21 @@ const webhookTestLimiter = rateLimit({
  },
 });
 
+/** Public marketing forms (trial request / contact) — unauthenticated, so keyed per IP. */
+const publicLeadLimiter = rateLimit({
+ windowMs: 60 * 60 * 1000,
+ standardHeaders: true,
+ legacyHeaders: false,
+ max: parseInt(process.env.PUBLIC_LEAD_RATE_LIMIT_MAX, 10) || 5,
+ keyGenerator: ipKeyGenerator,
+ message: {
+ success: false,
+ error: { code: 'RATE_LIMIT', message: 'Too many requests from this network. Please try again later or email us.' },
+ timestamp: new Date().toISOString(),
+ },
+});
+
 module.exports = {
  generalLimiter, authLimiter, bootstrapLimiter, onboardingOtpLimiter, settingsLimiter, admsLimiter, beaconPingLimiter,
- webhookTestLimiter,
+ webhookTestLimiter, publicLeadLimiter,
 };

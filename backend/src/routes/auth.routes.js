@@ -1,5 +1,5 @@
 const express = require('express');
-const { body } = require('express-validator');
+const { body, query } = require('express-validator');
 const authController = require('../controllers/auth.controller');
 const { authenticate } = require('../middleware/auth.middleware');
 const { validate } = require('../middleware/validation.middleware');
@@ -38,6 +38,14 @@ router.post(
   authController.verifyOnboardingOtp
 );
 router.get(
+  '/onboarding/slug-availability',
+  onboardingOtpLimiter,
+  query('slug').isString().isLength({ min: 1, max: 63 }),
+  query('inviteToken').isString().isLength({ min: 16, max: 128 }),
+  validate,
+  authController.onboardingSlugAvailability
+);
+router.get(
   '/onboarding/invite/:token',
   onboardingOtpLimiter,
   authController.peekOnboardingInvite
@@ -66,6 +74,13 @@ router.post('/logout', authenticate, authController.logout);
 router.post('/refresh-token', authLimiter, authController.refreshToken);
 router.get('/me', authenticate, authController.getMe);
 router.patch('/me/install-prompt-seen', authenticate, authController.markInstallPromptSeen);
+router.post(
+  '/impersonation/start',
+  authLimiter,
+  body('token').isString().isLength({ min: 20, max: 4096 }),
+  validate,
+  authController.startImpersonationHandoff,
+);
 router.post('/impersonation/end', authenticate, authController.endImpersonation);
 router.put('/change-password', authenticate, changePasswordRules, validate, authController.changePassword);
 router.post('/forgot-password', authLimiter, forgotPasswordRules, validate, authController.forgotPassword);

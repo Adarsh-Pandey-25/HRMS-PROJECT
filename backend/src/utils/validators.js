@@ -34,6 +34,7 @@ const bootstrapRules = [
   body('verification_token').optional().isString().isLength({ min: 16, max: 128 }),
   body('inviteToken').optional().isString().isLength({ min: 16, max: 128 }),
   body('invite_token').optional().isString().isLength({ min: 16, max: 128 }),
+  body('workspaceSlug').optional({ values: 'falsy' }).isString().isLength({ max: 63 }),
 ];
 
 const onboardingSendOtpRules = [
@@ -92,6 +93,7 @@ const checkInRules = [
   body('device_id').optional().trim(),
   body('location').optional().isObject(),
   body('is_wfh').optional().isBoolean(),
+  body('selfie_token').optional({ values: 'falsy' }).isString().isLength({ max: 2048 }),
 ];
 
 const leaveApplyRules = [
@@ -243,7 +245,27 @@ const paginationQuery = [
   query('limit').optional().isInt({ min: 1, max: 500 }),
 ];
 
+/** Salary revision: monthly components + effective date (see salaryRevision.service.js). */
+const salaryRevisionCreateRules = [
+  body('employee_id').isUUID().withMessage('Select an employee'),
+  body('components').isObject().withMessage('Salary components are required'),
+  body(['components.basic', 'components.hra', 'components.da', 'components.special', 'components.transport', 'components.medical'])
+    .optional({ values: 'falsy' })
+    .isFloat({ min: 0, max: 100000000 })
+    .withMessage('Salary amounts must be positive numbers'),
+  body('effective_date').isISO8601({ strict: true }).withMessage('Effective date must be a valid date'),
+  body('reason').optional({ values: 'null' }).isString().isLength({ max: 1000 }),
+];
+
+const salaryRevisionListQueryRules = [
+  query('employee_id').optional().isUUID(),
+  query('status').optional().isIn(['scheduled', 'applied', 'cancelled']),
+  query('limit').optional().isInt({ min: 1, max: 500 }),
+];
+
 module.exports = {
+  salaryRevisionCreateRules,
+  salaryRevisionListQueryRules,
   registerRules,
   loginRules,
   bootstrapRules,

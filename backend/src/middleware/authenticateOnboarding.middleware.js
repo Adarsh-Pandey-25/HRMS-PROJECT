@@ -27,6 +27,10 @@ const authenticateOnboarding = async (req, res, next) => {
     if (!decoded.employee_id) {
       throw new UnauthorizedError('Invalid onboarding token payload');
     }
+    // The link only works on the employee's own company subdomain.
+    if (req.tenantCompany && String(decoded.company_id) !== String(req.tenantCompany.id)) {
+      throw new UnauthorizedError('Invalid or expired onboarding token');
+    }
 
     const { data: employee, error } = await supabaseAdmin
       .from('employees')

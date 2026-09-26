@@ -7,6 +7,8 @@ const RESERVED_SLUGS = new Set([
   'assets', 'dashboard', 'login', 'logout', 'signup', 'signin', 'auth',
   'status', 'docs', 'help', 'support', 'blog', 'staging', 'dev', 'test',
   'localhost', 'onboarding', 'billing', 'root', 'null', 'undefined',
+  'employee-onboarding', 'pricing', 'features', 'about', 'contact', 'legal',
+  'security', 'privacy', 'terms', 'status-page', 'marketing', 'public', 'www2',
 ]);
 
 /** Lowercase, hyphenated, DNS-label-safe. Leaves room for a numeric suffix. */
@@ -44,23 +46,45 @@ const isSlugTaken = async (slug, { excludeInviteId = null } = {}) => {
   return Boolean(invite);
 };
 
-/** Suggests the first free `base`, `base-2`, `base-3`, ... slug for a company name. */
+/**
+ * Suggests a subdomain from the company name: the first word
+ * ("Spaxads Digital Media Pvt Ltd" → "spaxads"), then the first two words
+ * ("spaxads-digital"), then "spaxads-2", "spaxads-3", ...
+ */
 const suggestUniqueSlug = async (companyName, opts = {}) => {
-  const base = slugify(companyName) || 'company';
-  const seedBase = RESERVED_SLUGS.has(base) ? `${base}-hq` : base;
-  let candidate = seedBase;
-  let n = 2;
-  // Bounded — a runaway loop here would mean something is structurally wrong upstream.
-  while (n < 200) {
+  const words = String(companyName || '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  const firstWord = slugify(words[0] || '') || 'company';
+  const firstTwo = slugify(words.slice(0, 2).join('-'));
+
+  for (const candidate of [...new Set([firstWord, firstTwo].filter(Boolean))]) {
     if (isValidSlugFormat(candidate) && !(await isSlugTaken(candidate, opts))) {
       return candidate;
     }
-    candidate = `${seedBase}-${n}`;
-    n += 1;
+  }
+
+  const seedBase = RESERVED_SLUGS.has(firstWord) ? `${firstWord}-hq` : firstWord;
+  // Bounded — a runaway loop here would mean something is structurally wrong upstream.
+  for (let n = 2; n < 200; n += 1) {
+    const candidate = `${seedBase}-${n}`;
+    if (isValidSlugFormat(candidate) && !(await isSlugTaken(candidate, opts))) {
+      return candidate;
+    }
   }
   return `${seedBase}-${Date.now()}`;
 };
 
+/**
+ * Availability of a user-typed subdomain.
+ * @returns {Promise<{ slug: string, status: 'available'|'taken'|'reserved'|'invalid' }>}
+ */
+const checkSlugAvailability = async (rawSlug, opts = {}) => {
+  const slug = String(rawSlug || '').trim().toLowerCase();
+  if (RESERVED_SLUGS.has(slug)) return { slug, status: 'reserved' };
+  if (!isValidSlugFormat(slug) || slug.length > 48) return { slug, status: 'invalid' };
+  if (await isSlugTaken(slug, opts)) return { slug, status: 'taken' };
+  return { slug, status: 'available' };
+};
+
 module.exports = {
-  RESERVED_SLUGS, slugify, isValidSlugFormat, isSlugTaken, suggestUniqueSlug,
+  RESERVED_SLUGS, slugify, isValidSlugFormat, isSlugTaken, suggestUniqueSlug, checkSlugAvailability,
 };

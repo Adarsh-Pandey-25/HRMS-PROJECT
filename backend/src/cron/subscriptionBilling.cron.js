@@ -264,6 +264,55 @@ const runRenewalReminders = async () => {
   return { sent };
 };
 
+/**
+ * Free trials (status 'trialing') end at current_period_end, set to
+ * TRIAL_DAYS after signup. Two days before, admins get a reminder; once it
+ * passes, the trial is marked 'expired', which the login gate
+ * (auth.service.js assertCompanyInGoodStanding) treats like any lapsed
+ * subscription until a plan is activated. Data is untouched.
+ */
+const TRIAL_REMINDER_HOURS = 48;
+
+const runTrialLifecycle = async () => {
+  const now = new Date();
+  const reminderCutoff = new Date(now.getTime() + TRIAL_REMINDER_HOURS * 60 * 60 * 1000);
+
+  const { data: endingSoon, error: endingError } = await supabaseAdmin
+    .from('company_billing_subscriptions')
+    .select('*, plans:subscription_plans(*), companies(id, name)')
+    .eq('status', 'trialing')
+    .gt('current_period_end', now.toISOString())
+    .lte('current_period_end', reminderCutoff.toISOString());
+  if (endingError) throw endingError;
+
+  let reminded = 0;
+  for (const s of endingSoon || []) {
+    if (await notifications.alreadySent(s.id, 'trial_ending')) continue;
+    await notifications.sendTrialEndingNotification(s).catch(() => {});
+    reminded += 1;
+  }
+
+  const { data: ended, error: endedError } = await supabaseAdmin
+    .from('company_billing_subscriptions')
+    .update({ status: 'expired', updated_at: now.toISOString() })
+    .eq('status', 'trialing')
+    .lte('current_period_end', now.toISOString())
+    .select('*, plans:subscription_plans(*), companies(id, name)');
+  if (endedError) throw endedError;
+
+  for (const s of ended || []) {
+    await subscriptionService.logSubscriptionEvent(s.id, 'expired', 'system', null, {
+      reason: 'trial_ended',
+      trialEndedAt: s.current_period_end,
+    });
+    if (!(await notifications.alreadySent(s.id, 'trial_ended'))) {
+      await notifications.sendTrialEndedNotification(s).catch(() => {});
+    }
+  }
+
+  return { reminded, expired: (ended || []).length };
+};
+
 const runSubscriptionBilling = withCronLock('subscription_billing', 10 * 60 * 1000, async (reason = 'cron') => {
   logger.info(`Running subscription billing (${reason})`);
   const results = {};
@@ -296,6 +345,12 @@ const runSubscriptionBilling = withCronLock('subscription_billing', 10 * 60 * 10
   } catch (err) {
     logger.error('[SubscriptionBilling] Renewal reminders failed', { error: err.message });
     results.remindersError = err.message;
+  }
+  try {
+    results.trials = await runTrialLifecycle();
+  } catch (err) {
+    logger.error('[SubscriptionBilling] Trial lifecycle step failed', { error: err.message });
+    results.trialsError = err.message;
   }
 
   const hasFailure = Object.keys(results).some((k) => k.endsWith('Error'));

@@ -59,6 +59,10 @@ const isCompanySuspended = async (companyId) => {
   return Boolean(data);
 };
 
+/** True unless the request is on a tenant host that belongs to another company. */
+const belongsToTenant = (req, companyId) => !req.tenantCompany
+  || String(companyId || '') === String(req.tenantCompany.id);
+
 const attachTenant = (employee) => {
   if (!employee) return employee;
   const safe = omitSensitive(employee, [
@@ -79,6 +83,9 @@ const authenticate = async (req, res, next) => {
     if (rawApiKey) {
       const keyRow = await apiKeyService.verifyApiKey(rawApiKey);
       if (!keyRow) {
+        throw new UnauthorizedError('Invalid or revoked API key');
+      }
+      if (!belongsToTenant(req, keyRow.company_id)) {
         throw new UnauthorizedError('Invalid or revoked API key');
       }
       attachApiKeyUser(req, keyRow);
@@ -111,6 +118,12 @@ const authenticate = async (req, res, next) => {
     // deactivation after that point actually diverges the two values.
     if (tokenVersionAvailable && (decoded.token_version ?? 0) !== (employee.token_version ?? 0)) {
       throw new UnauthorizedError('Session has been revoked. Please log in again.');
+    }
+
+    // A session is only valid on its own company's subdomain. Same generic
+    // message as a bad token so it can't be used to probe other workspaces.
+    if (!belongsToTenant(req, getCompanyId(employee))) {
+      throw new UnauthorizedError('Invalid or expired token');
     }
 
     if (decoded.scope === 'two_fa_pending') {
@@ -186,7 +199,9 @@ const optionalAuth = async (req, res, next) => {
 
     if (
       employee
+      && decoded.scope !== 'two_fa_pending'
       && (!tokenVersionAvailable || (decoded.token_version ?? 0) === (employee.token_version ?? 0))
+      && belongsToTenant(req, getCompanyId(employee))
       && !(await isCompanySuspended(employee.company_id))
     ) {
       req.user = attachTenant(employee);

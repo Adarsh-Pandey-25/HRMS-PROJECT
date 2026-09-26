@@ -5,6 +5,10 @@ const logger = require('../utils/logger');
 const { BadRequestError, NotFoundError, ConflictError } = require('../utils/errors');
 const config = require('../config/database');
 const { getInvoiceNumber } = require('./invoiceNumber.service');
+const { grossAmount } = require('../utils/gst');
+
+/** Free trial length for new workspaces. The trial ends at current_period_end. */
+const TRIAL_DAYS = Math.max(1, parseInt(process.env.TRIAL_DAYS ?? '7', 10) || 7);
 
 const LIVE_STATUSES = ['trialing', 'active', 'past_due', 'grace_period'];
 
@@ -165,7 +169,11 @@ const createSubscription = async (companyId, planId, billingCycle, seatCount, ac
   if (coupon) price = couponService.applyDiscount(price, coupon);
 
   const periodStart = new Date().toISOString();
-  const periodEnd = cyclePeriodEnd(periodStart, billingCycle);
+  // A trial runs for TRIAL_DAYS, not a full billing cycle; expireTrials() in
+  // subscriptionBilling.cron.js ends it once current_period_end passes.
+  const periodEnd = initialStatus === 'trialing'
+    ? new Date(Date.now() + TRIAL_DAYS * 24 * 60 * 60 * 1000).toISOString()
+    : cyclePeriodEnd(periodStart, billingCycle);
 
   const { data: subscription, error } = await supabaseAdmin
     .from('company_billing_subscriptions')
@@ -489,8 +497,10 @@ const reactivateSubscription = async (subscriptionId, actorId) => {
  * later without touching any caller of this function.
  */
 const chargePaymentMethod = async (subscription, invoice) => {
+  // invoice.amount is the base (ex-GST) amount; the customer is charged base + GST.
+  const chargeAmount = grossAmount(invoice?.amount);
   logger.info('[Subscription] chargePaymentMethod stub invoked (no gateway wired in)', {
-    subscriptionId: subscription.id, invoiceId: invoice?.id, amount: invoice?.amount,
+    subscriptionId: subscription.id, invoiceId: invoice?.id, baseAmount: invoice?.amount, chargeAmount,
   });
   return { success: true, gatewayResponse: { stub: true, note: 'No payment gateway wired in yet — stub always succeeds.' } };
 };

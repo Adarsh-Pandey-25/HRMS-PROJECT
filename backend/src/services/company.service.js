@@ -14,29 +14,7 @@ const {
   BadRequestError, ForbiddenError, NotFoundError, ConflictError,
 } = require('../utils/errors');
 
-const slugify = (name) => {
-  const base = String(name || 'company')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 80);
-  return base || 'company';
-};
-
-const uniqueSlug = async (name) => {
-  const base = slugify(name);
-  let candidate = base;
-  for (let i = 0; i < 8; i += 1) {
-    const { data } = await supabaseAdmin
-      .from('companies')
-      .select('id')
-      .eq('slug', candidate)
-      .maybeSingle();
-    if (!data) return candidate;
-    candidate = `${base}-${Math.random().toString(36).slice(2, 6)}`;
-  }
-  return `${base}-${Date.now().toString(36)}`;
-};
+const { suggestUniqueSlug, checkSlugAvailability } = require('../utils/slug');
 
 const countEmployees = async (companyId) => {
   const { count, error } = await supabaseAdmin
@@ -232,16 +210,17 @@ const createChild = async (actorCompanyId, actorUserId, { name, slug } = {}) => 
   await promoteToParentIfNeeded(actorCompanyId);
 
   const childId = newCompanyId();
-  const childSlug = slug
-    ? String(slug).trim().slice(0, 100)
-    : await uniqueSlug(trimmed);
-
-  const { data: slugTaken } = await supabaseAdmin
-    .from('companies')
-    .select('id')
-    .eq('slug', childSlug)
-    .maybeSingle();
-  if (slugTaken) throw new ConflictError('Company slug already exists');
+  let childSlug;
+  if (slug) {
+    const { slug: requested, status } = await checkSlugAvailability(slug);
+    if (status === 'taken') throw new ConflictError('That subdomain is already taken. Try another.');
+    if (status !== 'available') {
+      throw new BadRequestError('That subdomain is not available — use lowercase letters, numbers, and hyphens only.');
+    }
+    childSlug = requested;
+  } else {
+    childSlug = await suggestUniqueSlug(trimmed);
+  }
 
   const child = await ensureCompanyRow({
     id: childId,
@@ -287,18 +266,9 @@ const updateChild = async (actorCompanyId, childId, { name, is_active } = {}) =>
   if (name !== undefined) {
     const trimmed = String(name || '').trim();
     if (trimmed.length < 2) throw new BadRequestError('Company name is required');
+    // The slug is the company's subdomain and is locked once created —
+    // renaming must not move the workspace to a new URL.
     patch.name = trimmed;
-    // Always regenerate slug from the new display name
-    const desiredSlug = slugify(trimmed);
-    if (desiredSlug) {
-      const { data: slugTaken } = await supabaseAdmin
-        .from('companies')
-        .select('id')
-        .eq('slug', desiredSlug)
-        .neq('id', childId)
-        .maybeSingle();
-      patch.slug = slugTaken ? await uniqueSlug(trimmed) : desiredSlug;
-    }
   }
   if (is_active !== undefined) {
     patch.is_active = Boolean(is_active);

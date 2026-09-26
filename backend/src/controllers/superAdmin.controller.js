@@ -230,6 +230,13 @@ const suggestSlug = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+const inviteSlugAvailability = async (req, res, next) => {
+  try {
+    const { checkSlugAvailability } = require('../utils/slug');
+    successResponse(res, 'Availability checked', await checkSlugAvailability(req.query.slug));
+  } catch (err) { next(err); }
+};
+
 const listInvites = async (req, res, next) => {
   try {
     const data = await superAdminService.listInvites();
@@ -260,6 +267,7 @@ module.exports = {
   listCompanies,
   setCompanyActive,
   suggestSlug,
+  inviteSlugAvailability,
   createInvite,
   listInvites,
   revokeInvite,

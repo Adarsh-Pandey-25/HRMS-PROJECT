@@ -47,6 +47,15 @@ const checkIn = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+/** Step 1 of selfie check-in: store the photo, return a short-lived token for /check-in. */
+const uploadSelfie = async (req, res, next) => {
+  try {
+    const companyId = req.user.company_id || require('../utils/tenant').getCompanyId(req.user);
+    const result = await attendanceService.uploadCheckInSelfie(req.user.id, companyId, req.file);
+    successResponse(res, 'Selfie saved', result, null, 201);
+  } catch (err) { next(err); }
+};
+
 const checkOut = async (req, res, next) => {
   try {
     rejectSpoofedBiometricMethod(req);
@@ -82,7 +91,7 @@ const myAttendance = async (req, res, next) => {
     const data = (await shouldHideBiometric(req.user.company_id))
       ? attendanceService.stripBiometricRows(result.data)
       : result.data;
-    successResponse(res, 'Attendance fetched', data, result.meta);
+    successResponse(res, 'Attendance fetched', await attendanceService.attachSelfieUrls(data), result.meta);
   } catch (err) { next(err); }
 };
 
@@ -118,7 +127,7 @@ const teamAttendance = async (req, res, next) => {
     const data = (await shouldHideBiometric(req.user.company_id))
       ? attendanceService.stripBiometricRows(result.data)
       : result.data;
-    successResponse(res, 'Team attendance fetched', data, result.meta);
+    successResponse(res, 'Team attendance fetched', await attendanceService.attachSelfieUrls(data), result.meta);
   } catch (err) { next(err); }
 };
 
@@ -134,7 +143,7 @@ const allAttendance = async (req, res, next) => {
     const data = (await shouldHideBiometric(req.user.company_id))
       ? attendanceService.stripBiometricRows(result.data)
       : result.data;
-    successResponse(res, 'All attendance fetched', data, result.meta);
+    successResponse(res, 'All attendance fetched', await attendanceService.attachSelfieUrls(data), result.meta);
   } catch (err) { next(err); }
 };
 
@@ -331,6 +340,7 @@ const checkContext = async (req, res, next) => {
 };
 
 module.exports = {
+  uploadSelfie,
   checkIn, checkOut, biometricWebhook, myAttendance, teamAttendance,
   allAttendance, employeeReport, manualEntry, monthlySummary, checkContext,
 };

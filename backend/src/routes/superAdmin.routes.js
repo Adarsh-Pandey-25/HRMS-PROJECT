@@ -9,6 +9,7 @@ const featureOverrideController = require('../controllers/featureOverride.contro
 const couponController = require('../controllers/coupon.controller');
 const systemHealthController = require('../controllers/systemHealth.controller');
 const emailPreferencesController = require('../controllers/emailPreferences.controller');
+const marketingController = require('../controllers/marketing.controller');
 const { ALLOWED_CATEGORIES } = require('../services/emailPreferences.service');
 const { authenticateSuperAdmin, requireSuperAdminRole } = require('../middleware/superAdmin.middleware');
 const { validate } = require('../middleware/validation.middleware');
@@ -120,6 +121,13 @@ router.get('/impersonation/active', authenticateSuperAdmin, requireSuperAdminRol
 
 router.get('/invites', authenticateSuperAdmin, superAdminController.listInvites);
 router.get('/invites/suggest-slug', authenticateSuperAdmin, superAdminController.suggestSlug);
+router.get(
+  '/invites/slug-availability',
+  authenticateSuperAdmin,
+  query('slug').isString().isLength({ min: 1, max: 63 }),
+  validate,
+  superAdminController.inviteSlugAvailability,
+);
 router.post(
   '/invites',
   authenticateSuperAdmin,
@@ -322,6 +330,36 @@ router.patch(
   body('preferences.*.enabled').isBoolean(),
   validate,
   emailPreferencesController.setBulkEmailPreferences,
+);
+
+// ── Marketing leads (free-trial requests + contact messages) ───────────────
+router.get(
+  '/leads',
+  authenticateSuperAdmin,
+  query('status').optional().isIn(['new', 'contacted', 'invited', 'rejected']),
+  query('type').optional().isIn(['trial', 'contact']),
+  validate,
+  marketingController.listLeads,
+);
+router.patch(
+  '/leads/:id/status',
+  authenticateSuperAdmin,
+  requireSuperAdminRole('support_admin', 'billing_admin'),
+  param('id').isUUID(),
+  body('status').isIn(['new', 'contacted', 'invited', 'rejected']),
+  validate,
+  marketingController.updateLeadStatus,
+);
+router.post(
+  '/leads/:id/invite',
+  authenticateSuperAdmin,
+  requireSuperAdminRole('billing_admin'),
+  param('id').isUUID(),
+  body('company_name').optional().isString().trim().isLength({ min: 2, max: 200 }),
+  body('slug').optional({ values: 'falsy' }).isString().isLength({ max: 63 }),
+  body('expires_in_days').optional().isInt({ min: 1, max: 30 }),
+  validate,
+  marketingController.inviteFromLead,
 );
 
 module.exports = router;

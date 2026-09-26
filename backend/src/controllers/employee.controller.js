@@ -10,7 +10,7 @@ const {
   getCompanyById,
 } = require('../services/tenant.service');
 const { allocateNextEmployeeCode } = require('../services/employeeCode.service');
-const { uploadProfilePicture, getSignedUrl, STORAGE_BUCKETS, deleteEmployeeFolder } = require('../services/storage.service');
+const { uploadProfilePicture, getSignedUrl, getSignedUrls, STORAGE_BUCKETS, deleteEmployeeFolder } = require('../services/storage.service');
 const logger = require('../utils/logger');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -250,15 +250,15 @@ const create = async (req, res, next) => {
       try {
         const { onboardingInviteEmail } = require('../services/email.service');
         const onboardingToken = authService.generateOnboardingToken(employee);
-        const frontendBase = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
-        onboardingLink = `${frontendBase}/onboarding?token=${onboardingToken}`;
+        const { getTenantOrigin } = require('../services/tenantUrl.service');
+        onboardingLink = `${await getTenantOrigin(companyId)}/employee-onboarding?token=${onboardingToken}`;
         const settingsService = require('../services/settings.service');
         const profile = await settingsService.getSetting('company_profile', {}, companyId);
         const companyName = profile?.name || '';
         await onboardingInviteEmail(employee, tempPassword, onboardingLink, { companyName, expiryHours: 72 });
       } catch (emailErr) {
         /* email is best-effort */
-        console.warn('Onboarding invite email failed', { employeeId: employee.id, error: emailErr.message });
+        logger.warn('Onboarding invite email failed', { employeeId: employee.id, error: emailErr.message });
       }
     } else {
       try {
@@ -324,7 +324,20 @@ const getAll = async (req, res, next) => {
     const { data, error, count } = await query;
     if (error) throw new BadRequestError(error.message);
 
-    const sanitized = (data || []).map((e) => omitSensitive(e, ['password_hash']));
+    // profile_picture is a private storage path; sign the whole page in one
+    // call so list rows can show photos. A signing failure only costs the
+    // photos — rows still render with initials.
+    let photoUrls = new Map();
+    try {
+      photoUrls = await getSignedUrls(STORAGE_BUCKETS.profilePictures, (data || []).map((e) => e.profile_picture), 86400);
+    } catch (e) {
+      logger.warn('[Employees] Could not sign list photos', { error: e.message });
+    }
+
+    const sanitized = (data || []).map((e) => ({
+      ...omitSensitive(e, ['password_hash']),
+      profile_picture_url: photoUrls.get(e.profile_picture) || null,
+    }));
     successResponse(res, 'Employees fetched', sanitized, buildMeta(page, limit, count || 0));
   } catch (err) { next(err); }
 };

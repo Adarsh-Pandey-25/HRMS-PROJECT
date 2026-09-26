@@ -1,6 +1,7 @@
 const tenantBillingService = require('../services/tenantBilling.service');
 const invoicePdfService = require('../services/invoicePdf.service');
 const planService = require('../services/plan.service');
+const settingsService = require('../services/settings.service');
 const { successResponse, paginate, buildMeta } = require('../utils/helpers');
 const { BadRequestError } = require('../utils/errors');
 
@@ -41,7 +42,8 @@ const myInvoices = async (req, res, next) => {
 const downloadInvoice = async (req, res, next) => {
   try {
     const invoice = await tenantBillingService.getInvoiceOrThrow(req.user.company_id, req.params.id);
-    const buffer = await invoicePdfService.generateInvoicePdf(invoice, invoice.companies?.name);
+    const profile = await settingsService.getSetting('company_profile', {}, req.user.company_id).catch(() => ({}));
+    const buffer = await invoicePdfService.generateInvoicePdf(invoice, invoice.companies?.name, profile?.gstin || null);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="invoice-${invoice.invoice_number}.pdf"`);
     res.setHeader('Content-Length', buffer.length);

@@ -148,6 +148,10 @@ const uploadProfilePicture = (file, employeeId) =>
 const uploadCompanyLogo = (file, companyId) =>
   uploadFile(STORAGE_BUCKETS.documents, file, `company-logos/${companyId}`);
 
+/** Check-in selfie — private documents bucket, one folder per employee per day. */
+const uploadAttendanceSelfie = (file, companyId, employeeId, day) =>
+  uploadFile(STORAGE_BUCKETS.documents, file, `attendance-selfies/${companyId}/${employeeId}/${day}`);
+
 /** Compact square mark for cards, collapsed sidebar, and favicon. */
 const uploadCompanyBrandIcon = (file, companyId) =>
   uploadFile(STORAGE_BUCKETS.documents, file, `company-brand-icons/${companyId}`);
@@ -167,9 +171,40 @@ const uploadPayslip = (buffer, employeeId, month, year) => {
     });
 };
 
+/**
+ * Sign many paths in one storage call (list views). Returns Map(path -> url);
+ * a path that fails to sign (deleted file) is simply absent so the caller
+ * falls back to initials. Shares the single-URL cache.
+ */
+const getSignedUrls = async (bucket, paths, expiresIn = 3600) => {
+  const result = new Map();
+  const now = Date.now();
+  const missing = [];
+  for (const path of new Set((paths || []).filter(Boolean))) {
+    if (/^https?:\/\//i.test(path)) {
+      result.set(path, path);
+      continue;
+    }
+    const cached = signedUrlCache.get(`${bucket}:${path}`);
+    if (cached && cached.expiresAt > now + 60_000) result.set(path, cached.url);
+    else missing.push(path);
+  }
+  if (!missing.length) return result;
+
+  const { data, error } = await supabaseAdmin.storage.from(bucket).createSignedUrls(missing, expiresIn);
+  if (error) throw new BadRequestError(`Failed to generate signed URLs: ${error.message}`);
+  for (const row of data || []) {
+    if (!row.signedUrl || row.error) continue;
+    result.set(row.path, row.signedUrl);
+    signedUrlCache.set(`${bucket}:${row.path}`, { url: row.signedUrl, expiresAt: now + expiresIn * 1000 });
+  }
+  return result;
+};
+
 module.exports = {
   uploadFile,
   getSignedUrl,
+  getSignedUrls,
   deleteFile,
   deleteEmployeeFolder,
   uploadDocument,
@@ -180,6 +215,7 @@ module.exports = {
   uploadProfilePicture,
   uploadCompanyLogo,
   uploadCompanyBrandIcon,
+  uploadAttendanceSelfie,
   uploadResume,
   uploadPayslip,
   resolveCourseVideoBucket,

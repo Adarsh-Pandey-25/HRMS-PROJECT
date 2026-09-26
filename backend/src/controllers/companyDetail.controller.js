@@ -5,33 +5,6 @@ const auditLogService = require('../services/auditLog.service');
 const { successResponse, paginate, buildMeta } = require('../utils/helpers');
 const { BadRequestError } = require('../utils/errors');
 
-/**
- * Same logic as auth.controller.js's cookieOptions (duplicated rather than
- * extracted/shared, deliberately — this touches nothing about the existing,
- * already-working employee/super-admin login cookie paths). See that file
- * for the full SameSite rationale.
- */
-const employeeCookieOptions = (req, maxAge, path = '/') => {
-  const explicitSameSite = String(process.env.COOKIE_SAMESITE || '').trim().toLowerCase();
-  if (['strict', 'lax', 'none'].includes(explicitSameSite)) {
-    return { httpOnly: true, secure: true, sameSite: explicitSameSite, path, maxAge };
-  }
-  const explicitCrossSite = String(process.env.COOKIE_CROSS_SITE || '').trim().toLowerCase();
-  if (explicitCrossSite === 'true' || explicitCrossSite === 'false') {
-    return { httpOnly: true, secure: true, sameSite: explicitCrossSite === 'true' ? 'none' : 'lax', path, maxAge };
-  }
-  const frontend = String(process.env.FRONTEND_URL || '').replace(/\/$/, '');
-  const apiHost = String(req.get('host') || '').split(':')[0];
-  let frontendHost = '';
-  try {
-    frontendHost = frontend ? new URL(frontend).hostname : '';
-  } catch {
-    frontendHost = '';
-  }
-  const crossSite = Boolean(frontendHost && apiHost && frontendHost !== apiHost);
-  return { httpOnly: true, secure: true, sameSite: crossSite ? 'none' : 'lax', path, maxAge };
-};
-
 const getProfile = async (req, res, next) => {
   try {
     successResponse(res, 'Company profile fetched', await companyDetailService.getCompanyProfile(req.params.id));
@@ -146,12 +119,18 @@ const impersonate = async (req, res, next) => {
       req.body.reason,
       req.ip,
     );
-    const ttlMs = new Date(result.expiresAt).getTime() - Date.now();
-    res.cookie('accessToken', result.token, employeeCookieOptions(req, Math.max(60_000, ttlMs)));
+    // The company app lives on the company's own subdomain and cookies are
+    // host-only, so the session is handed over there: the panel opens this
+    // URL, and that host claims the token once and sets its own cookie
+    // (POST /api/auth/impersonation/start). The token rides in the URL
+    // fragment, which browsers never send to servers or proxies.
+    const { getTenantOrigin } = require('../services/tenantUrl.service');
+    const handoffUrl = `${await getTenantOrigin(result.company.id)}/impersonate#token=${encodeURIComponent(result.token)}`;
     successResponse(res, 'Impersonation session started', {
       expiresAt: result.expiresAt,
       company: result.company,
       targetEmployee: result.targetEmployee,
+      handoffUrl,
     });
   } catch (err) { next(err); }
 };

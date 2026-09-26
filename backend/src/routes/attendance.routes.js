@@ -7,12 +7,14 @@ const { requireApiScope } = require('../middleware/apiKey.middleware');
 const { attachClientIp } = require('../middleware/ipValidation.middleware');
 const { validate } = require('../middleware/validation.middleware');
 const { requireFeature } = require('../middleware/featureGate.middleware');
+const { upload } = require('../middleware/upload.middleware');
 const { checkInRules, uuidParam, paginationQuery } = require('../utils/validators');
 
 const router = express.Router();
 
 router.use(authenticate);
 
+router.post('/selfie', isEmployee, upload.single('photo'), attendanceController.uploadSelfie);
 router.post('/check-in', isEmployee, checkInRules, validate, attachClientIp, attendanceController.checkIn);
 router.post('/check-out', isEmployee, attachClientIp, attendanceController.checkOut);
 router.get('/check-context', isEmployee, attendanceController.checkContext);

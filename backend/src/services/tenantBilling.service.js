@@ -4,6 +4,7 @@ const subscriptionService = require('./subscription.service');
 const featureOverrideService = require('./featureOverride.service');
 const { getFeatureMeta } = require('../config/featureRegistry');
 const logger = require('../utils/logger');
+const { applyGst, withInvoiceGst } = require('../utils/gst');
 
 const LIVE_STATUSES = ['trialing', 'active', 'past_due', 'grace_period', 'suspended'];
 
@@ -30,6 +31,9 @@ const getMySubscription = async (companyId) => {
     planName: subscription.plans?.name,
     planCode: subscription.plans?.code,
     price: subscription.price_locked_at_signup,
+    // Prices are exclusive of GST; the breakdown lets the UI show base + GST = total.
+    priceGst: subscription.price_locked_at_signup != null ? applyGst(subscription.price_locked_at_signup) : null,
+    trialEndsAt: subscription.status === 'trialing' ? subscription.current_period_end : null,
     billingCycle: subscription.billing_cycle,
     status: subscription.status,
     currentPeriodEnd: subscription.current_period_end,
@@ -58,7 +62,7 @@ const listMyInvoices = async (companyId, { page = 1, limit = 20 } = {}) => {
     .order('issued_at', { ascending: false })
     .range(offset, offset + limit - 1);
   if (error) throw new BadRequestError(error.message);
-  return { data: data || [], total: count || 0 };
+  return { data: (data || []).map(withInvoiceGst), total: count || 0 };
 };
 
 const getInvoiceOrThrow = async (companyId, invoiceId) => {

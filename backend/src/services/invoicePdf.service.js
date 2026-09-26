@@ -1,4 +1,5 @@
 const PDFDocument = require('pdfkit');
+const { applyGst } = require('../utils/gst');
 
 /**
  * Section F: "generate via whatever PDF library is already used for
@@ -9,7 +10,7 @@ const PDFDocument = require('pdfkit');
  */
 const fmt = (n) => `INR ${Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-const generateInvoicePdf = (invoice, companyName) =>
+const generateInvoicePdf = (invoice, companyName, customerGstin = null) =>
   new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: 'A4', margin: 50 });
     const chunks = [];
@@ -24,7 +25,10 @@ const generateInvoicePdf = (invoice, companyName) =>
     if (invoice.paid_at) doc.text(`Paid: ${new Date(invoice.paid_at).toLocaleDateString('en-IN')}`);
     doc.text(`Status: ${invoice.status}`);
     doc.moveDown(1);
+    if (process.env.PLATFORM_GSTIN) doc.text(`Supplier GSTIN: ${process.env.PLATFORM_GSTIN}`);
+    doc.moveDown(0.5);
     doc.fontSize(12).fillColor('#000').text(`Billed to: ${companyName || 'Company'}`);
+    if (customerGstin) doc.fontSize(10).fillColor('#555').text(`GSTIN: ${customerGstin}`).fillColor('#000');
     doc.moveDown(1);
 
     doc.fontSize(11).text('Line items:', { underline: true });
@@ -34,7 +38,15 @@ const generateInvoicePdf = (invoice, companyName) =>
       doc.text(fmt(item.amount), { align: 'right' });
     }
     doc.moveDown(1);
-    doc.fontSize(13).text(`Total: ${fmt(invoice.amount)}`, { align: 'right' });
+    // Stored amounts are exclusive of GST (utils/gst.js).
+    const gst = applyGst(invoice.amount);
+    doc.fontSize(10).text(`Subtotal: ${fmt(gst.base)}`, { align: 'right' });
+    doc.text(`GST @ ${Math.round(gst.gstRate * 100)}%: ${fmt(gst.gstAmount)}`, { align: 'right' });
+    doc.moveDown(0.3);
+    doc.fontSize(13).text(`Total: ${fmt(gst.total)}`, { align: 'right' });
+    if (Number(invoice.amount_paid) > 0 && invoice.status !== 'paid') {
+      doc.fontSize(9).fillColor('#666').text(`Paid so far: ${fmt(invoice.amount_paid)}`, { align: 'right' }).fillColor('#000');
+    }
     if (invoice.payment_method) doc.moveDown(0.5).fontSize(9).fillColor('#666').text(`Payment method: ${invoice.payment_method}`, { align: 'right' });
     if (invoice.payment_reference) doc.fontSize(9).text(`Reference: ${invoice.payment_reference}`, { align: 'right' });
 

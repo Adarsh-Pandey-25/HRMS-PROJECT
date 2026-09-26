@@ -1,5 +1,7 @@
 const { supabaseAdmin } = require('../config/supabase');
 const logger = require('../utils/logger');
+const { classifyHost, getRequestHost } = require('../utils/host');
+const { RESERVED_SLUGS } = require('../utils/slug');
 
 /** Short-TTL cache so every request on a tenant subdomain doesn't hit the DB
  *  just to resolve its own host — this middleware runs on literally every
@@ -39,20 +41,26 @@ const resolveTenantSubdomain = async (req, res, next) => {
   try {
     req.tenantCompany = null;
 
-    const baseDomain = String(process.env.BASE_DOMAIN || '').toLowerCase().trim();
-    if (!baseDomain) return next();
+    const { kind, slug } = classifyHost(getRequestHost(req));
+    // req.hostKind: 'apex' | 'other' | 'tenant' | 'unknown-tenant' — read by
+    // hostScope.middleware.js. Any subdomain starts as unknown-tenant and is
+    // upgraded to 'tenant' only once a company row resolves.
+    req.hostKind = (kind === 'subdomain' || kind === 'invalid-subdomain') ? 'unknown-tenant' : kind;
+    if (kind !== 'subdomain') return next();
+    if (RESERVED_SLUGS.has(slug)) return next();
 
-    const host = String(req.hostname || '').toLowerCase();
-    if (!host || host === baseDomain || host === `www.${baseDomain}`) return next();
-    if (!host.endsWith(`.${baseDomain}`)) return next();
-
-    const slug = host.slice(0, -(`.${baseDomain}`.length));
-    // A subdomain must be one label — "acme.example.com" not "acme.staging.example.com".
-    if (!slug || slug.includes('.')) return next();
+    // Deactivated companies still resolve, so login returns the existing
+    // "workspace is deactivated" message instead of "not found".
+    const markResolved = (company) => {
+      if (company) {
+        req.tenantCompany = company;
+        req.hostKind = 'tenant';
+      }
+    };
 
     const cached = getCachedCompany(slug);
     if (cached !== undefined) {
-      if (cached) req.tenantCompany = cached;
+      markResolved(cached);
       return next();
     }
 
@@ -67,7 +75,7 @@ const resolveTenantSubdomain = async (req, res, next) => {
       return next();
     }
     setCachedCompany(slug, company || null);
-    if (company) req.tenantCompany = company;
+    markResolved(company);
     return next();
   } catch (err) {
     logger.error('[tenantSubdomain] unexpected failure', { error: err.message });

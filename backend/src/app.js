@@ -10,6 +10,7 @@ const { generalLimiter, settingsLimiter, admsLimiter } = require('./middleware/r
 const { errorHandler, notFoundHandler } = require('./middleware/errorHandler.middleware');
 const { handleMulterError } = require('./middleware/upload.middleware');
 const { resolveTenantSubdomain } = require('./middleware/tenantSubdomain.middleware');
+const { hostScope } = require('./middleware/hostScope.middleware');
 const { requireCsrfHeader } = require('./middleware/csrf.middleware');
 
 const authRoutes = require('./routes/auth.routes');
@@ -45,6 +46,7 @@ const onboardingChecklistRoutes = require('./routes/onboardingChecklist.routes')
 const onboardingRoutes = require('./routes/onboarding.routes');
 const webhookRoutes = require('./routes/webhook.routes');
 const auditLogRoutes = require('./routes/auditLog.routes');
+const publicRoutes = require('./routes/public.routes');
 
 const app = express();
 
@@ -100,6 +102,7 @@ app.use(express.urlencoded({ extended: false, limit: '100kb' }));
 app.use(cookieParser());
 app.use(generalLimiter);
 app.use(resolveTenantSubdomain);
+app.use(hostScope);
 
 // Kill any request that has been open longer than 25 s — prevents
 // slow-loris and hung upstreams from holding connections indefinitely.
@@ -195,6 +198,7 @@ app.use('/api/webhooks', webhookRoutes);
 app.use('/api/onboarding-checklist-templates', onboardingChecklistRoutes);
 app.use('/api/onboarding', onboardingRoutes);
 app.use('/api/audit-logs', auditLogRoutes);
+app.use('/api/public', publicRoutes);
 
 app.use(notFoundHandler);
 app.use(handleMulterError);

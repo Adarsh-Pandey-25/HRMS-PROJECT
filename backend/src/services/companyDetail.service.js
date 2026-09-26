@@ -2,6 +2,7 @@ const moment = require('moment-timezone');
 const { supabaseAdmin } = require('../config/supabase');
 const { BadRequestError, NotFoundError } = require('../utils/errors');
 const { isMissingColumnError } = require('../utils/helpers');
+const { withInvoiceGst } = require('../utils/gst');
 
 const getCompanyProfile = async (companyId) => {
   const { data: company, error } = await supabaseAdmin
@@ -88,7 +89,7 @@ const getCompanySubscription = async (companyId) => {
     events = eventRows || [];
   }
 
-  return { subscription: subscription || null, invoices: invoices || [], events };
+  return { subscription: subscription || null, invoices: (invoices || []).map(withInvoiceGst), events };
 };
 
 /**

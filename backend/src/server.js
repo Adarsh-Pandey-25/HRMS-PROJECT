@@ -11,6 +11,7 @@ const { startBiometricWindowTransitionCron } = require('./cron/biometricWindowTr
 const { startBirthdayAnniversaryCron } = require('./cron/birthdayAnniversary.cron');
 const { startOnboardingCron } = require('./cron/onboarding.cron');
 const { startWeeklyDigestCrons } = require('./cron/weeklyDigest.cron');
+const { startSalaryRevisionCron } = require('./cron/salaryRevision.cron');
 
 const PORT = config.port;
 
@@ -39,6 +40,7 @@ const server = app.listen(PORT, config.host, () => {
   startBirthdayAnniversaryCron();
   startOnboardingCron();
   startWeeklyDigestCrons();
+  startSalaryRevisionCron();
   // Tag legacy employees under the default company so new workspaces stay empty
   require('./services/tenant.service').ensureTenantBackfill()
     .then(() => require('./services/settings.service').migrateLegacySettingsToDefaultCompany())

@@ -1,3 +1,4 @@
+const { AsyncLocalStorage } = require('async_hooks');
 const moment = require('moment-timezone');
 const { sendWithFallback } = require('../config/email');
 const logger = require('../utils/logger');
@@ -71,7 +72,17 @@ const escapeHtml = (value) =>
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 
-const getAppUrl = () => (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+// ── Per-recipient links ─────────────────────────────────────────────────────
+// Every template builds its links synchronously via getAppUrl()/getLoginUrl().
+// The exported templates are wrapped (see bottom of file) so each call first
+// resolves the RECIPIENT's company and role, then runs the template inside
+// this context — links always point at that company's own workspace
+// ({slug}.BASE_DOMAIN) and its role's login page, never the platform apex.
+const linkContext = new AsyncLocalStorage();
+
+const getPlatformUrl = () => (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+const getAppUrl = () => linkContext.getStore()?.origin || getPlatformUrl();
+const getLoginUrl = () => linkContext.getStore()?.loginUrl || `${getAppUrl()}/`;
 
 const monthName = (m) => MONTH_NAMES[(Number(m) - 1 + 12) % 12] || escapeHtml(m);
 
@@ -307,9 +318,15 @@ const welcomeEmail = (employee, tempPassword) => {
       bodyHtml: `
         ${etP(`We&rsquo;re glad to have you with us. Your HRMS account is ready &mdash; it&rsquo;s your single place to manage attendance, leaves, payslips, and everything work-related.`)}
         ${etInfo(rows)}
-        ${tempPassword ? etInfo([{ label: 'Login email', value: employee.email }, { label: 'Temporary password', valueHtml: `<span style="font-family:${FONT_MONO};letter-spacing:0.06em;font-size:12px;">${escapeHtml(tempPassword)}</span>` }]) : ''}
+        ${etInfo([
+          { label: 'Your login link', value: getLoginUrl() },
+          ...(tempPassword ? [
+            { label: 'Login email', value: employee.email },
+            { label: 'Temporary password', valueHtml: `<span style="font-family:${FONT_MONO};letter-spacing:0.06em;font-size:12px;">${escapeHtml(tempPassword)}</span>` },
+          ] : []),
+        ])}
         ${tempPassword ? etAlert('You&rsquo;ll be asked to set your own password on first login.', { bg: COLOR.amberBg, color: COLOR.amberDeep }) : ''}
-        ${etCta(`${getAppUrl()}/login`, 'Log in to HRMS', COLOR.emerald)}
+        ${etCta(getLoginUrl(), 'Log in to HRMS', COLOR.emerald)}
       `,
     }),
   });
@@ -341,7 +358,7 @@ const prejoiningEmail = (employee, { reportTime, location, contactName, contactP
           { icon: '✓', iconBg: COLOR.emeraldBg, iconColor: COLOR.emerald, html: 'Educational certificates' },
           { icon: '✓', iconBg: COLOR.emeraldBg, iconColor: COLOR.emerald, html: 'Relieving letter from previous employer' },
         ])}
-        ${etCta(`${getAppUrl()}/onboarding`, 'View Joining Guide', COLOR.blue)}
+        ${etCta(getLoginUrl(), 'Open Your HRMS Portal', COLOR.blue)}
       `,
     }),
   });
@@ -360,12 +377,12 @@ const dayOneEmail = (employee, tempPassword, expiryHours = 48) =>
       bodyHtml: `
         ${etP(`Today is the day. Your workspace is set up and your team is expecting you. Here are your login details.`)}
         ${etInfo([
-          { label: 'Portal', value: getAppUrl().replace(/^https?:\/\//, '') },
+          { label: 'Your login link', value: getLoginUrl() },
           { label: 'Login', value: employee.email },
           { label: 'Temp password', valueHtml: `<span style="font-family:${FONT_MONO};letter-spacing:0.08em;font-size:12px;">${escapeHtml(tempPassword)}</span>` },
         ])}
         ${etAlert(`You&rsquo;ll be prompted to change your password on first login. Your temporary password expires in <strong>${expiryHours} hours</strong>.`, { bg: COLOR.amberBg, color: COLOR.amberDeep })}
-        ${etCta(`${getAppUrl()}/login`, 'Open HRMS Portal', COLOR.navy)}
+        ${etCta(getLoginUrl(), 'Open HRMS Portal', COLOR.navy)}
         ${etSublink('Start with your onboarding checklist after logging in.')}
       `,
     }),
@@ -385,7 +402,7 @@ const checklistReminderEmail = (employee, pendingItems) =>
       bodyHtml: `
         ${etP(`A few onboarding tasks are still open. Please complete them when you get a moment.`)}
         ${etList(pendingItems.map((label) => ({ icon: '!', iconBg: COLOR.amberBg, iconColor: COLOR.amber, html: escapeHtml(label) })))}
-        ${etCta(`${getAppUrl()}/onboarding`, 'Complete My Checklist', COLOR.amber)}
+        ${etCta(`${getAppUrl()}/dashboard`, 'Complete My Checklist', COLOR.amber)}
       `,
     }),
   });
@@ -396,16 +413,18 @@ const onboardingInviteEmail = (employee, tempPassword, onboardingLink, { company
   const rows = [
     { label: 'Employee ID', value: employee.employee_code },
     { label: 'Joining date', value: formatDate(employee.date_of_joining) },
+    { label: 'Your login link', value: getLoginUrl() },
     { label: 'Login email', value: employee.email },
     { label: 'Temporary password', valueHtml: `<span style="font-family:${FONT_MONO};letter-spacing:0.06em;font-size:12px;">${escapeHtml(tempPassword)}</span>` },
   ];
   return sendEmail({
     to: employee.email,
-    subject: `Welcome to ${escapeHtml(companyName || 'the team')} — complete your profile`,
+    subject: `Welcome to ${companyName || 'the team'} — complete your profile`,
     html: etDocument({
-      preheader: `Complete your profile to get started, ${escapeHtml(employee.first_name || '')}.`,
+      // etDocument escapes preheader and eyebrow itself.
+      preheader: `Complete your profile to get started, ${employee.first_name || ''}.`,
       gradient: GRADIENT.emerald,
-      eyebrow: escapeHtml(companyName || 'HRMS'),
+      eyebrow: companyName || 'SpaxSync',
       titleHtml: `Welcome, <em style="font-style:italic;">${escapeHtml(employee.first_name)}.</em><br>Complete your profile to begin.`,
       icon: '🎉',
       bodyHtml: `
@@ -468,12 +487,13 @@ const bulkImportEmail = (employee, tempPassword, { recordTypesLabel = 'Attendanc
         ])}
         ${etDividerLabel('Your login details')}
         ${etInfo([
+          { label: 'Your login link', value: getLoginUrl() },
           { label: 'Login email', value: employee.email },
           { label: 'Temporary password', valueHtml: `<span style="font-family:${FONT_MONO};letter-spacing:0.06em;font-size:12px;">${escapeHtml(tempPassword)}</span>` },
         ])}
         ${etP(`Log in with the details above. You&rsquo;ll be asked to set your own password on first login &mdash; nothing else to re-enter.`)}
         ${etAlert(`This temporary password expires in <strong>${expiryHours} hours</strong>. Please log in and set your own before then.`, { bg: COLOR.amberBg, color: COLOR.amberDeep })}
-        ${etCta(`${getAppUrl()}/login`, 'Login to My Account', COLOR.blue)}
+        ${etCta(getLoginUrl(), 'Login to My Account', COLOR.blue)}
         ${etAlert('Notice something off in your migrated records? Contact HR &mdash; corrections are quick to make.', { bg: COLOR.blueBg, color: '#1E3A5F', icon: 'ℹ' })}
       `,
     }),
@@ -860,7 +880,7 @@ const payslipFailedEmail = (recipient, companyMonthLabel, failures) =>
     }),
   });
 
-/** No salary-revision feature exists in this codebase (SalaryRevisions.jsx is a frontend-only mock, no backend table). Template ready; needs that feature built before it can be wired to anything real. */
+/** Wired: salaryRevision.service.js applyRevision() — sent when a revision takes effect. */
 const salaryRevisedEmail = (employee, { previousCtc, revisedCtc, effectiveDate, revisedBy } = {}) => {
   const pctChange = previousCtc ? Math.round(((revisedCtc - previousCtc) / previousCtc) * 100) : null;
   return sendEmail({
@@ -992,6 +1012,7 @@ const passwordResetEmail = (employee, otp) =>
       bodyHtml: `
         ${etP(`Hi ${escapeHtml(employee.first_name || 'there')}, use the code below to reset your password. It&rsquo;s valid for 10 minutes.`)}
         ${etOtp(otp, 'Valid for 10 minutes', { bg: COLOR.violetBg, color: COLOR.violet })}
+        ${etInfo([{ label: 'Your login link', value: getLoginUrl() }])}
         ${etAlert("If you didn't request this, your account is safe — ignore this email. No changes have been made.", { bg: COLOR.violetBg, color: '#4C1D95', icon: '🛡' })}
       `,
     }),
@@ -1016,8 +1037,83 @@ const onboardingOtpEmail = (email, name, otp) =>
     }),
   });
 
+// ── Marketing leads (platform-level; links stay on the apex) ───────────────
+
+/** To SUPER_ADMIN_EMAIL when a trial request or contact message arrives. */
+const leadNotificationEmail = (to, lead) => {
+  const isTrial = lead.type === 'trial';
+  const rows = [
+    { label: 'Name', value: lead.full_name },
+    { label: 'Work email', value: lead.work_email },
+    { label: 'Phone', value: lead.phone || '—' },
+    { label: 'Company', value: lead.company_name || '—' },
+    { label: 'Company size', value: lead.company_size || '—' },
+    ...(isTrial ? [{ label: 'Desired workspace', value: lead.desired_slug || '—' }] : []),
+  ];
+  return sendEmail({
+    to,
+    subject: isTrial
+      ? `New trial request — ${lead.company_name || lead.full_name}`
+      : `New contact message — ${lead.full_name}`,
+    html: etDocument({
+      preheader: isTrial ? 'A company requested a free trial.' : 'Someone contacted SpaxSync.',
+      gradient: GRADIENT.blueDeep,
+      eyebrow: isTrial ? 'Trial request' : 'Contact message',
+      titleHtml: isTrial ? 'New trial<br><em style="font-style:italic;">request.</em>' : 'New contact<br><em style="font-style:italic;">message.</em>',
+      icon: isTrial ? '🚀' : '✉️',
+      bodyHtml: `
+        ${etInfo(rows)}
+        ${lead.message ? etP(escapeHtml(lead.message).replace(/\n/g, '<br/>')) : ''}
+        ${etCta(`${getPlatformUrl()}/super-admin/leads`, 'Review in Super Admin', COLOR.navy)}
+      `,
+    }),
+  });
+};
+
+/** Confirmation to the person who filled the form. */
+const leadConfirmationEmail = (to, { fullName, type }) => sendEmail({
+  to,
+  subject: type === 'trial' ? 'We received your SpaxSync trial request' : 'We received your message — SpaxSync',
+  html: etDocument({
+    preheader: 'Thanks for reaching out to SpaxSync.',
+    gradient: GRADIENT.emeraldSolid,
+    eyebrow: 'SpaxSync',
+    titleHtml: `Thanks,<br><em style="font-style:italic;">${escapeHtml(String(fullName || 'there').split(' ')[0])}.</em>`,
+    icon: '👋',
+    bodyHtml: `
+      ${etP(type === 'trial'
+    ? 'We&rsquo;ve received your free-trial request. Our team will review it and email you an invitation to set up your workspace, usually within one business day.'
+    : 'We&rsquo;ve received your message and will get back to you shortly.')}
+      ${etP('If you didn&rsquo;t submit this request, you can ignore this email.', { color: COLOR.slateSoft })}
+    `,
+  }),
+});
+
+/** Company workspace invite sent when a super-admin approves a trial lead. */
+const companyInviteEmail = (to, { fullName, companyName, inviteUrl, workspaceUrl, expiresAt }) => sendEmail({
+  to,
+  subject: `Your SpaxSync workspace for ${companyName} is ready to set up`,
+  html: etDocument({
+    preheader: 'Set up your SpaxSync workspace.',
+    gradient: GRADIENT.emerald,
+    eyebrow: 'Your free trial',
+    titleHtml: `Welcome to SpaxSync,<br><em style="font-style:italic;">${escapeHtml(String(fullName || 'there').split(' ')[0])}.</em>`,
+    icon: '🎉',
+    bodyHtml: `
+      ${etP(`Your free trial for <strong>${escapeHtml(companyName)}</strong> is approved. Use the button below to verify your email and set up your workspace.`)}
+      ${etInfo([
+    { label: 'Company', value: companyName },
+    { label: 'Workspace address', value: workspaceUrl },
+    { label: 'Link valid until', value: formatDate(expiresAt, 'DD MMM YYYY') },
+  ])}
+      ${etCta(inviteUrl, 'Set Up My Workspace', COLOR.emerald)}
+      ${etSublink('This link works once and only for this email address.')}
+    `,
+  }),
+});
+
 /** Wired: apiKey.controller.js create(). */
-const apiKeyCreatedEmail = (recipient, { keyName, keyPrefix, scopeLabel, createdByName }) =>
+const apiKeyCreatedEmail =(recipient, { keyName, keyPrefix, scopeLabel, createdByName }) =>
   sendEmail({
     to: recipient.email,
     subject: `New API key created — ${keyName}`,
@@ -1315,7 +1411,7 @@ const subscriptionWelcomeEmail = ({ to, name }, subscription, plan) =>
           { label: 'Seats', value: String(subscription.seat_count) },
           { label: 'Current period ends', value: formatDate(subscription.current_period_end) },
         ])}
-        ${etCta(`${getAppUrl()}/settings/billing`, 'View Billing Details', COLOR.emerald)}
+        ${etCta(`${getAppUrl()}/subscription-billing`, 'View Billing Details', COLOR.emerald)}
       `,
     }),
   });
@@ -1338,7 +1434,7 @@ const subscriptionRenewedEmail = ({ to, name }, subscription, invoice) =>
           { label: 'New period ends', value: formatDate(subscription.current_period_end) },
           { label: 'Seats', value: String(subscription.seat_count) },
         ])}
-        ${etCta(`${getAppUrl()}/settings/billing`, 'View Invoice', COLOR.emerald)}
+        ${etCta(`${getAppUrl()}/subscription-billing`, 'View Invoice', COLOR.emerald)}
       `,
     }),
   });
@@ -1355,7 +1451,7 @@ const subscriptionPlanChangedEmail = ({ to, name }, subscription, oldPlan, newPl
       icon: '🔄',
       bodyHtml: `
         ${etP(`Hi ${escapeHtml(name || 'there')}, your company&rsquo;s plan has been updated. Any price difference will appear as a prorated line item on your next invoice.`)}
-        ${etCta(`${getAppUrl()}/settings/billing`, 'View Billing Details', COLOR.blue)}
+        ${etCta(`${getAppUrl()}/subscription-billing`, 'View Billing Details', COLOR.blue)}
       `,
     }),
   });
@@ -1384,7 +1480,7 @@ const subscriptionRenewalReminderEmail = ({ to, name }, subscription, plan, pric
           { label: 'Plan', value: plan.name },
           { label: 'Seats', value: String(subscription.seat_count) },
         ])}
-        ${etCta(`${getAppUrl()}/settings/billing`, isAutoRenew ? 'View Billing Details' : 'Renew Now', isAutoRenew ? COLOR.sky : COLOR.amber)}
+        ${etCta(`${getAppUrl()}/subscription-billing`, isAutoRenew ? 'View Billing Details' : 'Renew Now', isAutoRenew ? COLOR.sky : COLOR.amber)}
       `,
     }),
   });
@@ -1404,7 +1500,7 @@ const subscriptionPaymentFailedEmail = ({ to, name }, subscription, reason, grac
         ${etP(`Hi ${escapeHtml(name || 'there')}, your subscription payment failed.`)}
         ${etQuote(reason || 'Unknown error', { border: COLOR.red, bg: COLOR.roseBg, color: COLOR.roseDeep })}
         ${etP(`Your account remains active for a ${graceDays}-day grace period while you update your payment details.`)}
-        ${etCta(`${getAppUrl()}/settings/billing`, 'Update Payment Details', COLOR.red)}
+        ${etCta(`${getAppUrl()}/subscription-billing`, 'Update Payment Details', COLOR.red)}
       `,
     }),
   });
@@ -1421,7 +1517,7 @@ const subscriptionGracePeriodEndingEmail = ({ to, name }, subscription, daysLeft
       icon: '⏰',
       bodyHtml: `
         ${etP(`Hi ${escapeHtml(name || 'there')}, your subscription is still past due. Access will be suspended in ${daysLeft} day${daysLeft === 1 ? '' : 's'} if payment isn&rsquo;t resolved.`)}
-        ${etCta(`${getAppUrl()}/settings/billing`, 'Resolve Billing Now', COLOR.amber)}
+        ${etCta(`${getAppUrl()}/subscription-billing`, 'Resolve Billing Now', COLOR.amber)}
       `,
     }),
   });
@@ -1438,10 +1534,50 @@ const subscriptionSuspendedEmail = ({ to, name }, subscription) =>
       icon: '⛔',
       bodyHtml: `
         ${etP(`Hi ${escapeHtml(name || 'there')}, your company&rsquo;s HRMS access has been suspended due to your subscription status. Your data is safe and untouched.`)}
-        ${etCta(`${getAppUrl()}/settings/billing`, 'Contact Billing', COLOR.red)}
+        ${etCta(`${getAppUrl()}/subscription-billing`, 'Contact Billing', COLOR.red)}
       `,
     }),
   });
+
+/** Two days before a free trial ends (subscriptionBilling.cron.js runTrialLifecycle). */
+const subscriptionTrialEndingEmail = ({ to, name }, subscription) =>
+  sendEmail({
+    to,
+    subject: `Your SpaxSync trial ends on ${formatDate(subscription.current_period_end, 'D MMM')}`,
+    html: etDocument({
+      preheader: 'Choose a plan to keep your workspace running.',
+      gradient: GRADIENT.amber,
+      eyebrow: 'Free trial',
+      titleHtml: `Your trial ends<br><em style="font-style:italic;">${escapeHtml(formatDate(subscription.current_period_end, 'dddd, D MMM'))}.</em>`,
+      icon: '⏳',
+      bodyHtml: `
+        ${etP(`Hi ${escapeHtml(name || 'there')}, your company&rsquo;s free trial of SpaxSync ends soon. Choose a plan before then so your team can keep signing in without interruption.`)}
+        ${etCta(`${getAppUrl()}/subscription-billing`, 'Choose a Plan', COLOR.amber)}
+        ${etSublink(`Questions? Reply to this email or write to ${escapeHtml(process.env.SALES_EMAIL || 'sales@spaxsync.com')}.`)}
+      `,
+    }),
+  });
+
+/** When a free trial has ended. Sign-in is paused until a plan is active, so the CTA is email, not the app. */
+const subscriptionTrialEndedEmail = ({ to, name }, subscription) => {
+  const salesEmail = process.env.SALES_EMAIL || 'sales@spaxsync.com';
+  const companyName = subscription.companies?.name || 'your company';
+  return sendEmail({
+    to,
+    subject: 'Your SpaxSync trial has ended',
+    html: etDocument({
+      preheader: 'Your data is safe — choose a plan to continue.',
+      gradient: GRADIENT.slateDark,
+      eyebrow: 'Free trial',
+      titleHtml: 'Your trial<br><em style="font-style:italic;">has ended.</em>',
+      icon: '📅',
+      bodyHtml: `
+        ${etP(`Hi ${escapeHtml(name || 'there')}, the free trial for ${escapeHtml(companyName)} has ended. Sign-in is paused until a plan is active. Your data is kept safe and nothing has been deleted.`)}
+        ${etCta(`mailto:${salesEmail}?subject=${encodeURIComponent(`Activate a plan for ${companyName}`)}`, 'Activate a Plan', COLOR.navy)}
+      `,
+    }),
+  });
+};
 
 // ── Section D: IP beacon system ─────────────────────────────────────────
 const beaconFirstPingEmail = ({ to, name }, beacon, ip) =>
@@ -1512,8 +1648,11 @@ const beaconGeoMismatchEmail = ({ to, name }, beacon, { proposedIp, detectedRegi
     }),
   });
 
-module.exports = {
-  sendEmail,
+const templates = {
+  // Marketing leads
+  leadNotificationEmail,
+  leadConfirmationEmail,
+  companyInviteEmail,
   beaconFirstPingEmail,
   beaconCompromiseAlertEmail,
   beaconGeoMismatchEmail,
@@ -1575,4 +1714,75 @@ module.exports = {
   subscriptionPaymentFailedEmail,
   subscriptionGracePeriodEndingEmail,
   subscriptionSuspendedEmail,
+  subscriptionTrialEndingEmail,
+  subscriptionTrialEndedEmail,
 };
+
+// ── Recipient link context (see getAppUrl at the top) ───────────────────────
+
+/** Sent before a company exists — links stay on the platform apex. */
+const PLATFORM_TEMPLATES = new Set([
+  'onboardingOtpEmail',
+  'leadNotificationEmail',
+  'leadConfirmationEmail',
+  'companyInviteEmail',
+]);
+
+const pickCompanyId = (value) => {
+  if (!value || typeof value !== 'object') return null;
+  if (value.company_id || value.companyId) return value.company_id || value.companyId;
+  const addr = value.address;
+  if (addr && typeof addr === 'object') return addr.company_id || addr.companyId || null;
+  return null;
+};
+
+/**
+ * Resolves the recipient (first argument) to { companyId, role }. Falls back
+ * to a DB lookup by employee id, then to any other argument that carries a
+ * company id (e.g. a subscription row). Never throws — an unresolved
+ * recipient just gets platform links, and the email still goes out.
+ */
+const resolveLinkContext = async (templateName, args) => {
+  const { getTenantOrigin, getPortalPath } = require('./tenantUrl.service');
+  const recipient = args[0];
+  let companyId = pickCompanyId(recipient);
+  let role = recipient && typeof recipient === 'object' ? recipient.role : null;
+
+  try {
+    if ((!companyId || !role) && recipient?.id) {
+      const { supabaseAdmin } = require('../config/supabase');
+      const { data } = await supabaseAdmin
+        .from('employees')
+        .select('company_id, role, address')
+        .eq('id', recipient.id)
+        .maybeSingle();
+      if (data) {
+        companyId = companyId || pickCompanyId(data);
+        role = role || data.role;
+      }
+    }
+    if (!companyId) {
+      companyId = args.slice(1).map(pickCompanyId).find(Boolean) || null;
+    }
+    if (!companyId) {
+      logger.warn('[email] could not resolve recipient company — using platform links', { template: templateName });
+      return {};
+    }
+    const origin = await getTenantOrigin(companyId);
+    const path = getPortalPath(role);
+    return { origin, loginUrl: path === '/' ? `${origin}/` : `${origin}${path}` };
+  } catch (err) {
+    logger.warn('[email] link context lookup failed — using platform links', { template: templateName, error: err.message });
+    return {};
+  }
+};
+
+const withRecipientLinks = (name, fn) => async (...args) => {
+  const ctx = await resolveLinkContext(name, args);
+  return linkContext.run(ctx, () => fn(...args));
+};
+
+module.exports = { sendEmail };
+for (const [name, fn] of Object.entries(templates)) {
+  module.exports[name] = PLATFORM_TEMPLATES.has(name) ? fn : withRecipientLinks(name, fn);
+}

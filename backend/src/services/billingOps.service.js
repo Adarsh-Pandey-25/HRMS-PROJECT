@@ -3,6 +3,7 @@ const { supabaseAdmin } = require('../config/supabase');
 const { BadRequestError, NotFoundError, ConflictError } = require('../utils/errors');
 const subscriptionService = require('./subscription.service');
 const logger = require('../utils/logger');
+const { grossAmount } = require('../utils/gst');
 
 /**
  * Same caveat as subscriptionAnalytics.service.js's churn(): no
@@ -263,7 +264,10 @@ const recordInvoicePayment = async (invoiceId, { paymentMethod, reference, amoun
     throw new ConflictError(`Invoice is already ${invoice.status} — nothing to record`);
   }
 
-  const remaining = Number(invoice.amount) - Number(invoice.amount_paid || 0);
+  // invoice.amount is the base (ex-GST) amount; the customer owes base + GST,
+  // so amount_paid is tracked against the gross total.
+  const amountDue = grossAmount(invoice.amount);
+  const remaining = Math.round((amountDue - Number(invoice.amount_paid || 0)) * 100) / 100;
   const amount = amountReceived != null ? Number(amountReceived) : remaining;
   if (!amount || amount <= 0) throw new BadRequestError('A positive amount received is required');
   // Overpayment cap: previously only a mismatch from `remaining` required a
@@ -283,7 +287,7 @@ const recordInvoicePayment = async (invoiceId, { paymentMethod, reference, amoun
   }
 
   const newAmountPaid = Number(invoice.amount_paid || 0) + amount;
-  const fullyPaid = newAmountPaid >= Number(invoice.amount);
+  const fullyPaid = newAmountPaid >= amountDue - 0.01;
   const newStatus = fullyPaid ? 'paid' : 'partially_paid';
 
   // Optimistic concurrency: the WHERE clause is conditioned on the exact

@@ -1,5 +1,6 @@
 const express = require('express');
 const payrollController = require('../controllers/payroll.controller');
+const salaryRevisionController = require('../controllers/salaryRevision.controller');
 const { authenticate } = require('../middleware/auth.middleware');
 const { isHROrAdmin, isEmployee } = require('../middleware/role.middleware');
 const { validate } = require('../middleware/validation.middleware');
@@ -10,6 +11,8 @@ const {
   payrollGeneratePayslipRules,
   payrollListQueryRules,
   uuidParam,
+  salaryRevisionCreateRules,
+  salaryRevisionListQueryRules,
 } = require('../utils/validators');
 
 const router = express.Router();
@@ -27,5 +30,9 @@ router.post('/payslips/recalculate-from-settings', isHROrAdmin, payrollControlle
 router.put('/payslips/:id/publish', isHROrAdmin, uuidParam(), validate, payrollController.publishPayslip);
 router.get('/payslips', isEmployee, payrollListQueryRules, validate, payrollController.listPayslips);
 router.get('/payslips/:id/download', uuidParam(), validate, payrollController.downloadPayslip);
+
+router.get('/revisions', isHROrAdmin, salaryRevisionListQueryRules, validate, salaryRevisionController.list);
+router.post('/revisions', isHROrAdmin, salaryRevisionCreateRules, validate, salaryRevisionController.create);
+router.post('/revisions/:id/cancel', isHROrAdmin, uuidParam(), validate, salaryRevisionController.cancel);
 
 module.exports = router;

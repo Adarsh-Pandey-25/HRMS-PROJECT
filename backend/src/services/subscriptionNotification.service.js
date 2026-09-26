@@ -52,6 +52,23 @@ const alreadySentToday = async (subscriptionId, notificationType) => {
   return Boolean(data);
 };
 
+/** Ever sent (not just today) — for one-off notifications such as trial reminders. */
+const alreadySent = async (subscriptionId, notificationType) => {
+  const { data, error } = await supabaseAdmin
+    .from('subscription_notifications_log')
+    .select('id')
+    .eq('company_subscription_id', subscriptionId)
+    .eq('notification_type', notificationType)
+    .eq('delivery_status', 'sent')
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    logger.error('[SubscriptionNotify] Dedup check failed — assuming not sent', { subscriptionId, notificationType, error: error.message });
+    return false;
+  }
+  return Boolean(data);
+};
+
 const sendToAllRecipients = async (companyId, subscriptionId, notificationType, sendFn) => {
   const recipients = await getRecipients(companyId);
   if (!recipients.length) {
@@ -100,10 +117,21 @@ const sendSuspendedNotification = (subscription) =>
   sendToAllRecipients(subscription.company_id, subscription.id, 'suspended', (recipient) =>
     emailService.subscriptionSuspendedEmail(recipient, subscription));
 
+const sendTrialEndingNotification = (subscription) =>
+  sendToAllRecipients(subscription.company_id, subscription.id, 'trial_ending', (recipient) =>
+    emailService.subscriptionTrialEndingEmail(recipient, subscription));
+
+const sendTrialEndedNotification = (subscription) =>
+  sendToAllRecipients(subscription.company_id, subscription.id, 'trial_ended', (recipient) =>
+    emailService.subscriptionTrialEndedEmail(recipient, subscription));
+
 module.exports = {
   getRecipients,
   logNotification,
   alreadySentToday,
+  alreadySent,
+  sendTrialEndingNotification,
+  sendTrialEndedNotification,
   sendWelcomeNotification,
   sendRenewedNotification,
   sendPlanChangedNotification,

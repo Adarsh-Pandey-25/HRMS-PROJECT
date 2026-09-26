@@ -23,6 +23,8 @@ const SENSITIVE_RESPONSE_KEYS = new Set([
  'key_hash',
  'keyHash',
  'secret',
+ 'totp_secret',
+ 'totpSecret',
  'private_key',
  'privateKey',
 ]);

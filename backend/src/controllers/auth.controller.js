@@ -2,7 +2,7 @@ const { validatePassword } = require('../utils/passwordStrength');
 const authService = require('../services/auth.service');
 const impersonationService = require('../services/impersonation.service');
 const { successResponse } = require('../utils/helpers');
-const { BadRequestError, UnauthorizedError } = require('../utils/errors');
+const { BadRequestError, UnauthorizedError, ForbiddenError } = require('../utils/errors');
 const employee2faService = require('../services/employee2fa.service');
 
 /**
@@ -62,7 +62,7 @@ const issueSessionCookies = (req, res, accessToken, refreshToken) => {
 
 const login = async (req, res, next) => {
   try {
-    const result = await authService.login(req.body.email, req.body.password);
+    const result = await authService.login(req.body.email, req.body.password, req.tenantCompany?.id || null);
     if (result.requires2FA) {
       return successResponse(res, 'Two-factor authentication required', {
         requires2FA: true,
@@ -97,14 +97,21 @@ const loginAdmin = loginToPortal('admin');
 const loginHr = loginToPortal('hr');
 const loginEmployee = loginToPortal('employee');
 
+/** A super-admin impersonating an employee must not change that person's login security. */
+const assertNotImpersonating = (req) => {
+  if (req.impersonation) throw new ForbiddenError('Two-factor settings cannot be changed during impersonation');
+};
+
 const startEmployeeTwoFactor = async (req, res, next) => {
   try {
+    assertNotImpersonating(req);
     successResponse(res, 'TOTP secret generated', await employee2faService.generateTotpSecret(req.user.id));
   } catch (err) { next(err); }
 };
 
 const confirmEmployeeTwoFactor = async (req, res, next) => {
   try {
+    assertNotImpersonating(req);
     await employee2faService.verifyAndEnableTotpFor(req.user.id, req.body.code);
     successResponse(res, 'Two-factor authentication enabled');
   } catch (err) { next(err); }
@@ -112,6 +119,7 @@ const confirmEmployeeTwoFactor = async (req, res, next) => {
 
 const disableEmployeeTwoFactor = async (req, res, next) => {
   try {
+    assertNotImpersonating(req);
     const result = await employee2faService.disableTotp(req.user.id, req.body.code);
     successResponse(res, result.alreadyDisabled ? '2FA was already disabled' : 'Two-factor authentication disabled', result);
   } catch (err) { next(err); }
@@ -129,6 +137,9 @@ const verifyTwoFaAndLogin = async (req, res, next) => {
       throw new BadRequestError('Invalid or expired twoFaToken');
     }
     if (decoded.scope !== 'two_fa_pending') throw new BadRequestError('Invalid token scope');
+    if (req.tenantCompany && String(decoded.company_id) !== String(req.tenantCompany.id)) {
+      throw new BadRequestError('Invalid or expired twoFaToken');
+    }
 
     const isValid = await employee2faService.verifyTotpCode(decoded.id, req.body.code);
     if (!isValid) throw new UnauthorizedError('Invalid authentication code');
@@ -154,11 +165,27 @@ const workspaceInfo = async (req, res, next) => {
     if (!req.tenantCompany) {
       return successResponse(res, 'No workspace resolved for this host', { resolved: false });
     }
+    // Branding for the login page: logo (short-lived signed URL, same as
+    // everywhere else the company logo is shown) and brand colour.
+    let logoUrl = null;
+    let brandColor = null;
+    try {
+      const settingsService = require('../services/settings.service');
+      const { getSignedUrl, STORAGE_BUCKETS } = require('../services/storage.service');
+      const profile = await settingsService.getSetting('company_profile', {}, req.tenantCompany.id) || {};
+      const logoPath = profile.logoPath || profile.logo_path || null;
+      if (logoPath) logoUrl = await getSignedUrl(STORAGE_BUCKETS.documents, logoPath, 3600);
+      brandColor = profile.brandColor || profile.brand_color || null;
+    } catch {
+      /* branding is cosmetic — the login page still works without it */
+    }
     successResponse(res, 'Workspace resolved', {
       resolved: true,
       name: req.tenantCompany.name,
       slug: req.tenantCompany.slug,
       isActive: req.tenantCompany.is_active,
+      logoUrl,
+      brandColor,
     });
   } catch (err) { next(err); }
 };
@@ -175,7 +202,7 @@ const logout = async (req, res, next) => {
 const refreshToken = async (req, res, next) => {
   try {
     const token = req.cookies?.refreshToken;
-    const result = await authService.refreshAccessToken(token);
+    const result = await authService.refreshAccessToken(token, req.tenantCompany?.id || null);
     res.cookie('accessToken', result.accessToken, cookieOptions(req, 24 * 60 * 60 * 1000));
     res.cookie(
       'refreshToken',
@@ -200,6 +227,19 @@ const getMe = async (req, res, next) => {
  * just lets the super-admin end it early and closes impersonation_sessions
  * cleanly instead of leaving it to be inferred from the expiry alone.
  */
+/** Company host side of the impersonation handoff — see companyDetail.controller.js impersonate(). */
+const startImpersonationHandoff = async (req, res, next) => {
+  try {
+    const { token, expiresAt } = await impersonationService.claimHandoff(
+      req.body?.token,
+      req.tenantCompany?.id || null,
+    );
+    const ttlMs = new Date(expiresAt).getTime() - Date.now();
+    res.cookie('accessToken', token, cookieOptions(req, Math.max(60_000, ttlMs)));
+    successResponse(res, 'Impersonation session active', { expiresAt });
+  } catch (err) { next(err); }
+};
+
 const endImpersonation = async (req, res, next) => {
   try {
     if (!req.impersonation) throw new BadRequestError('Not in an impersonation session');
@@ -305,9 +345,21 @@ const bootstrapAdmin = async (req, res, next) => {
       company_profile: body.company_profile || body.companyProfile || null,
       verificationToken: body.verificationToken || body.verification_token,
       inviteToken: body.inviteToken || body.invite_token,
+      workspaceSlug: body.workspaceSlug || body.workspace_slug || null,
       logoFile: req.file || null,
     });
     successResponse(res, 'Admin account ready', employee, null, 201);
+  } catch (err) { next(err); }
+};
+
+/** Live check for the editable workspace address on the company onboarding page. Needs a valid invite. */
+const onboardingSlugAvailability = async (req, res, next) => {
+  try {
+    const superAdminService = require('../services/superAdmin.service');
+    const invite = await superAdminService.assertInviteValid(req.query.inviteToken || req.query.invite_token);
+    const { checkSlugAvailability } = require('../utils/slug');
+    const result = await checkSlugAvailability(req.query.slug, { excludeInviteId: invite.inviteId });
+    successResponse(res, 'Availability checked', result);
   } catch (err) { next(err); }
 };
 
@@ -323,7 +375,7 @@ const peekOnboardingInvite = async (req, res, next) => {
 module.exports = {
   login, loginAdmin, loginHr, loginEmployee, workspaceInfo,
   logout, refreshToken, getMe, changePassword, forgotPassword, resetPassword,
-  sendOnboardingOtp, verifyOnboardingOtp, bootstrapAdmin, peekOnboardingInvite,
-  markInstallPromptSeen, endImpersonation,
+  sendOnboardingOtp, verifyOnboardingOtp, bootstrapAdmin, peekOnboardingInvite, onboardingSlugAvailability,
+  markInstallPromptSeen, startImpersonationHandoff, endImpersonation,
   startEmployeeTwoFactor, confirmEmployeeTwoFactor, disableEmployeeTwoFactor, verifyTwoFaAndLogin,
 };

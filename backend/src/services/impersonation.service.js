@@ -1,6 +1,8 @@
 const jwt = require('jsonwebtoken');
 const { supabaseAdmin } = require('../config/supabase');
-const { BadRequestError, NotFoundError, ForbiddenError } = require('../utils/errors');
+const {
+  BadRequestError, NotFoundError, ForbiddenError, UnauthorizedError,
+} = require('../utils/errors');
 const auditLogService = require('./auditLog.service');
 const logger = require('../utils/logger');
 
@@ -92,6 +94,46 @@ const startImpersonation = async (superAdminId, superAdminEmail, companyId, reas
   };
 };
 
+/**
+ * The super-admin panel lives on the apex, the company app on
+ * {slug}.BASE_DOMAIN, and cookies are host-only — so the impersonation
+ * token is handed to the company's own host once, which then sets its own
+ * session cookie. Each session can be claimed a single time.
+ *
+ * The claimed set is in-process memory: correct for this single-instance
+ * deployment; move it to a DB column before running more than one backend.
+ */
+const claimedHandoffs = new Map();
+
+const claimHandoff = async (token, tenantCompanyId) => {
+  const invalid = () => new UnauthorizedError('This impersonation link is invalid or has already been used');
+  let decoded;
+  try {
+    decoded = jwt.verify(String(token || ''), process.env.JWT_SECRET);
+  } catch {
+    throw invalid();
+  }
+  if (decoded.typ !== 'impersonation' || !decoded.sessionId) throw invalid();
+  if (tenantCompanyId && String(decoded.company_id) !== String(tenantCompanyId)) throw invalid();
+
+  const now = Date.now();
+  for (const [id, until] of claimedHandoffs) {
+    if (until <= now) claimedHandoffs.delete(id);
+  }
+  if (claimedHandoffs.has(decoded.sessionId)) throw invalid();
+
+  const { data: session } = await supabaseAdmin
+    .from('impersonation_sessions')
+    .select('id, ended_at, expires_at')
+    .eq('id', decoded.sessionId)
+    .maybeSingle();
+  if (!session || session.ended_at || new Date(session.expires_at) <= new Date()) throw invalid();
+
+  const expiresAtMs = decoded.exp * 1000;
+  claimedHandoffs.set(decoded.sessionId, expiresAtMs);
+  return { token: String(token), expiresAt: new Date(expiresAtMs).toISOString() };
+};
+
 const endImpersonation = async (sessionId, superAdminId, companyId, ipAddress) => {
   if (!sessionId) throw new BadRequestError('sessionId is required');
   const { data, error } = await supabaseAdmin
@@ -126,4 +168,6 @@ const listActiveSessions = async () => {
   return data || [];
 };
 
-module.exports = { startImpersonation, endImpersonation, listActiveSessions };
+module.exports = {
+  startImpersonation, claimHandoff, endImpersonation, listActiveSessions,
+};

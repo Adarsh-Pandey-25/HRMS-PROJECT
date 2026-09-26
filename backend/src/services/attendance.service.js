@@ -1,4 +1,5 @@
 const moment = require('moment-timezone');
+const jwt = require('jsonwebtoken');
 const { supabaseAdmin } = require('../config/supabase');
 const config = require('../config/database');
 const { TIMEZONE, WORK_HOURS } = require('../utils/constants');
@@ -177,7 +178,60 @@ const assertMethodAllowed = (normalizedMethod, methods) => {
   }
 };
 
-const checkIn = async (employeeId, { method, device_id, location, clientIp, clientIps, is_wfh }) => {
+/**
+ * Selfie check-in. The photo is uploaded first (POST /attendance/selfie) and
+ * the client gets back a 10-minute token naming the stored file; check-in
+ * then sends that token. The token is signed, so a client can't point
+ * check-in at a file it didn't just upload, or at someone else's photo.
+ */
+const SELFIE_TOKEN_SCOPE = 'attendance_selfie';
+const SELFIE_TOKEN_TTL_SECONDS = 10 * 60;
+const SELFIE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png']);
+
+const uploadCheckInSelfie = async (employeeId, companyId, file) => {
+  if (!file) throw new BadRequestError('Take a selfie to check in');
+  const ext = String(file.originalname || '').split('.').pop().toLowerCase();
+  if (!SELFIE_EXTENSIONS.has(ext)) throw new BadRequestError('Selfie must be a JPG or PNG image');
+  const { uploadAttendanceSelfie } = require('./storage.service');
+  const day = moment().tz(TIMEZONE).format('YYYY-MM-DD');
+  const { path } = await uploadAttendanceSelfie(file, companyId, employeeId, day);
+  const selfieToken = jwt.sign(
+    { scope: SELFIE_TOKEN_SCOPE, id: employeeId, path },
+    process.env.JWT_SECRET,
+    { expiresIn: SELFIE_TOKEN_TTL_SECONDS },
+  );
+  return { selfieToken, expiresInSeconds: SELFIE_TOKEN_TTL_SECONDS };
+};
+
+const resolveSelfiePath = (employeeId, token) => {
+  let decoded;
+  try {
+    decoded = jwt.verify(String(token), process.env.JWT_SECRET);
+  } catch {
+    throw new BadRequestError('Your selfie has expired. Please take a new one.');
+  }
+  if (decoded?.scope !== SELFIE_TOKEN_SCOPE || decoded.id !== employeeId || !decoded.path) {
+    throw new BadRequestError('Invalid selfie. Please take a new one.');
+  }
+  return decoded.path;
+};
+
+/** Adds check_in_selfie_url (1-hour signed URL) to attendance rows that have a selfie. */
+const attachSelfieUrls = async (rows) => {
+  const list = Array.isArray(rows) ? rows : [];
+  const paths = list.map((r) => r?.check_in_selfie).filter(Boolean);
+  if (!paths.length) return list;
+  const { getSignedUrls, STORAGE_BUCKETS } = require('./storage.service');
+  let urls = new Map();
+  try {
+    urls = await getSignedUrls(STORAGE_BUCKETS.documents, paths, 60 * 60);
+  } catch (e) {
+    logger.warn('[Attendance] Could not sign selfie URLs', { error: e.message });
+  }
+  return list.map((r) => (r?.check_in_selfie ? { ...r, check_in_selfie_url: urls.get(r.check_in_selfie) || null } : r));
+};
+
+const checkIn = async (employeeId, { method, device_id, location, clientIp, clientIps, is_wfh, selfie_token }) => {
   const { data: emp, error: empErr } = await supabaseAdmin
     .from('employees')
     .select('id, address, role, company_id')
@@ -213,6 +267,11 @@ const checkIn = async (employeeId, { method, device_id, location, clientIp, clie
   // day to day. Default OR (either sufficient) unless requireBothLocationChecks
   // is explicitly turned on — see Section E's report for this choice.
   const isBiometric = normalizedMethod === 'biometric';
+  const selfiePath = selfie_token && !isBiometric ? resolveSelfiePath(employeeId, selfie_token) : null;
+  if (attendanceConfig.selfieRequired && !isBiometric && !selfiePath) {
+    throw new BadRequestError('Your company requires a selfie to check in. Take a selfie and try again.');
+  }
+
   if (attendanceMode === 'office' && !wantsWfh && !isPrivilegedRole && !isBiometric) {
     const featureOverrideService = require('./featureOverride.service');
     const geofenceService = require('./geofence.service');
@@ -272,6 +331,7 @@ const checkIn = async (employeeId, { method, device_id, location, clientIp, clie
     location: Object.keys(savedLocation).length ? savedLocation : null,
     status: wantsWfh ? 'wfh' : 'present',
   };
+  if (selfiePath) insertPayload.check_in_selfie = selfiePath;
 
   let { data, error } = await supabaseAdmin
     .from('attendance')
@@ -1122,6 +1182,8 @@ const stripBiometricRows = (rows) => (rows || []).filter((r) => !isBiometricRow(
 
 module.exports = {
   checkIn,
+  uploadCheckInSelfie,
+  attachSelfieUrls,
   checkOut,
   biometricWebhook,
   manualEntry,
