@@ -1,6 +1,14 @@
-import { apiRequest, apiRequestPaginated } from './client';
+import { apiRequest, apiRequestPaginated, apiUpload } from './client';
 import { mapAttendanceFromApi, mapTodayStatusFromApi, mapLast7DaysFromApi } from '../lib/mappers';
 import { toSnakeCase } from '../lib/case';
+
+/** Selfie check-in step 1: upload the photo, get a 10-minute token to send with check-in. */
+export async function uploadCheckInSelfieApi(blob) {
+  const form = new FormData();
+  form.append('photo', blob, 'selfie.jpg');
+  const data = await apiUpload({ method: 'POST', url: '/attendance/selfie', data: form });
+  return data?.selfieToken;
+}
 
 export async function checkInApi(body = {}) {
   const data = await apiRequest({ method: 'POST', url: '/attendance/check-in', data: { method: 'web', ...body } });

@@ -192,9 +192,16 @@ export default function TeamAttendance() {
  cell: ({ row }) => {
  const r = row.original;
  return (
+ <div className="flex items-center gap-2">
+ {r.selfieUrl && (
+ <a href={r.selfieUrl} target="_blank" rel="noopener noreferrer" title="View check-in selfie" className="shrink-0">
+ <img src={r.selfieUrl} alt={`${r.employeeName || 'Employee'} check-in selfie`} className="h-8 w-8 rounded-full object-cover ring-1 ring-border" loading="lazy" />
+ </a>
+ )}
  <div>
  <p className="text-sm text-fg tabular-nums">{r.checkIn || '—'}</p>
- {r.checkInMethod && <p className="text-[10px] text-fg-subtle capitalize">{r.checkInMethod}</p>}
+ {r.checkInMethod && <p className="text-[10px] text-fg-subtle capitalize">{r.checkInMethod}{r.selfieUrl ? ' · selfie' : ''}</p>}
+ </div>
  </div>
  );
  },

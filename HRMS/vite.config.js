@@ -1,6 +1,5 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { VitePWA } from 'vite-plugin-pwa'
 
 const apiProxy = {
   '/api': {
@@ -43,47 +42,7 @@ const apiProxy = {
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [
-    react(),
-    VitePWA({
-      registerType: 'autoUpdate',
-      // We register via virtual:pwa-register in main.jsx — avoid double inject.
-      injectRegister: false,
-      includeAssets: ['favicon.svg', 'pwa-192.png', 'pwa-512.png'],
-      manifest: {
-        id: '/',
-        name: 'HRMS',
-        short_name: 'HRMS',
-        description: 'HR Suite — attendance, leave, payroll, and more',
-        theme_color: '#6C63FF',
-        background_color: '#F0EFFF',
-        display: 'standalone',
-        display_override: ['standalone', 'browser'],
-        start_url: '/?source=pwa',
-        scope: '/',
-        lang: 'en',
-        icons: [
-          { src: '/pwa-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
-          { src: '/pwa-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
-          { src: '/pwa-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
-        ],
-      },
-      workbox: {
-        navigateFallback: '/index.html',
-        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
-        runtimeCaching: [
-          {
-            urlPattern: ({ url }) => url.pathname.startsWith('/api') || url.pathname === '/health',
-            handler: 'NetworkOnly',
-          },
-        ],
-      },
-      // Dev SW is flaky for real phone installs — use `npm run build && npm run preview`.
-      devOptions: {
-        enabled: false,
-      },
-    }),
-  ],
+  plugins: [react()],
   esbuild: {
     drop: process.env.NODE_ENV === 'production' ? ['console', 'debugger'] : [],
   },
@@ -117,9 +76,9 @@ export default defineConfig({
     headers: {
       'Referrer-Policy': 'no-referrer',
       // geolocation=(self): GPS geofence check-in and the "Use current
-      // location" geofence-setup button both need it; camera/microphone
-      // stay locked down (nothing in this app uses them yet).
-      'Permissions-Policy': 'camera=(), microphone=(), geolocation=(self)',
+      // location" geofence-setup button both need it; camera=(self): selfie
+      // check-in. Microphone stays locked down.
+      'Permissions-Policy': 'camera=(self), microphone=(), geolocation=(self)',
       'X-Content-Type-Options': 'nosniff',
       'X-Frame-Options': 'DENY',
     },
@@ -133,9 +92,9 @@ export default defineConfig({
     headers: {
       'Referrer-Policy': 'no-referrer',
       // geolocation=(self): GPS geofence check-in and the "Use current
-      // location" geofence-setup button both need it; camera/microphone
-      // stay locked down (nothing in this app uses them yet).
-      'Permissions-Policy': 'camera=(), microphone=(), geolocation=(self)',
+      // location" geofence-setup button both need it; camera=(self): selfie
+      // check-in. Microphone stays locked down.
+      'Permissions-Policy': 'camera=(self), microphone=(), geolocation=(self)',
       'X-Content-Type-Options': 'nosniff',
       'X-Frame-Options': 'DENY',
     },

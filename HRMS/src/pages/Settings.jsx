@@ -101,7 +101,7 @@ function RolePermissionsMatrix() {
             onClick={() => setActiveRole(r)}
             className={cn(
               'rounded-pill px-3.5 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
-              activeRole === r ? 'bg-primary text-white' : 'bg-muted text-fg-muted hover:bg-muted/70'
+              activeRole === r ? 'bg-primary text-on-primary' : 'bg-muted text-fg-muted hover:bg-muted/70'
             )}
           >
             {PERMISSION_ROLE_LABELS[r]}
@@ -376,7 +376,7 @@ function CompanyProfileSection() {
           <label className="text-xs font-medium text-fg-muted">Primary brand color</label>
           <div className="flex items-center gap-2.5">
             <input type="color" value={form.brandColor} onChange={(e) => { setForm({ ...form, brandColor: e.target.value }); updateCompany({ brandColor: e.target.value }); }} className="h-10 w-12 rounded-input border border-border bg-card cursor-pointer" />
-            <Input className="flex-1" placeholder="e.g. #6C63FF" value={form.brandColor} onChange={(e) => { setForm({ ...form, brandColor: e.target.value }); if (/^#[0-9a-fA-F]{6}$/.test(e.target.value)) updateCompany({ brandColor: e.target.value }); }} />
+            <Input className="flex-1" placeholder="e.g. #0F766E" value={form.brandColor} onChange={(e) => { setForm({ ...form, brandColor: e.target.value }); if (/^#[0-9a-fA-F]{6}$/.test(e.target.value)) updateCompany({ brandColor: e.target.value }); }} />
           </div>
         </div>
       </div>

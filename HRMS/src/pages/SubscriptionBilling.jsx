@@ -8,6 +8,7 @@ import {
   PageHeader, Card, CardHeader, Button, Badge, Skeleton, Modal, Input, Textarea, ProgressBar, EmptyState,
 } from '../components/ui';
 import { formatCurrency, formatDateTime } from '../lib/utils';
+import { applyGST, gstPercentLabel } from '../lib/gst';
 import {
   getMySubscriptionApi, getMyFeaturesApi, listMyInvoicesApi, getMyPaymentMethodApi,
   requestChangePlanApi, requestChangeSeatsApi, requestChangeBillingCycleApi, requestFeatureApi,
@@ -60,11 +61,17 @@ export default function SubscriptionBilling() {
       <Card>
         <CardHeader
           title={subscription.planName}
-          subtitle={`${formatCurrency(subscription.price)} / ${subscription.billingCycle}`}
+          subtitle={`${formatCurrency(subscription.price)} + ${gstPercentLabel()} GST = ${formatCurrency(applyGST(subscription.price).total)} / ${subscription.billingCycle}`}
           action={<Badge tone={['active', 'trialing'].includes(subscription.status) ? 'success' : 'warning'}>{subscription.status}</Badge>}
         />
         <div className="px-5 pb-5 space-y-4">
-          {renewalDays != null && renewalDays <= 30 && (
+          {subscription.status === 'trialing' && subscription.trialEndsAt && (
+            <div className="rounded-lg bg-primary/10 text-primary text-sm px-3 py-2 flex items-center gap-2">
+              <Clock className="h-4 w-4 shrink-0" />
+              Free trial ends {formatDateTime(subscription.trialEndsAt)}. Choose a plan before then to keep your workspace running.
+            </div>
+          )}
+          {subscription.status !== 'trialing' && renewalDays != null && renewalDays <= 30 && (
             <div className="rounded-lg bg-warning/10 text-warning text-sm px-3 py-2 flex items-center gap-2">
               <Clock className="h-4 w-4 shrink-0" />
               Renews in {renewalDays} day{renewalDays === 1 ? '' : 's'} ({formatDateTime(subscription.nextRenewalDate)})
@@ -131,7 +138,7 @@ export default function SubscriptionBilling() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border text-left">
-                  {['Invoice #', 'Amount', 'Status', 'Issued', ''].map((h) => (
+                  {['Invoice #', 'Subtotal', 'GST', 'Total', 'Status', 'Issued', ''].map((h) => (
                     <th key={h || 'actions'} className="py-2 font-semibold text-fg-subtle text-xs uppercase">{h}</th>
                   ))}
                 </tr>
@@ -140,7 +147,9 @@ export default function SubscriptionBilling() {
                 {(invoicesResult?.items || []).map((inv) => (
                   <tr key={inv.id} className="border-b border-border/60">
                     <td className="py-2.5 font-mono text-xs">{inv.invoiceNumber}</td>
-                    <td className="py-2.5">{formatCurrency(inv.amount)}</td>
+                    <td className="py-2.5 tabular-nums">{formatCurrency(inv.amount)}</td>
+                    <td className="py-2.5 tabular-nums text-fg-subtle">{formatCurrency(applyGST(inv.amount).gst)}</td>
+                    <td className="py-2.5 tabular-nums font-medium">{formatCurrency(applyGST(inv.amount).total)}</td>
                     <td className="py-2.5"><Badge tone={inv.status === 'paid' ? 'success' : 'warning'}>{inv.status}</Badge></td>
                     <td className="py-2.5 text-fg-subtle text-xs">{formatDateTime(inv.issuedAt)}</td>
                     <td className="py-2.5 text-right">

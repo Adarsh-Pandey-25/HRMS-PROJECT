@@ -21,6 +21,7 @@ import { mergeLegalProfile, formatRegisteredAddress } from '../../lib/companyLeg
 import { CompanyLegalFields } from '../../components/shared/CompanyLegalFields';
 import { useAuthStore } from '../../store/authStore';
 import { useCompanyStore } from '../../store/companyStore';
+import { PortalLinks } from '../../components/shared/PortalLinks';
 
 const TABS = [
   { id: 'view', label: 'View companies', icon: Eye },
@@ -317,7 +318,7 @@ function CompanyDetailsDrawer({ company, open, onClose, canEdit, uploadLogo, upd
                     className="h-8 min-w-0 flex-1 rounded-md border border-primary bg-card px-2 text-sm text-fg focus:outline-none focus:ring-2 focus:ring-primary/30"
                     placeholder="Company name"
                   />
-                  <button type="button" aria-label="Save name" disabled={savingName} onClick={saveName} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary text-white hover:bg-primary-dark disabled:opacity-50">
+                  <button type="button" aria-label="Save name" disabled={savingName} onClick={saveName} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary text-on-primary hover:bg-primary-dark disabled:opacity-50">
                     <Check className="w-3.5 h-3.5" />
                   </button>
                   <button type="button" aria-label="Cancel" disabled={savingName} onClick={cancelEditName} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border text-fg-muted hover:bg-muted">
@@ -522,6 +523,7 @@ function AddTab({ canManage, createChild, uploadLogo, onCreated }) {
   const [logoFile, setLogoFile] = useState(null);
   const [logoKey, setLogoKey] = useState(0);
   const [saving, setSaving] = useState(false);
+  const [createdCompany, setCreatedCompany] = useState(null);
 
   if (!canManage) {
     return (
@@ -554,6 +556,7 @@ function AddTab({ canManage, createChild, uploadLogo, onCreated }) {
       }
 
       toast.success(`${created?.name || name} added as a subsidiary`);
+      setCreatedCompany(created?.slug ? created : null);
       setName('');
       setSlug('');
       setLogoFile(null);
@@ -605,6 +608,15 @@ function AddTab({ canManage, createChild, uploadLogo, onCreated }) {
           {saving ? 'Creating…' : 'Create subsidiary'}
         </Button>
       </form>
+
+      {createdCompany && (
+        <div className="mt-6 rounded-lg border border-border bg-muted/40 p-4 space-y-3">
+          <div className="text-sm font-medium text-fg">
+            Login links for {createdCompany.name}
+          </div>
+          <PortalLinks slug={createdCompany.slug} />
+        </div>
+      )}
     </Card>
   );
 }

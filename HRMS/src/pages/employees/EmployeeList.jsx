@@ -31,7 +31,7 @@ const STATUS_META = {
 const EMP_TYPE_META = {
   'full-time': { label: 'Full-Time', cls: 'bg-primary/10 text-primary' },
   intern: { label: 'Internship', cls: 'bg-pink-500/10 text-pink-500' },
-  contract: { label: 'Contract', cls: 'bg-violet-500/10 text-violet-500' },
+  contract: { label: 'Contract', cls: 'bg-sky-500/10 text-sky-600' },
   'part-time': { label: 'Part-Time', cls: 'bg-warning/12 text-warning' },
 };
 
@@ -499,7 +499,7 @@ export default function EmployeeList() {
                   className={cn(
                     'rounded-full px-3 py-1.5 text-xs font-medium border transition-colors',
                     !company
-                      ? 'bg-primary text-white border-primary'
+                      ? 'bg-primary text-on-primary border-primary'
                       : 'bg-card text-fg-muted border-border hover:border-primary/40 hover:text-fg',
                   )}
                 >
@@ -513,7 +513,7 @@ export default function EmployeeList() {
                     className={cn(
                       'rounded-full px-3 py-1.5 text-xs font-medium border transition-colors',
                       String(company) === String(opt.value)
-                        ? 'bg-primary text-white border-primary'
+                        ? 'bg-primary text-on-primary border-primary'
                         : 'bg-card text-fg-muted border-border hover:border-primary/40 hover:text-fg',
                     )}
                   >
@@ -577,7 +577,7 @@ export default function EmployeeList() {
                     placeholder="e.g. Pune, Chennai"
                     className="h-10 min-w-0 flex-1 rounded-input border border-primary bg-card px-3 text-sm text-fg placeholder:text-fg-subtle focus:outline-none focus:ring-2 focus:ring-primary"
                   />
-                  <button type="button" onClick={saveNewLocation} aria-label="Save new location" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-input bg-primary text-white hover:bg-primary-dark focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+                  <button type="button" onClick={saveNewLocation} aria-label="Save new location" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-input bg-primary text-on-primary hover:bg-primary-dark focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
                     <Check className="h-4 w-4" />
                   </button>
                   <button type="button" onClick={() => { setAddingLocation(false); setNewLocation(''); }} aria-label="Cancel adding location" className="flex h-10 w-10 shrink-0 items-center justify-center rounded-input border border-border text-fg-muted hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">

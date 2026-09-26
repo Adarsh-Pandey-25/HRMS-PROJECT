@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { Card, CardHeader, PageHeader, Select, StatusBadge, Skeleton, EmptyState } from '../../components/ui';
 import { formatCurrency, formatDate } from '../../lib/utils';
+import { applyGST } from '../../lib/gst';
 import { listInvoicesApi } from '../../api/subscription.api';
 
 const STATUS_OPTIONS = ['draft', 'pending', 'paid', 'failed', 'refunded', 'void'];
@@ -47,7 +48,7 @@ export default function Invoices() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border text-left">
-                    {['Invoice', 'Company', 'Amount', 'Cycle', 'Status', 'Issued', 'Paid'].map((h) => (
+                    {['Invoice', 'Company', 'Amount (incl. GST)', 'Cycle', 'Status', 'Issued', 'Paid'].map((h) => (
                       <th key={h} className="py-2.5 pr-3 font-semibold text-fg-subtle text-xs uppercase tracking-wide">{h}</th>
                     ))}
                   </tr>
@@ -61,7 +62,7 @@ export default function Invoices() {
                     >
                       <td className="py-3 pr-3 font-mono text-xs text-fg">{inv.invoiceNumber}</td>
                       <td className="py-3 pr-3 font-medium text-fg">{inv.companies?.name}</td>
-                      <td className="py-3 pr-3 text-fg-muted tabular-nums">{formatCurrency(inv.amount)}</td>
+                      <td className="py-3 pr-3 text-fg-muted tabular-nums" title={`${formatCurrency(inv.amount)} + GST`}>{formatCurrency(applyGST(inv.amount).total)}</td>
                       <td className="py-3 pr-3 text-fg-muted capitalize">{inv.billingCycle}</td>
                       <td className="py-3 pr-3"><StatusBadge status={inv.status} /></td>
                       <td className="py-3 pr-3 text-fg-subtle text-xs">{formatDate(inv.issuedAt)}</td>

@@ -1,8 +1,10 @@
 import { Navigate, Outlet } from 'react-router-dom';
 import { useAuthStore } from '../../store/authStore';
+import { lastLoginPath } from '../../lib/host';
 import { AppShellSkeleton } from './AppShellSkeleton';
 
-// Gate the main app behind sign-in (/login), once onboarding is complete.
+// Gate the main app behind sign-in — back to the portal the user last used
+// (/, /admin or /hr on the company subdomain).
 export function RequireAuth() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const sessionChecked = useAuthStore((s) => s.sessionChecked);
@@ -12,7 +14,7 @@ export function RequireAuth() {
     return <AppShellSkeleton />;
   }
 
-  if (!isAuthenticated) return <Navigate to="/login" replace />;
+  if (!isAuthenticated) return <Navigate to={lastLoginPath()} replace />;
   // key={userId}: every store/hook feeding the authenticated tree (role,
   // nav, dashboard) is provably correct by itself — traced end to end,
   // login()'s atomic set() always lands role+isAuthenticated+sessionChecked

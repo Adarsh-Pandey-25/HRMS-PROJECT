@@ -119,7 +119,7 @@ export function NotificationDrawer() {
                       {n.title}
                     </p>
                     {unread ? (
-                      <span className="shrink-0 mt-0.5 rounded-md bg-primary px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white">
+                      <span className="shrink-0 mt-0.5 rounded-md bg-primary px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-on-primary">
                         New
                       </span>
                     ) : null}

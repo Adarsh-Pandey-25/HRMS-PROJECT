@@ -4,7 +4,7 @@ import { cn } from '../../lib/utils';
 
 const VARIANTS = {
   primary:
-    'bg-primary text-white hover:bg-primary-dark shadow-sm shadow-primary/30 disabled:bg-primary/50',
+    'bg-primary text-on-primary hover:bg-primary-dark shadow-sm shadow-primary/30 disabled:bg-primary/50',
   secondary:
     'bg-primary/10 text-primary hover:bg-primary/20 disabled:opacity-50',
   ghost:

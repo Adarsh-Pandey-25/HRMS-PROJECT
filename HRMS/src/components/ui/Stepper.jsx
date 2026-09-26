@@ -14,7 +14,7 @@ export function Stepper({ steps, current }) {
               <div
                 className={cn(
                   'h-8 w-8 rounded-full flex items-center justify-center text-xs font-semibold transition-all',
-                  done && 'bg-primary text-white',
+                  done && 'bg-primary text-on-primary',
                   active && 'bg-primary/12 text-primary ring-2 ring-primary',
                   !done && !active && 'bg-muted text-fg-subtle'
                 )}

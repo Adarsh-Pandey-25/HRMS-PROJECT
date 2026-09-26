@@ -1,9 +1,9 @@
 import { Link, useNavigate } from 'react-router-dom';
-import { Bell, Megaphone, Moon, Sun, ChevronDown, ChevronsRight, ChevronsLeft, LogOut, User, Menu, Download, CreditCard } from 'lucide-react';
+import { Bell, Megaphone, Moon, Sun, ChevronDown, ChevronsRight, ChevronsLeft, LogOut, User, Menu, CreditCard, ShieldCheck } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useUIStore } from '../../store/uiStore';
 import { useAuthStore, useCurrentUser } from '../../store/authStore';
-import { usePwaInstallStore } from '../../store/pwaInstallStore';
+import { loginPathForRole } from '../../lib/host';
 import { useNotificationStore } from '../../store/notificationStore';
 import { useUnreadNotificationCount } from '../../hooks/useNotifications';
 import { useActiveAnnouncements, useAnnouncementMutations } from '../../hooks/useAnnouncements';
@@ -22,8 +22,6 @@ export function Topbar() {
   const { role, logout } = useAuthStore();
   const { toggleDrawer } = useNotificationStore();
   const { data: unread = 0 } = useUnreadNotificationCount();
-  const pwaStandalone = usePwaInstallStore((s) => s.standalone);
-  const installPwa = usePwaInstallStore((s) => s.install);
 
   const menu = useDropdown();
   const ann = useDropdown();
@@ -40,10 +38,11 @@ export function Topbar() {
     // arrived before the late logout response's clearCookie, the clear
     // would win, silently undoing the new session's cookie right after
     // login (part of the reported cross-account session-bleed bug).
+    const loginPath = loginPathForRole(role);
     await logout();
     menu.close();
     toast.success('Signed out');
-    navigate('/login');
+    navigate(loginPath);
   };
 
   return (
@@ -79,7 +78,7 @@ export function Topbar() {
           >
             <Megaphone className="h-5 w-5" />
             {publishedFeed.length > 0 && (
-              <span className="absolute top-1.5 right-1.5 h-4 min-w-4 px-1 rounded-full bg-primary text-white text-[10px] font-semibold flex items-center justify-center">
+              <span className="absolute top-1.5 right-1.5 h-4 min-w-4 px-1 rounded-full bg-primary text-on-primary text-[10px] font-semibold flex items-center justify-center">
                 {publishedFeed.length}
               </span>
             )}
@@ -182,7 +181,7 @@ export function Topbar() {
             aria-label="Account menu"
             className="flex items-center gap-2 rounded-xl pl-1.5 pr-2 py-1.5 hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
           >
-            <Avatar name={user?.name} size="sm" />
+            <Avatar name={user?.name} src={user?.avatar} size="sm" />
             <div className="hidden md:block text-left">
               <p className="text-xs font-semibold text-fg leading-tight">{user?.firstName} {user?.lastName}</p>
               <p className="text-[10px] text-fg-subtle leading-tight">{humanize(role)}</p>
@@ -209,6 +208,14 @@ export function Topbar() {
               >
                 <User className="h-4 w-4" /> My Profile
               </Link>
+              <Link
+                to="/account/security"
+                role="menuitem"
+                onClick={() => menu.close()}
+                className="flex items-center gap-2 w-full rounded-lg px-3 py-2 text-sm text-fg-muted hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+              >
+                <ShieldCheck className="h-4 w-4" /> Security
+              </Link>
               {/* Section F: HR/Admin only — a regular employee never sees this. */}
               {['admin', 'hr'].includes(role) && (
                 <Link
@@ -219,15 +226,6 @@ export function Topbar() {
                 >
                   <CreditCard className="h-4 w-4" /> Subscription & Billing
                 </Link>
-              )}
-              {!pwaStandalone && (
-                <button
-                  role="menuitem"
-                  onClick={() => { menu.close(); installPwa(); }}
-                  className="flex items-center gap-2 w-full rounded-lg px-3 py-2 text-sm text-fg-muted hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
-                >
-                  <Download className="h-4 w-4" /> Install App
-                </button>
               )}
               <div className="border-t border-border/60 mt-1 pt-1">
                 <button role="menuitem" onClick={signOut} className="flex items-center gap-2 w-full rounded-lg px-3 py-2 text-sm text-fg-muted hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary">

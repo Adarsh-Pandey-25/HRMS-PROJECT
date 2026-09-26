@@ -1,7 +1,7 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import {
   Building2, Link2, LogOut, Shield, LayoutDashboard, CreditCard, Layers, Receipt,
-  Gauge, Tag, AlertOctagon, Activity, Users2,
+  Gauge, Tag, AlertOctagon, Activity, Users2, Inbox,
 } from 'lucide-react';
 import { useSuperAdminStore } from '../../store/superAdminStore';
 import { cn } from '../../lib/utils';
@@ -12,6 +12,7 @@ import { cn } from '../../lib/utils';
 const NAV = [
   { to: '/super-admin/dashboard', label: 'Dashboard', icon: Gauge, roles: null },
   { to: '/super-admin/companies', label: 'Companies', icon: Building2, roles: null },
+  { to: '/super-admin/leads', label: 'Leads', icon: Inbox, roles: null },
   { to: '/super-admin/invites', label: 'Onboarding links', icon: Link2, roles: ['billing_admin'] },
   { to: '/super-admin/billing', label: 'Billing Overview', icon: LayoutDashboard, roles: ['billing_admin'] },
   { to: '/super-admin/plans', label: 'Plans', icon: CreditCard, roles: ['billing_admin'] },

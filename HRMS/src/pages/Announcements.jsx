@@ -307,7 +307,7 @@ export default function Announcements() {
               <p className="text-sm font-medium text-fg">Pin to top</p>
               <p className="text-xs text-fg-subtle">Pinned announcements always show first in the feed</p>
             </div>
-            <input type="checkbox" checked={form.isPinned} onChange={(e) => setForm({ ...form, isPinned: e.target.checked })} className="h-5 w-5 accent-[#6C63FF]" />
+            <input type="checkbox" checked={form.isPinned} onChange={(e) => setForm({ ...form, isPinned: e.target.checked })} className="h-5 w-5 accent-primary" />
           </div>
 
           {/* Scheduling, delivery channels & attachments only apply when
@@ -322,7 +322,7 @@ export default function Announcements() {
                     <p className="text-sm font-medium text-fg">Schedule for later</p>
                     <p className="text-xs text-fg-subtle">Pick a future date & time to auto-publish</p>
                   </div>
-                  <input type="checkbox" checked={form.isScheduled} onChange={(e) => setForm({ ...form, isScheduled: e.target.checked })} className="h-5 w-5 accent-[#6C63FF]" />
+                  <input type="checkbox" checked={form.isScheduled} onChange={(e) => setForm({ ...form, isScheduled: e.target.checked })} className="h-5 w-5 accent-primary" />
                 </div>
                 {form.isScheduled && (
                   <Input type="datetime-local" placeholder="DD-MM-YYYY --:--" value={form.scheduledAt} onChange={(e) => setForm({ ...form, scheduledAt: e.target.value })} />
@@ -332,13 +332,13 @@ export default function Announcements() {
               <div className="rounded-input border border-border p-4 space-y-2.5">
                 <p className="text-sm font-medium text-fg">Channels</p>
                 <label className="flex items-center gap-2.5 text-sm text-fg-muted">
-                  <input type="checkbox" checked disabled className="h-4 w-4 accent-[#6C63FF]" /> In-app (web) — always on
+                  <input type="checkbox" checked disabled className="h-4 w-4 accent-primary" /> In-app (web) — always on
                 </label>
                 <label className="flex items-center gap-2.5 text-sm text-fg-muted">
-                  <input type="checkbox" checked={form.channels.mobilePush} onChange={(e) => setForm({ ...form, channels: { ...form.channels, mobilePush: e.target.checked } })} className="h-4 w-4 accent-[#6C63FF]" /> Mobile app (push)
+                  <input type="checkbox" checked={form.channels.mobilePush} onChange={(e) => setForm({ ...form, channels: { ...form.channels, mobilePush: e.target.checked } })} className="h-4 w-4 accent-primary" /> Mobile app (push)
                 </label>
                 <label className="flex items-center gap-2.5 text-sm text-fg-muted">
-                  <input type="checkbox" checked={form.channels.email} onChange={(e) => setForm({ ...form, channels: { ...form.channels, email: e.target.checked } })} className="h-4 w-4 accent-[#6C63FF]" /> Email
+                  <input type="checkbox" checked={form.channels.email} onChange={(e) => setForm({ ...form, channels: { ...form.channels, email: e.target.checked } })} className="h-4 w-4 accent-primary" /> Email
                 </label>
               </div>
 

@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { AppLayout } from './components/layout/AppLayout';
 import { ProtectedRoute } from './components/layout/ProtectedRoute';
@@ -11,10 +11,13 @@ import { useApplyBrandColor } from './hooks/useApplyBrandColor';
 import { useSyncDocumentTitle } from './hooks/useSyncDocumentTitle';
 import { useBrandFavicon } from './hooks/useBrandFavicon';
 import { loaders } from './lib/routePrefetch';
+import { getHostInfo, lastLoginPath } from './lib/host';
+import { useWorkspaceStore } from './store/workspaceStore';
 
-const Welcome = lazy(() => import('./pages/Welcome'));
 const Onboarding = lazy(() => import('./pages/Onboarding'));
-const Login = lazy(() => import('./pages/Login'));
+const EmployeeOnboarding = lazy(() => import('./pages/EmployeeOnboarding'));
+const Impersonate = lazy(() => import('./pages/Impersonate'));
+const WorkspaceNotFound = lazy(() => import('./pages/WorkspaceNotFound'));
 const AdminLogin = lazy(() => import('./pages/AdminLogin'));
 const HrLogin = lazy(() => import('./pages/HrLogin'));
 const EmployeeLogin = lazy(() => import('./pages/EmployeeLogin'));
@@ -33,6 +36,7 @@ const SuperAdminCoupons = lazy(() => import('./pages/super-admin/Coupons'));
 const SuperAdminFailedPayments = lazy(() => import('./pages/super-admin/FailedPayments'));
 const SuperAdminSystemHealth = lazy(() => import('./pages/super-admin/SystemHealth'));
 const SuperAdminUsers = lazy(() => import('./pages/super-admin/AdminUsers'));
+const SuperAdminLeads = lazy(() => import('./pages/super-admin/Leads'));
 const Dashboard = lazy(loaders['/dashboard']);
 const EmployeeList = lazy(loaders['/employees']);
 const EmployeeProfile = lazy(() => import('./pages/employees/EmployeeProfile'));
@@ -94,6 +98,7 @@ const Settings = lazy(loaders['/settings']);
 const Organizations = lazy(loaders['/organizations']);
 const SearchResults = lazy(loaders['/search']);
 const NotFound = lazy(() => import('./pages/NotFound'));
+const AccountSecurity = lazy(() => import('./pages/AccountSecurity'));
 
 /** Employee self-service routes — not for Admin. */
 const SELF_SERVICE_ROLES = ['employee', 'manager', 'hr'];
@@ -113,26 +118,59 @@ const page = (Component, guard, options = {}) => {
   );
 };
 
+const withSuspense = (el) => <Suspense fallback={<PageLoader />}>{el}</Suspense>;
+
+/** On the apex this app only serves /super-admin and /onboarding — anything
+ *  else belongs to the marketing site, which main.jsx mounts on a full load. */
+function ToMarketingSite() {
+  useEffect(() => { window.location.replace('/'); }, []);
+  return <PageLoader />;
+}
+
 export default function App() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const role = useAuthStore((s) => s.role);
   const isAdmin = role === 'admin';
+  const { kind } = getHostInfo();
+  const isApex = kind === 'apex';
+  const isTenant = kind === 'tenant';
+  // Platform-only screens live on the apex; plain localhost (kind "other")
+  // keeps them reachable for development.
+  const showPlatformRoutes = !isTenant;
+  const showCompanyRoutes = !isApex;
+  const workspaceStatus = useWorkspaceStore((s) => s.status);
+  const loadWorkspace = useWorkspaceStore((s) => s.load);
   useApplyBrandColor();
   useSyncDocumentTitle();
   useBrandFavicon();
 
+  useEffect(() => { if (isTenant) loadWorkspace(); }, [isTenant, loadWorkspace]);
+
+  if (isTenant && (workspaceStatus === 'idle' || workspaceStatus === 'loading')) {
+    return <PageLoader />;
+  }
+  if (isTenant && workspaceStatus === 'notFound') {
+    return withSuspense(<WorkspaceNotFound />);
+  }
+
   return (
     <Routes>
-      <Route path="/welcome" element={<Suspense fallback={<PageLoader />}><Welcome /></Suspense>} />
-      <Route path="/onboarding" element={<Suspense fallback={<PageLoader />}><Onboarding /></Suspense>} />
-      <Route path="/login" element={<Suspense fallback={<PageLoader />}><Login /></Suspense>} />
-      {/* Subdomain-per-tenant portal logins — same public tier as /login. */}
-      <Route path="/admin" element={<Suspense fallback={<PageLoader />}><AdminLogin /></Suspense>} />
-      <Route path="/hr" element={<Suspense fallback={<PageLoader />}><HrLogin /></Suspense>} />
-      <Route path="/employee" element={<Suspense fallback={<PageLoader />}><EmployeeLogin /></Suspense>} />
-      <Route path="/forgot-password" element={<Suspense fallback={<PageLoader />}><ForgotPassword /></Suspense>} />
+      {showPlatformRoutes && (
+        <Route path="/onboarding" element={withSuspense(<Onboarding />)} />
+      )}
+      {showCompanyRoutes && (
+        <>
+          {/* Company logins on {slug}.spaxsync.com: / = employees, /admin, /hr. */}
+          <Route path="/admin" element={withSuspense(<AdminLogin />)} />
+          <Route path="/hr" element={withSuspense(<HrLogin />)} />
+          <Route path="/forgot-password" element={withSuspense(<ForgotPassword />)} />
+          <Route path="/employee-onboarding" element={withSuspense(<EmployeeOnboarding />)} />
+          <Route path="/impersonate" element={withSuspense(<Impersonate />)} />
+        </>
+      )}
 
       {/* Platform Super Admin — must stay outside company RequireAuth + AppLayout */}
+      {showPlatformRoutes && (
       <Route path="super-admin">
         <Route path="login" element={<Suspense fallback={<PageLoader />}><SuperAdminLogin /></Suspense>} />
         <Route element={<RequireSuperAdmin />}>
@@ -151,10 +189,15 @@ export default function App() {
             <Route path="failed-payments" element={<Suspense fallback={<PageLoader />}><SuperAdminFailedPayments /></Suspense>} />
             <Route path="system-health" element={<Suspense fallback={<PageLoader />}><SuperAdminSystemHealth /></Suspense>} />
             <Route path="admin-users" element={<Suspense fallback={<PageLoader />}><SuperAdminUsers /></Suspense>} />
+            <Route path="leads" element={<Suspense fallback={<PageLoader />}><SuperAdminLeads /></Suspense>} />
           </Route>
         </Route>
       </Route>
+      )}
 
+      {isApex && <Route path="*" element={<ToMarketingSite />} />}
+
+      {showCompanyRoutes && (
       <Route element={<RequireAuth />}>
           <Route element={<AppLayout />}>
             <Route path="/dashboard" element={page(Dashboard)} />
@@ -242,24 +285,30 @@ export default function App() {
             <Route path="/subscription-billing" element={page(SubscriptionBilling, ['admin', 'hr'])} />
             <Route path="/organizations" element={page(Organizations, ['admin', 'hr'])} />
             <Route path="/settings" element={page(Settings, { module: 'settings', action: 'manage' })} />
+            <Route path="/account/security" element={page(AccountSecurity)} />
             <Route path="/search" element={page(SearchResults)} />
             <Route path="/404" element={page(NotFound)} />
           </Route>
         </Route>
+      )}
 
-      <Route
-        path="/"
-        element={<Navigate to={isAuthenticated ? '/dashboard' : '/login'} replace />}
-      />
+      {showCompanyRoutes && (
+        <Route
+          path="/"
+          element={isAuthenticated ? <Navigate to="/dashboard" replace /> : withSuspense(<EmployeeLogin />)}
+        />
+      )}
       {/* Catch-all last — do not nest under AppLayout or it steals /super-admin/* */}
-      <Route
-        path="*"
-        element={
-          isAuthenticated
-            ? <Navigate to="/404" replace />
-            : <Navigate to="/login" replace />
-        }
-      />
+      {showCompanyRoutes && (
+        <Route
+          path="*"
+          element={
+            isAuthenticated
+              ? <Navigate to="/404" replace />
+              : <Navigate to={lastLoginPath()} replace />
+          }
+        />
+      )}
     </Routes>
   );
 }

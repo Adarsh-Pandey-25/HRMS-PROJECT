@@ -118,6 +118,7 @@ export function mapAttendanceFromApi(row) {
     checkIn: checkIn ? new Intl.DateTimeFormat('en-GB', tzOpts).format(checkIn) : null,
     checkOut: checkOut ? new Intl.DateTimeFormat('en-GB', tzOpts).format(checkOut) : null,
     checkInAt: c.checkInTime || null,
+    selfieUrl: c.checkInSelfieUrl || null,
     checkOutAt: c.checkOutTime || null,
     checkInIp: c.checkInIp || null,
     checkOutIp: c.checkOutIp || null,

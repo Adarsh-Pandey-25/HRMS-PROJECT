@@ -6,6 +6,7 @@ import toast from 'react-hot-toast';
 import { Card, CardHeader, Button, Badge, Skeleton } from '../../components/ui';
 import { listAllCompaniesApi, setCompanyActiveApi } from '../../api/superAdmin.api';
 import { formatDateTime } from '../../lib/utils';
+import { PortalLinks } from '../../components/shared/PortalLinks';
 
 export default function SuperAdminCompanies() {
   const qc = useQueryClient();
@@ -88,7 +89,7 @@ export default function SuperAdminCompanies() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border text-left">
-                  {['Company', 'Employees', 'Status', 'Created', ''].map((h) => (
+                  {['Company', 'Login links', 'Employees', 'Status', 'Created', ''].map((h) => (
                     <th key={h || 'actions'} className="py-2.5 pr-3 font-semibold text-fg-subtle text-xs uppercase tracking-wide">{h}</th>
                   ))}
                 </tr>
@@ -142,6 +143,9 @@ export default function SuperAdminCompanies() {
                                   <p className="mt-0.5 font-mono text-[11px] text-fg-subtle">{c.slug}</p>
                                 </div>
                               </div>
+                            </td>
+                            <td className="py-3 pr-3">
+                              <PortalLinks slug={c.slug} compact />
                             </td>
                             <td className="py-3 pr-3 text-fg-muted">
                               {c.employeeCount ?? c.employee_count ?? 0}

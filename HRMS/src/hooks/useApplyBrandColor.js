@@ -45,8 +45,28 @@ function hslToChannels(h, s, l) {
 // adjustment (rather than naive RGB mixing) so arbitrary hues stay saturated
 // instead of drifting toward gray, and are recomputed per light/dark theme since
 // each theme wants different lightness targets for its light/dark tint shade.
+export const DEFAULT_BRAND_COLOR = '#0F766E';
+/** The pre-launch purple default. Companies that never picked a colour still
+ *  have it saved, so it is treated as "no choice" and gets the new default. */
+const LEGACY_DEFAULT_BRAND_COLOR = '#6C63FF';
+
+export const effectiveBrandColor = (color) => {
+  const c = String(color || '').trim();
+  if (!c || c.toUpperCase() === LEGACY_DEFAULT_BRAND_COLOR) return DEFAULT_BRAND_COLOR;
+  return c;
+};
+
+/** Relative luminance of "r g b" channels (WCAG formula). */
+const channelsLuminance = (channels) => {
+  const [r, g, b] = channels.split(' ').map((v) => {
+    const c = Number(v) / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+
 export function useApplyBrandColor() {
-  const brandColor = useCompanyStore((s) => s.company.brandColor);
+  const brandColor = useCompanyStore((s) => effectiveBrandColor(s.company.brandColor));
   const isDark = useUIStore((s) => s.isDark);
 
   useEffect(() => {
@@ -55,14 +75,20 @@ export function useApplyBrandColor() {
     const { h, s } = hsl;
     const root = document.documentElement.style;
 
+    let primary;
     if (isDark) {
-      root.setProperty('--color-primary', hslToChannels(h, s, Math.min(0.78, hsl.l + 0.12)));
+      primary = hslToChannels(h, s, Math.min(0.78, hsl.l + 0.3));
+      root.setProperty('--color-primary', primary);
       root.setProperty('--color-primary-light', hslToChannels(h, s * 0.6, 0.16));
-      root.setProperty('--color-primary-dark', hslToChannels(h, s, hsl.l));
+      root.setProperty('--color-primary-dark', hslToChannels(h, s, Math.min(0.85, hsl.l + 0.4)));
     } else {
-      root.setProperty('--color-primary', hslToChannels(h, s, hsl.l));
-      root.setProperty('--color-primary-light', hslToChannels(h, s * 0.5, 0.94));
-      root.setProperty('--color-primary-dark', hslToChannels(h, s, hsl.l * 0.65));
+      primary = hslToChannels(h, s, hsl.l);
+      root.setProperty('--color-primary', primary);
+      root.setProperty('--color-primary-light', hslToChannels(h, s * 0.5, 0.96));
+      root.setProperty('--color-primary-dark', hslToChannels(h, s, hsl.l * 0.8));
     }
+    // Text on solid primary fills: white on dark brand colours, deep ink on
+    // light ones, so any company-chosen colour stays readable.
+    root.setProperty('--color-on-primary', channelsLuminance(primary) > 0.4 ? '11 18 32' : '255 255 255');
   }, [brandColor, isDark]);
 }

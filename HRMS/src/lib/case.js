@@ -77,7 +77,9 @@ export function mapEmployeeFromApi(emp) {
     companyId: c.companyId || c.company?.id || null,
     companyName: c.companyName || c.company?.name || '',
     companyType: c.companyType || c.company?.companyType || c.company?.company_type || '',
-    avatar: c.profilePictureUrl || c.profilePicture || c.avatar || null,
+    // profilePicture is a private storage path, not a URL — only a signed
+    // profilePictureUrl (or an absolute URL) can be used as an <img> src.
+    avatar: c.profilePictureUrl || [c.profilePicture, c.avatar].find((v) => /^(https?:|data:)/i.test(v || '')) || null,
     reportingTo: c.managerId || c.reportingTo,
     manager: c.manager,
     salary: {

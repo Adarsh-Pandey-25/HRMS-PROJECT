@@ -8,6 +8,7 @@ import {
 } from '../../hooks/useAttendance';
 import { useAuthStore } from '../../store/authStore';
 import toast from 'react-hot-toast';
+import { useSelfieCapture } from '../../components/attendance/SelfieCapture';
 
 const GOAL_HOURS = 9;
 const GOAL_MS = GOAL_HOURS * 60 * 60 * 1000;
@@ -101,6 +102,7 @@ export default function MyAttendance() {
   const { data: monthly, isLoading: loadingSummary } = useMonthlyAttendanceSummary({ month: viewMonth, year: viewYear });
   const { data: checkContext, refetch: refetchContext } = useCheckContext();
   const { checkIn, checkOut, requestWfh, cancelWfh } = useAttendanceMutations();
+  const selfie = useSelfieCapture();
   const role = useAuthStore((s) => s.role);
   const canRequestDailyWfh = role !== 'admin' && role !== 'hr';
 
@@ -275,7 +277,12 @@ export default function MyAttendance() {
           );
           return;
         }
-        await checkIn.mutateAsync({ method: 'web', is_wfh: Boolean(wfhApproved), location });
+        let selfieToken;
+        if (checkContext?.selfieRequired) {
+          selfieToken = await selfie.capture();
+          if (!selfieToken) return;
+        }
+        await checkIn.mutateAsync({ method: 'web', is_wfh: Boolean(wfhApproved), location, selfie_token: selfieToken });
         toast.success(
           wfhApproved
             ? 'Clocked in as WFH — 9h goal timer started'
@@ -298,6 +305,7 @@ export default function MyAttendance() {
 
   return (
     <div className="space-y-6 animate-fade-in">
+      {selfie.modal}
       <PageHeader title="My Attendance" subtitle="Track your time, presence and overtime" />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">

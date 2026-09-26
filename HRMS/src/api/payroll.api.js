@@ -119,3 +119,22 @@ export async function downloadPayslipApi(id) {
   a.click();
   URL.revokeObjectURL(url);
 }
+
+/** Salary revisions — monthly components with an effective date. Revisions
+ *  dated today or earlier apply immediately; later ones are scheduled. */
+export async function fetchSalaryRevisionsApi(params = {}) {
+  const rows = await apiRequest({ method: 'GET', url: '/payroll/revisions', params });
+  return Array.isArray(rows) ? rows : [];
+}
+
+export async function createSalaryRevisionApi({ employeeId, components, effectiveDate, reason }) {
+  return apiRequest({
+    method: 'POST',
+    url: '/payroll/revisions',
+    data: { employee_id: employeeId, components, effective_date: effectiveDate, reason: reason || null },
+  });
+}
+
+export async function cancelSalaryRevisionApi(id) {
+  return apiRequest({ method: 'POST', url: `/payroll/revisions/${id}/cancel` });
+}

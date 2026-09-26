@@ -9,6 +9,7 @@ import {
   Card, CardHeader, Button, Badge, Skeleton, Tabs, Textarea, Modal, Input, Select, Toggle, EmptyState, Field,
 } from '../../components/ui';
 import { formatDateTime, formatCurrency } from '../../lib/utils';
+import { applyGST } from '../../lib/gst';
 import {
   getCompanyProfileApi, updateCompanyProfileApi, listCompanyEmployeesApi, getCompanySubscriptionDetailApi,
   getCompanyUsageApi, getCompanyAuditLogApi, listCompanyNotesApi, addCompanyNoteApi, deleteCompanyNoteApi,
@@ -19,6 +20,9 @@ import {
   issueManualCreditApi, issueManualInvoiceApi, recordInvoicePaymentApi, extendSubscriptionApi, setExportOverrideApi,
   listPlansApi, createSubscriptionApi, setDataCollectionModeApi,
 } from '../../api/subscription.api';
+
+// Invoices store the ex-GST amount; the customer owes amount + GST (backend recordInvoicePayment).
+const outstandingBalance = (inv) => Math.round((applyGST(inv.amount).total - Number(inv.amountPaid || 0)) * 100) / 100;
 
 // Item 7/8: explicit, non-generic labels for the two full-opt-in modules —
 // a raw key like "payroll" doesn't communicate the default-off/visibility-
@@ -83,9 +87,9 @@ export default function CompanyDetail() {
     try {
       const result = await startImpersonationApi(id, impersonateReason.trim());
       toast.success(`Impersonation session started for ${result.targetEmployee?.name || 'admin'}`);
-      // The backend already set the accessToken cookie on this response —
-      // a new tab against the app just picks it up, same as any login.
-      window.open('/dashboard', '_blank');
+      // The company app lives on its own subdomain: this one-time link signs
+      // the new tab into that workspace (see pages/Impersonate.jsx).
+      window.open(result.handoffUrl, '_blank', 'noopener');
       setImpersonateOpen(false);
       setImpersonateReason('');
     } catch (err) {
@@ -402,7 +406,7 @@ function BillingTab({ companyId }) {
     setPaymentTarget(inv);
     setPaymentMethod('');
     setPaymentReference('');
-    setPaymentAmount(String(Number(inv.amount) - Number(inv.amountPaid || 0)));
+    setPaymentAmount(String(outstandingBalance(inv)));
     setPaymentNote('');
   };
 
@@ -514,7 +518,7 @@ function BillingTab({ companyId }) {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border text-left">
-                  {['Invoice #', 'Amount', 'Status', 'Issued', ''].map((h) => (
+                  {['Invoice #', 'Amount (incl. GST)', 'Status', 'Issued', ''].map((h) => (
                     <th key={h} className="py-2 pr-3 font-semibold text-fg-subtle text-xs uppercase tracking-wide">{h}</th>
                   ))}
                 </tr>
@@ -525,7 +529,10 @@ function BillingTab({ companyId }) {
                   return (
                     <tr key={inv.id} className="border-b border-border/60">
                       <td className="py-2 pr-3 font-mono text-xs">{inv.invoiceNumber}</td>
-                      <td className="py-2 pr-3">{formatCurrency(inv.amount)}</td>
+                      <td className="py-2 pr-3">
+                        {formatCurrency(applyGST(inv.amount).total)}
+                        <span className="block text-[11px] text-fg-subtle">{formatCurrency(inv.amount)} + GST</span>
+                      </td>
                       <td className="py-2 pr-3">
                         <Badge tone={inv.status === 'paid' ? 'success' : inv.status === 'failed' ? 'danger' : inv.status === 'partially_paid' ? 'warning' : 'warning'}>
                           {inv.status.replace('_', ' ')}
@@ -635,7 +642,7 @@ function BillingTab({ companyId }) {
           <div className="space-y-3">
             <p className="text-xs text-fg-subtle">
               Reconciles an offline payment against this EXISTING invoice — does not create a new one. Outstanding
-              balance: {formatCurrency(Number(paymentTarget.amount) - Number(paymentTarget.amountPaid || 0))}.
+              balance: {formatCurrency(outstandingBalance(paymentTarget))}.
             </p>
             <Select
               label="Payment method"
@@ -651,7 +658,7 @@ function BillingTab({ companyId }) {
             />
             <Input label="Reference / note" placeholder="e.g. Bank ref #12345" value={paymentReference} onChange={(e) => setPaymentReference(e.target.value)} />
             <Input label="Amount received (INR)" type="number" min="0" value={paymentAmount} onChange={(e) => setPaymentAmount(e.target.value)} />
-            {Number(paymentAmount) !== (Number(paymentTarget.amount) - Number(paymentTarget.amountPaid || 0)) && (
+            {Number(paymentAmount) !== outstandingBalance(paymentTarget) && (
               <Textarea
                 label="Explain the difference from the outstanding balance (required)"
                 value={paymentNote}

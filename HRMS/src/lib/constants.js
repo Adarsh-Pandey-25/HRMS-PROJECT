@@ -303,8 +303,8 @@ export const PRIORITY_TONE = {
 
 /** Chart palette used across dashboards. */
 export const CHART_COLORS = [
-  '#6C63FF',
-  '#14B8A6',
+  '#0F766E',
+  '#0EA5E9',
   '#F59E0B',
   '#EF4444',
   '#3B82F6',

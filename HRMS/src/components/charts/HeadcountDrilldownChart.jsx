@@ -57,7 +57,7 @@ export default function HeadcountDrilldownChart() {
 
   const categories = drilled ? drilled.departments.map((d) => d.name) : months.map((m) => m.label);
   const values = drilled ? drilled.departments.map((d) => d.value) : months.map((m) => m.count);
-  const colors = drilled ? drilled.departments.map((_, i) => CHART_PALETTE[i % CHART_PALETTE.length]) : ['#6C63FF'];
+  const colors = drilled ? drilled.departments.map((_, i) => CHART_PALETTE[i % CHART_PALETTE.length]) : ['#0F766E'];
 
   const options = {
     chart: {
@@ -85,7 +85,7 @@ export default function HeadcountDrilldownChart() {
     dataLabels: {
       enabled: true,
       offsetY: -22,
-      style: { fontSize: '12px', colors: [t.isDark ? '#C7C2FF' : '#6C63FF'], fontWeight: 600 },
+      style: { fontSize: '12px', colors: [t.isDark ? '#C7C2FF' : '#0F766E'], fontWeight: 600 },
     },
     fill: {
       type: 'gradient',

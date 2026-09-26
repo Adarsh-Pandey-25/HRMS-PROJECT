@@ -159,7 +159,7 @@ function OnboardingChecklistCard({ acceptedOffers, selectedCandidateId, onSelect
                       checked={item.isChecked}
                       disabled={toggleItem.isPending}
                       onChange={(e) => handleToggle(item, e.target.checked)}
-                      className="h-4 w-4 accent-[#6C63FF]"
+                      className="h-4 w-4 accent-primary"
                     />
                     <span className="text-sm text-fg">{item.label}</span>
                   </label>

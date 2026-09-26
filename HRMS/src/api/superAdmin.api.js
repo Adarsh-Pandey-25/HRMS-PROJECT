@@ -117,6 +117,40 @@ export async function suggestSlugApi(companyNameHint) {
   return data?.slug || '';
 }
 
+/** { slug, status: 'available' | 'taken' | 'reserved' | 'invalid' } for a typed subdomain. */
+export async function checkInviteSlugApi(slug) {
+  return apiRequest({
+    method: 'GET',
+    url: '/super-admin/invites/slug-availability',
+    params: { slug },
+  });
+}
+
+// ── Marketing leads (free-trial requests + contact messages) ──────────────
+export async function listLeadsApi({ page = 1, limit = 20, status, type } = {}) {
+  return apiRequestPaginated({
+    method: 'GET',
+    url: '/super-admin/leads',
+    params: { page, limit, ...(status ? { status } : {}), ...(type ? { type } : {}) },
+  });
+}
+
+export async function updateLeadStatusApi(id, status) {
+  return apiRequest({ method: 'PATCH', url: `/super-admin/leads/${id}/status`, data: { status } });
+}
+
+export async function inviteFromLeadApi(id, { companyName, slug, expiresInDays } = {}) {
+  return apiRequest({
+    method: 'POST',
+    url: `/super-admin/leads/${id}/invite`,
+    data: {
+      ...(companyName ? { company_name: companyName } : {}),
+      ...(slug ? { slug } : {}),
+      ...(expiresInDays ? { expires_in_days: expiresInDays } : {}),
+    },
+  });
+}
+
 export async function createInviteApi(payload) {
   return apiRequest({
     method: 'POST',

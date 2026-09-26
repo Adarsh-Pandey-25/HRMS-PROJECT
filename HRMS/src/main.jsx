@@ -1,55 +1,24 @@
-import { StrictMode } from 'react';
-import { createRoot } from 'react-dom/client';
-import { BrowserRouter } from 'react-router-dom';
-import { QueryClientProvider } from '@tanstack/react-query';
-import { Toaster } from 'react-hot-toast';
-import { registerSW } from 'virtual:pwa-register';
 import './index.css';
-import App from './App.jsx';
-import { ErrorBoundary } from './components/layout/ErrorBoundary';
-import { PwaInstallPrompt } from './components/layout/PwaInstallPrompt';
-import { startSessionHydration } from './store/authStore';
-import { queryClient } from './lib/queryClient';
+import { isApexHost } from './lib/host';
+import { isMarketingPath } from './marketing/routes';
 
-// Restore cookie session before first paint so reload feels instant.
-startSessionHydration();
-
-if (import.meta.env.DEV) {
-  // A SW left behind by `npm run preview` on this same port would serve a stale
-  // bundle and hide new routes. Drop it so dev always runs current source.
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.getRegistrations()
-      .then((regs) => Promise.all(regs.map((r) => r.unregister())))
-      .catch(() => {});
-  }
-  if (typeof caches !== 'undefined') {
-    caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k)))).catch(() => {});
-  }
-} else {
-  registerSW({ immediate: true });
+// The PWA was retired. Remove any service worker and cache an older build
+// left behind (public/sw.js does the same from inside the worker).
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.getRegistrations()
+    .then((regs) => Promise.all(regs.map((r) => r.unregister())))
+    .catch(() => {});
+}
+if (typeof caches !== 'undefined') {
+  caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k)))).catch(() => {});
 }
 
-createRoot(document.getElementById('root')).render(
-  <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <ErrorBoundary>
-          <App />
-        </ErrorBoundary>
-        <PwaInstallPrompt />
-        <Toaster
-          position="top-right"
-          toastOptions={{
-            style: {
-              borderRadius: '12px',
-              background: 'rgb(var(--color-card))',
-              color: 'rgb(var(--color-text-primary))',
-              border: '1px solid rgb(var(--color-border))',
-              fontSize: '14px',
-            },
-          }}
-        />
-      </BrowserRouter>
-    </QueryClientProvider>
-  </StrictMode>
-);
+const rootEl = document.getElementById('root');
+
+// Two bundles: the marketing site (apex, public pages) and the HRMS app.
+// Dynamic imports keep the app's code off the marketing pages.
+if (isApexHost() && isMarketingPath(window.location.pathname)) {
+  import('./bootMarketing').then(({ bootMarketing }) => bootMarketing(rootEl));
+} else {
+  import('./bootApp').then(({ bootApp }) => bootApp(rootEl));
+}

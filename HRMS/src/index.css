@@ -6,35 +6,41 @@
 /*  Theme tokens — RGB channels so Tailwind opacity modifiers work     */
 /* ------------------------------------------------------------------ */
 :root {
-  --color-primary: 108 99 255; /* #6C63FF */
-  --color-primary-light: 238 240 255; /* #EEF0FF */
-  --color-primary-dark: 75 68 204; /* #4B44CC */
+  /* "Ink & Teal" — teal-700 on white passes WCAG AA for text and buttons. */
+  --color-primary: 15 118 110; /* #0F766E teal-700 */
+  --color-primary-light: 240 253 250; /* #F0FDFA teal-50 */
+  --color-primary-dark: 17 94 89; /* #115E59 teal-800 */
+  --color-on-primary: 255 255 255; /* text on solid primary fills */
+  --color-accent: 217 119 6; /* #D97706 brass — sparing highlights only */
+  --color-ink: 11 18 32; /* #0B1220 ink-950 — dark marketing surfaces */
 
-  --color-page: 240 239 255; /* #F0EFFF */
+  --color-page: 248 250 252; /* #F8FAFC */
   --color-card: 255 255 255; /* #FFFFFF */
   --color-sidebar: 255 255 255; /* #FFFFFF */
-  --color-muted: 247 247 251; /* #F7F7FB */
-  --color-border: 231 230 245; /* soft lavender border */
+  --color-muted: 241 245 249; /* #F1F5F9 */
+  --color-border: 226 232 240; /* #E2E8F0 */
 
-  --color-text-primary: 30 27 75; /* #1E1B4B */
-  --color-text-secondary: 107 114 128; /* #6B7280 */
-  --color-text-muted: 156 163 175; /* #9CA3AF */
+  --color-text-primary: 15 23 42; /* #0F172A ink-900 */
+  --color-text-secondary: 100 116 139; /* #64748B */
+  --color-text-muted: 148 163 184; /* #94A3B8 */
 }
 
 .dark {
-  --color-primary: 124 116 255; /* #7C74FF */
-  --color-primary-light: 40 38 72;
-  --color-primary-dark: 108 99 255;
+  --color-primary: 45 212 191; /* #2DD4BF teal-400 */
+  --color-primary-light: 19 78 74; /* #134E4A teal-900 */
+  --color-primary-dark: 94 234 212; /* #5EEAD4 teal-300 (hover lightens on dark) */
+  --color-on-primary: 4 47 46; /* #042F2E — dark text keeps AA contrast on teal-400 */
+  --color-accent: 245 158 11; /* #F59E0B */
 
-  --color-page: 15 14 26; /* #0F0E1A */
-  --color-card: 26 24 48; /* #1A1830 */
-  --color-sidebar: 19 18 42; /* #13122A */
-  --color-muted: 33 31 58;
-  --color-border: 45 43 70;
+  --color-page: 11 18 32; /* #0B1220 ink-950 */
+  --color-card: 15 23 42; /* #0F172A ink-900 */
+  --color-sidebar: 11 18 32; /* #0B1220 */
+  --color-muted: 22 32 51; /* #162033 */
+  --color-border: 30 41 59; /* #1E293B ink-800 */
 
-  --color-text-primary: 240 239 255; /* #F0EFFF */
-  --color-text-secondary: 165 163 192;
-  --color-text-muted: 120 117 150;
+  --color-text-primary: 241 245 249; /* #F1F5F9 */
+  --color-text-secondary: 148 163 184; /* #94A3B8 */
+  --color-text-muted: 100 116 139; /* #64748B */
 }
 
 /* ------------------------------------------------------------------ */

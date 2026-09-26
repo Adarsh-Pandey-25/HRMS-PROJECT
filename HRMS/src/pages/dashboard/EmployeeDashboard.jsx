@@ -8,11 +8,13 @@ import { useAttendanceMutations, useCheckContext } from '../../hooks/useAttendan
 import { formatDate, formatCurrency, cn } from '../../lib/utils';
 import { leaveTypeLabel } from '../../lib/mappers';
 import { Greeting, RecentAnnouncements } from './shared';
+import { useSelfieCapture } from '../../components/attendance/SelfieCapture';
 
 export default function EmployeeDashboard({ user }) {
  const { data: api, isLoading } = useDashboardData();
  const { checkIn, checkOut } = useAttendanceMutations();
  const { data: checkContext } = useCheckContext();
+ const selfie = useSelfieCapture();
 
  const kpis = api?.kpis || {};
  const todayStatus = api?.todayStatus || {};
@@ -37,7 +39,12 @@ export default function EmployeeDashboard({ user }) {
  await checkOut.mutateAsync({});
  toast.success('Checked out — see you tomorrow!');
  } else if (canCheckIn) {
- await checkIn.mutateAsync({ method: 'web' });
+ let selfieToken;
+ if (checkContext?.selfieRequired) {
+ selfieToken = await selfie.capture();
+ if (!selfieToken) return;
+ }
+ await checkIn.mutateAsync({ method: 'web', selfie_token: selfieToken });
  toast.success('Checked in — have a great day!');
  }
  } catch (err) {
@@ -58,6 +65,7 @@ export default function EmployeeDashboard({ user }) {
 
  return (
  <div className="space-y-6 animate-fade-in">
+ {selfie.modal}
  <Greeting user={user} dateLabel={api?.greeting?.date} />
 
  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

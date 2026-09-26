@@ -3,8 +3,18 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy, Link2, Plus, Ban } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { Card, CardHeader, Button, Badge, Input, Skeleton, Modal, ConfirmDialog } from '../../components/ui';
-import { createInviteApi, listInvitesApi, revokeInviteApi, suggestSlugApi } from '../../api/superAdmin.api';
+import {
+  checkInviteSlugApi, createInviteApi, listInvitesApi, revokeInviteApi, suggestSlugApi,
+} from '../../api/superAdmin.api';
 import { formatDateTime } from '../../lib/utils';
+import { useDebounce } from '../../hooks/useDebounce';
+
+const SLUG_STATUS_TEXT = {
+  available: 'Available',
+  taken: 'Already taken — try another',
+  reserved: 'Reserved — choose another',
+  invalid: 'Use lowercase letters, numbers or hyphens',
+};
 
 // Shown in the "Workspace URL" preview — real wildcard DNS/TLS for
 // subdomains isn't live on every deployment yet, but the domain shown must
@@ -38,6 +48,21 @@ export default function SuperAdminInvites() {
   const [lastLink, setLastLink] = useState(null);
   const [revoking, setRevoking] = useState(null);
   const [revokeTarget, setRevokeTarget] = useState(null);
+  const [slugStatus, setSlugStatus] = useState(null);
+  const debouncedSlug = useDebounce(slug, 400);
+
+  // Live availability for a hand-edited subdomain (auto-suggestions are already free).
+  useEffect(() => {
+    if (!debouncedSlug) {
+      setSlugStatus(null);
+      return undefined;
+    }
+    let cancelled = false;
+    checkInviteSlugApi(debouncedSlug)
+      .then((res) => { if (!cancelled) setSlugStatus(res?.status || null); })
+      .catch(() => { if (!cancelled) setSlugStatus(null); });
+    return () => { cancelled = true; };
+  }, [debouncedSlug]);
 
   // Debounced auto-suggest: as the company name is typed, populate the slug field —
   // but only until the super admin edits it manually, then stop overwriting it.
@@ -219,7 +244,7 @@ export default function SuperAdminInvites() {
             <Button
               onClick={create}
               loading={creating}
-              disabled={creating || !email.trim() || !hint.trim()}
+              disabled={creating || !email.trim() || !hint.trim() || ['taken', 'reserved', 'invalid'].includes(slugStatus)}
             >
               Create link
             </Button>
@@ -250,7 +275,12 @@ export default function SuperAdminInvites() {
             placeholder="acme-corp"
             value={slug}
             onChange={handleSlugChange}
-            hint={slugSuggesting ? 'Suggesting…' : 'Auto-suggested from the company name — you can edit it'}
+            error={slug === debouncedSlug && ['taken', 'reserved', 'invalid'].includes(slugStatus) ? SLUG_STATUS_TEXT[slugStatus] : undefined}
+            hint={slugSuggesting
+              ? 'Suggesting…'
+              : slug && slug === debouncedSlug && slugStatus === 'available'
+                ? `✓ ${SLUG_STATUS_TEXT.available} — the company can still change it during onboarding`
+                : 'Auto-suggested from the company name — you can edit it'}
           />
           <p className="text-xs text-fg-subtle -mt-2">
             {WORKSPACE_DOMAIN

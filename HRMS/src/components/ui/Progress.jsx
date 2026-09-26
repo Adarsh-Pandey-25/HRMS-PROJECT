@@ -25,7 +25,7 @@ export function ProgressBar({ value = 0, tone = 'primary', className, showLabel 
   );
 }
 
-export function ProgressRing({ value = 0, size = 72, stroke = 7, tone = '#6C63FF', label, sublabel }) {
+export function ProgressRing({ value = 0, size = 72, stroke = 7, tone = '#0F766E', label, sublabel }) {
   const pct = clamp(value, 0, 100);
   const r = (size - stroke) / 2;
   const c = 2 * Math.PI * r;

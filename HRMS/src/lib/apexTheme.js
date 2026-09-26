@@ -3,15 +3,15 @@ import { useUIStore } from '../store/uiStore';
 /** Shared ApexCharts palette — mirrors CHART_COLORS but tuned for the premium
  *  gradient/3D-style charts. */
 export const CHART_PALETTE = [
-  '#2563EB',
-  '#14B8A6',
+  '#0F766E',
+  '#0EA5E9',
   '#F59E0B',
   '#EF4444',
   '#22C55E',
-  '#38BDF8',
+  '#334155',
   '#EC4899',
-  '#3B82F6',
-  '#8B5CF6',
+  '#2DD4BF',
+  '#F97316',
 ];
 
 /**
@@ -49,7 +49,7 @@ export function useApexTheme() {
         top: 4,
         left: 0,
         blur: 10,
-        color: '#6C63FF',
+        color: '#0F766E',
         opacity: isDark ? 0.35 : 0.15,
       },
     },

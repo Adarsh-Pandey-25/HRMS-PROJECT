@@ -5,6 +5,7 @@ import toast from 'react-hot-toast';
 import { ArrowLeft, Users, RefreshCw, Ban, Pause, Play, Building2 } from 'lucide-react';
 import { Card, CardHeader, Button, StatusBadge, Skeleton, Modal, Input, Textarea, Select, ConfirmDialog } from '../../components/ui';
 import { formatCurrency, formatDate, formatDateTime, humanize } from '../../lib/utils';
+import { applyGST } from '../../lib/gst';
 import {
   getSubscriptionApi, changeSeatsApi, changePlanApi, renewSubscriptionApi, manualRenewSubscriptionApi,
   cancelSubscriptionApi, suspendSubscriptionApi, reactivateSubscriptionApi, listPlansApi,
@@ -112,7 +113,7 @@ export default function SubscriptionDetail() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border text-left">
-                  {['Invoice', 'Amount', 'Status', 'Issued', 'Paid', 'Payment method'].map((h) => (
+                  {['Invoice', 'Amount (incl. GST)', 'Status', 'Issued', 'Paid', 'Payment method'].map((h) => (
                     <th key={h} className="py-2.5 pr-3 font-semibold text-fg-subtle text-xs uppercase tracking-wide">{h}</th>
                   ))}
                 </tr>
@@ -121,7 +122,7 @@ export default function SubscriptionDetail() {
                 {invoices.map((inv) => (
                   <tr key={inv.id} className="border-b border-border/60">
                     <td className="py-3 pr-3 font-mono text-xs text-fg">{inv.invoiceNumber}</td>
-                    <td className="py-3 pr-3 text-fg-muted tabular-nums">{formatCurrency(inv.amount)}</td>
+                    <td className="py-3 pr-3 text-fg-muted tabular-nums" title={`${formatCurrency(inv.amount)} + GST`}>{formatCurrency(applyGST(inv.amount).total)}</td>
                     <td className="py-3 pr-3"><StatusBadge status={inv.status} /></td>
                     <td className="py-3 pr-3 text-fg-subtle text-xs">{formatDate(inv.issuedAt)}</td>
                     <td className="py-3 pr-3 text-fg-subtle text-xs">{inv.paidAt ? formatDate(inv.paidAt) : '—'}</td>

@@ -38,7 +38,7 @@ export function PhotoUpload({ photoFile, onChange, name }) {
           type="button"
           onClick={() => inputRef.current?.click()}
           aria-label="Upload employee photo"
-          className="absolute -bottom-1 -right-1 h-7 w-7 rounded-full bg-primary text-white flex items-center justify-center shadow-card hover:bg-primary-dark transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+          className="absolute -bottom-1 -right-1 h-7 w-7 rounded-full bg-primary text-on-primary flex items-center justify-center shadow-card hover:bg-primary-dark transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
         >
           <Camera className="h-3.5 w-3.5" />
         </button>

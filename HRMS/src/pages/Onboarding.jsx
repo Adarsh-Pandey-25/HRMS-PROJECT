@@ -1,4 +1,4 @@
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -12,12 +12,30 @@ import { useCompanyStore } from '../store/companyStore';
 import { INDUSTRIES, COMPANY_SIZES } from '../lib/constants';
 import {
   bootstrapAdminApi,
+  checkOnboardingSlugApi,
   peekOnboardingInviteApi,
   sendOnboardingOtpApi,
   verifyOnboardingOtpApi,
 } from '../api/auth.api';
 import { useAuthStore } from '../store/authStore';
 import { useSettingsStore } from '../store/settingsStore';
+import { platformUrl, workspaceUrl } from '../lib/host';
+import { useDebounce } from '../hooks/useDebounce';
+
+const SLUG_STATUS_TEXT = {
+  checking: 'Checking…',
+  available: 'Available',
+  taken: 'Already taken — try another',
+  reserved: 'Reserved — choose another',
+  invalid: 'Use 1–48 lowercase letters, numbers or hyphens (no hyphen at the start or end)',
+  error: 'Could not check right now',
+};
+
+const normaliseSlugInput = (value) => String(value || '')
+  .toLowerCase()
+  .replace(/[^a-z0-9-]/g, '-')
+  .replace(/-{2,}/g, '-')
+  .slice(0, 48);
 
 function OnboardingLogoPreview({ file, className = 'h-16 w-16 rounded-xl object-cover border border-border bg-card' }) {
   const [url, setUrl] = useState(null);
@@ -118,7 +136,7 @@ const schema = z.object({
   brandColor: z
     .string()
     .min(1, 'Required')
-    .regex(/^#[0-9A-Fa-f]{6}$/, 'Enter a valid color (e.g. #6C63FF)'),
+    .regex(/^#[0-9A-Fa-f]{6}$/, 'Enter a valid color (e.g. #0F766E)'),
   tagline: z.string().trim().min(1, 'Required'),
 
   adminName: z
@@ -160,7 +178,7 @@ const EMPTY_ONBOARDING = {
   emergencyName: '',
   emergencyPhone: '',
   emergencyRelation: '',
-  brandColor: '#6C63FF',
+  brandColor: '#0F766E',
   tagline: '',
   adminName: '',
   adminEmail: '',
@@ -194,9 +212,28 @@ export default function Onboarding() {
 
   const values = watch();
   const adminEmail = values.adminEmail;
-  // The subdomain locked in by the super admin when this invite was created —
-  // informational only, never editable at this step.
-  const companySlug = inviteMeta?.companySlug || inviteMeta?.company_slug || '';
+  // Workspace address: prefilled from the invite, editable here, re-checked
+  // by the server on launch. Locked once the workspace exists.
+  const [companySlug, setCompanySlug] = useState('');
+  const [slugStatus, setSlugStatus] = useState('available');
+  const debouncedSlug = useDebounce(companySlug, 400);
+
+  useEffect(() => {
+    const invited = inviteMeta?.companySlug || inviteMeta?.company_slug || '';
+    if (invited) setCompanySlug(invited);
+  }, [inviteMeta]);
+
+  useEffect(() => {
+    if (inviteStatus !== 'valid' || !debouncedSlug) return undefined;
+    let cancelled = false;
+    setSlugStatus('checking');
+    checkOnboardingSlugApi(debouncedSlug, inviteToken)
+      .then((res) => { if (!cancelled) setSlugStatus(res?.status || 'error'); })
+      .catch(() => { if (!cancelled) setSlugStatus('error'); });
+    return () => { cancelled = true; };
+  }, [debouncedSlug, inviteStatus, inviteToken]);
+
+  const slugReady = companySlug && companySlug === debouncedSlug && slugStatus === 'available';
 
   useEffect(() => {
     if (!inviteToken) {
@@ -284,6 +321,10 @@ export default function Onboarding() {
 
   const next = async () => {
     const valid = await trigger(STEP_FIELDS[step]);
+    if (step === 0 && !slugReady) {
+      toast.error('Choose an available workspace address to continue');
+      return;
+    }
     if (valid) setStep((s) => Math.min(s + 1, STEPS.length - 1));
   };
 
@@ -331,6 +372,10 @@ export default function Onboarding() {
     if (!emailVerified || !verificationToken) {
       return toast.error('Verify the OTP sent to your admin email before launching');
     }
+    if (!slugReady) {
+      setStep(0);
+      return toast.error('Choose an available workspace address before launching');
+    }
     // eslint-disable-next-line no-unused-vars
     const { companyName, companySize, ...rest } = data;
 
@@ -342,6 +387,7 @@ export default function Onboarding() {
         email: data.adminEmail,
         verificationToken,
         inviteToken,
+        workspaceSlug: companySlug,
         company_profile: {
           name: companyName,
           industry: data.industry,
@@ -392,14 +438,14 @@ export default function Onboarding() {
       }
 
       toast.success(`${companyName} is live — check your email for the admin password, then sign in`);
-      navigate('/login', {
-        replace: true,
-        state: {
-          justOnboarded: true,
-          email: data.adminEmail,
-          companyName,
-        },
-      });
+      // The workspace lives on its own subdomain; send the new admin to its admin login.
+      const slug = admin?.companySlug || admin?.company_slug || companySlug;
+      const target = workspaceUrl(slug);
+      if (target) {
+        window.location.assign(`${target}/admin`);
+      } else {
+        navigate('/admin', { replace: true });
+      }
     } catch (err) {
       toast.error(err.message || 'Could not create company workspace');
     } finally {
@@ -428,11 +474,14 @@ export default function Onboarding() {
               ? 'Company onboarding is invite-only. Ask your platform administrator for a one-time link.'
               : (inviteMeta?.message || 'This invite link is invalid, used, or expired.')}
           </p>
-          <Button className="mt-6 w-full" onClick={() => navigate('/login')}>
-            Go to company sign in
-          </Button>
+          <a
+            href={platformUrl()}
+            className="mt-6 inline-flex w-full items-center justify-center rounded-input bg-primary px-4 py-2.5 text-sm font-semibold text-on-primary hover:bg-primary-dark"
+          >
+            Go to spaxsync.com
+          </a>
           <p className="mt-3 text-xs text-fg-subtle">
-            Already have a workspace? <Link to="/login" className="text-primary hover:underline">Sign in</Link>
+            Already have a workspace? Use the sign-in link your company sent you.
           </p>
         </Card>
       </div>
@@ -478,12 +527,25 @@ export default function Onboarding() {
                     error={errors.companyName?.message}
                     hint="Locked to the company name on your invitation"
                   />
-                  {companySlug && (
-                    <p className="sm:col-span-2 -mt-2 text-xs text-fg-subtle">
-                      Your workspace subdomain (set by your platform administrator, not editable here):{' '}
-                      <span className="font-mono font-medium text-fg-muted">{workspaceUrlText(companySlug)}</span>
-                    </p>
-                  )}
+                  <div className="sm:col-span-2">
+                    <Input
+                      label="Workspace address"
+                      required
+                      value={companySlug}
+                      onChange={(e) => setCompanySlug(normaliseSlugInput(e.target.value))}
+                      onBlur={() => setCompanySlug((s) => s.replace(/^-+|-+$/g, ''))}
+                      autoComplete="off"
+                      spellCheck={false}
+                      error={['taken', 'reserved', 'invalid'].includes(slugStatus) && companySlug === debouncedSlug ? SLUG_STATUS_TEXT[slugStatus] : undefined}
+                      hint={`${workspaceUrlText(companySlug || 'your-company')} · your team signs in here. You can’t change it after launch.`}
+                    />
+                    {slugStatus === 'available' && companySlug === debouncedSlug && companySlug && (
+                      <p className="mt-1 text-xs font-medium text-primary">✓ {SLUG_STATUS_TEXT.available}</p>
+                    )}
+                    {(slugStatus === 'checking' || companySlug !== debouncedSlug) && companySlug && (
+                      <p className="mt-1 text-xs text-fg-subtle">{SLUG_STATUS_TEXT.checking}</p>
+                    )}
+                  </div>
                   <Select label="Industry" required placeholder="Select industry" options={INDUSTRIES} {...register('industry')} error={errors.industry?.message} />
                   <Select label="Company size" required placeholder="Select size" options={COMPANY_SIZES} {...register('companySize')} error={errors.companySize?.message} />
                   <Input
@@ -598,7 +660,7 @@ export default function Onboarding() {
                       />
                       <Input
                         className="flex-1"
-                        placeholder="#6C63FF"
+                        placeholder="#0F766E"
                         value={values.brandColor}
                         onChange={(e) => setValue('brandColor', e.target.value, { shouldValidate: true })}
                         error={errors.brandColor?.message}
@@ -777,9 +839,11 @@ export default function Onboarding() {
 
             {/* Footer nav */}
             <div className="px-6 pb-6 flex items-center justify-between pt-5 border-t border-border/60">
-              <Button type="button" variant="ghost" icon={ArrowLeft} onClick={() => (step === 0 ? navigate('/welcome') : setStep((s) => s - 1))}>
-                {step === 0 ? 'Back to welcome' : 'Back'}
-              </Button>
+              {step === 0 ? <span /> : (
+                <Button type="button" variant="ghost" icon={ArrowLeft} onClick={() => setStep((s) => s - 1)}>
+                  Back
+                </Button>
+              )}
               {step === 4 ? null : step < STEPS.length - 1 ? (
                 <Button key="next" type="button" onClick={next} icon={ArrowRight} className="flex-row-reverse">Next</Button>
               ) : (

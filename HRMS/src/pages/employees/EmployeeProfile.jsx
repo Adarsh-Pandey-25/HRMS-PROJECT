@@ -540,7 +540,7 @@ export default function EmployeeProfile() {
             <Avatar name={emp.name} src={emp.avatar} size="xl" />
             {isOwnProfile && (
               <label
-                className="absolute -bottom-1 -right-1 h-7 w-7 rounded-full bg-primary text-white flex items-center justify-center cursor-pointer shadow hover:bg-primary/90"
+                className="absolute -bottom-1 -right-1 h-7 w-7 rounded-full bg-primary text-on-primary flex items-center justify-center cursor-pointer shadow hover:bg-primary/90"
                 title="Change photo"
               >
                 <Pencil className="h-3.5 w-3.5" />
@@ -620,7 +620,7 @@ export default function EmployeeProfile() {
                 type="checkbox"
                 checked={ackChecked}
                 onChange={(e) => setAckChecked(e.target.checked)}
-                className="mt-0.5 h-4 w-4 accent-[#6C63FF]"
+                className="mt-0.5 h-4 w-4 accent-primary"
               />
               I understand this is a one-time edit and I've reviewed the note above.
             </label>

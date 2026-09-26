@@ -368,7 +368,7 @@ export function AttendanceConfigSection() {
             <Input label="New joiner training window (days)" type="number" value={form.newJoinerWindowDays} onChange={(e) => setForm({ ...form, newJoinerWindowDays: Number(e.target.value) })} onBlur={saveNow} />
             <Input label="New joiner training deadline (days)" type="number" value={form.newJoinerDeadlineDays} onChange={(e) => setForm({ ...form, newJoinerDeadlineDays: Number(e.target.value) })} onBlur={saveNow} />
           </div>
-          <Toggle label="Selfie required on check-in" hint="Applies to web + app check-in" checked={form.selfieRequired} onChange={(v) => patch({ selfieRequired: v })} />
+          <Toggle label="Selfie required on check-in" hint="Web and app check-ins need a photo from the camera. Biometric punches are exempt." checked={form.selfieRequired} onChange={(v) => patch({ selfieRequired: v })} />
           <Toggle label="Enforce new joiner video watch order" hint="Next video unlocks only after the previous is completed" checked={form.orderedNewJoinerVideos} onChange={(v) => patch({ orderedNewJoinerVideos: v })} />
         </div>
       </Card>

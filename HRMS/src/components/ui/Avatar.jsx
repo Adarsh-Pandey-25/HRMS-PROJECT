@@ -8,10 +8,10 @@ const SIZES = {
   xl: 'h-20 w-20 text-2xl',
 };
 
-/** Accepts either an `employee` object (avatarUrl/name) or plain `name`/`src` props. */
+/** Accepts either an `employee` object (avatar/avatarUrl + name) or plain `name`/`src` props. */
 export function Avatar({ employee, name, src, size = 'md', className, ring = false }) {
   const resolvedName = employee?.name || name || '';
-  const resolvedSrc = employee?.avatarUrl || src;
+  const resolvedSrc = employee?.avatarUrl || employee?.avatar || src;
   const initials = getInitials(resolvedName);
   return (
     <div

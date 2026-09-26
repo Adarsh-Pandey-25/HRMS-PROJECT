@@ -26,7 +26,7 @@ const EMPTY_COMPANY = {
   brandIconName: null,
   brandIconPath: null,
   brandIconUrl: null,
-  brandColor: '#6C63FF',
+  brandColor: '#0F766E',
   tagline: '',
   fyStart: 'April',
   currency: 'INR',

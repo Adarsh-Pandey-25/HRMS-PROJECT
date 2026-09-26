@@ -7,6 +7,7 @@ import { ArrowLeft, KeyRound, Mail, Send } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { Card, Button, Input } from '../components/ui';
 import { forgotPasswordApi, resetPasswordApi } from '../api/auth.api';
+import { lastLoginPath } from '../lib/host';
 
 const emailSchema = z.object({
   email: z.string().email('Enter a valid work email'),
@@ -124,7 +125,7 @@ export default function ForgotPassword() {
         newPassword: values.newPassword,
       });
       toast.success('Password updated — sign in with your new password');
-      navigate('/login', { replace: true });
+      navigate(lastLoginPath(), { replace: true });
     } catch (err) {
       applyLockFromError(err, setLockUntil);
       toast.error(err.message || 'Reset failed — check OTP and try again');
@@ -146,7 +147,7 @@ export default function ForgotPassword() {
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary-light via-page to-primary-light px-4 animate-fade-in">
       <div className="w-full max-w-sm">
         <Link
-          to="/login"
+          to={lastLoginPath()}
           className="inline-flex items-center gap-1.5 text-sm text-fg-muted hover:text-fg mb-4 transition-colors"
         >
           <ArrowLeft className="h-4 w-4" /> Back to sign in
@@ -154,7 +155,7 @@ export default function ForgotPassword() {
 
         <div className="text-center mb-6">
           <div className="mx-auto mb-4 h-14 w-14 rounded-2xl bg-gradient-to-br from-primary to-primary-dark flex items-center justify-center shadow-card-hover">
-            <KeyRound className="h-7 w-7 text-white" />
+            <KeyRound className="h-7 w-7 text-on-primary" />
           </div>
           <h1 className="text-xl font-semibold text-fg">Reset your password</h1>
           <p className="mt-1 text-sm text-fg-muted">

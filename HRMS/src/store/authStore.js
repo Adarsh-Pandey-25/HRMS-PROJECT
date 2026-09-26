@@ -1,5 +1,8 @@
 import { create } from 'zustand';
-import { loginApi, logoutApi, fetchMeApi } from '../api/auth.api';
+import {
+  loginApi, logoutApi, fetchMeApi, verifyTwoFactorLoginApi,
+} from '../api/auth.api';
+import { rememberPortalForRole } from '../lib/host';
 import { fetchDashboardApi } from '../api/dashboard.api';
 import { fetchRolePermissionsApi } from '../api/settings.api';
 import { registerLogoutHandler, setStoredToken } from '../api/client';
@@ -42,29 +45,51 @@ export const useAuthStore = create((set, get) => ({
     return allowedRoles.includes(get().role);
   },
 
-  /** `portal` scopes the login to /auth/{portal}/login ('admin' | 'hr' | 'employee');
-   *  omitted, it hits the original unscoped /auth/login (legacy /login page). */
+  /** `portal` scopes the login to /auth/{portal}/login ('admin' | 'hr' | 'employee').
+   *  Resolves to `{ requires2FA, twoFaToken }` instead of a user when the account
+   *  has two-factor authentication on — finish with `completeTwoFactor`. */
   login: async ({ email, password, portal }) => {
     set({ isLoading: true, authError: null });
     try {
       clearSessionCache();
-      const { user } = await loginApi(email, password, portal);
-      const role = user?.role || 'employee';
-      set({
-        user,
-        role,
-        isAuthenticated: true,
-        sessionChecked: true,
-        isLoading: false,
-        authError: null,
-        pendingLoginPassword: user?.mustChangePassword ? password : null,
-      });
-      primeAuthenticatedCaches(role);
+      const result = await loginApi(email, password, portal);
+      if (result.requires2FA) {
+        set({ isLoading: false, pendingLoginPassword: password });
+        return result;
+      }
+      get().setAuthenticatedUser(result.user, password);
+      return { user: result.user };
+    } catch (err) {
+      set({ isLoading: false, authError: err.message });
+      throw err;
+    }
+  },
+
+  completeTwoFactor: async ({ twoFaToken, code }) => {
+    set({ isLoading: true, authError: null });
+    try {
+      const { user } = await verifyTwoFactorLoginApi(twoFaToken, code);
+      get().setAuthenticatedUser(user, get().pendingLoginPassword);
       return { user };
     } catch (err) {
       set({ isLoading: false, authError: err.message });
       throw err;
     }
+  },
+
+  setAuthenticatedUser: (user, password = null) => {
+    const role = user?.role || 'employee';
+    rememberPortalForRole(role);
+    set({
+      user,
+      role,
+      isAuthenticated: true,
+      sessionChecked: true,
+      isLoading: false,
+      authError: null,
+      pendingLoginPassword: user?.mustChangePassword ? password : null,
+    });
+    primeAuthenticatedCaches(role);
   },
 
   logout: async ({ silent = false } = {}) => {
@@ -100,6 +125,7 @@ export const useAuthStore = create((set, get) => ({
     try {
       const user = await fetchMeApi();
       const role = user?.role || 'employee';
+      rememberPortalForRole(role);
       set({
         user,
         role,

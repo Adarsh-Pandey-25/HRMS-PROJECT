@@ -1,8 +1,8 @@
 import { apiRequest, apiUpload, setStoredToken } from './client';
 import { mapEmployeeFromApi } from '../lib/case';
 
-/** Portal-scoped logins for the subdomain-per-tenant Admin/HR/Employee pages hit their
- *  own endpoint; the original generic login (no portal) keeps hitting `/auth/login`. */
+/** Each company login page (/, /admin, /hr on the company subdomain) posts to its own
+ *  portal endpoint, which also enforces the role and the company server-side. */
 const PORTAL_LOGIN_PATHS = {
   admin: '/auth/admin/login',
   hr: '/auth/hr/login',
@@ -12,20 +12,60 @@ const PORTAL_LOGIN_PATHS = {
 export async function loginApi(email, password, portal) {
   // Remove any token left by older versions; auth now uses HttpOnly cookies.
   setStoredToken(null);
-  const url = PORTAL_LOGIN_PATHS[portal] || '/auth/login';
+  const url = PORTAL_LOGIN_PATHS[portal] || PORTAL_LOGIN_PATHS.employee;
   const data = await apiRequest({
     method: 'POST',
     url,
     data: { email, password },
   });
 
+  if (data?.requires2FA) {
+    return { requires2FA: true, twoFaToken: data.twoFaToken };
+  }
   return {
     user: mapEmployeeFromApi(data.employee),
   };
 }
 
-/** Public — resolves the current Host header to a tenant company, if any (subdomain
- *  routing is not live yet, so `resolved` is false on every deployment today). */
+/** Second login step for accounts with two-factor authentication. */
+export async function verifyTwoFactorLoginApi(twoFaToken, code) {
+  const data = await apiRequest({
+    method: 'POST',
+    url: '/auth/2fa/verify-login',
+    data: { twoFaToken, code },
+  });
+  return { user: mapEmployeeFromApi(data.employee) };
+}
+
+/** Company host side of a super-admin impersonation handoff. */
+export async function startImpersonationApi(token) {
+  return apiRequest({ method: 'POST', url: '/auth/impersonation/start', data: { token } });
+}
+
+/** Employee self-onboarding (token from the emailed /employee-onboarding link). */
+const onboardingHeaders = (token) => ({ Authorization: `Bearer ${token}` });
+
+export async function fetchEmployeeOnboardingApi(token) {
+  return apiRequest({ method: 'GET', url: '/onboarding/me', headers: onboardingHeaders(token) });
+}
+
+export async function uploadEmployeeOnboardingPhotoApi(token, file) {
+  const form = new FormData();
+  form.append('photo', file);
+  return apiUpload({
+    method: 'POST', url: '/onboarding/upload-photo', data: form, headers: onboardingHeaders(token),
+  });
+}
+
+export async function completeEmployeeOnboardingApi(token, payload) {
+  return apiRequest({
+    method: 'PUT', url: '/onboarding/complete', data: payload, headers: onboardingHeaders(token),
+  });
+}
+
+/** Public — resolves the current Host header to a tenant company: name, slug,
+ *  logo and brand colour for the login page. 404 WORKSPACE_NOT_FOUND on an
+ *  unknown subdomain. */
 export async function fetchWorkspaceApi() {
   return apiRequest({
     method: 'GET',
@@ -44,11 +84,6 @@ export async function logoutApi() {
 export async function fetchMeApi() {
   const employee = await apiRequest({ method: 'GET', url: '/auth/me' });
   return mapEmployeeFromApi(employee);
-}
-
-/** Item 4: marks the PWA install prompt as seen, server-side, so it stops showing automatically. */
-export async function markInstallPromptSeenApi() {
-  return apiRequest({ method: 'PATCH', url: '/auth/me/install-prompt-seen' });
 }
 
 /** Request a 6-digit OTP via SMTP (nodemailer on backend). */
@@ -105,6 +140,7 @@ export async function bootstrapAdminApi(payload, logoFile) {
   form.append('admin_name', payload.admin_name || '');
   if (payload.verificationToken) form.append('verificationToken', payload.verificationToken);
   if (payload.inviteToken) form.append('inviteToken', payload.inviteToken);
+  if (payload.workspaceSlug) form.append('workspaceSlug', payload.workspaceSlug);
   form.append('company_profile', JSON.stringify(payload.company_profile || {}));
   if (logoFile) form.append('logo', logoFile);
   return apiUpload({
@@ -115,10 +151,34 @@ export async function bootstrapAdminApi(payload, logoFile) {
   });
 }
 
+/** Live availability of the editable workspace address during company onboarding.
+ *  Resolves to { slug, status: 'available' | 'taken' | 'reserved' | 'invalid' }. */
+export async function checkOnboardingSlugApi(slug, inviteToken) {
+  return apiRequest({
+    method: 'GET',
+    url: '/auth/onboarding/slug-availability',
+    params: { slug, inviteToken },
+  });
+}
+
 /** Public — validate one-time onboarding invite before showing the form. */
 export async function peekOnboardingInviteApi(token) {
   return apiRequest({
     method: 'GET',
     url: `/auth/onboarding/invite/${encodeURIComponent(token)}`,
   });
+}
+
+/** Self-service 2FA. `enroll` returns { qrDataUri, manualEntryKey, otpauthUri }
+ *  for a pending secret; `confirm` switches it on; `disable` needs a current code. */
+export async function startTwoFactorEnrollApi() {
+  return apiRequest({ method: 'POST', url: '/auth/2fa/enroll' });
+}
+
+export async function confirmTwoFactorApi(code) {
+  return apiRequest({ method: 'POST', url: '/auth/2fa/confirm', data: { code } });
+}
+
+export async function disableTwoFactorApi(code) {
+  return apiRequest({ method: 'POST', url: '/auth/2fa/disable', data: { code } });
 }
