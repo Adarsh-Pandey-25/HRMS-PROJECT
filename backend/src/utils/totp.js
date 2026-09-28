@@ -88,15 +88,35 @@ const buildOtpauthUri = (base32Secret, accountLabel, issuer = 'HRMS Super Admin'
 
 // ── At-rest encryption for the stored secret ────────────────────────────────
 
-const getEncryptionKey = () => {
-  const raw = process.env.SUPER_ADMIN_2FA_ENC_KEY;
+const KEY_HELP = 'Generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'base64\'))"';
+
+/**
+ * Decode a 2FA encryption key from base64 (or 64-char hex) and require
+ * exactly 32 bytes.
+ *
+ * This used to silently SHA-256 any wrong-length value into a key, which
+ * made a typo'd or truncated key "work" while producing a DIFFERENT key
+ * than intended — so secrets encrypted before the typo could no longer be
+ * decrypted, surfacing only as "invalid code" at login. Failing loudly is
+ * the whole point.
+ *
+ * Exported so server.js can validate at boot using this exact logic.
+ */
+const decodeEncryptionKey = (raw, varName = 'SUPER_ADMIN_2FA_ENC_KEY') => {
   if (!raw) {
-    throw new Error('SUPER_ADMIN_2FA_ENC_KEY is not set — required to store/read 2FA secrets. Set a 32-byte key (base64 or hex).');
+    throw new Error(`${varName} is not set — required to store/read 2FA secrets. It must be 32 bytes, base64-encoded. ${KEY_HELP}`);
   }
-  let key = Buffer.from(raw, raw.length === 64 ? 'hex' : 'base64');
-  if (key.length !== 32) key = crypto.createHash('sha256').update(raw).digest();
+  const key = Buffer.from(raw, String(raw).length === 64 ? 'hex' : 'base64');
+  if (key.length !== 32) {
+    throw new Error(
+      `${varName} must decode to exactly 32 bytes (got ${key.length}). `
+      + `Use a 44-character base64 string or a 64-character hex string. ${KEY_HELP}`,
+    );
+  }
   return key;
 };
+
+const getEncryptionKey = () => decodeEncryptionKey(process.env.SUPER_ADMIN_2FA_ENC_KEY);
 
 const encryptSecret = (plainSecret) => {
   const key = getEncryptionKey();
@@ -125,4 +145,5 @@ module.exports = {
   buildOtpauthUri,
   encryptSecret,
   decryptSecret,
+  decodeEncryptionKey,
 };

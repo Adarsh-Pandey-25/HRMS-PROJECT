@@ -8,7 +8,6 @@ export { Drawer } from './Drawer';
 export { ConfirmDialog } from './ConfirmDialog';
 export { Tabs, SegmentedControl } from './Tabs';
 export { DataTable } from './Table';
-export { VirtualizedDataTable } from './VirtualizedDataTable';
 export { EmptyState } from './EmptyState';
 export { Skeleton, SkeletonCard, SkeletonTable } from './Skeleton';
 export { ProgressBar, ProgressRing } from './Progress';

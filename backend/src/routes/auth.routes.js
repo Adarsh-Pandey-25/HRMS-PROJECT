@@ -3,7 +3,7 @@ const { body, query } = require('express-validator');
 const authController = require('../controllers/auth.controller');
 const { authenticate } = require('../middleware/auth.middleware');
 const { validate } = require('../middleware/validation.middleware');
-const { authLimiter, bootstrapLimiter, onboardingOtpLimiter } = require('../middleware/rateLimiter.middleware');
+const { authLimiter, bootstrapLimiter, onboardingOtpLimiter, twoFaLimiter } = require('../middleware/rateLimiter.middleware');
 const { optionalLogoUpload } = require('../middleware/upload.middleware');
 const { BadRequestError } = require('../utils/errors');
 const {
@@ -96,15 +96,15 @@ router.post('/2fa/verify-login', authLimiter,
   authController.verifyTwoFaAndLogin,
 );
 // Step 2: enroll — requires an existing session
-router.post('/2fa/enroll', authenticate, authController.startEmployeeTwoFactor);
+router.post('/2fa/enroll', authenticate, twoFaLimiter, authController.startEmployeeTwoFactor);
 // Step 3: confirm enrollment with a valid TOTP code
-router.post('/2fa/confirm', authenticate,
+router.post('/2fa/confirm', authenticate, twoFaLimiter,
   body('code').isLength({ min: 6, max: 6 }),
   validate,
   authController.confirmEmployeeTwoFactor,
 );
 // Step 4: disable (requires a valid code to prove device possession)
-router.post('/2fa/disable', authenticate,
+router.post('/2fa/disable', authenticate, twoFaLimiter,
   body('code').isLength({ min: 6, max: 6 }),
   validate,
   authController.disableEmployeeTwoFactor,

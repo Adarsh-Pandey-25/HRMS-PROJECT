@@ -28,6 +28,45 @@ if (config.env === 'production' && !process.env.SUPABASE_SERVICE_KEY) {
   process.exit(1);
 }
 
+/**
+ * Fail fast on secrets that used to fail at first use instead of at boot.
+ *
+ * SUPER_ADMIN_2FA_ENC_KEY encrypts both super-admin and employee TOTP seeds
+ * (utils/totp.js). Unset, every 2FA enrol/verify/disable returned a generic
+ * 500; wrong-length, it silently derived a different key and locked users
+ * out with "invalid code". Validated here with the same decoder the runtime
+ * uses, so the two can never disagree.
+ */
+try {
+  require('./utils/totp').decodeEncryptionKey(process.env.SUPER_ADMIN_2FA_ENC_KEY);
+} catch (err) {
+  logger.error(err.message);
+  process.exit(1);
+}
+
+// Production-only: both have silent-degradation fallbacks that are fine in
+// dev but wrong in production.
+if (config.env === 'production') {
+  // Unset, utils/host.js classifies every host as 'other' — subdomain-per-tenant
+  // routing goes inert and tenant links fall back to FRONTEND_URL.
+  if (!process.env.BASE_DOMAIN) {
+    logger.error('BASE_DOMAIN is required in production (e.g. BASE_DOMAIN=spaxsync.com) — subdomain-per-tenant routing depends on it');
+    process.exit(1);
+  }
+  // Unset, utils/auditIntegrity.js signs audit rows with JWT_SECRET, so
+  // rotating JWT_SECRET silently invalidates every existing signature.
+  if (!process.env.AUDIT_LOG_HMAC_KEY) {
+    logger.error('AUDIT_LOG_HMAC_KEY is required in production — without it audit-log signatures fall back to JWT_SECRET, and rotating JWT_SECRET would invalidate them all. Generate with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'base64\'))"');
+    process.exit(1);
+  }
+  // FRONTEND_URL has a localhost:5173 fallback in three services, which would
+  // mint onboarding invite links that can never work.
+  if (!process.env.FRONTEND_URL) {
+    logger.error('FRONTEND_URL is required in production — onboarding invite and tenant links fall back to http://localhost:5173 without it');
+    process.exit(1);
+  }
+}
+
 const server = app.listen(PORT, config.host, () => {
   logger.info(`HRMS Backend running on ${config.host}:${PORT} [${config.env}]`);
   logger.info(`Timezone: ${config.timezone}`);

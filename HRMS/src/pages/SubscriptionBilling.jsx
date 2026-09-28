@@ -173,7 +173,7 @@ export default function SubscriptionBilling() {
       </Card>
 
       <LockedFeatureModal feature={lockedFeature} onClose={() => setLockedFeature(null)} onUpgrade={() => { setLockedFeature(null); setChangePlanOpen(true); }} />
-      <ChangePlanModal open={changePlanOpen} onClose={() => setChangePlanOpen(false)} plans={plans} currentPlanCode={subscription.planCode} onDone={invalidateSub} />
+      <ChangePlanModal open={changePlanOpen} onClose={() => setChangePlanOpen(false)} plans={plans} currentPlanCode={subscription.planCode} billingCycle={subscription.billingCycle} onDone={invalidateSub} />
       <ChangeSeatsModal open={changeSeatsOpen} onClose={() => setChangeSeatsOpen(false)} currentSeats={subscription.seatUsage?.limit} onDone={invalidateSub} />
       <ChangeCycleModal open={changeCycleOpen} onClose={() => setChangeCycleOpen(false)} currentCycle={subscription.billingCycle} onDone={invalidateSub} />
       <CancelModal open={cancelOpen} onClose={() => setCancelOpen(false)} companyName={companyName} subscription={subscription} onDone={invalidateSub} />
@@ -223,7 +223,23 @@ function LockedFeatureModal({ feature, onClose, onUpgrade }) {
   );
 }
 
-function ChangePlanModal({ open, onClose, plans, currentPlanCode, onDone }) {
+/**
+ * Price for one plan option on the current billing cycle, with GST.
+ * The picker used to show bare plan names, so a customer chose a plan with no
+ * idea what it cost. Prices from the API are ex-GST (lib/gst.js).
+ */
+function planPriceLabel(plan, billingCycle) {
+  const base = Number(
+    billingCycle === 'annual' ? plan.basePriceAnnual
+      : billingCycle === 'quarterly' ? plan.basePriceQuarterly
+        : plan.basePriceMonthly,
+  );
+  if (!Number.isFinite(base) || base <= 0) return '';
+  const { total } = applyGST(base);
+  return ` — ${formatCurrency(base)} + ${gstPercentLabel()} GST = ${formatCurrency(total)}/${billingCycle || 'monthly'}`;
+}
+
+function ChangePlanModal({ open, onClose, plans, currentPlanCode, billingCycle, onDone }) {
   const [planId, setPlanId] = useState('');
   const [busy, setBusy] = useState(false);
   const submit = async () => {
@@ -246,8 +262,13 @@ function ChangePlanModal({ open, onClose, plans, currentPlanCode, onDone }) {
         <p className="text-xs text-fg-subtle">No payment gateway is connected yet — this submits a request that billing will complete manually.</p>
         <select value={planId} onChange={(e) => setPlanId(e.target.value)} className="w-full rounded-md border border-border bg-card px-3 py-2 text-sm">
           <option value="">Select a plan…</option>
-          {plans.map((p) => <option key={p.id} value={p.id} disabled={p.code === currentPlanCode}>{p.name}{p.code === currentPlanCode ? ' (current)' : ''}</option>)}
+          {plans.map((p) => (
+            <option key={p.id} value={p.id} disabled={p.code === currentPlanCode}>
+              {p.name}{planPriceLabel(p, billingCycle)}{p.code === currentPlanCode ? ' (current)' : ''}
+            </option>
+          ))}
         </select>
+        <p className="text-xs text-fg-subtle">All prices exclusive of GST; {gstPercentLabel()} GST is added on the invoice.</p>
       </div>
     </Modal>
   );

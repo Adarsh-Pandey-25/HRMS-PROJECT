@@ -6,6 +6,13 @@
  *
  * Amounts are rounded to the paisa (2 decimals) because they appear on tax
  * invoices; UI copy may round further for display.
+ *
+ * RATE DEFINED IN THREE PLACES — change all three together:
+ *   backend/src/utils/gst.js           (this file — source of truth, GST_RATE env)
+ *   HRMS/src/lib/gst.js                (in-app frontend fallback)
+ *   HRMS/src/marketing/siteConfig.js   (`gstRate`, marketing fallback)
+ * Frontend and backend cannot share a module here, so the value is duplicated
+ * deliberately. This file's rate is the one sent to clients as `gstRate`.
  */
 const GST_RATE = Number.isFinite(Number(process.env.GST_RATE)) && process.env.GST_RATE !== ''
   ? Number(process.env.GST_RATE)

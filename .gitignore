@@ -1,14 +1,33 @@
-# Secrets
+# Secrets — every .env variant, but keep the committed templates.
+# backend/.gitignore and HRMS/.gitignore repeat this for their own subtrees;
+# these root rules cover anything added at the repo root later.
 **/.env
+**/.env.*
+!**/.env.example
 
 # Dependencies and generated output
 **/node_modules/
 **/dist/
+**/dist-ssr/
+**/build/
 **/coverage/
+**/.nyc_output/
 **/logs/
 **/uploads/
 **/supabase/.temp/
 backend/proj.json
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor — .vscode/extensions.json stays shareable for recommended extensions.
+.vscode/*
+!.vscode/extensions.json
+.idea/
 
 # OS/editor files
 .DS_Store

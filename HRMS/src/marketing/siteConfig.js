@@ -15,10 +15,11 @@ export const SITE = {
   phone: '',
   // TODO(launch): registered office address as it appears on your incorporation documents
   address: '',
-  // TODO(launch): Grievance Officer under the DPDP Act 2023 / IT Rules 2011
+  // Grievance Officer under the DPDP Act 2023 / IT Rules 2011. Named in the
+  // privacy policy, which legally requires a contactable person.
   grievanceOfficer: {
-    name: '',
-    email: 'support@spaxsync.com',
+    name: 'Adarsh Pandey',
+    email: 'grievance@spaxsync.com',
   },
   // What a new workspace gets: backend TRIAL_DAYS (default 7) on the plan
   // bootstrapTrialSubscription picks (backend/src/services/auth.service.js).
@@ -28,11 +29,18 @@ export const SITE = {
     plan: 'Starter',
   },
   // Prices from the API are exclusive of GST (backend/src/utils/gst.js).
+  // RATE DEFINED IN THREE PLACES — change all three together:
+  //   backend/src/utils/gst.js (source of truth, GST_RATE env)
+  //   HRMS/src/lib/gst.js
+  //   this file
+  // PricingCards prefers a plan's own `gstRate` from the API and falls back here.
   gstRate: 0.18,
   // TODO(launch): GST registration number of the legal entity. Shown in the footer once set.
   gstin: '',
-  // TODO(launch): Calendly (or similar) booking link. Empty → "Book a demo" opens an email to salesEmail.
-  demoUrl: '',
+  // "Book a demo" target. Still a mailto, not a real booking link — swap in a
+  // Calendly/Cal.com URL when there is one; an https:// value here also opens
+  // in a new tab (components/ui.jsx), a mailto correctly does not.
+  demoUrl: 'mailto:hello@spaxsync.com?subject=Demo%20Request%20-%20SpaxSync%20HRMS',
   // TODO(launch): number of live customer companies. 0 → the trust bar shows who SpaxSync is for, without a count.
   customerCount: 0,
   legalLastUpdated: '25 September 2026',

@@ -1,7 +1,9 @@
 {
   "name": "hrms",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "SpaxSync HRMS frontend — tenant app, super-admin console and public marketing site (React + Vite)",
+  "license": "UNLICENSED",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -17,7 +19,6 @@
     "@hookform/resolvers": "^5.4.0",
     "@tanstack/react-query": "^5.101.2",
     "@tanstack/react-table": "^8.21.3",
-    "@tanstack/react-virtual": "^3.14.5",
     "apexcharts": "^5.16.0",
     "axios": "^1.18.1",
     "clsx": "^2.1.1",

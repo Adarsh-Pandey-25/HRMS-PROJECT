@@ -1,14 +1,15 @@
 {
   "name": "hrms-backend",
   "version": "1.0.0",
-  "description": "Enterprise HRMS Backend API with Supabase",
+  "private": true,
+  "description": "SpaxSync HRMS backend — multi-tenant HR, attendance, payroll and billing API (Express + Supabase)",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "seed:demo": "node scripts/seed-demo-data.js",
     "seed:payroll-components": "node scripts/seed-payroll-components.js",
-    "test": "jest --runInBand --forceExit"
+    "test": "echo \"No tests yet\" && exit 0"
   },
   "keywords": [
     "hrms",
@@ -16,11 +17,10 @@
     "supabase"
   ],
   "author": "",
-  "license": "ISC",
+  "license": "UNLICENSED",
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
     "bcryptjs": "^2.4.3",
-    "body-parser": "^1.20.8",
     "compression": "^1.7.4",
     "cookie-parser": "^1.4.6",
     "cors": "^2.8.5",

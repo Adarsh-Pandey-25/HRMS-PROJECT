@@ -150,7 +150,7 @@ export default function PlansManagement() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border text-left">
-                  {['Plan', 'Monthly', 'Quarterly', 'Annual', 'Per seat (mo/yr)', 'Included seats', 'Max seats', 'Status', ''].map((h) => (
+                  {['Plan', 'Monthly (excl. GST)', 'Quarterly (excl. GST)', 'Annual (excl. GST)', 'Per seat mo/yr (excl. GST)', 'Included seats', 'Max seats', 'Status', ''].map((h) => (
                     <th key={h || 'actions'} className="py-2.5 pr-3 font-semibold text-fg-subtle text-xs uppercase tracking-wide">{h}</th>
                   ))}
                 </tr>
@@ -219,13 +219,13 @@ export default function PlansManagement() {
           <Textarea label="Description" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
 
           <div className="grid grid-cols-3 gap-4">
-            <Input label="Base price / month" type="number" value={form.basePriceMonthly} onChange={(e) => setForm((f) => ({ ...f, basePriceMonthly: e.target.value }))} />
-            <Input label="Base price / quarter" type="number" value={form.basePriceQuarterly} onChange={(e) => setForm((f) => ({ ...f, basePriceQuarterly: e.target.value }))} />
-            <Input label="Base price / year" type="number" value={form.basePriceAnnual} onChange={(e) => setForm((f) => ({ ...f, basePriceAnnual: e.target.value }))} />
+            <Input label="Base price / month" hint="Excl. GST — customers are charged this + 18% GST" type="number" value={form.basePriceMonthly} onChange={(e) => setForm((f) => ({ ...f, basePriceMonthly: e.target.value }))} />
+            <Input label="Base price / quarter" hint="Excl. GST" type="number" value={form.basePriceQuarterly} onChange={(e) => setForm((f) => ({ ...f, basePriceQuarterly: e.target.value }))} />
+            <Input label="Base price / year" hint="Excl. GST" type="number" value={form.basePriceAnnual} onChange={(e) => setForm((f) => ({ ...f, basePriceAnnual: e.target.value }))} />
           </div>
           <div className="grid grid-cols-2 gap-4">
-            <Input label="Per-seat price / month" type="number" value={form.pricePerSeatMonthly} onChange={(e) => setForm((f) => ({ ...f, pricePerSeatMonthly: e.target.value }))} />
-            <Input label="Per-seat price / year" type="number" value={form.pricePerSeatAnnual} onChange={(e) => setForm((f) => ({ ...f, pricePerSeatAnnual: e.target.value }))} />
+            <Input label="Per-seat price / month" hint="Excl. GST" type="number" value={form.pricePerSeatMonthly} onChange={(e) => setForm((f) => ({ ...f, pricePerSeatMonthly: e.target.value }))} />
+            <Input label="Per-seat price / year" hint="Excl. GST" type="number" value={form.pricePerSeatAnnual} onChange={(e) => setForm((f) => ({ ...f, pricePerSeatAnnual: e.target.value }))} />
           </div>
           <div className="grid grid-cols-2 gap-4">
             <Input label="Included seats" type="number" hint="Free before per-seat charges kick in" value={form.includedSeats} onChange={(e) => setForm((f) => ({ ...f, includedSeats: e.target.value }))} />

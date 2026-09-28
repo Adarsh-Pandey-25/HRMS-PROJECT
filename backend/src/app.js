@@ -162,6 +162,9 @@ app.use('/api/auth', authRoutes);
 // the beacon ping endpoint's own unauthenticated-by-JWT requests — before
 // ever reaching these two routers.
 app.use('/api/attendance/beacons', beaconRoutes);
+// Ping is unauthenticated-by-JWT (X-Beacon-Secret instead, verified in the
+// controller) — deliberately a SEPARATE mount from /attendance/beacons
+// above, which requires a full HR/Admin employee session.
 app.use('/api/attendance/ip-beacon', beaconPingRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/leaves', leaveRoutes);
@@ -188,11 +191,6 @@ app.use('/api/super-admin', superAdminRoutes);
 app.use('/api/device-mapping', deviceMappingRoutes);
 app.use('/api/ip-whitelist', ipWhitelistRoutes);
 app.use('/api/geofences', geofenceRoutes);
-app.use('/api/attendance/beacons', beaconRoutes);
-// Ping is unauthenticated-by-JWT (X-Beacon-Secret instead, verified in the
-// controller) — deliberately a SEPARATE mount from /attendance/beacons
-// above, which requires a full HR/Admin employee session.
-app.use('/api/attendance/ip-beacon', beaconPingRoutes);
 app.use('/api/billing', billingRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/onboarding-checklist-templates', onboardingChecklistRoutes);

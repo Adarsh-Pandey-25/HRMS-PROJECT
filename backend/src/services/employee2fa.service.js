@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const QRCode = require('qrcode');
 const { UnauthorizedError, BadRequestError } = require('../utils/errors');
 const totp = require('../utils/totp');
+const logger = require('../utils/logger');
 const { getCompanyId } = require('../utils/tenant');
 
 /**
@@ -103,7 +104,17 @@ const verifyTotpCode = async (employeeId, totpCode) => {
   try {
     const secret = totp.decryptSecret(employee.totp_secret);
     return totp.verifyTotp(secret, totpCode);
-  } catch {
+  } catch (err) {
+    // A decryption failure here is NOT a wrong code — it means the stored
+    // seed can no longer be read, almost always because
+    // SUPER_ADMIN_2FA_ENC_KEY changed. The employee only ever sees "invalid
+    // code", so without this log the cause is invisible: every 2FA user is
+    // locked out and nothing says why.
+    logger.error(
+      '[Employee2FA] TOTP secret decryption failed — SUPER_ADMIN_2FA_ENC_KEY may have changed since enrollment. '
+      + 'This employee cannot complete login until the original key is restored or they re-enroll.',
+      { employeeId, error: err.message },
+    );
     return false;
   }
 };

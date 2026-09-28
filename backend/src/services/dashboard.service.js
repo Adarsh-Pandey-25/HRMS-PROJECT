@@ -353,8 +353,8 @@ const getUpcomingEvents = (employees) => {
   return events.sort((a, b) => new Date(a.sortDate) - new Date(b.sortDate)).slice(0, 8);
 };
 
-// There is no real mood/wellness backend yet (employee check-ins live only in the
-// browser's localStorage — see HRMS/src/store/wellnessStore.js). Rather than
+// There is no real mood/wellness backend yet, and no frontend for it either —
+// the unused localStorage store it used to reference was deleted. Rather than
 // fabricating counts that look real, report an honest "not enough data" state.
 // TODO(future work): a real team-mood feature needs a backend table + API so
 // employee check-ins actually reach the server and can be aggregated per company.

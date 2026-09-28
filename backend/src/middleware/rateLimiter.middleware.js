@@ -149,6 +149,30 @@ const onboardingOtpLimiter = rateLimit({
 });
 
 /**
+ * TOTP code submission on an already-authenticated session (2FA enroll
+ * confirm / disable). A 6-digit code is only 1e6 combinations and each
+ * 30-second window accepts a fresh one, so these need a tighter budget than
+ * the general auth limiter.
+ *
+ * Keyed on the authenticated employee id, not ip+email: these routes carry no
+ * email in the body, so authKeyGenerator would collapse every user behind one
+ * NAT into a shared bucket and let one person's attempts lock out everyone
+ * else's. Falls back to IP only if somehow unauthenticated.
+ */
+const twoFaLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  max: 10,
+  keyGenerator: (req) => (req.user?.id ? `2fa:${req.user.id}` : `2fa:ip:${req.ip}`),
+  message: {
+    success: false,
+    error: { code: 'RATE_LIMIT', message: 'Too many verification attempts. Please wait 15 minutes and try again.' },
+    timestamp: new Date().toISOString(),
+  },
+});
+
+/**
  * Device push endpoints are unauthenticated by protocol — key on the device
  * serial (SN query param) so each registered biometric device gets its own
  * independent rate budget. This is correct because:
@@ -228,5 +252,6 @@ const publicLeadLimiter = rateLimit({
 
 module.exports = {
  generalLimiter, authLimiter, bootstrapLimiter, onboardingOtpLimiter, settingsLimiter, admsLimiter, beaconPingLimiter,
+ twoFaLimiter,
  webhookTestLimiter, publicLeadLimiter,
 };

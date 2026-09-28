@@ -5,7 +5,7 @@ import toast from 'react-hot-toast';
 import { ArrowLeft, Users, RefreshCw, Ban, Pause, Play, Building2 } from 'lucide-react';
 import { Card, CardHeader, Button, StatusBadge, Skeleton, Modal, Input, Textarea, Select, ConfirmDialog } from '../../components/ui';
 import { formatCurrency, formatDate, formatDateTime, humanize } from '../../lib/utils';
-import { applyGST } from '../../lib/gst';
+import { applyGST, gstPercentLabel } from '../../lib/gst';
 import {
   getSubscriptionApi, changeSeatsApi, changePlanApi, renewSubscriptionApi, manualRenewSubscriptionApi,
   cancelSubscriptionApi, suspendSubscriptionApi, reactivateSubscriptionApi, listPlansApi,
@@ -98,7 +98,15 @@ export default function SubscriptionDetail() {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card className="p-4"><p className="text-xs text-fg-subtle">Current price</p><p className="mt-1 text-lg font-semibold text-fg tabular-nums">{formatCurrency(s.priceLockedAtSignup)}</p></Card>
+        {/* Labelled excl. GST because the Invoices table below is headed
+            "Amount (incl. GST)" — two differently-based figures on one screen. */}
+        <Card className="p-4">
+          <p className="text-xs text-fg-subtle">Current price (excl. GST)</p>
+          <p className="mt-1 text-lg font-semibold text-fg tabular-nums">{formatCurrency(s.priceLockedAtSignup)}</p>
+          <p className="mt-0.5 text-xs text-fg-subtle tabular-nums">
+            {formatCurrency(applyGST(s.priceLockedAtSignup).total)} incl. {gstPercentLabel()} GST
+          </p>
+        </Card>
         <Card className="p-4"><p className="text-xs text-fg-subtle">Current period</p><p className="mt-1 text-sm font-medium text-fg">{formatDate(s.currentPeriodStart)} – {formatDate(s.currentPeriodEnd)}</p></Card>
         <Card className="p-4"><p className="text-xs text-fg-subtle">Next renewal</p><p className="mt-1 text-sm font-medium text-fg">{s.nextRenewalDate ? formatDate(s.nextRenewalDate) : '—'}{s.cancelAtPeriodEnd && <span className="block text-xs text-danger mt-0.5">Cancels at period end</span>}</p></Card>
         <Card className="p-4"><p className="text-xs text-fg-subtle">Seat usage</p><p className="mt-1 text-lg font-semibold text-fg tabular-nums">{seatUsage?.used ?? 0} / {seatUsage?.limit ?? s.seatCount}</p></Card>

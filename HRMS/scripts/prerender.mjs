@@ -30,7 +30,13 @@ async function loadPlans() {
   const allowWithout = process.env.ALLOW_PRERENDER_WITHOUT_API === '1';
   if (!apiUrl) {
     if (allowWithout) { console.warn('[prerender] PRERENDER_API_URL not set — pages will load prices in the browser.'); return []; }
-    throw new Error('Set PRERENDER_API_URL (e.g. http://127.0.0.1:5050) or ALLOW_PRERENDER_WITHOUT_API=1');
+    throw new Error(
+      'PRERENDER_API_URL is required for the build — the marketing pages bake in live plan pricing.\n'
+      + '  Point it at the running backend, e.g.:\n'
+      + '    PRERENDER_API_URL=http://127.0.0.1:5050 npm run build\n'
+      + '  Or build without pre-rendered prices (they load in the browser instead):\n'
+      + '    ALLOW_PRERENDER_WITHOUT_API=1 npm run build',
+    );
   }
   try {
     const res = await fetch(`${apiUrl}/api/public/plans`, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(10_000) });

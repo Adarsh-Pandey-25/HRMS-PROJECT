@@ -1,6 +1,8 @@
 node_modules/
 .env
 .env.*
+# Keep the committed template that documents every required var.
+!.env.example
 logs/
 uploads/
 *.log

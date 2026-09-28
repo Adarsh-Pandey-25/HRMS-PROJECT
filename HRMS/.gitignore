@@ -10,6 +10,8 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+# vite-plugin-pwa dev output; the plugin is gone but this dir was committed once.
+dev-dist
 *.local
 
 # Editor directories and files

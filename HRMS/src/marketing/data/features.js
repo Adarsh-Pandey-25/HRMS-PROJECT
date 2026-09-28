@@ -1,6 +1,7 @@
 import {
   Fingerprint, CalendarDays, IndianRupee, Users, Briefcase, GraduationCap,
   LifeBuoy, ShieldCheck, Building2, Plug, UserRound, FileText, Laptop, Target,
+  Camera, TrendingUp, KeyRound,
 } from 'lucide-react';
 
 /** Home-page grid: the core modules, each verified against a backend route. */
@@ -17,14 +18,21 @@ export const CORE_FEATURES = [
   { icon: Briefcase, title: 'Recruitment pipeline', text: 'Job openings, candidates, interviews and offer letters.' },
   { icon: Building2, title: 'Your own workspace', text: 'Each company is isolated at yourcompany.spaxsync.com, with its own logo.' },
   { icon: Plug, title: 'API & webhooks', text: 'Scoped API keys and signed webhooks for your other systems.' },
+  { icon: Camera, title: 'Selfie check-in', text: 'Verify attendance with a photo. Employees capture a selfie at check-in — stored securely, visible only to HR.' },
+  { icon: TrendingUp, title: 'Salary revisions', text: 'Schedule salary changes in advance. Set the new structure and effective date — the system applies it automatically and notifies the employee.' },
+  { icon: KeyRound, title: 'Two-factor authentication', text: 'Add an extra layer of security. Employees enable 2FA with any authenticator app — optional, per user.' },
 ];
 
 /**
  * Feature copy for the marketing site. Every item is a real module in this
- * codebase — check before adding anything. Not listed on purpose: selfie
- * check-in (a setting only, no capture), salary revisions (UI mock, no
- * backend), employee 2FA (no enrolment screen yet), installable app (PWA
- * removed).
+ * codebase — check before adding anything.
+ *
+ * Selfie check-in, salary revisions and employee 2FA were previously excluded
+ * as unfinished; all three now ship end to end (camera capture + private
+ * storage, a salary_revisions table with a scheduling cron, and a Security
+ * page with QR enrolment), so they are listed below.
+ *
+ * Still not listed on purpose: installable app (PWA removed).
  */
 export const FEATURE_GROUPS = [
   {
@@ -36,6 +44,7 @@ export const FEATURE_GROUPS = [
       'Web check-in restricted to your office IP ranges, GPS geofences, or both',
       'Biometric devices using the eSSL / ADMS push protocol, mapped to employees',
       'Shifts, late marks and short-hour detection with daily anomaly alerts',
+      'Optional selfie capture at check-in, stored privately and visible only to HR',
       'Regularization requests and work-from-home approvals',
       'Automatic check-out for anyone who forgets to punch out',
     ],
@@ -62,6 +71,7 @@ export const FEATURE_GROUPS = [
       'Loss-of-pay calculated from attendance and unpaid leave',
       'State-wise professional tax',
       'Payslips as PDF, published to each employee',
+      'Scheduled salary revisions that apply on their effective date and notify the employee',
     ],
   },
   {
@@ -128,6 +138,7 @@ export const FEATURE_GROUPS = [
     summary: 'See who changed what, and limit who can.',
     points: [
       'Role-based access for admins, HR, managers and employees',
+      'Optional two-factor authentication per employee, with any authenticator app',
       'Audit log of sensitive actions, tamper-evident',
       'Reports and exports for attendance, leave and payroll',
     ],

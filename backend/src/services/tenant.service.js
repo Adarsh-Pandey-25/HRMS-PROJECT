@@ -125,6 +125,7 @@ const ensureCompanyRow = async ({
       .select('id, name, slug, is_active, created_at')
       .single());
     if (!error && data) {
+      require('./tenantUrl.service').invalidateSlugCache(companyId);
       return { ...data, parent_company_id: null, company_type: 'standalone' };
     }
   }
@@ -145,6 +146,12 @@ const ensureCompanyRow = async ({
     throw new BadRequestError(`Failed to create company workspace: ${error.message}`);
   }
   if (data?.company_type) hierarchyColumnsReady = true;
+  // A brand-new company: drop any cached "no slug for this id" entry so the
+  // onboarding emails sent moments from now link to {slug}.BASE_DOMAIN rather
+  // than falling back to the apex. Required lazily — tenantUrl.service
+  // requires nothing from here, but keep it lazy to match the file's style
+  // and stay immune to future cycles.
+  require('./tenantUrl.service').invalidateSlugCache(companyId);
   return data;
 };
 

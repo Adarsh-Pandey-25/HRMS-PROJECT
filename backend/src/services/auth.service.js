@@ -347,6 +347,22 @@ const authenticateEmployee = async (email, password, { tenantCompanyId = null, a
     }
   }
 
+  // Prove the password BEFORE any account- or company-state check. Those
+  // checks throw distinct, descriptive errors ("Account is deactivated",
+  // "subscription is not active"), so running them first let anyone with
+  // just an email address — no password — learn whether an account exists,
+  // whether it is active, and what the company's billing status is.
+  //
+  // The multi-candidate branch above already proved the password against the
+  // row it selected, so skip a second bcrypt compare in that case.
+  if (candidates.length === 1) {
+    const valid = await comparePassword(password, employee.password_hash);
+    if (!valid) {
+      recordLoginFailure(email);
+      throw new UnauthorizedError('Invalid email or password');
+    }
+  }
+
   if (!employee.is_active) {
     recordLoginFailure(email);
     throw new ForbiddenError('Account is deactivated');
@@ -363,12 +379,6 @@ const authenticateEmployee = async (email, password, { tenantCompanyId = null, a
       throw new ForbiddenError('This company workspace is deactivated. Contact your platform administrator.');
     }
     await assertCompanyInGoodStanding(companyId, employee.role);
-  }
-
-  const valid = await comparePassword(password, employee.password_hash);
-  if (!valid) {
-    recordLoginFailure(email);
-    throw new UnauthorizedError('Invalid email or password');
   }
 
   // Self-service employee 2FA: after password, before session issuance.
