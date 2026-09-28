@@ -18,9 +18,19 @@ export class ErrorBoundary extends Component {
     return { error };
   }
 
-  componentDidCatch() {
-    // Never log errors to the browser console — stacks can include PII from render data.
+  componentDidCatch(error, errorInfo) {
+    // Log only the error's own message/name and the component stack (a list of
+    // component NAMES, no props or render data). Deliberately NOT error.stack
+    // or any rendered value — those are what can carry PII.
+    //
+    // Swallowing this entirely used to make production crashes undiagnosable:
+    // React does not log boundary-caught errors itself in a production build,
+    // so a blank "Something went wrong" left literally no trace anywhere.
     // Wire a remote error service here if needed (Sentry, etc.).
+    console.error(
+      `[ErrorBoundary] ${error?.name || 'Error'}: ${error?.message || 'unknown error'}`,
+      errorInfo?.componentStack || '(no component stack)',
+    );
   }
 
   reset = () => this.setState({ error: null });
@@ -58,6 +68,16 @@ export class ErrorBoundary extends Component {
             An unexpected error occurred while displaying this page. Your data is safe — try again or reload the app.
           </p>
         </div>
+        {/* Collapsed by default: end users never see it unless they open it,
+            but it means a support screenshot carries the actual cause instead
+            of just "Something went wrong". Message/name only — no render data. */}
+        <details className="max-w-md text-left">
+          <summary className="cursor-pointer text-xs text-fg-subtle hover:text-fg-muted">Technical details</summary>
+          <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-muted p-3 text-left text-xs text-fg-muted">
+            {`${error?.name || 'Error'}: ${error?.message || 'unknown error'}`}
+          </pre>
+        </details>
+
         <div className="flex items-center gap-2">
           <button
             type="button"
