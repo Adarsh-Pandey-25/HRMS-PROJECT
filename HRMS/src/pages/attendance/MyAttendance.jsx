@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
-import { LogIn, LogOut, Clock, UserCheck, Home, UserX, CheckCircle2, MapPin } from 'lucide-react';
+import { LogIn, LogOut, Clock, UserCheck, Home, UserX, CheckCircle2, MapPin, Fingerprint } from 'lucide-react';
 import { PageHeader, Card, Button, Modal, EmptyState, Skeleton, StatusBadge } from '../../components/ui';
 import { AttendanceCalendar } from '../../components/shared/AttendanceCalendar';
 import { cn, formatDate } from '../../lib/utils';
@@ -137,6 +137,11 @@ export default function MyAttendance() {
   // written, so this block only renders for checkInMethod === 'biometric'.
   const checkoutStatus = todayRecord?.checkoutStatus || 'finalized';
   const isBiometricToday = checkInMethod === 'biometric';
+  // A biometric day can only be closed on the device that opened it, so the
+  // web Clock Out is locked out for the rest of that day. Claiming
+  // method:'biometric' from here cannot work either — the controller rejects
+  // it as spoofing — so the button is disabled rather than left to fail.
+  const biometricCheckoutLocked = isBiometricToday && clockedIn;
 
   const permanentWfh = checkContext?.attendanceMode === 'wfh';
   const dailyWfhStatus = checkContext?.dailyWfhStatus || null;
@@ -261,8 +266,11 @@ export default function MyAttendance() {
       }
 
       if (clockedIn) {
-        const checkoutMethod = checkInMethod === 'biometric' ? 'biometric' : 'web';
- await checkOut.mutateAsync({ method: checkoutMethod, location });
+        if (biometricCheckoutLocked) {
+          toast.error('You checked in on the Biometric device — please check out on the same device.');
+          return;
+        }
+        await checkOut.mutateAsync({ method: 'web', location });
         toast.success('Clocked out successfully');
       } else {
         if (!canClockIn) {
@@ -402,11 +410,25 @@ export default function MyAttendance() {
               icon={clockedIn ? LogOut : LogIn}
               onClick={handleClock}
               size="lg"
-              disabled={checkIn.isPending || checkOut.isPending || (!clockedIn && !canClockIn)}
+              disabled={
+                checkIn.isPending || checkOut.isPending
+                || (!clockedIn && !canClockIn)
+                || biometricCheckoutLocked
+              }
               loading={checkIn.isPending || checkOut.isPending}
             >
               {clockedIn ? 'Clock Out' : wfhApproved ? 'Clock In (WFH)' : 'Clock In'}
             </Button>
+          )}
+
+          {biometricCheckoutLocked && (
+            <p className="mt-2 flex items-start gap-1.5 text-[11px] text-fg-subtle text-center max-w-[240px]">
+              <Fingerprint className="h-3 w-3 shrink-0 mt-0.5" />
+              <span>
+                You checked in via <span className="font-medium text-fg-muted">Biometric device</span>.
+                Please check out on the same device.
+              </span>
+            </p>
           )}
 
           {checkContext && (

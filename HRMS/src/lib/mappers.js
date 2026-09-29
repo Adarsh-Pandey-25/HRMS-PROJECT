@@ -90,8 +90,17 @@ export function mapLeaveBalanceFromApi(rows = []) {
 export function mapAttendanceFromApi(row) {
   if (!row) return null;
   const c = toCamelCase(row);
-  const checkIn = c.checkInTime ? new Date(c.checkInTime) : null;
-  const checkOut = c.checkOutTime ? new Date(c.checkOutTime) : null;
+  // An unparseable value must yield null, not an Invalid Date: the Intl
+  // formatter below THROWS RangeError on one, which took down the whole
+  // request (attendance list and month summary both rendered empty) rather
+  // than degrading to a missing time on one row.
+  const toDate = (value) => {
+    if (!value) return null;
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
+  const checkIn = toDate(c.checkInTime);
+  const checkOut = toDate(c.checkOutTime);
   const tzOpts = { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
   const date = checkIn
     ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(checkIn)

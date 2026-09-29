@@ -320,6 +320,12 @@ const checkContext = async (req, res, next) => {
             check_out_time: session.check_out_time,
             check_in_ip: session.check_in_ip,
             check_out_ip: session.check_out_ip,
+            // My Attendance builds its clock card from this payload, not from
+            // the month list. Omitting the method left checkInMethod null
+            // there, so the "via Biometric device" hint never rendered and the
+            // page offered a web Check Out for a day the device owns.
+            check_in_method: session.check_in_method || null,
+            check_out_method: session.check_out_method || null,
             total_hours: session.total_hours,
             overtime_hours: session.overtime_hours,
             status: session.status,

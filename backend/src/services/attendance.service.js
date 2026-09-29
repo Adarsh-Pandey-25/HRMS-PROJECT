@@ -375,6 +375,20 @@ const checkOut = async (employeeId, { method, clientIp, break_minutes = 0, locat
   const active = await getActiveCheckIn(employeeId);
   if (!active) throw new BadRequestError('No active check-in found for today');
 
+  // A biometric day can only be closed on the biometric device. Without this,
+  // the web "Check out" button silently closed it: `method` is undefined on a
+  // web request, so the update below fell back to `active.check_in_method` and
+  // stamped check_out_method='biometric' on a checkout the device never saw —
+  // and `isBiometricCheckout` below then skipped the geofence check too.
+  // Claiming 'biometric' from a browser is already blocked in the controller
+  // (rejectSpoofedBiometricMethod), so reaching here with anything else means
+  // a genuinely different channel.
+  if (active.check_in_method === 'biometric' && normalizeCheckInMethod(method) !== 'biometric') {
+    throw new ForbiddenError(
+      'You checked in on the biometric device. Please check out on the same device.',
+    );
+  }
+
   const checkOutTime = nowIST().toISOString();
   const totalHours = calculateWorkingHours(active.check_in_time, checkOutTime) - (break_minutes / 60);
   const wasWfh = active.status === 'wfh' || isWfhLocation(active.location);
@@ -612,7 +626,12 @@ const getAttendance = async (filters, query) => {
     const diffMin = Math.floor(diffMs / 60000);
     duration = `${Math.floor(diffMin / 60)}h ${diffMin % 60}m`;
   }
-  return { ...row, check_in_time: checkInFormatted, check_out_time: checkOutFormatted, duration, approved_leave: myLeaves[0] || null };
+  // Keep check_in_time/check_out_time as the raw ISO timestamps the client
+  // needs to build a Date from. Overwriting them with an "HH:mm" display
+  // string made `new Date("11:47")` an Invalid Date on the client, and the
+  // Intl formatter then threw RangeError, failing the whole request — which
+  // is why attendance history and the month summary rendered empty.
+  return { ...row, check_in_display: checkInFormatted, check_out_display: checkOutFormatted, duration, approved_leave: myLeaves[0] || null };
  });
 
  return { data: enrichedRows, meta: buildMeta(page, limit, count) };
@@ -733,7 +752,8 @@ const getMonthlySummary = async (employeeId, month, year) => {
       const diffMin = Math.floor(diffMs / 60000);
       duration = `${Math.floor(diffMin / 60)}h ${diffMin % 60}m`;
     }
-    return { ...a, check_in_time: checkInFormatted, check_out_time: checkOutFormatted, duration };
+    // Same as getAttendance above — never clobber the raw timestamps.
+    return { ...a, check_in_display: checkInFormatted, check_out_display: checkOutFormatted, duration };
   });
 
   return { records: formattedRows, summary };
