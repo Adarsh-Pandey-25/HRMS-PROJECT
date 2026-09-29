@@ -12,6 +12,8 @@ import {
   useNotifications, useNotificationMutations, useUnreadNotificationCount,
 } from '../../hooks/useNotifications';
 import { resolveNotificationLink } from '../../lib/notificationLinks';
+import { useAuthStore } from '../../store/authStore';
+import { useSettingsStore } from '../../store/settingsStore';
 import { timeAgo, cn } from '../../lib/utils';
 
 const ICONS = {
@@ -54,6 +56,9 @@ function groupByDay(items) {
 
 export function NotificationDrawer() {
   const navigate = useNavigate();
+  const role = useAuthStore((st) => st.role);
+  const user = useAuthStore((st) => st.user);
+  const rolePermissions = useSettingsStore((st) => st.rolePermissions);
   const { drawerOpen, closeDrawer } = useNotificationStore();
   const { data: notifications = [], isLoading, refetch: refetchList } = useNotifications({
     enabled: true,
@@ -73,9 +78,15 @@ export function NotificationDrawer() {
     refetchCount();
   }, [drawerOpen, refetchList, refetchCount]);
 
+  // Some notifications are broadcast company-wide but link to an HR-only
+  // route — the birthday announcement goes to everyone and points at
+  // /employees/:id. Resolving against this recipient's own permissions means
+  // they get the announcement without being walked into "Access restricted".
+  const access = { role, rolePermissions, user };
+
   const handleClick = (n) => {
     if (!n.read) markRead.mutate(n.id);
-    const target = resolveNotificationLink(n.link);
+    const target = resolveNotificationLink(n.link, access);
     if (target) {
       closeDrawer();
       navigate(target);
@@ -91,6 +102,9 @@ export function NotificationDrawer() {
             const meta = iconForType(n.type);
             const Icon = meta.icon;
             const unread = !n.read;
+            // Nothing to open: still clickable to mark read, but it should not
+            // present itself as a link.
+            const navigable = Boolean(resolveNotificationLink(n.link, access));
             return (
               <button
                 key={n.id}
@@ -98,6 +112,7 @@ export function NotificationDrawer() {
                 onClick={() => handleClick(n)}
                 className={cn(
                   'flex gap-3 w-full text-left rounded-xl p-3 transition-colors border',
+                  navigable ? 'cursor-pointer' : 'cursor-default',
                   unread
                     ? 'bg-primary/10 border-primary/30 shadow-sm ring-1 ring-primary/15 hover:bg-primary/15'
                     : 'bg-transparent border-transparent opacity-70 hover:opacity-100 hover:bg-muted'

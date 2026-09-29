@@ -140,6 +140,26 @@ async function broadcastToCompany(celebrant, companyId) {
   }
 
   try {
+    // Idempotency, per celebrant per day. withCronLock only stops two runs
+    // overlapping inside 5 minutes; it does not stop the same day being
+    // broadcast again later. This function is reached from three triggers —
+    // the 8 AM cron, a catch-up on every server start, and a 4-hourly
+    // fallback sweep — so a single birthday was being announced to the whole
+    // company six times a day, plus once more per restart.
+    const startOfDayIso = moment().tz(TIMEZONE).startOf('day').toISOString();
+    const { count: alreadySent } = await supabaseAdmin
+      .from('notifications')
+      .select('id', { count: 'exact', head: true })
+      .eq('type', celebrant.isBirthday ? TYPE_BIRTHDAY : TYPE_ANNIVERSARY)
+      .eq('meta->>celebrant_id', celebrant.id)
+      .gte('created_at', startOfDayIso);
+    if (alreadySent > 0) {
+      logger.info('[BirthdayAnniversary] Already announced today, skipping', {
+        companyId, employeeId: celebrant.id,
+      });
+      return;
+    }
+
     const { data: employees, error } = await supabaseAdmin
       .from('employees')
       .select('id')
@@ -154,6 +174,9 @@ async function broadcastToCompany(celebrant, companyId) {
         type: celebrant.isBirthday ? TYPE_BIRTHDAY : TYPE_ANNIVERSARY,
         title,
         message,
+        // HR/Admin can open this; for everyone else the drawer drops it (see
+        // notificationLinks.js) rather than walking them into "Access
+        // restricted" on a route their role cannot view.
         link: `/employees/${celebrant.id}`,
         meta: {
           celebrant_id: celebrant.id,
