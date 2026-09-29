@@ -1,16 +1,16 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { BookOpen, PlayCircle, Plus, Pencil, Archive, Trash2, ListVideo, Settings2 } from 'lucide-react';
+import { BookOpen, PlayCircle, Plus, Pencil, Archive, Trash2, ListVideo, Settings2, ShieldAlert, CalendarClock } from 'lucide-react';
 import {
   PageHeader, Card, Badge, EmptyState, Button, Skeleton, ProgressBar,
-  Modal, Input, RichTextEditor, StatusBadge, ConfirmDialog,
+  Modal, Input, Select, SearchInput, RichTextEditor, StatusBadge, ConfirmDialog,
 } from '../../components/ui';
 import {
   useCourseCatalog, useManageCourses, useManageCourse, useTrainingMutations,
 } from '../../hooks/useTraining';
 import { useCan } from '../../hooks/useCan';
 import { DEPARTMENTS } from '../../lib/constants';
-import { stripHtml, humanize } from '../../lib/utils';
+import { stripHtml, humanize, formatDate, cn } from '../../lib/utils';
 import toast from 'react-hot-toast';
 
 const ALL_DEPT_OPTIONS = ['all', ...DEPARTMENTS];
@@ -57,6 +57,13 @@ function CourseFormModal({ open, onClose, editing, form, setForm, onSave, saving
     >
       <div className="space-y-4">
         <Input label="Title" required value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
+        <Input
+          label="Category"
+          placeholder="e.g. Compliance, Onboarding, Sales"
+          hint="Shown on the course card and used to build the catalog filters."
+          value={form.category}
+          onChange={(e) => setForm({ ...form, category: e.target.value })}
+        />
         <RichTextEditor value={form.description} onChange={(v) => setForm((f) => ({ ...f, description: v }))} minHeight={100} />
         <div>
           <p className="text-xs font-medium text-fg-muted mb-2">Department access</p>
@@ -74,7 +81,39 @@ function CourseFormModal({ open, onClose, editing, form, setForm, onSave, saving
   );
 }
 
-function LessonsModal({ course, onClose, lessonForm, setLessonForm, onVideoFile, onSaveLesson, saving, lessons }) {
+const UNGROUPED = 'ungrouped';
+
+/**
+ * Lesson manager. Sections (chapters) are a grouping layer only — moving a
+ * lesson between them never changes `lesson_order`, which is what decides the
+ * order lessons unlock in for the employee. Sections are therefore listed in
+ * the order their lessons play, and the numbering shown is the global lesson
+ * order, not a per-section count, so it matches the player exactly.
+ */
+function LessonsModal({
+  course, detail, onClose,
+  lessonForm, setLessonForm, onVideoFile, onSaveLesson, saving,
+  onAddChapter, onRenameChapter, onDeleteChapter, onMoveLesson, chapterBusy,
+}) {
+  const [newChapter, setNewChapter] = useState('');
+  const sections = detail?.chapters || [];
+  const chapterOptions = detail?.chapterOptions || [];
+  const lessonNumber = new Map(
+    (detail?.lessons || []).map((l, i) => [l.id, i + 1]),
+  );
+
+  const moveTargets = [
+    { value: UNGROUPED, label: 'No section' },
+    ...chapterOptions.map((c) => ({ value: c.id, label: c.title })),
+  ];
+
+  const addChapter = async () => {
+    const title = newChapter.trim();
+    if (!title) return;
+    await onAddChapter(title);
+    setNewChapter('');
+  };
+
   return (
     <Modal
       open={Boolean(course)}
@@ -84,29 +123,89 @@ function LessonsModal({ course, onClose, lessonForm, setLessonForm, onVideoFile,
       footer={<Button variant="outline" onClick={onClose}>Close</Button>}
     >
       <div className="space-y-5">
-        <div className="space-y-2">
-          {(lessons || []).length === 0 ? (
+        <div className="space-y-4">
+          {sections.length === 0 ? (
             <p className="text-sm text-fg-subtle">No lessons yet. Add the first lesson below.</p>
           ) : (
-            <ul className="space-y-2">
-              {lessons.map((l, i) => (
-                <li key={l.id} className="flex items-center justify-between rounded-lg border border-border px-3 py-2 text-sm">
-                  <span className="text-fg">
-                    <span className="text-fg-subtle mr-2">{i + 1}.</span>
-                    {l.title}
-                    <span className="ml-2 text-xs text-fg-subtle">
-                      {l.type === 'EXTERNAL_LINK' ? 'Link' : `Video · ${Math.round(l.videoDuration || 0)}s`}
-                    </span>
-                  </span>
-                </li>
-              ))}
-            </ul>
+            sections.map((section) => (
+              <div key={section.id} className="rounded-lg border border-border">
+                <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
+                  <p className="text-sm font-semibold text-fg truncate">{section.title}</p>
+                  {section.id !== UNGROUPED && (
+                    <div className="flex items-center gap-1 shrink-0">
+                      <Button
+                        size="sm" variant="outline" icon={Pencil} className="shrink-0"
+                        aria-label={`Rename ${section.title}`}
+                        onClick={() => onRenameChapter(section)}
+                      />
+                      <Button
+                        size="sm" variant="outline" icon={Trash2} className="shrink-0 text-danger"
+                        aria-label={`Delete ${section.title}`}
+                        onClick={() => onDeleteChapter(section)}
+                      />
+                    </div>
+                  )}
+                </div>
+                {section.lessons.length === 0 ? (
+                  <p className="px-3 py-2 text-xs text-fg-subtle">
+                    No lessons in this section yet — move one here, or pick it when adding a lesson.
+                  </p>
+                ) : (
+                  <ul className="divide-y divide-border">
+                    {section.lessons.map((l) => (
+                      <li key={l.id} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+                        <span className="text-fg min-w-0 truncate">
+                          <span className="text-fg-subtle mr-2 tabular-nums">{lessonNumber.get(l.id) ?? '–'}.</span>
+                          {l.title}
+                          <span className="ml-2 text-xs text-fg-subtle">
+                            {l.type === 'EXTERNAL_LINK' ? 'Link' : `Video · ${Math.round(l.videoDuration || 0)}s`}
+                          </span>
+                        </span>
+                        <Select
+                          className="h-8 w-40 shrink-0 text-xs"
+                          aria-label={`Section for ${l.title}`}
+                          value={l.chapterId || UNGROUPED}
+                          disabled={chapterBusy}
+                          options={moveTargets}
+                          onChange={(e) => onMoveLesson(l.id, e.target.value)}
+                        />
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))
           )}
+
+          <div className="flex items-end gap-2">
+            <Input
+              label="New section"
+              placeholder="e.g. Getting started"
+              containerClass="flex-1"
+              value={newChapter}
+              onChange={(e) => setNewChapter(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addChapter(); } }}
+            />
+            <Button size="sm" variant="outline" icon={Plus} loading={chapterBusy} onClick={addChapter}>
+              Add section
+            </Button>
+          </div>
+          <p className="text-xs text-fg-subtle">
+            Sections only group lessons on screen. They never change the order lessons unlock in — that stays the order the lessons were added.
+          </p>
         </div>
 
         <div className="border-t border-border pt-4 space-y-3">
           <p className="text-sm font-semibold text-fg">Add lesson</p>
           <Input label="Lesson title" required value={lessonForm.title} onChange={(e) => setLessonForm({ ...lessonForm, title: e.target.value })} />
+          {chapterOptions.length > 0 && (
+            <Select
+              label="Section"
+              value={lessonForm.chapterId || UNGROUPED}
+              options={moveTargets}
+              onChange={(e) => setLessonForm({ ...lessonForm, chapterId: e.target.value })}
+            />
+          )}
           <div className="flex gap-4 text-sm">
             <label className="flex items-center gap-2 cursor-pointer">
               <input type="radio" name="lessonType" checked={lessonForm.type === 'VIDEO_UPLOAD'} onChange={() => setLessonForm({ ...lessonForm, type: 'VIDEO_UPLOAD' })} />
@@ -160,25 +259,28 @@ export default function CourseCatalog() {
   const canManage = useCan('training', 'manage');
   const { data: catalogCourses = [], isLoading: catalogLoading } = useCourseCatalog();
   const { data: manageCourses = [], isLoading: manageLoading } = useManageCourses(canManage);
-  const { enroll, createCourse, updateCourse, deleteCourse, archiveCourse, addLesson } = useTrainingMutations();
+  const {
+    enroll, createCourse, updateCourse, deleteCourse, archiveCourse, addLesson,
+    createChapter, updateChapter, deleteChapter, setLessonChapter,
+  } = useTrainingMutations();
 
   const courses = canManage ? manageCourses : catalogCourses;
   const isLoading = canManage ? manageLoading : catalogLoading;
 
-  const blankForm = { title: '', description: '', departmentAccess: ['all'] };
+  const blankForm = { title: '', description: '', category: '', departmentAccess: ['all'] };
   const [modal, setModal] = useState(false);
   const [lessonsModal, setLessonsModal] = useState(null);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(blankForm);
   const [lessonForm, setLessonForm] = useState({
-    title: '', type: 'VIDEO_UPLOAD', externalLink: '', videoFile: null, videoDuration: 0,
+    title: '', type: 'VIDEO_UPLOAD', externalLink: '', videoFile: null, videoDuration: 0, chapterId: '',
   });
 
   const { data: courseDetail } = useManageCourse(lessonsModal?.id);
 
   useEffect(() => {
     if (!lessonsModal) {
-      setLessonForm({ title: '', type: 'VIDEO_UPLOAD', externalLink: '', videoFile: null, videoDuration: 0 });
+      setLessonForm({ title: '', type: 'VIDEO_UPLOAD', externalLink: '', videoFile: null, videoDuration: 0, chapterId: '' });
     }
   }, [lessonsModal]);
 
@@ -200,6 +302,7 @@ export default function CourseCatalog() {
     setForm({
       title: c.title || '',
       description: c.description || '',
+      category: c.category || '',
       departmentAccess: c.targetDepartments || c.departmentAccess || ['all'],
     });
     setModal(true);
@@ -280,15 +383,93 @@ export default function CourseCatalog() {
         externalLink: lessonForm.externalLink,
         videoDuration: lessonForm.videoDuration || undefined,
         videoFile: lessonForm.videoFile,
+        chapterId: lessonForm.chapterId && lessonForm.chapterId !== UNGROUPED ? lessonForm.chapterId : null,
       });
       toast.success('Lesson added');
-      setLessonForm({ title: '', type: 'VIDEO_UPLOAD', externalLink: '', videoFile: null, videoDuration: 0 });
+      setLessonForm((f) => ({
+        title: '', type: 'VIDEO_UPLOAD', externalLink: '', videoFile: null, videoDuration: 0,
+        // Keep the section selected: adding several lessons to one section in
+        // a row is the normal case, re-picking it each time is not.
+        chapterId: f.chapterId,
+      }));
     } catch (err) {
       toast.error(err.message || 'Failed to add lesson');
     }
   };
 
-  const lessons = courseDetail?.lessons || [];
+  const chapterBusy = createChapter.isPending || updateChapter.isPending
+    || deleteChapter.isPending || setLessonChapter.isPending;
+
+  const addChapterHandler = async (title) => {
+    try {
+      await createChapter.mutateAsync({ courseId: lessonsModal.id, title });
+      toast.success(`Section "${title}" added`);
+    } catch (err) {
+      toast.error(err.message || 'Failed to add section');
+    }
+  };
+
+  const [renaming, setRenaming] = useState(null); // { id, title }
+  const renameChapterHandler = async () => {
+    const title = renaming.title.trim();
+    if (!title) return toast.error('Section name cannot be empty');
+    try {
+      await updateChapter.mutateAsync({ chapterId: renaming.id, title });
+      setRenaming(null);
+      toast.success('Section renamed');
+    } catch (err) {
+      toast.error(err.message || 'Failed to rename section');
+    }
+  };
+
+  const [deletingChapter, setDeletingChapter] = useState(null);
+  const confirmDeleteChapter = async () => {
+    try {
+      await deleteChapter.mutateAsync(deletingChapter.id);
+      setDeletingChapter(null);
+      toast.success('Section deleted — its lessons moved to Other lessons');
+    } catch (err) {
+      toast.error(err.message || 'Failed to delete section');
+    }
+  };
+
+  const moveLessonHandler = async (lessonId, chapterId) => {
+    try {
+      await setLessonChapter.mutateAsync({
+        lessonId,
+        chapterId: chapterId === UNGROUPED ? null : chapterId,
+      });
+    } catch (err) {
+      toast.error(err.message || 'Failed to move lesson');
+    }
+  };
+
+  // ---- Catalog browsing: search + category + required-only ------------------
+  const [search, setSearch] = useState('');
+  const [category, setCategory] = useState('all');
+  const [requiredOnly, setRequiredOnly] = useState(false);
+
+  // Built from the categories actually in use, so the filter never offers one
+  // that matches nothing and never needs a migration to extend.
+  const categories = useMemo(() => {
+    const seen = new Set();
+    for (const c of courses) if (c.category) seen.add(c.category);
+    return [...seen].sort((a, b) => a.localeCompare(b));
+  }, [courses]);
+
+  const visibleCourses = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return courses.filter((c) => {
+      if (category !== 'all' && (c.category || '') !== category) return false;
+      if (requiredOnly && !c.isMandatory) return false;
+      if (!q) return true;
+      const haystack = `${c.title || ''} ${stripHtml(c.description || '')} ${c.category || ''}`.toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [courses, search, category, requiredOnly]);
+
+  const filtersActive = Boolean(search.trim()) || category !== 'all' || requiredOnly;
+  const anyRequired = useMemo(() => courses.some((c) => c.isMandatory), [courses]);
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -299,6 +480,37 @@ export default function CourseCatalog() {
           <Button icon={Plus} onClick={openAdd}>Add Course</Button>
         ) : undefined}
       />
+
+      {!isLoading && courses.length > 0 && (
+        <Card className="p-3 flex flex-col gap-3 sm:flex-row sm:items-center">
+          <SearchInput
+            value={search}
+            onChange={setSearch}
+            placeholder="Search courses…"
+            className="flex-1"
+          />
+          {categories.length > 0 && (
+            <Select
+              className="h-9 sm:w-48 text-sm"
+              aria-label="Filter by category"
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              options={[{ value: 'all', label: 'All categories' }, ...categories.map((c) => ({ value: c, label: humanize(c) }))]}
+            />
+          )}
+          {anyRequired && (
+            <label className="flex items-center gap-2 text-sm text-fg-muted cursor-pointer shrink-0">
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-primary"
+                checked={requiredOnly}
+                onChange={(e) => setRequiredOnly(e.target.checked)}
+              />
+              Required only
+            </label>
+          )}
+        </Card>
+      )}
 
       {isLoading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -313,9 +525,25 @@ export default function CourseCatalog() {
             action={canManage ? <Button icon={Plus} onClick={openAdd}>Add Course</Button> : undefined}
           />
         </Card>
+      ) : visibleCourses.length === 0 ? (
+        <Card className="py-8">
+          <EmptyState
+            icon={BookOpen}
+            title="No courses match"
+            message="Try a different search term or clear the filters."
+            action={filtersActive ? (
+              <Button
+                variant="outline"
+                onClick={() => { setSearch(''); setCategory('all'); setRequiredOnly(false); }}
+              >
+                Clear filters
+              </Button>
+            ) : undefined}
+          />
+        </Card>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {courses.map((c) => {
+          {visibleCourses.map((c) => {
             const completed = c.completedLessons ?? c.completed_lessons ?? 0;
             const total = c.totalLessons ?? c.total_lessons ?? c.lessonCount ?? 0;
             const pct = c.progressPercent ?? (total ? Math.round((completed / total) * 100) : 0);
@@ -339,6 +567,7 @@ export default function CourseCatalog() {
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
                   <Badge tone="primary">{humanize(c.category || 'general')}</Badge>
+                  {c.isMandatory && <Badge tone="warning">Required</Badge>}
                   {canManage && total > 0 && (
                     <span className="text-xs text-fg-subtle">{total} lesson{total !== 1 ? 's' : ''}</span>
                   )}
@@ -348,6 +577,15 @@ export default function CourseCatalog() {
                 {canManage && (
                   <p className="text-xs text-fg-subtle mt-1">
                     {depts.includes('all') ? 'All departments' : depts.join(', ')}
+                  </p>
+                )}
+                {!canManage && c.deadline && (
+                  <p className={cn(
+                    'mt-2 inline-flex items-center gap-1 text-xs',
+                    c.isOverdue ? 'font-medium text-danger' : 'text-fg-subtle',
+                  )}>
+                    {c.isOverdue ? <ShieldAlert className="h-3.5 w-3.5" /> : <CalendarClock className="h-3.5 w-3.5" />}
+                    {c.isOverdue ? `Overdue — was due ${formatDate(c.deadline)}` : `Due ${formatDate(c.deadline)}`}
                   </p>
                 )}
                 {!canManage && enrolled && total > 0 && (
@@ -403,13 +641,49 @@ export default function CourseCatalog() {
           />
           <LessonsModal
             course={lessonsModal}
+            detail={courseDetail}
             onClose={() => setLessonsModal(null)}
             lessonForm={lessonForm}
             setLessonForm={setLessonForm}
             onVideoFile={onVideoFile}
             onSaveLesson={saveLesson}
             saving={addLesson.isPending}
-            lessons={lessons}
+            onAddChapter={addChapterHandler}
+            onRenameChapter={(section) => setRenaming({ id: section.id, title: section.title })}
+            onDeleteChapter={setDeletingChapter}
+            onMoveLesson={moveLessonHandler}
+            chapterBusy={chapterBusy}
+          />
+
+          <Modal
+            open={Boolean(renaming)}
+            onClose={() => setRenaming(null)}
+            title="Rename section"
+            footer={(
+              <>
+                <Button variant="outline" onClick={() => setRenaming(null)}>Cancel</Button>
+                <Button onClick={renameChapterHandler} loading={updateChapter.isPending}>Save</Button>
+              </>
+            )}
+          >
+            <Input
+              label="Section name"
+              required
+              value={renaming?.title || ''}
+              onChange={(e) => setRenaming((r) => ({ ...r, title: e.target.value }))}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); renameChapterHandler(); } }}
+            />
+          </Modal>
+
+          <ConfirmDialog
+            open={Boolean(deletingChapter)}
+            onClose={() => setDeletingChapter(null)}
+            onConfirm={confirmDeleteChapter}
+            loading={deleteChapter.isPending}
+            tone="warning"
+            title={`Delete section "${deletingChapter?.title || ''}"?`}
+            message="Its lessons are kept — they move to Other lessons, and employee progress is unaffected."
+            confirmLabel="Delete section"
           />
         </>
       )}
