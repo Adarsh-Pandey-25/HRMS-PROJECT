@@ -296,6 +296,10 @@ export default function CourseCatalog() {
     }
   };
 
+  /** Managers opening a course to look at it. Deliberately does not enrol —
+   *  previewing someone else's training is not taking it. */
+  const previewCourse = (course) => navigate(`/training/courses/${course.id}/play`);
+
   const openAdd = () => { setEditing(null); setForm(blankForm); setModal(true); };
   const openEdit = (c) => {
     setEditing(c);
@@ -612,7 +616,7 @@ export default function CourseCatalog() {
                         onClick={() => deleteCourseHandler(c.id, c.title)}
                         aria-label="Delete course"
                       />
-                      <Button size="sm" className="min-w-0 flex-1 basis-[calc(50%-0.25rem)]" icon={Settings2} onClick={() => handleEnroll(c)}>
+                      <Button size="sm" className="min-w-0 flex-1 basis-[calc(50%-0.25rem)]" icon={Settings2} onClick={() => previewCourse(c)}>
                         Preview
                       </Button>
                     </>

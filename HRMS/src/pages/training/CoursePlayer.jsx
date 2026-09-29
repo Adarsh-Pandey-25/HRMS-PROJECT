@@ -75,10 +75,11 @@ export default function CoursePlayer() {
     return (course?.chapters || []).flatMap((ch) => ch.lessons || []);
   }, [course]);
 
-  useEffect(() => {
-    if (!course || course.enrollment) return;
-    enroll.mutateAsync(id).then(() => refetch()).catch(() => {});
-  }, [course?.id]);
+  // Deliberately no auto-enrol here. Opening a course used to enrol the
+  // viewer in it, so merely looking at a second course — or a manager hitting
+  // Preview — silently added an enrolment nobody asked for, which is why
+  // enrolling in one course appeared to enrol you in another. Enrolment is now
+  // only ever an explicit click, below.
 
   useEffect(() => {
     if (!lessons.length) return;
@@ -372,6 +373,36 @@ export default function CoursePlayer() {
         <p className="text-sm text-fg-muted">Course not found.</p>
         <Button className="mt-4" variant="outline" onClick={() => navigate('/training/catalog')}>Back to catalog</Button>
       </Card>
+    );
+  }
+
+  const enrollAndStart = async () => {
+    try {
+      await enroll.mutateAsync(id);
+      await refetch();
+    } catch (err) {
+      toast.error(err.message || 'Could not enrol in this course');
+    }
+  };
+
+  // Progress can only be recorded against an enrolment, so without one there
+  // is nothing to play. Ask, rather than enrolling on their behalf.
+  if (!course.enrollment) {
+    return (
+      <div className="animate-fade-in space-y-4">
+        <button type="button" onClick={() => navigate('/training/catalog')} className="flex items-center gap-1.5 text-sm text-fg-muted hover:text-fg">
+          <ArrowLeft className="h-4 w-4" /> Back to catalog
+        </button>
+        <Card className="p-8 text-center">
+          <p className="text-lg font-semibold text-fg">{course.title}</p>
+          <p className="mt-1 text-sm text-fg-muted">
+            {lessons.length} lesson{lessons.length === 1 ? '' : 's'} · Enrol to start tracking your progress.
+          </p>
+          <Button className="mt-4" onClick={enrollAndStart} loading={enroll.isPending}>
+            Enrol and start
+          </Button>
+        </Card>
+      </div>
     );
   }
 
