@@ -34,6 +34,7 @@ export async function createCourseApi(payload) {
       title: payload.title,
       description: payload.description,
       target_departments: payload.targetDepartments || payload.departmentAccess || ['all'],
+      category: payload.category || null,
       status: payload.status || 'ACTIVE',
     },
   });
@@ -48,6 +49,7 @@ export async function updateCourseApi(id, payload) {
       title: payload.title,
       description: payload.description,
       target_departments: payload.targetDepartments || payload.departmentAccess,
+      category: payload.category ?? null,
       is_active: payload.status !== 'archived' && payload.status !== 'ARCHIVED',
       status: payload.status === 'archived' || payload.status === 'ARCHIVED' ? 'ARCHIVED' : 'ACTIVE',
     },
@@ -64,13 +66,14 @@ export async function archiveCourseApi(id) {
 }
 
 /** Add lesson: VIDEO_UPLOAD (multipart) or EXTERNAL_LINK (JSON). */
-export async function addCourseLessonApi(courseId, { title, type, externalLink, videoDuration, order, videoFile }) {
+export async function addCourseLessonApi(courseId, { title, type, externalLink, videoDuration, order, videoFile, chapterId }) {
   if (type === 'VIDEO_UPLOAD' && videoFile) {
     const form = new FormData();
     form.append('title', title);
     form.append('type', 'VIDEO_UPLOAD');
     form.append('videoDuration', String(videoDuration || 0));
     if (order) form.append('order', String(order));
+    if (chapterId) form.append('chapterId', chapterId);
     form.append('video', videoFile);
     const data = await apiUpload({ method: 'POST', url: `/training/courses/${courseId}/lessons`, data: form });
     return toCamelCase(data);
@@ -86,7 +89,49 @@ export async function addCourseLessonApi(courseId, { title, type, externalLink, 
       video_duration: videoDuration,
       videoDuration,
       order,
+      chapterId: chapterId || null,
     },
+  });
+  return toCamelCase(data);
+}
+
+// ----- Chapters -------------------------------------------------------------
+// Chapters group a course's lessons for display. None of these change
+// lesson_order, so the order lessons unlock in is untouched by any of them.
+
+export async function fetchCourseChaptersApi(courseId) {
+  const rows = await apiRequest({ method: 'GET', url: `/training/courses/${courseId}/chapters` });
+  return Array.isArray(rows) ? rows.map((r) => toCamelCase(r)) : [];
+}
+
+export async function createChapterApi(courseId, { title, order } = {}) {
+  const data = await apiRequest({
+    method: 'POST',
+    url: `/training/courses/${courseId}/chapters`,
+    data: { title, ...(order ? { order } : {}) },
+  });
+  return toCamelCase(data);
+}
+
+export async function updateChapterApi(chapterId, { title, order } = {}) {
+  const data = await apiRequest({
+    method: 'PUT',
+    url: `/training/chapters/${chapterId}`,
+    data: { ...(title !== undefined ? { title } : {}), ...(order !== undefined ? { order } : {}) },
+  });
+  return toCamelCase(data);
+}
+
+export async function deleteChapterApi(chapterId) {
+  return apiRequest({ method: 'DELETE', url: `/training/chapters/${chapterId}` });
+}
+
+/** Pass chapterId null to move a lesson out of every chapter. */
+export async function setLessonChapterApi(lessonId, chapterId) {
+  const data = await apiRequest({
+    method: 'PUT',
+    url: `/training/lessons/${lessonId}/chapter`,
+    data: { chapterId: chapterId || null },
   });
   return toCamelCase(data);
 }

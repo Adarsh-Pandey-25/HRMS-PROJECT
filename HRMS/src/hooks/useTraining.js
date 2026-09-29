@@ -7,6 +7,7 @@ import {
   fetchEnrollmentsApi, createEnrollmentsApi, archiveEnrollmentApi,
   updateLessonProgressApi, fetchLessonVideoUrlApi,
   fetchTrainingProgressReportApi, sendTrainingReminderApi,
+  createChapterApi, updateChapterApi, deleteChapterApi, setLessonChapterApi,
 } from '../api/training.api';
 import { invalidateAndRefetch } from '../lib/queryCache';
 
@@ -113,6 +114,19 @@ export function useTrainingMutations() {
     }),
     updateProgress: useMutation({
       mutationFn: ({ lessonId, watchedSeconds, forceComplete }) => updateLessonProgressApi(lessonId, watchedSeconds, { forceComplete }),
+      onSuccess: invalidate,
+    }),
+    createChapter: useMutation({
+      mutationFn: ({ courseId, title, order }) => createChapterApi(courseId, { title, order }),
+      onSuccess: invalidate,
+    }),
+    updateChapter: useMutation({
+      mutationFn: ({ chapterId, title, order }) => updateChapterApi(chapterId, { title, order }),
+      onSuccess: invalidate,
+    }),
+    deleteChapter: useMutation({ mutationFn: deleteChapterApi, onSuccess: invalidate }),
+    setLessonChapter: useMutation({
+      mutationFn: ({ lessonId, chapterId }) => setLessonChapterApi(lessonId, chapterId),
       onSuccess: invalidate,
     }),
     sendReminder: useMutation({ mutationFn: sendTrainingReminderApi }),

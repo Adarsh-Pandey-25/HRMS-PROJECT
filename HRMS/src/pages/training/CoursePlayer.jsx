@@ -89,6 +89,24 @@ export default function CoursePlayer() {
 
   const activeLesson = lessons.find((l) => l.id === activeLessonId) || null;
 
+  // `lessons` stays the flat list everything else works from — playback, the
+  // next-lesson jump, and the sequential lock all index into it. `sections` is
+  // purely how the sidebar is chunked, and the server orders chapters by the
+  // lesson_order they contain, so reading top to bottom still follows the
+  // order lessons unlock in. A course with no chapters yields one section.
+  const sections = useMemo(() => {
+    const grouped = course?.chapters;
+    if (Array.isArray(grouped) && grouped.length) return grouped;
+    return [{ id: 'all', title: 'Lessons', lessons }];
+  }, [course?.chapters, lessons]);
+
+  // Global lesson number, so the sidebar numbering matches the watch order
+  // rather than restarting inside each section.
+  const lessonNumber = useMemo(
+    () => new Map(lessons.map((l, i) => [l.id, i + 1])),
+    [lessons],
+  );
+
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
@@ -516,8 +534,17 @@ export default function CoursePlayer() {
         {!isFullscreen && (
           <aside className="lg:w-[30%] rounded-card border border-border bg-surface p-4">
             <p className="text-sm font-semibold text-fg mb-3">Lessons</p>
-            <ul className="space-y-1 max-h-[72vh] overflow-y-auto">
-              {lessons.map((l, i) => {
+            <div className="space-y-4 max-h-[72vh] overflow-y-auto">
+              {sections.map((section) => (
+                <div key={section.id}>
+                  {sections.length > 1 && (
+                    <p className="px-1 pb-1 text-[11px] font-semibold uppercase tracking-wide text-fg-subtle">
+                      {section.title}
+                    </p>
+                  )}
+                  <ul className="space-y-1">
+              {(section.lessons || []).map((l) => {
+                const i = (lessonNumber.get(l.id) ?? 1) - 1;
                 const done = l.isCompleted || l.progress?.isCompleted;
                 const locked = l.locked && !done;
                 const active = l.id === activeLessonId;
@@ -548,7 +575,10 @@ export default function CoursePlayer() {
                   </li>
                 );
               })}
-            </ul>
+                  </ul>
+                </div>
+              ))}
+            </div>
           </aside>
         )}
       </div>
