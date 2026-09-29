@@ -166,6 +166,17 @@ const normalizeCheckInMethod = (method) => {
   return 'web';
 };
 
+/**
+ * The channel a punch came through. The biometric device is its own channel;
+ * web, mobile and office_ip all happen in the browser and are interchangeable
+ * (no client sends office_ip — it is a legacy value normalizeCheckInMethod
+ * still accepts). A day must be closed on the channel that opened it, so this
+ * is what checkOut compares.
+ */
+const methodChannel = (method) => (normalizeCheckInMethod(method) === 'biometric' ? 'biometric' : 'web');
+
+const CHANNEL_LABEL = { biometric: 'the biometric device', web: 'the web app' };
+
 const assertMethodAllowed = (normalizedMethod, methods) => {
   if (normalizedMethod === 'biometric') {
     if (methods.biometric === false) {
@@ -375,17 +386,20 @@ const checkOut = async (employeeId, { method, clientIp, break_minutes = 0, locat
   const active = await getActiveCheckIn(employeeId);
   if (!active) throw new BadRequestError('No active check-in found for today');
 
-  // A biometric day can only be closed on the biometric device. Without this,
-  // the web "Check out" button silently closed it: `method` is undefined on a
-  // web request, so the update below fell back to `active.check_in_method` and
-  // stamped check_out_method='biometric' on a checkout the device never saw —
-  // and `isBiometricCheckout` below then skipped the geofence check too.
-  // Claiming 'biometric' from a browser is already blocked in the controller
-  // (rejectSpoofedBiometricMethod), so reaching here with anything else means
-  // a genuinely different channel.
-  if (active.check_in_method === 'biometric' && normalizeCheckInMethod(method) !== 'biometric') {
+  // A day must be closed on the channel that opened it, both directions:
+  // no web checkout on a biometric day, and no device punch-out on a web day.
+  // Nothing enforced this before — `method` is undefined on a web request, so
+  // the update below fell back to `active.check_in_method` and stamped
+  // check_out_method='biometric' on a checkout the device never saw, and
+  // `isBiometricCheckout` then skipped the geofence check on the way through.
+  // Claiming 'biometric' from a browser is separately blocked in the
+  // controller (rejectSpoofedBiometricMethod), so a mismatch here is a real
+  // one. HR regularization (manualEntry) is the escape hatch for a genuinely
+  // stranded day; it does not come through here.
+  const openedOn = methodChannel(active.check_in_method);
+  if (openedOn !== methodChannel(method)) {
     throw new ForbiddenError(
-      'You checked in on the biometric device. Please check out on the same device.',
+      `You checked in on ${CHANNEL_LABEL[openedOn]}. Please check out on ${CHANNEL_LABEL[openedOn]}.`,
     );
   }
 

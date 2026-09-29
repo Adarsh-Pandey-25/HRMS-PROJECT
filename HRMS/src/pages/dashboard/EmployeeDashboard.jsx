@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { CalendarCheck, CalendarOff, Receipt, LifeBuoy, LogIn, LogOut, DollarSign } from 'lucide-react';
+import { CalendarCheck, CalendarOff, Receipt, LifeBuoy, LogIn, LogOut, DollarSign, Fingerprint } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { Card, CardHeader, StatCard, Button, StatusBadge, ProgressBar, Skeleton } from '../../components/ui';
 import { useDashboardData } from '../../hooks/useDashboardData';
@@ -27,6 +27,11 @@ export default function EmployeeDashboard({ user }) {
  const webCheckInEnabled = checkContext?.webCheckInEnabled !== false;
  const canCheckIn = todayStatus.canCheckIn && webCheckInEnabled;
  const canCheckOut = todayStatus.canCheckOut;
+ // A biometric day can only be closed on the device that opened it — the
+ // server rejects a web checkout on one — so the card says which device to
+ // use instead of showing a button that would 403 (or, once the server sets
+ // canCheckOut false, a misleading "Day Complete").
+ const biometricLocked = checkedIn && todayStatus.checkInMethod === 'biometric';
 
  const totalRemaining = useMemo(
  () => leaveItems.reduce((sum, b) => sum + Number(b.available || 0), 0),
@@ -86,7 +91,7 @@ export default function EmployeeDashboard({ user }) {
  </div>
  <Button
  className="mt-4 w-full"
- icon={canCheckOut ? LogOut : LogIn}
+ icon={canCheckOut ? LogOut : biometricLocked ? Fingerprint : LogIn}
  variant={canCheckOut ? 'danger' : 'primary'}
  onClick={handleCheckInOut}
  loading={checkIn.isPending || checkOut.isPending}
@@ -94,12 +99,19 @@ export default function EmployeeDashboard({ user }) {
  >
  {canCheckOut
  ? 'Check Out'
+ : biometricLocked
+ ? 'Check out on device'
  : canCheckIn
  ? 'Check In'
  : !webCheckInEnabled && todayStatus.canCheckIn
  ? 'Web check-in disabled'
  : 'Day Complete'}
  </Button>
+ {biometricLocked && (
+ <p className="mt-2 text-[11px] text-fg-subtle">
+ Checked in via <span className="font-medium text-fg-muted">Biometric device</span> — please check out on the same device.
+ </p>
+ )}
  </Card>
 
  <Card className="lg:col-span-2">

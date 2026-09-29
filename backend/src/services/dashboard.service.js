@@ -828,7 +828,7 @@ const getEmployeeTodayStatus = async (employeeId) => {
 
   const { data, error } = await supabaseAdmin
     .from('attendance')
-    .select('id, check_in_time, check_out_time, status')
+    .select('id, check_in_time, check_out_time, status, check_in_method')
     .eq('employee_id', employeeId)
     .gte('check_in_time', start)
     .lte('check_in_time', end)
@@ -845,12 +845,19 @@ const getEmployeeTodayStatus = async (employeeId) => {
       checkOutTime: null,
       label: 'Not checked in',
       checkInLabel: null,
+      checkInMethod: null,
       canCheckIn: true,
       canCheckOut: false,
     };
   }
 
   const checkInLabel = moment(record.check_in_time).tz(TIMEZONE).format('HH:mm');
+  // The dashboard button can only do a web checkout, and attendance.service's
+  // checkOut rejects closing a biometric day from the browser. Surfacing the
+  // method lets the card disable the button and say which device to use,
+  // instead of offering a Check Out that always 403s.
+  const checkInMethod = record.check_in_method || null;
+  const biometricLocked = checkInMethod === 'biometric';
 
   if (!record.check_out_time) {
     return {
@@ -859,8 +866,9 @@ const getEmployeeTodayStatus = async (employeeId) => {
       checkOutTime: null,
       label: 'Checked in',
       checkInLabel,
+      checkInMethod,
       canCheckIn: false,
-      canCheckOut: true,
+      canCheckOut: !biometricLocked,
     };
   }
 
@@ -870,6 +878,7 @@ const getEmployeeTodayStatus = async (employeeId) => {
     checkOutTime: record.check_out_time,
     label: 'Day complete',
     checkInLabel,
+    checkInMethod,
     canCheckIn: false,
     canCheckOut: false,
   };
