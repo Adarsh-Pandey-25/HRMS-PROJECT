@@ -8,6 +8,7 @@ const { requireFeature } = require('../middleware/featureGate.middleware');
 const {
   courseCreateRules,
   courseChapterRules,
+  courseChapterUpdateRules,
   courseLessonRules,
   createEnrollmentsRules,
   lessonProgressRules,
@@ -45,7 +46,13 @@ router.post(
   validate,
   courseController.addLessonToCourse,
 );
+// Chapters group a course's lessons for display. lesson_order stays the watch
+// sequence, so none of these change the order lessons unlock in.
+router.get('/courses/:id/chapters', isManagerOrAbove, uuidParam(), validate, courseController.listChapters);
 router.post('/courses/:id/chapters', isManagerOrAbove, uuidParam(), courseChapterRules, validate, courseController.addChapter);
+router.put('/chapters/:id', isManagerOrAbove, uuidParam(), courseChapterUpdateRules, validate, courseController.updateChapter);
+router.delete('/chapters/:id', isManagerOrAbove, uuidParam(), validate, courseController.deleteChapter);
+router.put('/lessons/:id/chapter', isManagerOrAbove, uuidParam(), validate, courseController.setLessonChapter);
 router.post('/courses/:id/enroll', isEmployee, uuidParam(), validate, courseController.enrollCourse);
 router.get('/courses', isEmployee, courseController.listEmployeeCourses);
 router.get('/courses/:id', isEmployee, uuidParam(), validate, courseController.getCourse);

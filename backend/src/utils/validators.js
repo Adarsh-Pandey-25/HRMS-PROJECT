@@ -187,7 +187,14 @@ const courseCreateRules = [
 
 const courseChapterRules = [
   body('title').trim().notEmpty(),
-  body('order').isInt({ min: 1 }),
+  // Optional: addChapter appends to the end when it is omitted, so the UI
+  // does not have to know how many chapters already exist.
+  body('order').optional().isInt({ min: 1 }),
+];
+
+const courseChapterUpdateRules = [
+  body('title').optional().trim().notEmpty(),
+  body('order').optional().isInt({ min: 1 }),
 ];
 
 const courseLessonRules = [
@@ -281,6 +288,7 @@ module.exports = {
   trainingCreateRules,
   courseCreateRules,
   courseChapterRules,
+  courseChapterUpdateRules,
   courseLessonRules,
   createEnrollmentsRules,
   lessonProgressRules,

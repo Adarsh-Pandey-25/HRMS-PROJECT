@@ -76,10 +76,40 @@ const getManageCourse = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+const listChapters = async (req, res, next) => {
+  try {
+    const data = await courseService.listChaptersForCourse(req.params.id);
+    successResponse(res, 'Chapters fetched', data);
+  } catch (err) { next(err); }
+};
+
 const addChapter = async (req, res, next) => {
   try {
-    const data = await courseService.addChapter(req.params.id, req.body);
+    const data = await courseService.addChapter(req.params.id, req.body, companyIdOf(req));
     successResponse(res, 'Chapter added', data, null, 201);
+  } catch (err) { next(err); }
+};
+
+const updateChapter = async (req, res, next) => {
+  try {
+    const data = await courseService.updateChapter(req.params.id, req.body, companyIdOf(req));
+    successResponse(res, 'Chapter updated', data);
+  } catch (err) { next(err); }
+};
+
+const deleteChapter = async (req, res, next) => {
+  try {
+    const data = await courseService.deleteChapter(req.params.id, companyIdOf(req));
+    successResponse(res, 'Chapter deleted — its lessons moved back to Other lessons', data);
+  } catch (err) { next(err); }
+};
+
+/** Move a lesson into a chapter, or out of every chapter with chapterId null. */
+const setLessonChapter = async (req, res, next) => {
+  try {
+    const chapterId = req.body.chapterId ?? req.body.chapter_id ?? null;
+    const data = await courseService.setLessonChapter(req.params.id, chapterId, companyIdOf(req));
+    successResponse(res, 'Lesson moved', data);
   } catch (err) { next(err); }
 };
 
@@ -205,6 +235,10 @@ module.exports = {
   getCourse,
   getManageCourse,
   addChapter,
+  listChapters,
+  updateChapter,
+  deleteChapter,
+  setLessonChapter,
   addLesson,
   addLessonToCourse,
   enrollCourse,

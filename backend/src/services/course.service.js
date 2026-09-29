@@ -47,6 +47,18 @@ const shouldEnforceWatchOrder = async (companyId) => {
 
 const normalizeDept = (dept) => (dept || '').trim().toLowerCase();
 
+/** Today in YYYY-MM-DD, for comparing against the DATE-typed enrollment
+ *  deadline without dragging a timezone library in. */
+const todayIsoDate = () => new Date().toISOString().slice(0, 10);
+
+/** Free-text category, trimmed and capped. Empty becomes null so the catalog
+ *  filter counts only courses that were actually given one. */
+const normalizeCategory = (value) => {
+  const category = String(value ?? '').trim();
+  if (!category) return null;
+  return category.slice(0, 60);
+};
+
 const departmentMatches = (employeeDept, targetDepartments = []) => {
   const targets = targetDepartments || [];
   if (!targets.length || targets.some((d) => normalizeDept(d) === 'all')) return true;
@@ -121,10 +133,197 @@ const listLessonsForCourse = async (courseId, { withUrls = false } = {}) => {
   return Promise.all(lessons.map(resolveLessonPlaybackUrl));
 };
 
-const getLessonCountsByCourse = async () => {
+/**
+ * course_chapters has no company_id of its own (it predates tenanting), so
+ * every chapter operation scopes through its parent course instead. Returns
+ * the course row when it belongs to `companyId`, and 404s otherwise.
+ */
+const assertCourseInCompany = async (courseId, companyId) => {
+  const cid = resolveCompanyId(companyId);
+  const { data: course, error } = await supabaseAdmin
+    .from('courses')
+    .select('id, company_id')
+    .eq('id', courseId)
+    .maybeSingle();
+  if (error) throw new BadRequestError(error.message);
+  if (!course || course.company_id !== cid) throw new NotFoundError('Course not found');
+  return course;
+};
+
+const listChaptersForCourse = async (courseId) => {
+  const { data, error } = await supabaseAdmin
+    .from('course_chapters')
+    .select('id, title, "order", course_id')
+    .eq('course_id', courseId)
+    .order('order', { ascending: true });
+  if (error) throw new BadRequestError(error.message);
+  return data || [];
+};
+
+const UNGROUPED_CHAPTER_ID = 'ungrouped';
+
+/**
+ * Group a course's lessons into chapters for display.
+ *
+ * Chapters are a labelling layer only: lesson_order remains the single global
+ * watch sequence, which is what the sequential-unlock check in
+ * getCourseForEmployee and assertPriorLessonsComplete both read. So chapters
+ * are ordered by the lowest lesson_order they contain rather than by their own
+ * `order` column — what the employee reads top to bottom is then always the
+ * order the lessons actually unlock in, and moving a lesson between chapters
+ * never has to renumber anything. Chapters with no lessons yet fall to the end
+ * (rank Infinity) and break ties on their own `order`.
+ *
+ * Lessons with no chapter collect in a trailing ungrouped section: that is
+ * where every pre-existing lesson starts, and where a chapter's lessons return
+ * to when it is deleted (the FK is ON DELETE SET NULL).
+ */
+const groupLessonsIntoChapters = (lessons, chapters) => {
+  const sections = new Map(
+    (chapters || []).map((ch) => [ch.id, { id: ch.id, title: ch.title, order: ch.order, lessons: [] }]),
+  );
+  const ungrouped = [];
+  for (const lesson of lessons || []) {
+    const section = lesson.chapter_id ? sections.get(lesson.chapter_id) : null;
+    if (section) section.lessons.push(lesson);
+    else ungrouped.push(lesson);
+  }
+
+  const rank = (section) => (section.lessons.length
+    ? Math.min(...section.lessons.map((l) => Number(l.lesson_order) || 0))
+    : Number.POSITIVE_INFINITY);
+
+  const ordered = [...sections.values()].sort((a, b) => {
+    const ra = rank(a);
+    const rb = rank(b);
+    // Guarded so two empty chapters never compute Infinity - Infinity (NaN).
+    if (ra !== rb) return ra - rb;
+    return (a.order ?? 0) - (b.order ?? 0);
+  });
+
+  if (ungrouped.length) {
+    ordered.push({
+      id: UNGROUPED_CHAPTER_ID,
+      // Named "Lessons" rather than "Ungrouped" because a course that has
+      // never used chapters puts everything here, and that is the normal
+      // case, not a leftover.
+      title: ordered.length ? 'Other lessons' : 'Lessons',
+      order: null,
+      lessons: ungrouped,
+    });
+  }
+  return ordered;
+};
+
+const addChapter = async (courseId, { title, order }, companyId) => {
+  await assertCourseInCompany(courseId, companyId);
+  const name = String(title || '').trim();
+  if (!name) throw new BadRequestError('Chapter title is required');
+
+  let position = order != null ? parseInt(order, 10) : null;
+  if (!position || Number.isNaN(position)) {
+    const { count } = await supabaseAdmin
+      .from('course_chapters')
+      .select('id', { count: 'exact', head: true })
+      .eq('course_id', courseId);
+    position = (count || 0) + 1;
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from('course_chapters')
+    .insert({ course_id: courseId, title: name, order: position })
+    .select('id, title, "order", course_id')
+    .single();
+  if (error) throw new BadRequestError(error.message);
+  return { ...data, lessons: [] };
+};
+
+/** Resolve a chapter and check the caller's company owns its course. */
+const assertChapterInCompany = async (chapterId, companyId) => {
+  const { data: chapter, error } = await supabaseAdmin
+    .from('course_chapters')
+    .select('id, title, "order", course_id')
+    .eq('id', chapterId)
+    .maybeSingle();
+  if (error) throw new BadRequestError(error.message);
+  if (!chapter) throw new NotFoundError('Chapter not found');
+  await assertCourseInCompany(chapter.course_id, companyId);
+  return chapter;
+};
+
+const updateChapter = async (chapterId, { title, order }, companyId) => {
+  await assertChapterInCompany(chapterId, companyId);
+  const updates = {};
+  if (title !== undefined) {
+    const name = String(title || '').trim();
+    if (!name) throw new BadRequestError('Chapter title cannot be empty');
+    updates.title = name;
+  }
+  if (order !== undefined && order !== null) {
+    const position = parseInt(order, 10);
+    if (Number.isNaN(position)) throw new BadRequestError('Chapter order must be a number');
+    updates.order = position;
+  }
+  if (!Object.keys(updates).length) throw new BadRequestError('Nothing to update');
+
+  const { data, error } = await supabaseAdmin
+    .from('course_chapters')
+    .update(updates)
+    .eq('id', chapterId)
+    .select('id, title, "order", course_id')
+    .single();
+  if (error) throw new BadRequestError(error.message);
+  return data;
+};
+
+/** Deleting a chapter keeps its lessons — the FK is ON DELETE SET NULL, so
+ *  they reappear in the ungrouped section with their progress intact. */
+const deleteChapter = async (chapterId, companyId) => {
+  const chapter = await assertChapterInCompany(chapterId, companyId);
+  const { error } = await supabaseAdmin.from('course_chapters').delete().eq('id', chapterId);
+  if (error) throw new BadRequestError(error.message);
+  return { id: chapterId, course_id: chapter.course_id };
+};
+
+/** Move a lesson into a chapter, or out of every chapter when chapterId is
+ *  null. Never touches lesson_order, so the watch sequence is unaffected. */
+const setLessonChapter = async (lessonId, chapterId, companyId) => {
+  const { data: lesson, error: lErr } = await supabaseAdmin
+    .from('course_lessons')
+    .select('id, course_id')
+    .eq('id', lessonId)
+    .maybeSingle();
+  if (lErr) throw new BadRequestError(lErr.message);
+  if (!lesson) throw new NotFoundError('Lesson not found');
+  await assertCourseInCompany(lesson.course_id, companyId);
+
+  let target = null;
+  if (chapterId && chapterId !== UNGROUPED_CHAPTER_ID) {
+    const chapter = await assertChapterInCompany(chapterId, companyId);
+    if (chapter.course_id !== lesson.course_id) {
+      throw new BadRequestError('That chapter belongs to a different course');
+    }
+    target = chapter.id;
+  }
+
   const { data, error } = await supabaseAdmin
     .from('course_lessons')
-    .select('id, course_id');
+    .update({ chapter_id: target })
+    .eq('id', lessonId)
+    .select()
+    .single();
+  if (error) throw new BadRequestError(error.message);
+  return data;
+};
+
+/** Lesson count per course. `courseIds` scopes the scan — without it this
+ *  read every course_lessons row in the database to build counts for one
+ *  tenant's handful of courses. */
+const getLessonCountsByCourse = async (courseIds = null) => {
+  if (Array.isArray(courseIds) && courseIds.length === 0) return {};
+  let query = supabaseAdmin.from('course_lessons').select('id, course_id');
+  if (Array.isArray(courseIds)) query = query.in('course_id', courseIds);
+  const { data, error } = await query;
 
   if (error) throw new BadRequestError(error.message);
   const counts = {};
@@ -164,6 +363,7 @@ const createCourse = async (payload, userId, thumbnailFile, companyId) => {
       title: payload.title,
       description: payload.description || '',
       target_departments: payload.targetDepartments || payload.target_departments || [],
+      category: normalizeCategory(payload.category),
       thumbnail_key: thumbnailKey,
       created_by: userId,
       status,
@@ -193,6 +393,7 @@ const updateCourse = async (courseId, payload, thumbnailFile, companyId) => {
   if (payload.targetDepartments !== undefined || payload.target_departments !== undefined) {
     updates.target_departments = payload.targetDepartments || payload.target_departments;
   }
+  if (payload.category !== undefined) updates.category = normalizeCategory(payload.category);
   if (payload.status !== undefined) {
     const status = String(payload.status).toUpperCase() === 'ARCHIVED' ? 'ARCHIVED' : 'ACTIVE';
     updates.status = status;
@@ -231,7 +432,7 @@ const listManageCourses = async (companyId) => {
 
   if (error) throw new BadRequestError(error.message);
 
-  const lessonCounts = await getLessonCountsByCourse();
+  const lessonCounts = await getLessonCountsByCourse((data || []).map((c) => c.id));
   return mapWithConcurrency(data || [], SIGNED_URL_CONCURRENCY, async (course) => {
     const withThumb = await attachSignedUrls(course);
     return {
@@ -242,25 +443,26 @@ const listManageCourses = async (companyId) => {
   });
 };
 
-const ENROLLMENT_SELECT_WITH_ASSIGNED_BY = 'id, course_id, status, enrolled_at, completed_at, user_id, employee_id, assigned_by, course_progress(lesson_id, is_completed, watched_seconds)';
-const ENROLLMENT_SELECT_FALLBACK = 'id, course_id, status, enrolled_at, completed_at, user_id, employee_id, course_progress(lesson_id, is_completed, watched_seconds)';
+const ENROLLMENT_SELECT_WITH_ASSIGNED_BY = 'id, course_id, status, enrolled_at, completed_at, deadline, user_id, employee_id, assigned_by, course_progress(lesson_id, is_completed, watched_seconds)';
+const ENROLLMENT_SELECT_FALLBACK = 'id, course_id, status, enrolled_at, completed_at, deadline, user_id, employee_id, course_progress(lesson_id, is_completed, watched_seconds)';
 
 const listCatalog = async (employee, companyId) => {
   const cid = resolveCompanyId(companyId || getCompanyId(employee));
-  const [{ data: courses, error }, enrollmentsResult, lessonCounts] = await Promise.all([
+  const [{ data: courses, error }, enrollmentsResult] = await Promise.all([
     supabaseAdmin
       .from('courses')
-      .select('id, title, description, thumbnail_key, target_departments, status, is_active, created_at, company_id')
+      .select('id, title, description, thumbnail_key, target_departments, category, status, is_active, created_at, company_id')
       .eq('company_id', cid)
       .order('created_at', { ascending: false }),
     supabaseAdmin
       .from('course_enrollments')
       .select(ENROLLMENT_SELECT_WITH_ASSIGNED_BY)
       .or(enrollmentUserFilter(employee.id)),
-    getLessonCountsByCourse(),
   ]);
 
   if (error) throw new BadRequestError(error.message);
+
+  const lessonCounts = await getLessonCountsByCourse((courses || []).map((c) => c.id));
 
   let { data: enrollments, error: enrollError } = enrollmentsResult;
   if (enrollError && isMissingColumnError(enrollError.message, 'assigned_by')) {
@@ -300,6 +502,13 @@ const listCatalog = async (employee, companyId) => {
     const completedLessons = (enrollment?.course_progress || []).filter((p) => p.is_completed).length;
     const progressPercent = totalLessons ? Math.round((completedLessons / totalLessons) * 100) : 0;
     const isMandatory = Boolean(enrollment?.assigned_by);
+    // Surfaced so the catalog and My Trainings can show a due date and flag
+    // an overdue required course. The deadline has always been collected on
+    // assignment; it was simply never sent back to the client.
+    const deadline = enrollment?.deadline || null;
+    const isOverdue = Boolean(
+      deadline && enrollment?.status !== 'COMPLETED' && deadline < todayIsoDate(),
+    );
 
     return {
       ...withThumb,
@@ -313,6 +522,8 @@ const listCatalog = async (employee, companyId) => {
           completed_lessons: completedLessons,
           total_lessons: totalLessons,
           isMandatory,
+          deadline,
+          isOverdue,
           assignedByName: isMandatory ? (assignerMap.get(enrollment.assigned_by) || 'HR/Admin') : null,
         }
         : null,
@@ -321,6 +532,8 @@ const listCatalog = async (employee, companyId) => {
       totalLessons,
       progressPercent,
       isMandatory,
+      deadline,
+      isOverdue,
     };
   });
 };
@@ -354,7 +567,10 @@ const getCourseForEmployee = async (courseId, employee) => {
   }
 
   const withThumb = await attachSignedUrls(course);
-  const lessons = await listLessonsForCourse(courseId, { withUrls: true });
+  const [lessons, chapters] = await Promise.all([
+    listLessonsForCourse(courseId, { withUrls: true }),
+    listChaptersForCourse(courseId),
+  ]);
   const progressMap = new Map((enrollment?.course_progress || []).map((p) => [p.lesson_id, p]));
   const enforceOrder = await shouldEnforceWatchOrder(getCompanyId(employee));
   const lessonsWithProgress = lessons.map((l, idx) => {
@@ -373,9 +589,11 @@ const getCourseForEmployee = async (courseId, employee) => {
 
   return {
     ...withThumb,
+    // `lessons` stays the flat, lesson_order-sorted list the player reads for
+    // playback and sequential unlocking; `chapters` is the same lessons
+    // grouped for the sidebar. Never let the two disagree on order.
     lessons: lessonsWithProgress,
-    // Compat: wrap in a single chapter for any UI that still expects chapters
-    chapters: [{ id: 'default', title: 'Lessons', order: 1, lessons: lessonsWithProgress }],
+    chapters: groupLessonsIntoChapters(lessonsWithProgress, chapters),
     enrollment: enrollment
       ? {
         id: enrollment.id,
@@ -407,11 +625,17 @@ const getManageCourse = async (courseId, companyId) => {
   if (!course || course.company_id !== cid) throw new NotFoundError('Course not found');
 
   const withThumb = await attachSignedUrls(course);
-  const lessons = await listLessonsForCourse(courseId, { withUrls: true });
+  const [lessons, chapters] = await Promise.all([
+    listLessonsForCourse(courseId, { withUrls: true }),
+    listChaptersForCourse(courseId),
+  ]);
   return {
     ...withThumb,
     lessons,
-    chapters: [{ id: 'default', title: 'Lessons', order: 1, lessons }],
+    chapters: groupLessonsIntoChapters(lessons, chapters),
+    // The raw list too, so the manage UI can offer every chapter as a move
+    // target — including ones that have no lessons in them yet.
+    chapterOptions: chapters,
   };
 };
 
@@ -437,6 +661,16 @@ const addLessonToCourse = async (courseId, payload, videoFile, companyId) => {
       .select('id', { count: 'exact', head: true })
       .eq('course_id', courseId);
     order = (count || 0) + 1;
+  }
+
+  // Optional: a lesson with no chapter shows in the ungrouped section.
+  let chapterId = payload.chapterId || payload.chapter_id || null;
+  if (chapterId) {
+    const chapter = await assertChapterInCompany(chapterId, companyId);
+    if (chapter.course_id !== courseId) {
+      throw new BadRequestError('That chapter belongs to a different course');
+    }
+    chapterId = chapter.id;
   }
 
   let videoKey = null;
@@ -465,6 +699,7 @@ const addLessonToCourse = async (courseId, payload, videoFile, companyId) => {
     .from('course_lessons')
     .insert({
       course_id: courseId,
+      chapter_id: chapterId,
       title: payload.title,
       lesson_order: order,
       type,
@@ -479,15 +714,6 @@ const addLessonToCourse = async (courseId, payload, videoFile, companyId) => {
   if (error) throw new BadRequestError(error.message);
   return resolveLessonPlaybackUrl(data);
 };
-
-/** Legacy: chapter-based add — create/find a dummy chapter is no longer used; prefer addLessonToCourse */
-const addChapter = async (courseId, { title, order }) => ({
-  id: 'default',
-  course_id: courseId,
-  title: title || 'Lessons',
-  order: order || 1,
-  lessons: [],
-});
 
 const addLesson = async (chapterId, payload, videoFile, companyId) => {
   // If chapterId is actually a course id (new API), or look up chapter→course
@@ -1177,6 +1403,10 @@ module.exports = {
   getCourseForEmployee,
   getManageCourse,
   addChapter,
+  updateChapter,
+  deleteChapter,
+  listChaptersForCourse,
+  setLessonChapter,
   addLesson,
   addLessonToCourse,
   enrollCourse,
