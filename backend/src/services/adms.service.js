@@ -221,6 +221,7 @@ const alertOnUnauthorizedDevice = async (deviceSerial, reason, meta = {}) => {
 
   const { sendEmail } = require('./email.service');
   sendEmail({
+    type: 'adms_unauthorized_alert',
     to,
     subject: `[ADMS ALERT] Rejected/anomalous device request (${deviceSerial || 'unknown device'})`,
     html: `<p>A request to the biometric device endpoints was rejected or produced an anomaly.</p>
@@ -258,6 +259,7 @@ const alertOnSaveFailure = async (deviceSerial, errorMessage, count) => {
 
   const { sendEmail } = require('./email.service');
   sendEmail({
+    type: 'adms_save_failure_alert',
     to,
     subject: `[ADMS ALERT] Biometric punches are failing to save (${deviceSerial || 'unknown device'})`,
     html: `<p>Device <strong>${deviceSerial || 'unknown'}</strong> is pushing punches successfully, but they are failing to save to the database.</p>

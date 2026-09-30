@@ -9,6 +9,7 @@ const featureOverrideController = require('../controllers/featureOverride.contro
 const couponController = require('../controllers/coupon.controller');
 const systemHealthController = require('../controllers/systemHealth.controller');
 const emailPreferencesController = require('../controllers/emailPreferences.controller');
+const emailLogController = require('../controllers/emailLog.controller');
 const marketingController = require('../controllers/marketing.controller');
 const { ALLOWED_CATEGORIES } = require('../services/emailPreferences.service');
 const { authenticateSuperAdmin, requireSuperAdminRole } = require('../middleware/superAdmin.middleware');
@@ -331,6 +332,25 @@ router.patch(
   validate,
   emailPreferencesController.setBulkEmailPreferences,
 );
+
+// ── Email log + catalogue (full_admin only — recipient addresses across
+//    every company). Audit aid: who was sent which email, and why.
+router.get(
+  '/email-log',
+  authenticateSuperAdmin,
+  requireSuperAdminRole(),
+  query('company_id').optional().custom((v) => v === 'platform' || /^[0-9a-f-]{36}$/i.test(v)),
+  query('status').optional().isIn(['sent', 'mock', 'failed', 'skipped']),
+  query('type').optional().isString().isLength({ max: 60 }),
+  query('recipient').optional().isString().isLength({ max: 320 }),
+  query('from').optional().isISO8601(),
+  query('to').optional().isISO8601(),
+  query('page').optional().isInt({ min: 1 }),
+  query('limit').optional().isInt({ min: 1, max: 100 }),
+  validate,
+  emailLogController.listEmailLog,
+);
+router.get('/email-catalog', authenticateSuperAdmin, requireSuperAdminRole(), emailLogController.getEmailCatalog);
 
 // ── Marketing leads (free-trial requests + contact messages) ───────────────
 router.get(

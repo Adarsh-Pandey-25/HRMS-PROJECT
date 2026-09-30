@@ -91,6 +91,7 @@ function) and must go first on a fresh project; everything in
 18. `20260926_salary_revisions.sql` — salary revisions table
 19. `20260928_company_email_preferences.sql` — **creates `company_email_preferences`**; without it the super-admin Email Preferences screen returns 500 and category opt-outs never persist
 20. `20260929_course_chapters_and_category.sql` — links lessons to chapters (`addChapter` wrote nothing before this) and adds the course `category` the catalog card already rendered
+21. `20260930_email_log_and_preferences.sql` — **creates `email_log`** for the super-admin Email Log, and widens the per-company email switches from 10 to all 23. Until it runs, emails still send but nothing is logged, and switching off any of the 13 new ones fails
 
 Migrations are idempotent (`IF NOT EXISTS` / `CREATE OR REPLACE`), so
 re-running one is safe.

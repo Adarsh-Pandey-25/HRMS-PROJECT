@@ -2,6 +2,7 @@ const { AsyncLocalStorage } = require('async_hooks');
 const moment = require('moment-timezone');
 const { sendWithFallback } = require('../config/email');
 const logger = require('../utils/logger');
+const { getEmailType } = require('./emailCatalog');
 
 // ============================================================================
 // DESIGN SYSTEM — "Premium v2"
@@ -268,13 +269,71 @@ const etFooter = () => `
   </table>`;
 
 // ── Transport ────────────────────────────────────────────────────────────
-const sendEmail = async ({ to, subject, html, text }) => {
-  const redactTo = (addr) => {
-    const s = String(addr || '');
-    const at = s.indexOf('@');
-    if (at < 1) return '[redacted]';
-    return `${s[0]}***${s.slice(at)}`;
+const redactTo = (addr) => {
+  const s = String(addr || '');
+  const at = s.indexOf('@');
+  if (at < 1) return '[redacted]';
+  return `${s[0]}***${s.slice(at)}`;
+};
+
+let emailLogUnavailableWarned = false;
+
+/**
+ * One email_log row per send, skip or failure, for the super-admin Email
+ * Log. Never throws and is never awaited by the send: an audit write must
+ * not delay or fail the email it describes. Subject only — bodies carry
+ * temporary passwords and OTPs.
+ */
+const recordEmail = (row) => {
+  const { supabaseAdmin } = require('../config/supabase');
+  supabaseAdmin
+    .from('email_log')
+    .insert({
+      ...row,
+      recipient: String(Array.isArray(row.recipient) ? row.recipient.join(', ') : row.recipient || '').slice(0, 320),
+      subject: row.subject ? String(row.subject).slice(0, 300) : null,
+      error: row.error ? String(row.error).slice(0, 1000) : null,
+    })
+    .then(({ error }) => {
+      if (error && !emailLogUnavailableWarned) {
+        // Most likely the migration has not been run yet; say so once
+        // rather than on every email.
+        emailLogUnavailableWarned = true;
+        logger.warn('[email] could not write email_log — is 20260930_email_log_and_preferences.sql applied?', { error: error.message });
+      }
+    }, () => {});
+};
+
+/**
+ * Every email the platform sends passes through here. `type` names an entry
+ * in emailCatalog.js; the exported templates supply it (and the recipient's
+ * company) through linkContext, so only direct callers pass it explicitly.
+ *
+ * A switchable email whose switch is off for the recipient's company is
+ * skipped, not sent. Emails with no switch — credentials, security,
+ * billing, platform — always go.
+ */
+const sendEmail = async ({ to, subject, html, text, type }) => {
+  const ctx = linkContext.getStore() || {};
+  const emailType = type || ctx.emailType || 'untyped';
+  const entry = getEmailType(emailType);
+  const companyId = entry && entry.companyScoped === false ? null : (ctx.companyId || null);
+  const base = {
+    company_id: companyId,
+    email_type: emailType,
+    audience: entry?.audience || null,
+    recipient: to,
+    subject,
   };
+
+  if (entry?.preference && companyId) {
+    const { isEmailEnabled } = require('./emailPreferences.service');
+    if (!(await isEmailEnabled(companyId, entry.preference))) {
+      logger.info('Email skipped — switched off for this company', { type: emailType, companyId });
+      recordEmail({ ...base, status: 'skipped', skip_reason: 'disabled_for_company' });
+      return { success: false, skipped: true, reason: 'disabled_for_company' };
+    }
+  }
 
   try {
     const info = await sendWithFallback({
@@ -287,9 +346,11 @@ const sendEmail = async ({ to, subject, html, text }) => {
     if (info?.mock) {
       logger.info('Email (mock)', { to: redactTo(to), subject: String(subject || '').slice(0, 80) });
     }
+    recordEmail({ ...base, status: info?.mock ? 'mock' : 'sent' });
     return { success: true, messageId: info?.messageId, mock: Boolean(info?.mock) };
   } catch (err) {
     logger.error('Email send failed', { to: redactTo(to), error: err.message });
+    recordEmail({ ...base, status: 'failed', error: err.message });
     throw err;
   }
 };
@@ -1770,19 +1831,33 @@ const resolveLinkContext = async (templateName, args) => {
     }
     const origin = await getTenantOrigin(companyId);
     const path = getPortalPath(role);
-    return { origin, loginUrl: path === '/' ? `${origin}/` : `${origin}${path}` };
+    // companyId rides along for sendEmail: it decides which company's
+    // switches apply and which company the email_log row belongs to.
+    return { companyId, origin, loginUrl: path === '/' ? `${origin}/` : `${origin}${path}` };
   } catch (err) {
     logger.warn('[email] link context lookup failed — using platform links', { template: templateName, error: err.message });
     return {};
   }
 };
 
+/** welcomeEmail → 'welcome', attendanceAbsentAlertEmail → 'attendance_absent_alert':
+ *  the key the template is catalogued under in emailCatalog.js. */
+const templateTypeKey = (name) => name
+  .replace(/Email$/, '')
+  .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+  .toLowerCase();
+
 const withRecipientLinks = (name, fn) => async (...args) => {
   const ctx = await resolveLinkContext(name, args);
-  return linkContext.run(ctx, () => fn(...args));
+  return linkContext.run({ ...ctx, emailType: templateTypeKey(name) }, () => fn(...args));
 };
+
+/** Platform templates keep platform links, but still need their type set so
+ *  the log names them. */
+const withEmailType = (name, fn) => (...args) =>
+  linkContext.run({ emailType: templateTypeKey(name) }, () => fn(...args));
 
 module.exports = { sendEmail };
 for (const [name, fn] of Object.entries(templates)) {
-  module.exports[name] = PLATFORM_TEMPLATES.has(name) ? fn : withRecipientLinks(name, fn);
+  module.exports[name] = PLATFORM_TEMPLATES.has(name) ? withEmailType(name, fn) : withRecipientLinks(name, fn);
 }

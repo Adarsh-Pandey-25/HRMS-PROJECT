@@ -28,6 +28,7 @@ const alertOnCronFailure = async (jobName, errorMessage, meta = {}) => {
   const { sendEmail } = require('../services/email.service');
   const timestamp = new Date(now).toISOString();
   sendEmail({
+    type: 'cron_failure_alert',
     to,
     subject: `[CRON ALERT] ${jobName} failed`,
     html: `<p>Scheduled job <strong>${jobName}</strong> failed and did not complete.</p>

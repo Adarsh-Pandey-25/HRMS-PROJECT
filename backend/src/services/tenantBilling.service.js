@@ -90,7 +90,7 @@ const notifySuperAdminOfRequest = async (subject, htmlBody) => {
   const to = process.env.SUPER_ADMIN_EMAIL;
   if (!to) return;
   const { sendEmail } = require('./email.service');
-  sendEmail({ to, subject, html: `<p>${htmlBody}</p>` }).catch((e) =>
+  sendEmail({ to, subject, html: `<p>${htmlBody}</p>`, type: 'billing_alert' }).catch((e) =>
     logger.warn('[TenantBilling] Super-admin notification failed', { error: e.message }));
 };
 

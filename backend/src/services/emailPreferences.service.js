@@ -2,18 +2,12 @@ const { supabaseAdmin } = require('../config/supabase');
 const auditLogService = require('./auditLog.service');
 const logger = require('../utils/logger');
 
-const ALLOWED_CATEGORIES = new Set([
-  'attendance_anomaly_alerts',
-  'attendance_anomaly_digest',
-  'birthday_wishes',
-  'work_anniversary_wishes',
-  'pending_approvals_digest',
-  'joiner_digest',
-  'prejoining_reminder',
-  'day_one_welcome',
-  'checklist_reminder',
-  'leave_balance_low',
-]);
+const { PREFERENCE_KEYS, PREFERENCES, EMAIL_TYPES } = require('./emailCatalog');
+
+// Derived from the catalogue rather than listed here, so a switch added to
+// emailCatalog.js is accepted everywhere at once. The DB CHECK on
+// company_email_preferences.category is the one other place that lists them.
+const ALLOWED_CATEGORIES = new Set(PREFERENCE_KEYS);
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -94,13 +88,20 @@ const getCompanyEmailPreferences = async (companyId) => {
     throw error;
   }
 
-  const rows = (data || []).map((r) => ({ category: r.category, enabled: r.enabled }));
-  // Ensure every allowed category is present (default true if missing)
-  const existing = new Set(rows.map((r) => r.category));
-  for (const cat of ALLOWED_CATEGORIES) {
-    if (!existing.has(cat)) rows.push({ category: cat, enabled: true });
-  }
-  return rows;
+  // Every switch in catalogue order, defaulting to enabled when no row
+  // exists (a missing row means "never changed"), with the labels and the
+  // emails each one governs so the screen needs no copy of its own.
+  const saved = new Map((data || []).map((r) => [r.category, r.enabled]));
+  return PREFERENCE_KEYS.map((category) => ({
+    category,
+    enabled: saved.has(category) ? saved.get(category) : true,
+    group: PREFERENCES[category].group,
+    label: PREFERENCES[category].label,
+    description: PREFERENCES[category].description,
+    emails: EMAIL_TYPES
+      .filter((t) => t.preference === category)
+      .map((t) => ({ key: t.key, label: t.label, audience: t.audience, live: t.live !== false })),
+  }));
 };
 
 /**
