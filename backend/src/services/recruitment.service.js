@@ -1,3 +1,4 @@
+const { getHrEmailRecipients } = require('./emailRecipients.service');
 const { supabaseAdmin } = require('../config/supabase');
 const { BadRequestError, NotFoundError } = require('../utils/errors');
 const settingsService = require('./settings.service');
@@ -5,14 +6,10 @@ const { uploadResume, getSignedUrl, STORAGE_BUCKETS } = require('./storage.servi
 const emailService = require('./email.service');
 const logger = require('../utils/logger');
 
+/** Offer accepted/rejected notices go to HR — see emailRecipients.service.js. */
 const notifyHrAdmins = async (companyId, send) => {
-  const { data: recipients } = await supabaseAdmin
-    .from('employees')
-    .select('id, first_name, last_name, email')
-    .eq('company_id', companyId)
-    .eq('is_active', true)
-    .in('role', ['hr', 'admin']);
-  for (const r of recipients || []) {
+  const recipients = await getHrEmailRecipients(companyId);
+  for (const r of recipients) {
     send(r).catch((e) => logger.warn('Recruitment notification email failed', { error: e.message }));
   }
 };

@@ -7,6 +7,7 @@ const {
   leaveBalanceLowEmail,
 } = require('../services/email.service');
 const emailPreferencesService = require('../services/emailPreferences.service');
+const { getHrEmailRecipients } = require('../services/emailRecipients.service');
 const logger = require('../utils/logger');
 const config = require('../config/database');
 const { withCronLock } = require('../utils/cronLock');
@@ -53,21 +54,17 @@ const runPendingApprovalsDigest = withCronLock('digest_pending_approvals', 10 * 
 
       if (!pendingLeaves || !pendingLeaves.length) continue;
 
-      // HR and Admin employees who receive the digest
-      const { data: recipients, error: recipientsError } = await supabaseAdmin
-        .from('employees')
-        .select('id, first_name, last_name, email')
-        .eq('company_id', companyId)
-        .eq('is_active', true)
-        .in('role', ['hr', 'admin']);
-
-      if (recipientsError) {
+      // HR only — see emailRecipients.service.js.
+      let recipients;
+      try {
+        recipients = await getHrEmailRecipients(companyId);
+      } catch (recipientsError) {
         logger.warn('[WeeklyDigest] Recipients query failed', { companyId, error: recipientsError.message });
         summary.errors += 1;
         continue;
       }
 
-      if (!recipients || !recipients.length) continue;
+      if (!recipients.length) continue;
 
       const leaveItems = pendingLeaves.map((l) => ({
         name: l.employee
@@ -130,7 +127,7 @@ const runJoinerDigest = withCronLock('digest_joiners', 10 * 60 * 1000, async (re
         continue;
       }
 
-      const [joinersRes, exitsRes, headcountRes, recipientsRes] = await Promise.all([
+      const [joinersRes, exitsRes, headcountRes, recipients] = await Promise.all([
         supabaseAdmin
           .from('employees')
           .select('id, first_name, last_name, department, date_of_joining')
@@ -149,12 +146,8 @@ const runJoinerDigest = withCronLock('digest_joiners', 10 * 60 * 1000, async (re
           .select('id', { count: 'exact', head: true })
           .eq('company_id', companyId)
           .eq('is_active', true),
-        supabaseAdmin
-          .from('employees')
-          .select('id, first_name, last_name, email')
-          .eq('company_id', companyId)
-          .eq('is_active', true)
-          .in('role', ['hr', 'admin']),
+        // HR only — see emailRecipients.service.js.
+        getHrEmailRecipients(companyId),
       ]);
 
       const joiners = (joinersRes.data || []).map((e) => ({
@@ -168,7 +161,6 @@ const runJoinerDigest = withCronLock('digest_joiners', 10 * 60 * 1000, async (re
         date: e.updated_at ? e.updated_at.slice(0, 10) : todayStr,
       }));
       const headcount = headcountRes.count ?? null;
-      const recipients = recipientsRes.data || [];
 
       if (!joiners.length && !exits.length) continue;
 

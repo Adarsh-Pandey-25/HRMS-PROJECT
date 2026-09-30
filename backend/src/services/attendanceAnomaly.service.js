@@ -5,6 +5,7 @@ const { TIMEZONE, WORK_HOURS } = require('../utils/constants');
 const emailService = require('./email.service');
 const { isFeatureEmailSuppressed } = require('./emailSuppression.service');
 const emailPreferencesService = require('./emailPreferences.service');
+const { getHrEmailRecipients } = require('./emailRecipients.service');
 
 /**
  * Item 4 thresholds — stated explicitly since neither was already defined
@@ -236,13 +237,11 @@ const sendHrDigest = async (companyId, dateLabel, anomalies, biometricSuppressed
   // digest still send normally.
   const visibleAnomalies = anomalies.filter((a) => !(a.sourceIsBiometric && biometricSuppressed));
   if (!visibleAnomalies.length) return;
-  const { data: hrAdmins } = await supabaseAdmin
-    .from('employees')
-    .select('id, first_name, email')
-    .eq('company_id', companyId)
-    .eq('is_active', true)
-    .in('role', ['hr', 'admin']);
-  if (!hrAdmins?.length) return;
+  // HR only — see emailRecipients.service.js. This digest used to go to
+  // every admin too, which put a tenant's absences in the platform owner's
+  // inbox whenever they were that company's admin.
+  const hrAdmins = await getHrEmailRecipients(companyId);
+  if (!hrAdmins.length) return;
 
   const digestRows = visibleAnomalies.map((a) => ({
     employeeName: `${a.employee.first_name || ''} ${a.employee.last_name || ''}`.trim(),
