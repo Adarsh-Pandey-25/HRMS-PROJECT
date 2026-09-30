@@ -1,6 +1,7 @@
 const { supabaseAdmin } = require('../config/supabase');
 const auditLogService = require('./auditLog.service');
 const logger = require('../utils/logger');
+const { AppError, BadRequestError } = require('../utils/errors');
 
 const { PREFERENCE_KEYS, PREFERENCES, EMAIL_TYPES, AUDIENCE } = require('./emailCatalog');
 
@@ -118,7 +119,7 @@ const getCompanyEmailPreferences = async (companyId) => {
  */
 const setEmailPreference = async (companyId, category, enabled, updatedBy) => {
   if (!ALLOWED_CATEGORIES.has(category)) {
-    throw new Error(`Invalid email preference category: ${category}`);
+    throw new BadRequestError(`Unknown email switch: ${category}`);
   }
 
   // Read current value for audit
@@ -140,16 +141,39 @@ const setEmailPreference = async (companyId, category, enabled, updatedBy) => {
     );
 
   if (error) {
-    logger.error('[EmailPrefs] Upsert failed', { companyId, category, error: error.message });
-    throw error;
+    logger.error('[EmailPrefs] Upsert failed', { companyId, category, code: error.code, error: error.message });
+    // A raw Supabase error has no statusCode, so it surfaced as a bare
+    // "Internal server error" with the cause only in the server log. The two
+    // realistic causes are a migration not yet run; name it. Worded without
+    // Postgres's own phrasing so the error handler's DB-leak mask leaves it.
+    if (error.code === '23514') {
+      // CHECK on category: the switch is newer than the database — the
+      // 13 switches added with the email log need the widened CHECK.
+      throw new AppError(
+        'This email switch needs a database update first: run migration 20260930_email_log_and_preferences.sql in Supabase, then try again.',
+        409,
+        'MIGRATION_REQUIRED',
+      );
+    }
+    if (error.code === '42P01') {
+      throw new AppError(
+        'Email switches are not set up in the database yet: run migration 20260928_company_email_preferences.sql in Supabase, then try again.',
+        409,
+        'MIGRATION_REQUIRED',
+      );
+    }
+    throw new AppError(`Could not save the email switch (${error.code || 'unknown error'}).`, 500);
   }
 
   invalidateCache(companyId);
 
-  await auditLogService.logAudit({
+  // logSuperAdminAudit, not logAudit: logAudit writes the actor into
+  // actor_id, a foreign key to employees, so a super-admin id failed that
+  // key and every change here went unaudited (logAudit only logs its own
+  // failure). This one records the super admin in super_admin_actor_id.
+  await auditLogService.logSuperAdminAudit({
     companyId,
-    actorId: updatedBy,
-    actorRole: 'super_admin',
+    superAdminId: updatedBy,
     actionType: 'email_preference_updated',
     targetType: 'email_preference',
     targetId: `${companyId}:${category}`,
