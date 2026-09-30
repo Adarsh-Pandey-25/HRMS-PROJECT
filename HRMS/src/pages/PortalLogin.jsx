@@ -3,12 +3,47 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { LogIn, ShieldCheck } from 'lucide-react';
+import {
+  LogIn, ShieldCheck, Mail, Clock, CalendarCheck, FileText, Users, CheckCircle2,
+} from 'lucide-react';
 import toast from 'react-hot-toast';
-import { Card, Button, Input } from '../components/ui';
+import { Button, Input } from '../components/ui';
+import { AuthShell, AuthHeading, PasswordInput, CodeInput } from '../components/auth/AuthShell';
+import spaxsyncMark from '../assets/brand/spaxsync-mark.svg';
 import { PageLoader } from '../components/layout/PageLoader';
 import { useAuthStore } from '../store/authStore';
 import { useWorkspaceStore } from '../store/workspaceStore';
+
+/** Brand-panel copy per portal. Features named here all exist in the app. */
+const PORTAL_COPY = {
+  employee: {
+    headline: 'Your workday, all in one place.',
+    subline: (company) => `Check in, apply for leave and find your payslips — everything for your day${company ? ` at ${company}` : ''}.`,
+    highlights: [
+      { icon: Clock, text: 'Check in from the office, your phone or the biometric device' },
+      { icon: CalendarCheck, text: 'Apply for leave and follow every approval' },
+      { icon: FileText, text: 'Payslips and documents whenever you need them' },
+    ],
+  },
+  hr: {
+    headline: 'Everything your people need, handled.',
+    subline: (company) => `Approvals, attendance, payroll and onboarding${company ? ` for ${company}` : ''}.`,
+    highlights: [
+      { icon: CheckCircle2, text: 'Leave and regularization approvals in one queue' },
+      { icon: Users, text: 'Onboarding, documents and employee records' },
+      { icon: ShieldCheck, text: 'Every change recorded in the audit log' },
+    ],
+  },
+  admin: {
+    headline: "Run your company's HR from one place.",
+    subline: (company) => `People, attendance, payroll and settings${company ? ` for ${company}` : ''}.`,
+    highlights: [
+      { icon: Users, text: 'Attendance, leave and payroll in one system' },
+      { icon: CheckCircle2, text: 'Approvals routed to the right people' },
+      { icon: ShieldCheck, text: 'Every change recorded in the audit log' },
+    ],
+  },
+};
 
 const schema = z.object({
   email: z.string().email('Enter a valid email'),
@@ -90,78 +125,81 @@ export default function PortalLogin({ portal, portalLabel, placeholderEmail }) {
     }
   };
 
+  const copy = PORTAL_COPY[portal] || PORTAL_COPY.employee;
+
   return (
-    <div className="min-h-screen flex items-center justify-center bg-page px-4 animate-fade-in">
-      <div className="w-full max-w-sm">
-        <div className="text-center mb-6">
-          {logoUrl ? (
-            <img
-              src={logoUrl}
-              alt={`${companyName} logo`}
-              className="mx-auto mb-4 h-14 max-w-[180px] object-contain"
+    <AuthShell
+      brandName={companyName || 'SpaxSync'}
+      logoUrl={logoUrl}
+      markSrc={companyName ? null : spaxsyncMark}
+      headline={copy.headline}
+      subline={copy.subline(companyName)}
+      highlights={copy.highlights}
+    >
+      {twoFaToken ? (
+        <form onSubmit={onSubmitCode} className="space-y-5">
+          <AuthHeading
+            badge={<><ShieldCheck className="h-3.5 w-3.5" /> Two-step verification</>}
+            title="Enter your code"
+            subtitle="Two-factor authentication is on for this account. Enter the 6-digit code from your authenticator app."
+          />
+          <CodeInput
+            label="Authentication code"
+            required
+            autoFocus
+            value={code}
+            onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+          />
+          <Button type="submit" size="lg" className="w-full shadow-lg shadow-primary/25" loading={isLoading} disabled={isLoading}>
+            Verify and sign in
+          </Button>
+          <button
+            type="button"
+            className="w-full text-sm text-fg-muted transition-colors hover:text-primary"
+            onClick={() => { setTwoFaToken(null); setCode(''); }}
+          >
+            Use a different account
+          </button>
+        </form>
+      ) : (
+        <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
+          <AuthHeading
+            badge={portalLabel}
+            title="Welcome back"
+            subtitle={companyName ? `Sign in to ${companyName} with your work email.` : 'Sign in with your work email.'}
+          />
+          <Input
+            label="Work email"
+            type="email"
+            icon={Mail}
+            required
+            autoComplete="username"
+            placeholder={placeholderEmail}
+            className="h-11"
+            {...register('email')}
+            error={errors.email?.message}
+          />
+          <div>
+            <PasswordInput
+              label="Password"
+              required
+              autoComplete="current-password"
+              placeholder="Enter your password"
+              className="h-11"
+              {...register('password')}
+              error={errors.password?.message}
             />
-          ) : (
-            <div className="mx-auto mb-4 h-14 w-14 rounded-2xl bg-primary flex items-center justify-center shadow-card">
-              <span className="text-on-primary font-bold text-xl leading-none">
-                {(companyName[0] || 'S').toUpperCase()}
-              </span>
+            <div className="mt-2 flex justify-end">
+              <Link to="/forgot-password" className="text-xs font-medium text-primary hover:underline">
+                Forgot password?
+              </Link>
             </div>
-          )}
-          <h1 className="text-xl font-semibold text-fg">
-            {companyName ? `Sign in to ${companyName}` : `Sign in to the ${portalLabel}`}
-          </h1>
-          <p className="mt-1 text-sm text-fg-muted">
-            {companyName ? `${portalLabel} · Enter your work email and password.` : 'Enter your work email and password.'}
-          </p>
-        </div>
-
-        <Card className="p-6">
-          {twoFaToken ? (
-            <form onSubmit={onSubmitCode} className="space-y-4">
-              <div className="flex items-start gap-3 text-sm text-fg-muted">
-                <ShieldCheck className="h-5 w-5 text-primary shrink-0 mt-0.5" />
-                <p>Two-factor authentication is on for this account. Enter the 6-digit code from your authenticator app.</p>
-              </div>
-              <Input
-                label="Authentication code"
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                maxLength={6}
-                required
-                value={code}
-                onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-              />
-              <Button type="submit" size="lg" className="w-full" loading={isLoading} disabled={isLoading}>
-                Verify and sign in
-              </Button>
-              <button
-                type="button"
-                className="w-full text-xs text-fg-muted hover:text-primary"
-                onClick={() => { setTwoFaToken(null); setCode(''); }}
-              >
-                Use a different account
-              </button>
-            </form>
-          ) : (
-            <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-              <Input label="Work email" type="email" required autoComplete="username" placeholder={placeholderEmail} {...register('email')} error={errors.email?.message} />
-              <Input label="Password" type="password" required autoComplete="current-password" placeholder="Enter your password" {...register('password')} error={errors.password?.message} />
-              <div className="flex justify-end -mt-1">
-                <Link to="/forgot-password" className="text-xs text-primary hover:underline font-medium">
-                  Forgot password?
-                </Link>
-              </div>
-              <Button type="submit" size="lg" className="w-full" icon={LogIn} loading={isLoading} disabled={isLoading}>
-                Sign In
-              </Button>
-            </form>
-          )}
-        </Card>
-
-        <p className="mt-6 text-center text-xs text-fg-subtle">
-          Powered by <a href="https://spaxsync.com" className="font-medium text-fg-muted hover:text-primary">SpaxSync</a>
-        </p>
-      </div>
-    </div>
+          </div>
+          <Button type="submit" size="lg" className="w-full shadow-lg shadow-primary/25" icon={LogIn} loading={isLoading} disabled={isLoading}>
+            Sign in
+          </Button>
+        </form>
+      )}
+    </AuthShell>
   );
 }

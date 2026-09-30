@@ -3,9 +3,20 @@ import { useNavigate } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Shield, LogIn, KeyRound } from 'lucide-react';
+import {
+  Shield, LogIn, KeyRound, Mail, Building2, CreditCard, Activity,
+} from 'lucide-react';
 import toast from 'react-hot-toast';
-import { Card, Button, Input } from '../../components/ui';
+import { Button, Input } from '../../components/ui';
+import { AuthShell, AuthHeading, PasswordInput, CodeInput } from '../../components/auth/AuthShell';
+import spaxsyncMark from '../../assets/brand/spaxsync-mark.svg';
+
+/** Brand-panel highlights — each is a real section of this console. */
+const HIGHLIGHTS = [
+  { icon: Building2, text: 'Every company, its features and its email switches' },
+  { icon: CreditCard, text: 'Plans, subscriptions, invoices and payments' },
+  { icon: Activity, text: 'System health, the email log and the audit trail' },
+];
 import { PageLoader } from '../../components/layout/PageLoader';
 import { useSuperAdminStore } from '../../store/superAdminStore';
 
@@ -77,43 +88,45 @@ export default function SuperAdminLogin() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-page px-4">
-      <Card className="w-full max-w-md p-8">
-        <div className="flex flex-col items-center text-center mb-6">
-          <div className="h-12 w-12 rounded-2xl bg-primary/10 text-primary flex items-center justify-center mb-3">
-            {needsTwoFactor ? <KeyRound className="h-6 w-6" /> : <Shield className="h-6 w-6" />}
-          </div>
-          <h1 className="text-xl font-semibold text-fg">{needsTwoFactor ? 'Enter your code' : 'Super Admin'}</h1>
-          <p className="mt-1 text-sm text-fg-muted">
-            {needsTwoFactor
-              ? 'Open your authenticator app and enter the 6-digit code'
-              : 'Platform control — companies, billing, and support operations'}
-          </p>
-        </div>
-        {needsTwoFactor ? (
-          <form onSubmit={codeForm.handleSubmit(onSubmitCode)} className="space-y-4">
-            <Input
-              label="Authentication code"
-              inputMode="numeric"
-              maxLength={6}
-              autoComplete="one-time-code"
-              error={codeForm.formState.errors.code?.message}
-              {...codeForm.register('code')}
-            />
-            <Button type="submit" className="w-full" icon={LogIn} loading={isLoading} disabled={isLoading}>
-              Verify
-            </Button>
-          </form>
-        ) : (
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-            <Input label="Email" type="email" autoComplete="username" error={errors.email?.message} {...register('email')} />
-            <Input label="Password" type="password" autoComplete="current-password" error={errors.password?.message} {...register('password')} />
-            <Button type="submit" className="w-full" icon={LogIn} loading={isLoading} disabled={isLoading}>
-              Sign in
-            </Button>
-          </form>
-        )}
-      </Card>
-    </div>
+    <AuthShell
+      brandName="SpaxSync"
+      markSrc={spaxsyncMark}
+      eyebrow="Platform console"
+      headline="Run the platform behind every workspace."
+      subline="Companies, billing and support operations for SpaxSync, in one secure console."
+      highlights={HIGHLIGHTS}
+    >
+      {needsTwoFactor ? (
+        <form onSubmit={codeForm.handleSubmit(onSubmitCode)} className="space-y-5">
+          <AuthHeading
+            badge={<><KeyRound className="h-3.5 w-3.5" /> Two-step verification</>}
+            title="Enter your code"
+            subtitle="Open your authenticator app and enter the 6-digit code."
+          />
+          <CodeInput
+            label="Authentication code"
+            autoFocus
+            error={codeForm.formState.errors.code?.message}
+            {...codeForm.register('code')}
+          />
+          <Button type="submit" size="lg" className="w-full shadow-lg shadow-primary/25" icon={LogIn} loading={isLoading} disabled={isLoading}>
+            Verify
+          </Button>
+        </form>
+      ) : (
+        <form onSubmit={handleSubmit(onSubmit)} className="space-y-5">
+          <AuthHeading
+            badge={<><Shield className="h-3.5 w-3.5" /> Super Admin</>}
+            title="Welcome back"
+            subtitle="Sign in to the SpaxSync platform console."
+          />
+          <Input label="Email" type="email" icon={Mail} autoComplete="username" className="h-11" error={errors.email?.message} {...register('email')} />
+          <PasswordInput label="Password" autoComplete="current-password" className="h-11" error={errors.password?.message} {...register('password')} />
+          <Button type="submit" size="lg" className="w-full shadow-lg shadow-primary/25" icon={LogIn} loading={isLoading} disabled={isLoading}>
+            Sign in
+          </Button>
+        </form>
+      )}
+    </AuthShell>
   );
 }

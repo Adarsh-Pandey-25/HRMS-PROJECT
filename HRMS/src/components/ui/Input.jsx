@@ -26,7 +26,7 @@ const baseInput =
   'disabled:opacity-60 disabled:cursor-not-allowed';
 
 export const Input = forwardRef(function Input(
-  { label, error, hint, required, className, containerClass, icon: Icon, ...props },
+  { label, error, hint, required, className, containerClass, icon: Icon, trailing, ...props },
   ref
 ) {
   const input = (
@@ -36,9 +36,12 @@ export const Input = forwardRef(function Input(
       )}
       <input
         ref={ref}
-        className={cn(baseInput, 'h-10', Icon && 'pl-9', error && 'border-danger focus:ring-danger', className)}
+        className={cn(baseInput, 'h-10', Icon && 'pl-9', trailing && 'pr-10', error && 'border-danger focus:ring-danger', className)}
         {...props}
       />
+      {/* An interactive control inside the field's right edge, e.g. a
+          show/hide-password button. */}
+      {trailing && <div className="absolute right-1.5 top-1/2 -translate-y-1/2">{trailing}</div>}
     </div>
   );
   if (!label && !error && !hint) return input;
