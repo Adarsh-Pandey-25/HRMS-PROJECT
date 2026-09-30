@@ -117,52 +117,91 @@ const getCompanyEmailPreferences = async (companyId) => {
 /**
  * Upsert a single preference, clear cache, and audit-log the change.
  */
+/**
+ * Turn a failed write into a message the super admin can act on. Always a
+ * 4xx: the error handler replaces every 5xx message with "Internal server
+ * error", which is exactly what hid the cause before. Worded without
+ * Postgres's own phrasing so the handler's raw-DB-error mask leaves it be.
+ */
+const saveError = (error) => {
+  const code = error?.code || 'unknown';
+  if (code === '23514') {
+    return new AppError(
+      'This email switch needs a database update first. In Supabase SQL editor, run migration 20260930_email_log_and_preferences.sql, then try again.',
+      409,
+      'MIGRATION_REQUIRED',
+    );
+  }
+  if (code === '42P01') {
+    return new AppError(
+      'Email switches are not set up in the database yet. In Supabase SQL editor, run migration 20260928_company_email_preferences.sql, then try again.',
+      409,
+      'MIGRATION_REQUIRED',
+    );
+  }
+  return new AppError(
+    `Could not save the email switch (database error ${code}). The server log has the details under [EmailPrefs].`,
+    409,
+    'EMAIL_PREF_SAVE_FAILED',
+  );
+};
+
+/**
+ * Write one switch. Update-or-insert by hand rather than an upsert with
+ * onConflict, so the save does not depend on the unique index existing, and
+ * retried without updated_by if that column or its foreign key is what a
+ * given database rejects — the switch itself matters more than who flipped it
+ * (the audit log records that separately).
+ */
+const writePreference = async (existingId, companyId, category, enabled, updatedBy) => {
+  const attempt = async (withActor) => {
+    const fields = { enabled, updated_at: new Date().toISOString() };
+    if (withActor) fields.updated_by = updatedBy;
+    if (existingId) {
+      return supabaseAdmin.from('company_email_preferences').update(fields).eq('id', existingId);
+    }
+    return supabaseAdmin.from('company_email_preferences').insert({ company_id: companyId, category, ...fields });
+  };
+
+  let { error } = await attempt(true);
+  // 23503: updated_by's foreign key; 42703: a column this database lacks.
+  if (error && (error.code === '23503' || error.code === '42703')) {
+    logger.warn('[EmailPrefs] Retrying without updated_by', { companyId, category, code: error.code, error: error.message });
+    ({ error } = await attempt(false));
+  }
+  // 23505: a concurrent request inserted the row first — update it instead.
+  if (error && error.code === '23505' && !existingId) {
+    const { data: row } = await supabaseAdmin
+      .from('company_email_preferences').select('id')
+      .eq('company_id', companyId).eq('category', category).maybeSingle();
+    if (row?.id) return writePreference(row.id, companyId, category, enabled, updatedBy);
+  }
+  return error;
+};
+
 const setEmailPreference = async (companyId, category, enabled, updatedBy) => {
   if (!ALLOWED_CATEGORIES.has(category)) {
     throw new BadRequestError(`Unknown email switch: ${category}`);
   }
 
-  // Read current value for audit
-  const { data: existing } = await supabaseAdmin
+  const { data: existing, error: readError } = await supabaseAdmin
     .from('company_email_preferences')
-    .select('enabled')
+    .select('id, enabled')
     .eq('company_id', companyId)
     .eq('category', category)
     .maybeSingle();
+  if (readError) {
+    logger.error('[EmailPrefs] Read failed', { companyId, category, code: readError.code, error: readError.message });
+    throw saveError(readError);
+  }
 
   const oldValue = existing?.enabled ?? true;
   if (oldValue === enabled) return { changed: false, oldValue, newValue: enabled };
 
-  const { error } = await supabaseAdmin
-    .from('company_email_preferences')
-    .upsert(
-      { company_id: companyId, category, enabled, updated_by: updatedBy, updated_at: new Date().toISOString() },
-      { onConflict: 'company_id,category' },
-    );
-
+  const error = await writePreference(existing?.id || null, companyId, category, enabled, updatedBy);
   if (error) {
-    logger.error('[EmailPrefs] Upsert failed', { companyId, category, code: error.code, error: error.message });
-    // A raw Supabase error has no statusCode, so it surfaced as a bare
-    // "Internal server error" with the cause only in the server log. The two
-    // realistic causes are a migration not yet run; name it. Worded without
-    // Postgres's own phrasing so the error handler's DB-leak mask leaves it.
-    if (error.code === '23514') {
-      // CHECK on category: the switch is newer than the database — the
-      // 13 switches added with the email log need the widened CHECK.
-      throw new AppError(
-        'This email switch needs a database update first: run migration 20260930_email_log_and_preferences.sql in Supabase, then try again.',
-        409,
-        'MIGRATION_REQUIRED',
-      );
-    }
-    if (error.code === '42P01') {
-      throw new AppError(
-        'Email switches are not set up in the database yet: run migration 20260928_company_email_preferences.sql in Supabase, then try again.',
-        409,
-        'MIGRATION_REQUIRED',
-      );
-    }
-    throw new AppError(`Could not save the email switch (${error.code || 'unknown error'}).`, 500);
+    logger.error('[EmailPrefs] Save failed', { companyId, category, code: error.code, error: error.message, details: error.details, hint: error.hint });
+    throw saveError(error);
   }
 
   invalidateCache(companyId);
