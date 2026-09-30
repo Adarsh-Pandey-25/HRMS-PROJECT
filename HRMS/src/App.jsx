@@ -37,6 +37,7 @@ const SuperAdminFailedPayments = lazy(() => import('./pages/super-admin/FailedPa
 const SuperAdminSystemHealth = lazy(() => import('./pages/super-admin/SystemHealth'));
 const SuperAdminUsers = lazy(() => import('./pages/super-admin/AdminUsers'));
 const SuperAdminLeads = lazy(() => import('./pages/super-admin/Leads'));
+const SuperAdminEmailLog = lazy(() => import('./pages/super-admin/EmailLog'));
 const Dashboard = lazy(loaders['/dashboard']);
 const EmployeeList = lazy(loaders['/employees']);
 const EmployeeProfile = lazy(() => import('./pages/employees/EmployeeProfile'));
@@ -190,6 +191,7 @@ export default function App() {
             <Route path="system-health" element={<Suspense fallback={<PageLoader />}><SuperAdminSystemHealth /></Suspense>} />
             <Route path="admin-users" element={<Suspense fallback={<PageLoader />}><SuperAdminUsers /></Suspense>} />
             <Route path="leads" element={<Suspense fallback={<PageLoader />}><SuperAdminLeads /></Suspense>} />
+            <Route path="email-log" element={<Suspense fallback={<PageLoader />}><SuperAdminEmailLog /></Suspense>} />
           </Route>
         </Route>
       </Route>

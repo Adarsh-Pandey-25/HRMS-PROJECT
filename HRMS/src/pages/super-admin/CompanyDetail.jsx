@@ -4,12 +4,14 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import {
   Building2, Power, UserCog, StickyNote, Receipt, ScrollText, Gauge, ToggleLeft, ArrowLeft, Plus, Trash2,
+  Mail,
 } from 'lucide-react';
 import {
   Card, CardHeader, Button, Badge, Skeleton, Tabs, Textarea, Modal, Input, Select, Toggle, EmptyState, Field,
 } from '../../components/ui';
 import { formatDateTime, formatCurrency } from '../../lib/utils';
 import { applyGST } from '../../lib/gst';
+import { CompanyEmailsTab } from './CompanyEmailsTab';
 import {
   getCompanyProfileApi, updateCompanyProfileApi, listCompanyEmployeesApi, getCompanySubscriptionDetailApi,
   getCompanyUsageApi, getCompanyAuditLogApi, listCompanyNotesApi, addCompanyNoteApi, deleteCompanyNoteApi,
@@ -42,6 +44,7 @@ const TABS = [
   { id: 'employees', label: 'Employees', icon: UserCog },
   { id: 'billing', label: 'Subscription & Billing', icon: Receipt },
   { id: 'features', label: 'Features & Limits', icon: ToggleLeft },
+  { id: 'emails', label: 'Emails', icon: Mail },
   { id: 'activity', label: 'Activity Log', icon: ScrollText },
   { id: 'notes', label: 'Internal Notes', icon: StickyNote },
 ];
@@ -147,6 +150,7 @@ export default function CompanyDetail() {
       {tab === 'employees' && <EmployeesTab companyId={id} />}
       {tab === 'billing' && <BillingTab companyId={id} />}
       {tab === 'features' && <FeaturesTab companyId={id} />}
+      {tab === 'emails' && <CompanyEmailsTab companyId={id} />}
       {tab === 'activity' && <ActivityTab companyId={id} />}
       {tab === 'notes' && <NotesTab companyId={id} />}
 

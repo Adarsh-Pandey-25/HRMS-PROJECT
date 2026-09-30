@@ -14,7 +14,10 @@ const listEmailLog = async (req, res, next) => {
       },
       req.query,
     );
-    successResponse(res, 'Email log fetched', { rows, statusCounts }, meta);
+    // Rows as `data` and the totals in `meta`, the shape every other
+    // paginated endpoint uses — the client's paginated helper expects data
+    // to be the array and would otherwise quietly return nothing.
+    successResponse(res, 'Email log fetched', rows, { ...meta, statusCounts });
   } catch (err) { next(err); }
 };
 

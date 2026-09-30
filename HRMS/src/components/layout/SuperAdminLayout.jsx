@@ -1,7 +1,7 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import {
   Building2, Link2, LogOut, Shield, LayoutDashboard, CreditCard, Layers, Receipt,
-  Gauge, Tag, AlertOctagon, Activity, Users2, Inbox,
+  Gauge, Tag, AlertOctagon, Activity, Users2, Inbox, Mail,
 } from 'lucide-react';
 import { useSuperAdminStore } from '../../store/superAdminStore';
 import { cn } from '../../lib/utils';
@@ -21,6 +21,8 @@ const NAV = [
   { to: '/super-admin/coupons', label: 'Coupons', icon: Tag, roles: ['billing_admin'] },
   { to: '/super-admin/failed-payments', label: 'Failed Payments', icon: AlertOctagon, roles: ['billing_admin'] },
   { to: '/super-admin/system-health', label: 'System Health', icon: Activity, roles: [] },
+  // full_admin only — holds recipient addresses across every company.
+  { to: '/super-admin/email-log', label: 'Email Log', icon: Mail, roles: [] },
   { to: '/super-admin/admin-users', label: 'Admin Users', icon: Users2, roles: null },
 ];
 

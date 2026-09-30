@@ -2,7 +2,7 @@ const { supabaseAdmin } = require('../config/supabase');
 const auditLogService = require('./auditLog.service');
 const logger = require('../utils/logger');
 
-const { PREFERENCE_KEYS, PREFERENCES, EMAIL_TYPES } = require('./emailCatalog');
+const { PREFERENCE_KEYS, PREFERENCES, EMAIL_TYPES, AUDIENCE } = require('./emailCatalog');
 
 // Derived from the catalogue rather than listed here, so a switch added to
 // emailCatalog.js is accepted everywhere at once. The DB CHECK on
@@ -100,7 +100,16 @@ const getCompanyEmailPreferences = async (companyId) => {
     description: PREFERENCES[category].description,
     emails: EMAIL_TYPES
       .filter((t) => t.preference === category)
-      .map((t) => ({ key: t.key, label: t.label, audience: t.audience, live: t.live !== false })),
+      // audienceLabel is resolved here, not by the client: the client
+      // camelCases object keys, so a lookup map keyed 'hr_admin' would
+      // arrive keyed 'hrAdmin' and miss.
+      .map((t) => ({
+        key: t.key,
+        label: t.label,
+        audience: t.audience,
+        audienceLabel: AUDIENCE[t.audience] || t.audience,
+        live: t.live !== false,
+      })),
   }));
 };
 

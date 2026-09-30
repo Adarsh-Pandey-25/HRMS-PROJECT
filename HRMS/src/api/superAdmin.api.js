@@ -173,3 +173,30 @@ export async function peekOnboardingInviteApi(token) {
     url: `/auth/onboarding/invite/${encodeURIComponent(token)}`,
   });
 }
+
+// ── Email log, catalogue and per-company switches ───────────────────────
+/** Every email the platform sent, skipped or failed — newest first.
+ *  `companyId` may be 'platform' for email tied to no company. */
+export async function listEmailLogApi({ page = 1, limit = 25, companyId, type, status, recipient, from, to } = {}) {
+  const params = { page, limit };
+  if (companyId) params.company_id = companyId;
+  if (type) params.type = type;
+  if (status) params.status = status;
+  if (recipient) params.recipient = recipient;
+  if (from) params.from = from;
+  if (to) params.to = to;
+  return apiRequestPaginated({ method: 'GET', url: '/super-admin/email-log', params });
+}
+
+/** Which email goes to whom, for what, and which switch governs it. */
+export const getEmailCatalogApi = () => apiRequest({ method: 'GET', url: '/super-admin/email-catalog' });
+
+export const getCompanyEmailPreferencesApi = (companyId) =>
+  apiRequest({ method: 'GET', url: '/super-admin/email-preferences', params: { company_id: companyId } });
+
+export const setCompanyEmailPreferenceApi = (companyId, category, enabled) =>
+  apiRequest({
+    method: 'PATCH',
+    url: `/super-admin/email-preferences/${companyId}/${encodeURIComponent(category)}`,
+    data: { enabled },
+  });
