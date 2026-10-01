@@ -67,11 +67,10 @@ const createLead = async (payload, { ipAddress, userAgent }) => {
   const {
     leadNotificationEmail, leadConfirmationEmail,
   } = require('./email.service');
-  const superAdminEmail = process.env.SUPER_ADMIN_EMAIL;
-  if (superAdminEmail) {
-    leadNotificationEmail(superAdminEmail, data)
-      .catch((e) => logger.warn('[Leads] super-admin notification failed', { error: e.message }));
-  }
+  // Super admins from the database (plus SUPER_ADMIN_EMAIL if still set).
+  require('./emailRecipients.service').getPlatformAlertTo(['full_admin'])
+    .then((to) => (to ? leadNotificationEmail(to, data) : null))
+    .catch((e) => logger.warn('[Leads] super-admin notification failed', { error: e.message }));
   leadConfirmationEmail(data.work_email, { fullName: data.full_name, type: data.type })
     .catch((e) => logger.warn('[Leads] confirmation email failed', { error: e.message }));
 

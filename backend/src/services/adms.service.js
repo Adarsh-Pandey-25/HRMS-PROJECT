@@ -216,7 +216,7 @@ const alertOnUnauthorizedDevice = async (deviceSerial, reason, meta = {}) => {
   if (now - lastAlertAt < UNAUTHORIZED_ALERT_COOLDOWN_MS) return;
   await settingsService.setSetting(UNAUTHORIZED_ALERT_SETTING_KEY, new Date(now).toISOString(), null, null);
 
-  const to = process.env.SUPER_ADMIN_EMAIL;
+  const to = await require('./emailRecipients.service').getPlatformAlertTo(['full_admin', 'support_admin']).catch(() => '');
   if (!to) return;
 
   const { sendEmail } = require('./email.service');
@@ -254,7 +254,7 @@ const alertOnSaveFailure = async (deviceSerial, errorMessage, count) => {
   if (now - lastAlertAt < SAVE_FAILURE_ALERT_COOLDOWN_MS) return;
   await settingsService.setSetting(SAVE_FAILURE_ALERT_SETTING_KEY, new Date(now).toISOString(), null, null);
 
-  const to = process.env.SUPER_ADMIN_EMAIL;
+  const to = await require('./emailRecipients.service').getPlatformAlertTo(['full_admin', 'support_admin']).catch(() => '');
   if (!to) return;
 
   const { sendEmail } = require('./email.service');

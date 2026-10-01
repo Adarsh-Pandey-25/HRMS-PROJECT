@@ -65,7 +65,15 @@ const generateBootstrapPassword = () => {
 
 const ensureSeedSuperAdmin = async () => {
   const email = String(process.env.SUPER_ADMIN_EMAIL || '').trim().toLowerCase();
-  if (!email) return { seeded: false, reason: 'env_missing' };
+  // SUPER_ADMIN_EMAIL is optional: super admins live in the super_admins
+  // table, and `npm run super-admin` creates the first one without .env.
+  if (!email) {
+    const { count, error } = await supabaseAdmin.from('super_admins').select('id', { count: 'exact', head: true });
+    if (!error && count === 0) {
+      logger.warn('No super admin account exists yet. On the server run: cd backend && npm run super-admin');
+    }
+    return { seeded: false, reason: 'env_missing' };
+  }
 
   try {
     const { data: existing, error } = await supabaseAdmin

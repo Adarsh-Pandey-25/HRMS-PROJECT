@@ -22,7 +22,7 @@ const alertOnCronFailure = async (jobName, errorMessage, meta = {}) => {
   if (now - lastAlertAt < CRON_ALERT_COOLDOWN_MS) return;
   await settingsService.setSetting(settingKey, new Date(now).toISOString(), null, null);
 
-  const to = process.env.SUPER_ADMIN_EMAIL;
+  const to = await require('../services/emailRecipients.service').getPlatformAlertTo(['full_admin', 'support_admin']).catch(() => '');
   if (!to) return;
 
   const { sendEmail } = require('../services/email.service');

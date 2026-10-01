@@ -87,7 +87,7 @@ const getMyPaymentMethod = async () => ({ configured: false, note: 'Payment gate
 // ── Self-serve change requests (pending_payment fallback) ───────────────
 
 const notifySuperAdminOfRequest = async (subject, htmlBody) => {
-  const to = process.env.SUPER_ADMIN_EMAIL;
+  const to = await require('./emailRecipients.service').getPlatformAlertTo(['full_admin', 'billing_admin']).catch(() => '');
   if (!to) return;
   const { sendEmail } = require('./email.service');
   sendEmail({ to, subject, html: `<p>${htmlBody}</p>`, type: 'billing_alert' }).catch((e) =>
