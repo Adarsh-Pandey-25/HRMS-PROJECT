@@ -184,10 +184,48 @@ const backfillPunchesForMapping = async (deviceSerial, deviceUserId, employeeId,
   return { backfilled: punches.length, windowsRecomputed: windowStarts.size };
 };
 
+const fullName = (emp) => `${emp?.first_name || ''} ${emp?.last_name || ''}`.trim() || 'This employee';
+
+/**
+ * One biometric ID per employee. The same ID may be enrolled on several of
+ * the company's devices (that is still one person, one ID), but an employee
+ * can never hold two different IDs: their punches would split across two
+ * identities and a stale ID could be re-used by someone else. Returns the
+ * message to refuse with, or null when the mapping is allowed.
+ */
+const oneIdPerEmployeeConflict = async (employee, deviceUserId, deviceSerial) => {
+  const { data: existing, error } = await supabaseAdmin
+    .from('device_employee_mapping')
+    .select('device_user_id, device_serial')
+    .eq('employee_id', employee.id);
+  if (error) throw error;
+  const name = fullName(employee);
+  const otherId = (existing || []).find((m) => m.device_user_id !== deviceUserId);
+  if (otherId) {
+    return `${name} already has biometric ID ${otherId.device_user_id}. An employee can have only one biometric ID — remove that mapping first if you want to change it.`;
+  }
+  if ((existing || []).some((m) => m.device_serial === deviceSerial)) {
+    return `${name} is already mapped to biometric ID ${deviceUserId} on this device.`;
+  }
+  return null;
+};
+
+/** Who already holds this ID on this device — for a clear refusal message. */
+const describeIdHolder = async (deviceUserId, deviceSerial) => {
+  const { data } = await supabaseAdmin
+    .from('device_employee_mapping')
+    .select('employees(first_name, last_name)')
+    .eq('device_user_id', deviceUserId)
+    .eq('device_serial', deviceSerial)
+    .maybeSingle();
+  return data?.employees ? fullName(data.employees) : null;
+};
+
 /** Only expose mappings/employees that belong to the requesting HR/Admin's company. */
 const create = async (req, res, next) => {
   try {
-    const { device_user_id: deviceUserId, employee_id: employeeId, device_serial: deviceSerial } = req.body || {};
+    const { device_user_id: rawDeviceUserId, employee_id: employeeId, device_serial: deviceSerial } = req.body || {};
+    const deviceUserId = String(rawDeviceUserId ?? '').trim();
     if (!deviceUserId || !employeeId || !deviceSerial) {
       throw new BadRequestError('device_user_id, employee_id and device_serial are required');
     }
@@ -196,25 +234,37 @@ const create = async (req, res, next) => {
 
     const { data: employee, error: employeeError } = await supabaseAdmin
       .from('employees')
-      .select('id, company_id')
+      .select('id, company_id, first_name, last_name')
       .eq('id', employeeId)
       .eq('company_id', req.user.company_id)
       .maybeSingle();
     if (employeeError) throw employeeError;
     if (!employee) throw new NotFoundError('Employee not found');
 
+    const conflict = await oneIdPerEmployeeConflict(employee, deviceUserId, serial);
+    if (conflict) throw new ConflictError(conflict);
+
     const { data, error } = await supabaseAdmin
       .from('device_employee_mapping')
-      .insert({ device_user_id: String(deviceUserId), employee_id: employeeId, device_serial: serial })
+      .insert({ device_user_id: deviceUserId, employee_id: employeeId, device_serial: serial })
       .select('id, device_user_id, device_serial, employee_id, created_at, employees(first_name, last_name, employee_code)')
       .single();
 
     if (error) {
-      if (error.code === '23505') throw new ConflictError('This device user ID is already mapped on this device');
+      if (error.code === '23505') {
+        // Either the ID is taken on this device, or (with migration 20261002)
+        // a concurrent request gave this employee another ID first.
+        const raced = await oneIdPerEmployeeConflict(employee, deviceUserId, serial);
+        if (raced) throw new ConflictError(raced);
+        const holder = await describeIdHolder(deviceUserId, serial);
+        throw new ConflictError(holder
+          ? `Biometric ID ${deviceUserId} on this device already belongs to ${holder}.`
+          : `Biometric ID ${deviceUserId} is already mapped on this device.`);
+      }
       throw error;
     }
 
-    const backfill = await backfillPunchesForMapping(serial, String(deviceUserId), employeeId, req.user.company_id, device.claimed_at);
+    const backfill = await backfillPunchesForMapping(serial, deviceUserId, employeeId, req.user.company_id, device.claimed_at);
 
     successResponse(res, 'Mapping created', { ...withEmployeeName(data), backfill }, null, 201);
   } catch (err) { next(err); }

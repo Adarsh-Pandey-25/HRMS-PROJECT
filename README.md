@@ -93,6 +93,7 @@ function) and must go first on a fresh project; everything in
 20. `20260929_course_chapters_and_category.sql` — links lessons to chapters (`addChapter` wrote nothing before this) and adds the course `category` the catalog card already rendered
 21. `20260930_email_log_and_preferences.sql` — **creates `email_log`** for the super-admin Email Log, and widens the per-company email switches from 10 to all 23. Until it runs, emails still send but nothing is logged, and switching off any of the 13 new ones fails
 22. `20261001_fix_company_email_preferences_shape.sql` — repairs a `company_email_preferences` table created before 20260928 in another shape (production's had no `id`); recreates it only if empty, refuses otherwise
+23. `20261002_one_biometric_id_per_employee.sql` — one biometric ID per employee, enforced in the database (the same ID on several devices is still allowed); refuses, changing nothing, if an employee already has two IDs
 
 Migrations are idempotent (`IF NOT EXISTS` / `CREATE OR REPLACE`), so
 re-running one is safe.

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Plus, Trash2, Fingerprint } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { Card, CardHeader, Button, Input, Select, Modal, Badge, EmptyState, Skeleton } from '../../components/ui';
@@ -14,6 +14,7 @@ function AddMappingModal({ open, onClose }) {
   const { employees } = useEmployees();
   const { data: admsStatus } = useAdmsStatus();
   const { data: deviceUsers = [] } = useDeviceUsers();
+  const { data: mappings = [] } = useDeviceMappings();
   const devices = admsStatus?.devices || [];
   const unmappedDeviceUsers = deviceUsers.filter((d) => !d.mapped);
   const { create } = useDeviceMappingMutations();
@@ -22,11 +23,32 @@ function AddMappingModal({ open, onClose }) {
   const [employeeId, setEmployeeId] = useState('');
   const [deviceSerial, setDeviceSerial] = useState(devices.length === 1 ? devices[0].deviceSerial : '');
 
-  const resolvedDeviceUserId = deviceUserId === MANUAL_ENTRY ? manualId.trim() : deviceUserId;
+  // One biometric ID per employee (the server enforces it too). An employee
+  // who already has an ID can only be added to ANOTHER device, with that
+  // same ID.
+  const mappingsByEmployee = useMemo(() => {
+    const byEmployee = new Map();
+    for (const m of mappings) {
+      if (!byEmployee.has(m.employeeId)) byEmployee.set(m.employeeId, []);
+      byEmployee.get(m.employeeId).push(m);
+    }
+    return byEmployee;
+  }, [mappings]);
+  const isMappedOn = (rows, serial) => rows.some((m) => m.deviceSerial === serial)
+    // With no device picked yet and only one device, "mapped anywhere" is "mapped here".
+    || (!serial && devices.length <= 1 && rows.length > 0);
+  const employeeMappings = mappingsByEmployee.get(employeeId) || [];
+  const existingId = employeeMappings[0]?.deviceUserId || null;
+  const alreadyMappedHere = isMappedOn(employeeMappings, deviceSerial);
+
+  const resolvedDeviceUserId = existingId || (deviceUserId === MANUAL_ENTRY ? manualId.trim() : deviceUserId);
 
   const save = async () => {
     if (!resolvedDeviceUserId || !employeeId || !deviceSerial) {
       return toast.error('Device, employee, and device user ID are all required');
+    }
+    if (alreadyMappedHere) {
+      return toast.error(`This employee already has biometric ID ${existingId}. Remove that mapping first to change it.`);
     }
     try {
       const result = await create.mutateAsync({ deviceUserId: resolvedDeviceUserId, employeeId, deviceSerial });
@@ -52,7 +74,7 @@ function AddMappingModal({ open, onClose }) {
       title="Map Device User ID to Employee"
       footer={<>
         <Button variant="outline" onClick={onClose}>Cancel</Button>
-        <Button onClick={save} loading={create.isPending}>Add Mapping</Button>
+        <Button onClick={save} loading={create.isPending} disabled={alreadyMappedHere}>Add Mapping</Button>
       </>}
     >
       <div className="space-y-4">
@@ -70,31 +92,53 @@ function AddMappingModal({ open, onClose }) {
           label="Employee"
           value={employeeId}
           onChange={(e) => setEmployeeId(e.target.value)}
-          options={[{ value: '', label: 'Select employee…' }, ...employees.map((e) => ({ value: e.id, label: `${e.name} (${e.employeeCode})` }))]}
+          hint="Each employee has one biometric ID. Employees already mapped on this device are greyed out."
+          options={[{ value: '', label: 'Select employee…' }, ...employees.map((e) => {
+            const rows = mappingsByEmployee.get(e.id) || [];
+            return {
+              value: e.id,
+              label: `${e.name} (${e.employeeCode})${rows.length ? ` — has ID ${rows[0].deviceUserId}` : ''}`,
+              disabled: isMappedOn(rows, deviceSerial),
+            };
+          })]}
         />
-        <Select
-          label="Device user ID"
-          value={deviceUserId}
-          onChange={(e) => setDeviceUserId(e.target.value)}
-          options={[
-            { value: '', label: 'Select device user ID…' },
-            ...unmappedDeviceUsers.map((d) => ({
-              value: d.deviceUserId,
-              label: `${d.deviceUserId} — ${d.punchCount} punch${d.punchCount === 1 ? '' : 'es'}, last seen ${new Date(d.lastSeen).toLocaleDateString()}`,
-            })),
-            { value: MANUAL_ENTRY, label: "Other (hasn't punched yet — type manually)" },
-          ]}
-        />
-        {deviceUserId === MANUAL_ENTRY && (
-          <Input
-            label="Device user ID"
-            type="number"
-            placeholder="e.g. 5"
-            value={manualId}
-            onChange={(e) => setManualId(e.target.value)}
-          />
+        {alreadyMappedHere ? (
+          <p className="rounded-lg bg-danger/10 px-3 py-2 text-sm text-danger">
+            This employee already has biometric ID {existingId} on this device. An employee can have only one biometric ID —
+            remove the existing mapping first if you want to change it.
+          </p>
+        ) : existingId ? (
+          <p className="rounded-lg bg-muted px-3 py-2 text-sm text-fg-muted">
+            This employee already uses biometric ID <span className="font-mono font-semibold text-fg">{existingId}</span> on another device.
+            The same ID will be used on this one — an employee has only one biometric ID.
+          </p>
+        ) : (
+          <>
+            <Select
+              label="Device user ID"
+              value={deviceUserId}
+              onChange={(e) => setDeviceUserId(e.target.value)}
+              options={[
+                { value: '', label: 'Select device user ID…' },
+                ...unmappedDeviceUsers.map((d) => ({
+                  value: d.deviceUserId,
+                  label: `${d.deviceUserId} — ${d.punchCount} punch${d.punchCount === 1 ? '' : 'es'}, last seen ${new Date(d.lastSeen).toLocaleDateString()}`,
+                })),
+                { value: MANUAL_ENTRY, label: "Other (hasn't punched yet — type manually)" },
+              ]}
+            />
+            {deviceUserId === MANUAL_ENTRY && (
+              <Input
+                label="Device user ID"
+                type="number"
+                placeholder="e.g. 5"
+                value={manualId}
+                onChange={(e) => setManualId(e.target.value)}
+              />
+            )}
+          </>
         )}
-        {unmappedDeviceUsers.length === 0 && deviceUserId !== MANUAL_ENTRY && (
+        {!existingId && unmappedDeviceUsers.length === 0 && deviceUserId !== MANUAL_ENTRY && (
           <p className="text-xs text-fg-subtle">No unmapped device IDs have punched in yet — pick "Other" to map one by hand before its first scan.</p>
         )}
       </div>
@@ -122,7 +166,7 @@ export function DeviceMappingSection() {
       <Card>
         <CardHeader
           title="Device → Employee Mapping"
-          subtitle="Maps the fingerprint device's numeric user IDs to HRMS employees"
+          subtitle="Maps the fingerprint device's numeric user IDs to HRMS employees — one biometric ID per employee"
           action={<Button size="sm" icon={Plus} onClick={() => setAddOpen(true)}>Add Mapping</Button>}
         />
         <div className="p-5 pt-3 overflow-x-auto">
