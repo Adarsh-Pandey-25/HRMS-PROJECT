@@ -7,7 +7,7 @@ import {
   CreditCard, Shield, Phone as PhoneIcon, Upload, CheckCircle2, Trash2, Eye, Plus,
 } from 'lucide-react';
 import {
-  Card, CardHeader, Button, Avatar, StatusBadge, Tabs, EmptyState, Skeleton,
+  Card, CardHeader, Button, Avatar, StatusBadge, Badge, Tabs, EmptyState, Skeleton,
   Modal, Select, Input, Textarea, ConfirmDialog,
 } from '../../components/ui';
 import { AttendanceCalendar } from '../../components/shared/AttendanceCalendar';
@@ -552,6 +552,9 @@ export default function EmployeeProfile() {
             <div className="flex items-center gap-3 flex-wrap">
               <h1 className="text-page-title text-fg">{emp.name}</h1>
               <StatusBadge status={emp.status} />
+              {emp.profileCompleted === false && (
+                <Badge tone="warning" dot>Personal details pending</Badge>
+              )}
             </div>
             <p className="mt-1 text-sm text-fg-muted">{emp.designation} · {emp.department}</p>
             {resolvedCompanyName && (

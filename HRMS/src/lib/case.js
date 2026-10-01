@@ -72,6 +72,9 @@ export function mapEmployeeFromApi(emp) {
     employmentType: (c.employmentType || 'full_time').replace(/_/g, '-'),
     role: c.role || 'employee',
     mustChangePassword: Boolean(c.mustChangePassword),
+    // false only for someone HR/Admin added without their personal details
+    // and who has not filled them in yet (missing before migration 20261003 = complete).
+    profileCompleted: c.profileCompleted !== false,
     department: c.department || '',
     designation: c.designation || '',
     companyId: c.companyId || c.company?.id || null,

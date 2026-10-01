@@ -910,7 +910,8 @@ const getLast7DaysAttendance = async (employeeId) => {
   // A missed company holiday is a holiday, not an absence. Best-effort: this
   // strip is display only, so a failed lookup just shows no holidays.
   const holidayByDate = {};
-  const { data: emp } = await supabaseAdmin.from('employees').select('company_id').eq('id', employeeId).maybeSingle();
+  const { data: emp } = await supabaseAdmin.from('employees').select('company_id, date_of_joining').eq('id', employeeId).maybeSingle();
+  const joined = String(emp?.date_of_joining || '').slice(0, 10);
   if (emp?.company_id) {
     const { data: holidays } = await supabaseAdmin
       .from('holidays')
@@ -931,6 +932,8 @@ const getLast7DaysAttendance = async (employeeId) => {
     else if (isWeekend) state = 'weekend';
     else if (byDate[key]) state = byDate[key] === 'late' ? 'late' : 'present';
     else if (holidayByDate[key]) state = 'holiday';
+    // Days before someone joined are not absences.
+    else if (joined && key < joined) state = 'none';
     else if (day.isBefore(today, 'day')) state = 'absent';
 
     return {

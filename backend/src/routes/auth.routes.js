@@ -74,6 +74,7 @@ router.post('/logout', authenticate, authController.logout);
 router.post('/refresh-token', authLimiter, authController.refreshToken);
 router.get('/me', authenticate, authController.getMe);
 router.patch('/me/install-prompt-seen', authenticate, authController.markInstallPromptSeen);
+router.post('/complete-profile', authenticate, authController.completeProfile);
 router.post(
   '/impersonation/start',
   authLimiter,

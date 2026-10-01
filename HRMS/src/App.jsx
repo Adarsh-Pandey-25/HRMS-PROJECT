@@ -16,6 +16,7 @@ import { useWorkspaceStore } from './store/workspaceStore';
 
 const Onboarding = lazy(() => import('./pages/Onboarding'));
 const EmployeeOnboarding = lazy(() => import('./pages/EmployeeOnboarding'));
+const CompleteProfile = lazy(() => import('./pages/CompleteProfile'));
 const Impersonate = lazy(() => import('./pages/Impersonate'));
 const WorkspaceNotFound = lazy(() => import('./pages/WorkspaceNotFound'));
 const AdminLogin = lazy(() => import('./pages/AdminLogin'));
@@ -201,6 +202,8 @@ export default function App() {
 
       {showCompanyRoutes && (
       <Route element={<RequireAuth />}>
+          {/* First sign-in personal details — full screen, outside the app shell. */}
+          <Route path="/complete-profile" element={withSuspense(<CompleteProfile />)} />
           <Route element={<AppLayout />}>
             <Route path="/dashboard" element={page(Dashboard)} />
 

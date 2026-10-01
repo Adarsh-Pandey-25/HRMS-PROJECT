@@ -12,6 +12,7 @@ const {
 const { allocateNextEmployeeCode } = require('../services/employeeCode.service');
 const { uploadProfilePicture, getSignedUrl, getSignedUrls, STORAGE_BUCKETS, deleteEmployeeFolder } = require('../services/storage.service');
 const logger = require('../utils/logger');
+const profileCompletion = require('../services/profileCompletion.service');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -226,10 +227,22 @@ const create = async (req, res, next) => {
       temp_password_expires_at: new Date(Date.now() + expiryHours * 60 * 60 * 1000).toISOString(),
       ...companyIdFields(companyId, fields.address),
     };
+    // Personal details are optional for HR/Admin. Whatever they left blank,
+    // the employee is asked for on first sign-in (profileCompletion.service).
+    insertFields.profile_completed = profileCompletion.isProfileComplete(insertFields);
+
+    // Columns from migrations that may not be applied yet in this
+    // environment: retried without them rather than failing the hire.
     let { data, error } = await supabaseAdmin.from('employees').insert(insertFields).select().single();
-    if (error && isMissingColumnError(error.message, 'temp_password_expires_at')) {
-      const { temp_password_expires_at, ...withoutExpiry } = insertFields;
-      ({ data, error } = await supabaseAdmin.from('employees').insert(withoutExpiry).select().single());
+    for (let attempt = 0; error && attempt < 2; attempt += 1) {
+      if (isMissingColumnError(error.message, 'temp_password_expires_at')) {
+        delete insertFields.temp_password_expires_at;
+      } else if (profileCompletion.isMissingProfileColumn(error.message)) {
+        delete insertFields.profile_completed;
+      } else {
+        break;
+      }
+      ({ data, error } = await supabaseAdmin.from('employees').insert(insertFields).select().single());
     }
 
     if (error) {
@@ -545,6 +558,12 @@ const update = async (req, res, next) => {
     }
 
     if (error) throw new BadRequestError(error.message);
+
+    // HR/Admin may have filled in the details the employee was still due
+    // to provide — then they are not asked again on sign-in.
+    if (isPrivileged && !isSelf && data?.profile_completed === false) {
+      if (await profileCompletion.markCompleteIfFilled(req.params.id)) data.profile_completed = true;
+    }
 
     if (isPrivileged) {
       await logCareerEvents({

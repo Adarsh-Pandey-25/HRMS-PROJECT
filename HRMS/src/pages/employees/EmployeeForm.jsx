@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { ArrowLeft, ArrowRight, Check, Sparkles, Plus, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Check, Sparkles, Plus, X, UserCheck } from 'lucide-react';
 import { Card, Button, Input, Select, Stepper, Toggle } from '../../components/ui';
 import { EMPLOYMENT_TYPES, ROLES } from '../../lib/constants';
 import { useSettingsStore } from '../../store/settingsStore';
@@ -210,6 +210,30 @@ const contactFields = {
     .regex(/^[A-Za-z]{4}0[A-Za-z0-9]{6}$/, 'Enter a valid IFSC (e.g. HDFC0001234)'),
 };
 
+// HR/Admin add someone with their name, job and salary; personal details
+// are optional here — whatever is left blank, the employee is asked for on
+// first sign-in (pages/CompleteProfile.jsx, profileCompletion.service.js on
+// the server). Anything typed is still validated.
+const blankOr = (schema) => schema.optional().or(z.literal(''));
+const optionalPersonalFields = {
+  dob: blankOr(dobField),
+  gender: z.string().optional(),
+  personalEmail: blankOr(emailField),
+  phone: blankOr(phoneField),
+  addressLine1: z.string().trim().optional(),
+  addressLine2: z.string().trim().optional(),
+  city: blankOr(contactFields.city),
+  state: blankOr(contactFields.state),
+  pincode: blankOr(contactFields.pincode),
+  country: blankOr(contactFields.country),
+  emergencyName: blankOr(nameField),
+  emergencyPhone: blankOr(phoneField),
+  emergencyRelation: blankOr(nameField),
+  bankName: blankOr(z.string().trim().regex(/^[A-Za-z][A-Za-z\s.'&-]*$/, 'Bank name must contain letters only')),
+  bankAccount: blankOr(z.string().trim().regex(/^\d{9,18}$/, 'Account number must be 9–18 digits')),
+  bankIfsc: blankOr(z.string().trim().regex(/^[A-Za-z]{4}0[A-Za-z0-9]{6}$/, 'Enter a valid IFSC (e.g. HDFC0001234)')),
+};
+
 // Item 2: bank details are optional at creation — an employee fills them in
 // themselves post-onboarding (see item 3's one-time self-edit). Editing an
 // existing employee (employeeSchema below) keeps bank fields required via
@@ -245,9 +269,7 @@ const addEmployeeSchema = z.object({
   workEmail: emailField,
   role: z.string().min(1, 'Required'),
   ...contactFields,
-  bankName: z.string().trim().regex(/^[A-Za-z][A-Za-z\s.'&-]*$/, 'Bank name must contain letters only').optional().or(z.literal('')),
-  bankAccount: z.string().trim().regex(/^\d{9,18}$/, 'Account number must be 9–18 digits').optional().or(z.literal('')),
-  bankIfsc: z.string().trim().regex(/^[A-Za-z]{4}0[A-Za-z0-9]{6}$/, 'Enter a valid IFSC (e.g. HDFC0001234)').optional().or(z.literal('')),
+  ...optionalPersonalFields,
 });
 
 const employeeSchema = z.object({
@@ -438,7 +460,7 @@ function SalaryPreview({ basic, hra, da, special, transport, medical, payrollCon
   );
 }
 
-function PersonalStep({ register, errors, photoFile, setPhotoFile, watch, setValue, isAdd = false }) {
+function PersonalStep({ register, errors, photoFile, setPhotoFile, watch, setValue, isAdd = false, detailsOptional = isAdd }) {
   const firstNameReg = register('firstName', {
     onChange: (e) => {
       const cleaned = e.target.value.replace(/[^A-Za-z\s.'-]/g, '');
@@ -483,8 +505,21 @@ function PersonalStep({ register, errors, photoFile, setPhotoFile, watch, setVal
     e.target.value = e.target.value.replace(/[^A-Za-z\s.'&-]/g, '');
   };
 
+  const required = !detailsOptional;
+  const personName = `${watch('firstName') || ''}`.trim() || 'The employee';
+
   return (
     <div className="space-y-6">
+      {detailsOptional && (
+        <div className="flex gap-3 rounded-xl border border-primary/20 bg-primary/5 px-4 py-3">
+          <UserCheck className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+          <p className="text-sm text-fg-muted">
+            {isAdd
+              ? <>Only the <span className="font-medium text-fg">name</span> is needed here. {personName} will be asked for their date of birth, contact, address, emergency contact and bank details the first time they sign in. Anything you fill in now is pre-filled for them.</>
+              : <>{personName} hasn&apos;t filled in their personal details yet — they&apos;ll be asked on their next sign-in. Whatever you fill in here is used instead.</>}
+          </p>
+        </div>
+      )}
       {setPhotoFile && (
         <PhotoUpload photoFile={photoFile} onChange={setPhotoFile} name={`${watch('firstName') || ''} ${watch('lastName') || ''}`.trim()} />
       )}
@@ -508,23 +543,23 @@ function PersonalStep({ register, errors, photoFile, setPhotoFile, watch, setVal
         <Input
           label="Date of birth"
           type="date"
-          required
+          required={required}
           max={todayISO()}
           {...register('dob')}
           error={errors.dob?.message}
         />
-        <Select label="Gender" required {...register('gender')} placeholder="Select gender" options={['male', 'female', 'other']} error={errors.gender?.message} />
+        <Select label="Gender" required={required} {...register('gender')} placeholder="Select gender" options={['male', 'female', 'other']} error={errors.gender?.message} />
         <Input
           label="Personal email"
           type="email"
-          required
+          required={required}
           placeholder="e.g. john.doe@company.com"
           {...register('personalEmail')}
           error={errors.personalEmail?.message}
         />
         <Input
           label="Phone"
-          required
+          required={required}
           placeholder="e.g. 9876543210"
           inputMode="numeric"
           pattern="[0-9]*"
@@ -542,7 +577,7 @@ function PersonalStep({ register, errors, photoFile, setPhotoFile, watch, setVal
         <AddressFields
           register={register}
           errors={errors}
-          required
+          required={required}
           onPincodeInput={handlePincodeInput}
           onLettersInput={handleNameInput}
         />
@@ -552,7 +587,7 @@ function PersonalStep({ register, errors, photoFile, setPhotoFile, watch, setVal
         <EmergencyContactFields
           register={register}
           errors={errors}
-          required
+          required={required}
           onPhoneInput={handleEmergencyPhoneInput}
           onNameInput={handleNameInput}
         />
@@ -562,15 +597,15 @@ function PersonalStep({ register, errors, photoFile, setPhotoFile, watch, setVal
         <div>
           <h3 className="text-sm font-semibold text-fg">Bank Details</h3>
           <p className="text-xs text-fg-subtle mt-0.5">
-            {isAdd
-              ? 'Used for payroll disbursement. Optional here — the employee can add it themselves post-onboarding, or fill it in now.'
+            {detailsOptional
+              ? 'Used for payroll disbursement. Optional here — the employee adds it on first sign-in if you leave it blank.'
               : 'Used for payroll disbursement.'}
           </p>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Input
             label="Bank name"
-            required={!isAdd}
+            required={required}
             placeholder="e.g. HDFC Bank"
             {...register('bankName')}
             onInput={handleBankNameInput}
@@ -578,7 +613,7 @@ function PersonalStep({ register, errors, photoFile, setPhotoFile, watch, setVal
           />
           <Input
             label="Account number"
-            required={!isAdd}
+            required={required}
             placeholder="e.g. 50100123456789"
             inputMode="numeric"
             pattern="[0-9]*"
@@ -587,7 +622,7 @@ function PersonalStep({ register, errors, photoFile, setPhotoFile, watch, setVal
           />
           <Input
             label="IFSC code"
-            required={!isAdd}
+            required={required}
             placeholder="e.g. HDFC0001234"
             containerClass="sm:col-span-2"
             {...register('bankIfsc', {
@@ -1236,6 +1271,8 @@ function AddEmployeeForm({ navigate }) {
 
 function EditEmployeeForm({ navigate, existing }) {
   const [step, setStep] = useState(0);
+  // Added without personal details and not signed in to fill them yet.
+  const detailsPending = existing.profileCompleted === false;
   const role = useAuthStore((s) => s.role);
   const canAssignCompany = role === 'admin' || role === 'hr';
   const { employees } = useEmployees();
@@ -1265,6 +1302,7 @@ function EditEmployeeForm({ navigate, existing }) {
   } = useForm({
     resolver: zodResolver(employeeSchema.omit({ employeeId: true }).extend({
       employeeId: z.string().optional(),
+      ...(detailsPending ? optionalPersonalFields : {}),
     })),
     defaultValues: {
       firstName: existing.firstName,
@@ -1333,9 +1371,11 @@ function EditEmployeeForm({ navigate, existing }) {
           firstName: data.firstName,
           lastName: data.lastName,
           email: data.workEmail,
-          phone: data.phone,
-          dateOfBirth: data.dob,
-          gender: data.gender,
+          // Blank only while the employee's own details are still pending —
+          // left unchanged then, rather than written as an invalid ''.
+          phone: data.phone || undefined,
+          dateOfBirth: data.dob || undefined,
+          gender: data.gender || undefined,
           department: data.department,
           designation: data.designation,
           managerId: data.reportingTo || undefined,
@@ -1381,7 +1421,7 @@ function EditEmployeeForm({ navigate, existing }) {
 
       <form onSubmit={handleSubmit(onSubmit, onInvalid)}>
         <Card className="p-6">
-          {step === 0 && <PersonalStep register={register} errors={errors} watch={watch} setValue={setValue} />}
+          {step === 0 && <PersonalStep register={register} errors={errors} watch={watch} setValue={setValue} detailsOptional={detailsPending} />}
           {step === 1 && (
             <JobStep
               register={register}

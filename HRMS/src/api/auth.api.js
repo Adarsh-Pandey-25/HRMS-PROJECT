@@ -86,6 +86,12 @@ export async function fetchMeApi() {
   return mapEmployeeFromApi(employee);
 }
 
+/** First sign-in: the employee fills in the personal details HR left out. Returns the updated user. */
+export async function completeProfileApi(details) {
+  const employee = await apiRequest({ method: 'POST', url: '/auth/complete-profile', data: details });
+  return mapEmployeeFromApi(employee);
+}
+
 /** Request a 6-digit OTP via SMTP (nodemailer on backend). */
 export async function forgotPasswordApi(email) {
   return apiRequest({

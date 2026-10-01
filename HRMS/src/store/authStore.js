@@ -112,6 +112,15 @@ export const useAuthStore = create((set, get) => ({
     });
   },
 
+  /** After the first-sign-in profile form: swap in the updated user, which lifts the gate. */
+  setProfileCompleted: (updatedUser) => {
+    set((state) => ({
+      user: state.user
+        ? { ...state.user, ...updatedUser, mustChangePassword: state.user.mustChangePassword, profileCompleted: true }
+        : updatedUser,
+    }));
+  },
+
   clearPasswordChangeRequirement: () => {
     set((state) => ({
       pendingLoginPassword: null,

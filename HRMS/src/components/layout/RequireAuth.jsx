@@ -1,7 +1,9 @@
-import { Navigate, Outlet } from 'react-router-dom';
+import { Navigate, Outlet, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../../store/authStore';
 import { lastLoginPath } from '../../lib/host';
 import { AppShellSkeleton } from './AppShellSkeleton';
+
+export const COMPLETE_PROFILE_PATH = '/complete-profile';
 
 // Gate the main app behind sign-in — back to the portal the user last used
 // (/, /admin or /hr on the company subdomain).
@@ -9,12 +11,25 @@ export function RequireAuth() {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const sessionChecked = useAuthStore((s) => s.sessionChecked);
   const userId = useAuthStore((s) => s.user?.id);
+  // Someone HR/Admin added without their personal details fills them in
+  // before anything else (profileCompletion.service.js on the server). Not
+  // during a super-admin impersonation: support must not fill these in.
+  const mustCompleteProfile = useAuthStore(
+    (s) => s.user?.profileCompleted === false && !s.user?.impersonation,
+  );
+  const { pathname } = useLocation();
 
   if (!sessionChecked) {
     return <AppShellSkeleton />;
   }
 
   if (!isAuthenticated) return <Navigate to={lastLoginPath()} replace />;
+  if (mustCompleteProfile && pathname !== COMPLETE_PROFILE_PATH) {
+    return <Navigate to={COMPLETE_PROFILE_PATH} replace />;
+  }
+  if (!mustCompleteProfile && pathname === COMPLETE_PROFILE_PATH) {
+    return <Navigate to="/dashboard" replace />;
+  }
   // key={userId}: every store/hook feeding the authenticated tree (role,
   // nav, dashboard) is provably correct by itself — traced end to end,
   // login()'s atomic set() always lands role+isAuthenticated+sessionChecked
