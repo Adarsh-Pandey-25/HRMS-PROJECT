@@ -9,6 +9,8 @@ import { formatDate, formatCurrency, cn } from '../../lib/utils';
 import { leaveTypeLabel } from '../../lib/mappers';
 import { Greeting, RecentAnnouncements } from './shared';
 import { useSelfieCapture } from '../../components/attendance/SelfieCapture';
+import { planWebCheckIn, requestGeolocation } from '../../lib/webCheckIn';
+import { useAuthStore } from '../../store/authStore';
 
 export default function EmployeeDashboard({ user }) {
  const { data: api, isLoading } = useDashboardData();
@@ -24,7 +26,12 @@ export default function EmployeeDashboard({ user }) {
  const openExpenses = api?.openExpenseClaims?.items || [];
 
  const checkedIn = todayStatus.status === 'checked_in';
- const webCheckInEnabled = checkContext?.webCheckInEnabled !== false;
+ // Same rules as My Attendance, from the shared helper — this card used to
+ // send neither the WFH flag nor a location, so it failed where that page
+ // worked whenever WFH or the office geofence was involved.
+ const role = useAuthStore((st) => st.role);
+ const plan = planWebCheckIn(checkContext, { privileged: role === 'admin' || role === 'hr' });
+ const webCheckInEnabled = plan.allowed;
  const canCheckIn = todayStatus.canCheckIn && webCheckInEnabled;
  const canCheckOut = todayStatus.canCheckOut;
  // A biometric day can only be closed on the device that opened it — the
@@ -38,19 +45,32 @@ export default function EmployeeDashboard({ user }) {
  [leaveItems]
  );
 
+ /** Location when the company's rules need one for this action, else undefined. */
+ const locationIfNeeded = async (needed) => {
+ if (!needed) return undefined;
+ const toastId = toast.loading('Getting your location…');
+ try {
+ return await requestGeolocation();
+ } finally {
+ toast.dismiss(toastId);
+ }
+ };
+
  const handleCheckInOut = async () => {
  try {
  if (canCheckOut) {
- await checkOut.mutateAsync({});
+ const location = await locationIfNeeded(plan.needsCheckoutLocation);
+ await checkOut.mutateAsync({ method: 'web', location });
  toast.success('Checked out — see you tomorrow!');
  } else if (canCheckIn) {
+ const location = await locationIfNeeded(plan.needsLocation);
  let selfieToken;
- if (checkContext?.selfieRequired) {
+ if (plan.needsSelfie) {
  selfieToken = await selfie.capture();
  if (!selfieToken) return;
  }
- await checkIn.mutateAsync({ method: 'web', selfie_token: selfieToken });
- toast.success('Checked in — have a great day!');
+ await checkIn.mutateAsync({ method: 'web', is_wfh: plan.isWfh, location, selfie_token: selfieToken });
+ toast.success(plan.isWfh ? 'Checked in as WFH — have a great day!' : 'Checked in — have a great day!');
  }
  } catch (err) {
  toast.error(err.message || 'Attendance action failed');
@@ -104,9 +124,20 @@ export default function EmployeeDashboard({ user }) {
  : canCheckIn
  ? 'Check In'
  : !webCheckInEnabled && todayStatus.canCheckIn
- ? 'Web check-in disabled'
+ ? (plan.webMode === 'wfh_only' ? 'Check in on the device' : 'Web check-in off')
  : 'Day Complete'}
  </Button>
+ {!webCheckInEnabled && todayStatus.canCheckIn && (
+ <p className="mt-2 text-[11px] text-fg-subtle">
+ {plan.blockedReason}
+ {plan.webMode === 'wfh_only' && (
+ <>
+ {' '}
+ <Link to="/attendance/me" className="font-medium text-primary hover:underline">Request WFH</Link>
+ </>
+ )}
+ </p>
+ )}
  {biometricLocked && (
  <p className="mt-2 text-[11px] text-fg-subtle">
  Checked in via <span className="font-medium text-fg-muted">Biometric device</span> — please check out on the same device.

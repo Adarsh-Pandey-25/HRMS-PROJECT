@@ -9,36 +9,10 @@ import {
 import { useAuthStore } from '../../store/authStore';
 import toast from 'react-hot-toast';
 import { useSelfieCapture } from '../../components/attendance/SelfieCapture';
+import { planWebCheckIn, requestGeolocation } from '../../lib/webCheckIn';
 
 const GOAL_HOURS = 9;
 const GOAL_MS = GOAL_HOURS * 60 * 60 * 1000;
-
-/**
- * Section E: requested at the moment of check-in/out, not page load — a
- * permission prompt on every page load would be intrusive and often
- * denied reflexively. Resolves null (not throws) when geofencing isn't
- * on for this company, so callers only pay the permission-prompt cost
- * when it's actually needed.
- */
-function requestGeolocation() {
-  return new Promise((resolve, reject) => {
-    if (!navigator.geolocation) {
-      reject(new Error('Location is not available in this browser.'));
-      return;
-    }
-    navigator.geolocation.getCurrentPosition(
-      (pos) => resolve({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }),
-      (err) => {
-        if (err.code === err.PERMISSION_DENIED) {
-          reject(new Error('Location access was denied. Please allow location access and try again.'));
-        } else {
-          reject(new Error('Could not determine your location. Please try again.'));
-        }
-      },
-      { enableHighAccuracy: true, timeout: 10_000, maximumAge: 0 },
-    );
-  });
-}
 
 const STAT_CARDS = [
   { key: 'present', label: 'Present', tone: 'text-success', icon: UserCheck, filter: (a) => a.status !== 'wfh' && ['present', 'late', 'early_departure'].includes(a.status) },
@@ -104,7 +78,10 @@ export default function MyAttendance() {
   const { checkIn, checkOut, requestWfh, cancelWfh } = useAttendanceMutations();
   const selfie = useSelfieCapture();
   const role = useAuthStore((s) => s.role);
-  const canRequestDailyWfh = role !== 'admin' && role !== 'hr';
+  // Admin and HR were never offered WFH requests — the office-IP rule they
+  // are exempt from was the only thing it unlocked. Under "WFH days only" an
+  // approved day is the only way anyone checks in on the web, them included.
+  const canRequestDailyWfh = checkContext?.webMode === 'wfh_only' || (role !== 'admin' && role !== 'hr');
 
   const [tick, setTick] = useState(Date.now());
   const [activeStat, setActiveStat] = useState(null);
@@ -220,7 +197,8 @@ export default function MyAttendance() {
   // special-case privileged roles either. Never gates Clock Out: someone
   // already clocked in before the toggle was turned off must still be able
   // to close their session (checkOut has no method-enabled check at all).
-  const webCheckInEnabled = checkContext?.webCheckInEnabled !== false;
+  const plan = planWebCheckIn(checkContext, { privileged: privilegedAttendance });
+  const webCheckInEnabled = plan.allowed;
   const canClockIn = webCheckInEnabled
     && (privilegedAttendance || !ipEnforced || ipAllowed || wfhApproved || Boolean(checkContext?.gpsGeofenceOn));
 
@@ -251,7 +229,7 @@ export default function MyAttendance() {
       // Section E: requested at the moment of check-in/out, not page load.
       // Skipped entirely for WFH/privileged/geofencing-off — no permission
       // prompt shown when it isn't actually needed.
-      const needsLocation = Boolean(checkContext?.gpsGeofenceOn) && !wfhApproved && !privilegedAttendance;
+      const needsLocation = clockedIn ? plan.needsCheckoutLocation : plan.needsLocation;
       let location;
       if (needsLocation) {
         const toastId = toast.loading('Getting your location…');
@@ -276,7 +254,7 @@ export default function MyAttendance() {
         if (!canClockIn) {
           toast.error(
             !webCheckInEnabled
-              ? 'Web check-in is disabled for your company. Contact HR.'
+              ? plan.blockedReason
               : wfhPending
                 ? 'WFH request is still pending Manager/HR approval'
                 : canRequestDailyWfh
@@ -286,7 +264,7 @@ export default function MyAttendance() {
           return;
         }
         let selfieToken;
-        if (checkContext?.selfieRequired) {
+        if (plan.needsSelfie) {
           selfieToken = await selfie.capture();
           if (!selfieToken) return;
         }
@@ -401,8 +379,12 @@ export default function MyAttendance() {
           )}
 
           {!clockedIn && !webCheckInEnabled ? (
-            <p className="text-xs text-fg-subtle text-center max-w-[240px]">
-              Web check-in is disabled for your company. Contact HR if you need to check in.
+            // The server's own reason — "Office days use the biometric
+            // device…" under WFH-days-only — with the WFH request controls
+            // above as the way through when that applies.
+            <p className="flex items-start gap-1.5 text-xs text-fg-subtle text-center max-w-[260px]">
+              <Fingerprint className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+              <span>{plan.blockedReason}</span>
             </p>
           ) : (
             <Button

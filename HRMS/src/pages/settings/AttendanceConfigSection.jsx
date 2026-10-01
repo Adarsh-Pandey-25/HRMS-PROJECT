@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { Card, CardHeader, Button, Input, Toggle, Badge, Modal, SaveStatusIndicator } from '../../components/ui';
+import { Card, CardHeader, Button, Input, Toggle, Badge, Modal, SaveStatusIndicator, SegmentedControl } from '../../components/ui';
 import { useSettingsStore } from '../../store/settingsStore';
 import { updateSettingApi } from '../../api/settings.api';
 import { listIpWhitelistApi, createIpWhitelistEntryApi, removeIpWhitelistEntryApi } from '../../api/ipWhitelist.api';
@@ -31,6 +31,21 @@ const METHOD_LABELS = {
   ipApp: ['IP-based App', 'Coming soon', 'ipBasedApp'],
 };
 const COMING_SOON_METHODS = ['app', 'ipApp'];
+
+// Web check-in has three settings rather than on/off: a company that wants
+// office staff on the biometric device still has remote staff to cover.
+const WEB_MODE_OPTIONS = [
+  { value: 'everyone', label: 'Everyone' },
+  { value: 'wfh_only', label: 'WFH days only' },
+  { value: 'off', label: 'Off' },
+];
+const WEB_MODE_HINT = {
+  everyone: 'Anyone can check in from a browser, on desktop or phone.',
+  wfh_only: 'Office days use the biometric device. Web check-in is open only to WFH employees, and to anyone else on a day their WFH request was approved.',
+  off: 'Nobody can check in from a browser — the biometric device only.',
+};
+/** Configs saved before the three-way setting only have the boolean `web`. */
+const webModeOf = (methods = {}) => methods.webMode || (methods.web === false ? 'off' : 'everyone');
 
 /**
  * Section 0/C: writes directly to the real ip_whitelist table (immediate,
@@ -116,6 +131,59 @@ function buildPayload(form, cfg) {
     ipWhitelist: cfg.ipWhitelist,
     shifts: cfg.shifts,
   };
+}
+
+/**
+ * Web check-in: Everyone / WFH days only / Off, plus the optional proof a
+ * work-from-home check-in must carry. `web` is written alongside `webMode`
+ * so anything still reading the old boolean stays correct.
+ */
+function WebCheckInSetting({ methods, onChange }) {
+  const mode = webModeOf(methods);
+  const set = (partial) => onChange({ ...methods, ...partial });
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-fg">Web Check-in</p>
+          <p className="text-xs text-fg-subtle mt-0.5">{WEB_MODE_HINT[mode]}</p>
+        </div>
+        <SegmentedControl
+          className="shrink-0"
+          options={WEB_MODE_OPTIONS}
+          value={mode}
+          onChange={(next) => set({ webMode: next, web: next !== 'off' })}
+        />
+      </div>
+
+      {mode === 'wfh_only' && methods.biometric === false && (
+        <p className="rounded-lg bg-warning/10 px-3 py-2 text-xs text-warning">
+          Biometric Device is off, so office staff will have no way to check in. Turn it on below, or choose Everyone.
+        </p>
+      )}
+
+      {mode !== 'off' && (
+        <div className="rounded-lg border border-border bg-muted/30 p-3 space-y-3">
+          <div>
+            <p className="text-xs font-semibold text-fg">Proof on work-from-home check-in</p>
+            <p className="text-[11px] text-fg-subtle mt-0.5">The office network and geofence never cover WFH days — these are the checks that can.</p>
+          </div>
+          <Toggle
+            label="Require a selfie"
+            hint="A photo from the camera at check-in. Applies to WFH check-ins only."
+            checked={methods.wfhRequireSelfie === true}
+            onChange={(v) => set({ wfhRequireSelfie: v })}
+          />
+          <Toggle
+            label="Record location"
+            hint="Saves where they checked in from. Never checked against the office."
+            checked={methods.wfhRecordLocation === true}
+            onChange={(v) => set({ wfhRecordLocation: v })}
+          />
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function AttendanceConfigSection() {
@@ -232,6 +300,7 @@ export function AttendanceConfigSection() {
             // (disabled) so their state is visible, never hidden or toggleable.
             .filter(([key, [, , featureKey]]) => COMING_SOON_METHODS.includes(key) || !enabledFeatures || enabledFeatures[featureKey] !== false)
             .map(([key, [label, hint]]) => {
+              if (key === 'web') return <WebCheckInSetting key="web" methods={form.methods} onChange={(methods) => patch({ methods })} />;
               const comingSoon = COMING_SOON_METHODS.includes(key);
               return (
                 <Toggle
