@@ -106,7 +106,23 @@ const recalculateFromSettings = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+/** Monthly pay under current settings, for the employee profile. HR/Admin
+ *  for anyone in their organisation; everyone else only for themselves. */
+const salaryPreview = async (req, res, next) => {
+  try {
+    const employeeId = req.params.employeeId;
+    const privileged = ['hr', 'admin'].includes(req.user.role);
+    if (String(employeeId) !== String(req.user.id)) {
+      if (!privileged) throw new (require('../utils/errors').ForbiddenError)('Not authorized to view this salary');
+      const ids = await require('../services/tenant.service').getOrgEmployeeIds(req.user.company_id);
+      if (!ids.includes(employeeId)) throw new (require('../utils/errors').NotFoundError)('Employee not found');
+    }
+    successResponse(res, 'Salary preview', await payrollService.previewEmployeeSalary(employeeId));
+  } catch (err) { next(err); }
+};
+
 module.exports = {
+  salaryPreview,
   initializeMonth,
   getMonthStatus,
   generatePayslip,

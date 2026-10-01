@@ -30,6 +30,7 @@ router.post('/payslips/recalculate-from-settings', isHROrAdmin, payrollControlle
 router.put('/payslips/:id/publish', isHROrAdmin, uuidParam(), validate, payrollController.publishPayslip);
 router.get('/payslips', isEmployee, payrollListQueryRules, validate, payrollController.listPayslips);
 router.get('/payslips/:id/download', uuidParam(), validate, payrollController.downloadPayslip);
+router.get('/salary-preview/:employeeId', isEmployee, uuidParam('employeeId'), validate, payrollController.salaryPreview);
 
 router.get('/revisions', isHROrAdmin, salaryRevisionListQueryRules, validate, salaryRevisionController.list);
 router.post('/revisions', isHROrAdmin, salaryRevisionCreateRules, validate, salaryRevisionController.create);

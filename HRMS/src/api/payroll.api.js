@@ -65,6 +65,11 @@ export async function recalculatePayslipsFromSettingsApi(month, year, employeeId
   });
 }
 
+/** Monthly pay under current payroll settings (full month, no leave), from the server's payslip calculation. */
+export async function fetchSalaryPreviewApi(employeeId) {
+  return apiRequest({ method: 'GET', url: `/payroll/salary-preview/${employeeId}` });
+}
+
 export function payslipDownloadUrl(id) {
   const base = import.meta.env.VITE_API_URL || '/api';
   return `${base}/payroll/payslips/${id}/download`;

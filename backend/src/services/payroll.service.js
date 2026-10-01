@@ -316,6 +316,31 @@ const calculateContractPayslip = async (employee, attendanceSummary, month = nul
   };
 };
 
+/**
+ * What one employee's monthly pay works out to under the current settings,
+ * for a full month with no leave deducted — the same calculation a payslip
+ * uses, so the profile's figures match what payroll will produce. (The
+ * profile used to work this out in the browser with hard-coded numbers: a
+ * ₹200 professional tax whenever PT was 0, and always 8% TDS.)
+ */
+const previewEmployeeSalary = async (employeeId) => {
+  const { data: employee, error } = await supabaseAdmin
+    .from('employees').select(PAYSLIP_EMPLOYEE_SELECT).eq('id', employeeId).maybeSingle();
+  if (error) throw new BadRequestError(error.message);
+  if (!employee) throw new NotFoundError('Employee not found');
+  const calc = await calculateContractPayslip(employee, { absent: 0, halfDay: 0 });
+  const totals = calc.breakdown_json?.totals || {};
+  return {
+    gross: calc.gross_salary,
+    basic: calc.basic_salary,
+    pf: calc.pf_deduction,
+    deductions: calc.breakdown_json?.deductions || [],
+    totalDeductions: totals.total_deductions ?? 0,
+    net: calc.net_salary,
+    earnings: calc.breakdown_json?.earnings || [],
+  };
+};
+
 const computeRule = (vars, component) => {
   if (component.is_fixed) return round2(component.fixed_amount || 0);
 
@@ -1128,12 +1153,16 @@ const autoRunPayrollForCompany = async (companyId, { force = false } = {}) => {
     return { companyId, skipped: true, reason: 'auto_process_off' };
   }
 
+  // Any day 1–31; in a shorter month (e.g. 30 in February) payroll runs on
+  // that month's last day. It used to be capped at 28, so a saved 30 came
+  // back as 28 and ran on the 28th.
   const runDate = Math.min(
-    28,
+    31,
     Math.max(1, Number(payrollConfig.run_date ?? payrollConfig.runDate ?? 25) || 25),
   );
-  if (!force && now.date() !== runDate) {
-    return { companyId, skipped: true, reason: 'not_run_date', runDate, today: now.date() };
+  const runDay = Math.min(runDate, now.daysInMonth());
+  if (!force && now.date() !== runDay) {
+    return { companyId, skipped: true, reason: 'not_run_date', runDate, runDay, today: now.date() };
   }
 
   const lastYm = payrollConfig.last_auto_payroll_ym || payrollConfig.lastAutoPayrollYm;
@@ -1224,6 +1253,7 @@ module.exports = {
   downloadPayslip,
   recalculatePayslipsFromSettings,
   queueRecalculationFromSettings,
+  previewEmployeeSalary,
   mapPayslipRow,
   autoRunPayrollForCompany,
   processAutoPayroll,

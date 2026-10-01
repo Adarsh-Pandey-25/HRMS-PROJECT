@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import {
@@ -24,6 +25,7 @@ import { PayslipPreviewModal } from '../../components/payroll/PayslipPreviewModa
 import { useCompanyStore } from '../../store/companyStore';
 import { useAuthStore } from '../../store/authStore';
 import { LeaveBalanceCard } from '../../components/leave/LeaveBalanceCard';
+import { fetchSalaryPreviewApi } from '../../api/payroll.api';
 import { useSettingsStore } from '../../store/settingsStore';
 import { useCan } from '../../hooks/useCan';
 import { formatDate, formatCurrency, humanize } from '../../lib/utils';
@@ -217,6 +219,14 @@ export default function EmployeeProfile() {
   const { data: allAssets = [] } = useAssets();
   const { data: myAssetsData = [] } = useMyAssets({ enabled: !isHrAdmin && isOwnProfile });
   const { data: documents = [], isLoading: docsLoading } = useEmployeeDocuments(resolvedId);
+  // Payroll tab figures come from the server's payslip calculation, so they
+  // follow Settings → Payroll (PT, TDS, PF) exactly.
+  const { data: salaryPreview, isLoading: salaryPreviewLoading } = useQuery({
+    queryKey: ['payroll', 'salary-preview', resolvedId],
+    queryFn: () => fetchSalaryPreviewApi(resolvedId),
+    enabled: tab === 'payroll' && Boolean(resolvedId) && (isHrAdmin || isOwnProfile),
+    staleTime: 30_000,
+  });
   const { upload, verify, remove } = useDocumentMutations();
   const { data: payslips = [] } = useAllPayslipsForYear(now.getFullYear());
   const { data: careerEvents = [], isLoading: careerLoading } = useCareerEvents(resolvedId);
@@ -521,7 +531,6 @@ export default function EmployeeProfile() {
 
   const salary = emp.salary || { basic: 0, hra: 0, da: 0, special: 0, transport: 0, medical: 0, pf: 0 };
   const gross = salary.basic + salary.hra + salary.da + salary.special + (salary.transport || 0) + (salary.medical || 0);
-  const net = gross - salary.pf - (salary.pt || 200) - Math.round(gross * 0.08);
   const bank = emp.bank || { name: '', account: '', ifsc: '' };
   const ec = emp.emergencyContact || { name: '', phone: '', relation: '' };
   const isAdminAccount = emp.role === 'admin';
@@ -875,13 +884,28 @@ export default function EmployeeProfile() {
       {tab === 'payroll' && (
         <div className="space-y-4">
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            {[['Gross (monthly)', gross], ['Net pay', net], ['Basic', salary.basic], ['Employer PF', salary.pf]].map(([l, v]) => (
+            {[
+              ['Gross (monthly)', salaryPreview?.gross ?? gross],
+              ['Net pay', salaryPreview?.net],
+              ['Basic', salaryPreview?.basic ?? salary.basic],
+              ['PF (employee)', salaryPreview?.pf],
+            ].map(([l, v]) => (
               <Card key={l} className="p-4">
                 <p className="text-xs text-fg-subtle">{l}</p>
-                <p className="text-lg font-semibold text-fg mt-1">{formatCurrency(v)}</p>
+                <p className="text-lg font-semibold text-fg mt-1">
+                  {v == null ? (salaryPreviewLoading ? '…' : '—') : formatCurrency(v)}
+                </p>
               </Card>
             ))}
           </div>
+          {salaryPreview && (
+            <p className="-mt-2 mb-4 text-xs text-fg-subtle">
+              {salaryPreview.deductions.length
+                ? `Deductions: ${salaryPreview.deductions.map((d) => `${d.name} ${formatCurrency(d.amount)}`).join(' · ')}.`
+                : 'No deductions under the current payroll settings.'}
+              {' '}A full month with no leave; the actual payslip also accounts for attendance.
+            </p>
+          )}
           <Card>
             <CardHeader title="Payslip History" />
             <div className="p-5 pt-3 space-y-2">
