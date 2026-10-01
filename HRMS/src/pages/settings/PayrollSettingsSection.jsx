@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useQueryClient } from '@tanstack/react-query';
@@ -62,15 +62,19 @@ export function PayrollSettingsSection() {
     customPayrollOptions: cfg.customPayrollOptions || [],
   });
 
-  // Rehydrate after bootstrap loads payroll settings from server
+  // Rehydrate after bootstrap loads payroll settings from server — and note
+  // it as already saved, so leaving a field unchanged does not re-save.
   useEffect(() => {
-    setForm({
+    const loaded = {
       ...cfg,
       professionalTaxAmount: cfg.professionalTaxAmount ?? 200,
       tdsPercent: cfg.tdsPercent ?? 8,
       customPayrollOptions: cfg.customPayrollOptions || [],
-    });
+    };
+    setForm(loaded);
+    markSavedRef.current?.(loaded);
   }, [cfg]);
+  const markSavedRef = useRef(null);
 
   const customOptions = form.customPayrollOptions || [];
 
@@ -116,23 +120,17 @@ export function PayrollSettingsSection() {
         })),
       }),
     ]);
-    try {
-      const result = await recalculatePayslipsFromSettingsApi();
-      const n = result?.updated ?? 0;
-      await invalidateAndRefetch(queryClient, ['payroll']);
-      await invalidateAndRefetch(queryClient, ['settings']);
-      if (n > 0) toast.success(`${n} payslip${n === 1 ? '' : 's'} recalculated`);
-    } catch (recalcErr) {
-      await invalidateAndRefetch(queryClient, ['settings']);
-      toast.error(
-        recalcErr.message?.includes('timeout')
-          ? 'Payslip refresh is still running in the background — check Run Payroll in a minute'
-          : (recalcErr.message || 'Payslip refresh failed; settings were still saved'),
-      );
-    }
+    // The settings are saved — "Saved" shows now. Re-applying them to the
+    // open month's payslips is the server's job, in the background: it used
+    // to hold this spinner for minutes (one employee at a time, and from a
+    // laptop every step is a round trip to the database).
+    recalculatePayslipsFromSettingsApi(undefined, undefined, undefined, { background: true })
+      .catch((recalcErr) => toast.error(recalcErr.message || 'Payslips could not be refreshed; settings were still saved'));
+    invalidateAndRefetch(queryClient, ['payroll']).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queryClient, update]);
-  const { status, save, retry } = useAutosave(doSave);
+  const { status, save, retry, markSaved } = useAutosave(doSave);
+  markSavedRef.current = markSaved;
 
   /** Toggles/selects: merge + save immediately. */
   const patch = (partial) => {
@@ -202,7 +200,7 @@ export function PayrollSettingsSection() {
       <Card>
         <CardHeader
           title="PF, PT & TDS"
-          subtitle="Saves automatically and updates current & open-month payslips (and salary preview)"
+          subtitle="Saves automatically. Current & open-month payslips (and the salary preview) update in the background."
         />
         <div className="p-5 pt-3 grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Input

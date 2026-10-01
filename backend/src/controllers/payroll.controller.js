@@ -93,6 +93,12 @@ const recalculateFromSettings = async (req, res, next) => {
         throw new (require('../utils/errors').NotFoundError)('Employee not found');
       }
     }
+    // background: answer now, recalculate on the server (Payroll Settings
+    // autosave). Without it the caller waits for the result, as before.
+    if (req.body?.background === true && !employeeId) {
+      const queued = payrollService.queueRecalculationFromSettings({ month, year, companyId: req.user.company_id });
+      return successResponse(res, 'Payslip recalculation started', queued, null, 202);
+    }
     const data = await payrollService.recalculatePayslipsFromSettings({
       month, year, employeeId, companyId: req.user.company_id,
     });

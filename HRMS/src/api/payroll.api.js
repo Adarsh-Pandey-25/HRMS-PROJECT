@@ -48,11 +48,14 @@ export async function publishPayslipApi(id) {
 }
 
 /** Re-apply current payroll settings to existing month payslips (draft + published). */
-export async function recalculatePayslipsFromSettingsApi(month, year, employeeId) {
+/** With { background: true } the server answers at once and recalculates
+ *  in the background (Payroll Settings autosave); otherwise it waits. */
+export async function recalculatePayslipsFromSettingsApi(month, year, employeeId, { background = false } = {}) {
   const data = {};
   if (month != null) data.month = month;
   if (year != null) data.year = year;
   if (employeeId) data.employee_id = employeeId;
+  if (background) data.background = true;
   return apiRequest({
     method: 'POST',
     url: '/payroll/payslips/recalculate-from-settings',

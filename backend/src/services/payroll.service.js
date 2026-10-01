@@ -955,12 +955,15 @@ const recalculatePayslipsFromSettings = async ({
 
     if (error) throw new BadRequestError(error.message);
 
-    for (const row of slips || []) {
+    // Four at a time rather than one by one: each slip is ~10 database round
+    // trips, and in series a company's open month took minutes.
+    const { forEachWithLimit } = require('../utils/concurrency');
+    await forEachWithLimit(slips || [], 4, async (row) => {
       try {
         const employee = row.employee;
         if (!employee) {
           details.push({ id: row.id, status: 'skipped', reason: 'Employee missing' });
-          continue;
+          return;
         }
 
         const { summary } = await attendanceService.getMonthlySummary(
@@ -1002,11 +1005,43 @@ const recalculatePayslipsFromSettings = async ({
       } catch (err) {
         details.push({ id: row.id, status: 'error', reason: err.message });
       }
-    }
+    });
   }
 
   logger.info('Payslips recalculated from settings', { updated, focusMonth, focusYear });
   return { updated, month: focusMonth, year: focusYear, details };
+};
+
+/**
+ * Same recalculation, run on the server in the background so a settings save
+ * returns at once. One run per company at a time: saves made while one is
+ * running collapse into a single follow-up run with the latest settings,
+ * instead of piling up overlapping recalculations.
+ */
+const recalcRuns = new Map();
+const queueRecalculationFromSettings = (opts = {}) => {
+  const key = String(opts.companyId || 'all');
+  const running = recalcRuns.get(key);
+  if (running) {
+    running.again = true;
+    return { queued: true, alreadyRunning: true };
+  }
+  const run = { again: false };
+  recalcRuns.set(key, run);
+  (async () => {
+    try {
+      do {
+        run.again = false;
+        // eslint-disable-next-line no-await-in-loop
+        await recalculatePayslipsFromSettings(opts);
+      } while (run.again);
+    } catch (err) {
+      logger.error('Background payslip recalculation failed', { companyId: opts.companyId, error: err.message });
+    } finally {
+      recalcRuns.delete(key);
+    }
+  })();
+  return { queued: true, alreadyRunning: false };
 };
 
 const downloadPayslip = async (payslipId, user) => {
@@ -1188,6 +1223,7 @@ module.exports = {
   listPayslips,
   downloadPayslip,
   recalculatePayslipsFromSettings,
+  queueRecalculationFromSettings,
   mapPayslipRow,
   autoRunPayrollForCompany,
   processAutoPayroll,
