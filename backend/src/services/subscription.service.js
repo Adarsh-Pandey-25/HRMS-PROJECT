@@ -227,7 +227,8 @@ const createSubscription = async (companyId, planId, billingCycle, seatCount, ac
   });
 
   const notifications = require('./subscriptionNotification.service');
-  await notifications.sendWelcomeNotification(subscription).catch((e) =>
+  // Not awaited: the action does not wait on email.
+  notifications.sendWelcomeNotification(subscription).catch((e) =>
     logger.error('[Subscription] Welcome notification failed', { subscriptionId: subscription.id, error: e.message }));
 
   return { subscription, invoice };
@@ -311,7 +312,8 @@ const changePlan = async (subscriptionId, newPlanId, actorId) => {
   });
 
   const notifications = require('./subscriptionNotification.service');
-  await notifications.sendPlanChangedNotification(updated, oldPlan, newPlan).catch((e) =>
+  // Not awaited: the action does not wait on email.
+  notifications.sendPlanChangedNotification(updated, oldPlan, newPlan).catch((e) =>
     logger.error('[Subscription] Plan-changed notification failed', { subscriptionId, error: e.message }));
 
   return updated;
@@ -400,7 +402,8 @@ const renewSubscription = async (subscriptionId, actorId, isManual = false) => {
   const result = await performRenewal(subscription, { triggeredBy: isManual ? 'super_admin' : 'system', actorId });
 
   const notifications = require('./subscriptionNotification.service');
-  await notifications.sendRenewedNotification(result.subscription, result.invoice).catch((e) =>
+  // Not awaited: the action does not wait on email.
+  notifications.sendRenewedNotification(result.subscription, result.invoice).catch((e) =>
     logger.error('[Subscription] Renewed notification failed', { subscriptionId, error: e.message }));
 
   return result;
@@ -428,7 +431,8 @@ const manualRenewSubscription = async (subscriptionId, actorId, paymentReference
   if (error) throw error;
 
   const notifications = require('./subscriptionNotification.service');
-  await notifications.sendRenewedNotification(updatedSub, paidInvoice).catch((e) =>
+  // Not awaited: the action does not wait on email.
+  notifications.sendRenewedNotification(updatedSub, paidInvoice).catch((e) =>
     logger.error('[Subscription] Renewed notification failed', { subscriptionId, error: e.message }));
 
   return { subscription: updatedSub, invoice: paidInvoice };
@@ -468,7 +472,8 @@ const suspendSubscription = async (subscriptionId, actorId, reason) => {
   await logSubscriptionEvent(subscriptionId, 'suspended', 'super_admin', actorId, { reason: reason || null, manual: true });
 
   const notifications = require('./subscriptionNotification.service');
-  await notifications.sendSuspendedNotification(updated).catch((e) =>
+  // Not awaited: the action does not wait on email.
+  notifications.sendSuspendedNotification(updated).catch((e) =>
     logger.error('[Subscription] Suspended notification failed', { subscriptionId, error: e.message }));
 
   return updated;

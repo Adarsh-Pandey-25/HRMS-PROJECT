@@ -13,6 +13,7 @@ const { allocateNextEmployeeCode } = require('../services/employeeCode.service')
 const { uploadProfilePicture, getSignedUrl, getSignedUrls, STORAGE_BUCKETS, deleteEmployeeFolder } = require('../services/storage.service');
 const logger = require('../utils/logger');
 const profileCompletion = require('../services/profileCompletion.service');
+const { runInBackground } = require('../utils/background');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -259,31 +260,30 @@ const create = async (req, res, next) => {
 
     const employee = omitSensitive(data, ['password_hash']);
     let onboardingLink = null;
+    // The welcome / invite email goes out in the background — HR's screen
+    // (and every row of a bulk import) no longer waits on the mail server.
+    // Only the invite link is worked out first, since the response returns it.
+    const emailService = require('../services/email.service');
     if (isOnboardingMode) {
       try {
-        const { onboardingInviteEmail } = require('../services/email.service');
         const onboardingToken = authService.generateOnboardingToken(employee);
         const { getTenantOrigin } = require('../services/tenantUrl.service');
         onboardingLink = `${await getTenantOrigin(companyId)}/employee-onboarding?token=${onboardingToken}`;
-        const settingsService = require('../services/settings.service');
-        const profile = await settingsService.getSetting('company_profile', {}, companyId);
-        const companyName = profile?.name || '';
-        await onboardingInviteEmail(employee, tempPassword, onboardingLink, { companyName, expiryHours: 72 });
-      } catch (emailErr) {
-        /* email is best-effort */
-        logger.warn('Onboarding invite email failed', { employeeId: employee.id, error: emailErr.message });
+      } catch (linkErr) {
+        logger.warn('Onboarding link could not be built', { employeeId: employee.id, error: linkErr.message });
+      }
+      if (onboardingLink) {
+        const link = onboardingLink;
+        runInBackground('onboarding invite email', async () => {
+          const settingsService = require('../services/settings.service');
+          const profile = await settingsService.getSetting('company_profile', {}, companyId);
+          await emailService.onboardingInviteEmail(employee, tempPassword, link, { companyName: profile?.name || '', expiryHours: 72 });
+        });
       }
     } else {
-      try {
-        const { welcomeEmail, bulkImportEmail } = require('../services/email.service');
-        if (isBulkImport) {
-          await bulkImportEmail(employee, tempPassword, { expiryHours });
-        } else {
-          await welcomeEmail(employee, tempPassword);
-        }
-      } catch {
-        /* email is best-effort; do not fail create */
-      }
+      runInBackground(isBulkImport ? 'bulk import email' : 'welcome email', () => (isBulkImport
+        ? emailService.bulkImportEmail(employee, tempPassword, { expiryHours })
+        : emailService.welcomeEmail(employee, tempPassword)));
     }
     require('../services/webhook.service').dispatchWebhookEvent(companyId, 'employee.created', {
       employeeId: employee.id, employeeCode: employee.employee_code, firstName: employee.first_name,

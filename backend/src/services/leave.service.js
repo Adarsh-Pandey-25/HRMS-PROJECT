@@ -656,15 +656,14 @@ const setEmployeeAllocations = async ({ employeeId, year, allocations, actor, ip
   const emailService = require('./email.service');
   const { getAdminEmailRecipients } = require('./emailRecipients.service');
   const admins = await getAdminEmailRecipients(companyId).catch(() => []);
-  const sends = [];
+  // Sent in the background — saving the balance does not wait on email.
+  const { runInBackground } = require('../utils/background');
   if (employee?.email) {
-    sends.push(emailService.leaveBalanceChangedEmail(employee, toNotify, { year, changedByName }));
+    runInBackground('leave balance change email', () => emailService.leaveBalanceChangedEmail(employee, toNotify, { year, changedByName }));
   }
   for (const admin of admins) {
-    sends.push(emailService.leaveBalanceChangedAdminEmail(admin, employee || { id: employeeId }, toNotify, { year, changedByName }));
+    runInBackground('leave balance change admin email', () => emailService.leaveBalanceChangedAdminEmail(admin, employee || { id: employeeId }, toNotify, { year, changedByName }));
   }
-  const results = await Promise.allSettled(sends);
-  results.filter((r) => r.status === 'rejected').forEach((r) => logger.error('[Leave] balance-change email failed', { employeeId, error: r.reason?.message }));
   return { changes, notified: true, emailedAdmins: admins.length };
 };
 

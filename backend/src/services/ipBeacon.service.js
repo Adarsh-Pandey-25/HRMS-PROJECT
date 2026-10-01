@@ -16,12 +16,15 @@ const COMPROMISE_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000; // max once per 6h per 
 
 /** Every HR/Admin at the company — same notify pattern as apiKey.service.js's notifyHrAdmins. */
 const notifyHrAdmins = async (companyId, send) => {
-  const { data: recipients } = await supabaseAdmin
+  // Callers no longer await this, so it must never reject.
+  const { data: recipients, error } = await supabaseAdmin
     .from('employees')
     .select('id, first_name, last_name, email')
     .eq('company_id', companyId)
     .eq('is_active', true)
-    .in('role', ['hr', 'admin']);
+    .in('role', ['hr', 'admin'])
+    .then((r) => r, (e) => ({ data: null, error: e }));
+  if (error) { logger.warn('[IPBeacon] Recipient lookup failed', { error: error.message }); return; }
   for (const r of recipients || []) {
     send({ to: r.email, name: `${r.first_name} ${r.last_name}`.trim() }).catch((e) =>
       logger.warn('[IPBeacon] Notification email failed', { error: e.message }));
@@ -151,7 +154,8 @@ const checkRateAnomaly = async (beacon) => {
   if (Date.now() - lastAlertAt < COMPROMISE_ALERT_COOLDOWN_MS) return; // cooldown active — do not spam
   await settingsService.setSetting(cooldownKey, new Date().toISOString(), null, beacon.company_id);
 
-  await notifyHrAdmins(beacon.company_id, (recipient) =>
+  // Not awaited: the beacon's ping does not wait on email.
+  notifyHrAdmins(beacon.company_id, (recipient) =>
     emailService.beaconCompromiseAlertEmail(recipient, beacon, recentChanges));
 };
 
@@ -170,7 +174,8 @@ const checkGeoAndApply = async (beacon, observedIp) => {
   });
   if (error) logger.error('[IPBeacon] Failed to create pending approval', { error: error.message });
 
-  await notifyHrAdmins(beacon.company_id, (recipient) =>
+  // Not awaited: the beacon's ping does not wait on email.
+  notifyHrAdmins(beacon.company_id, (recipient) =>
     emailService.beaconGeoMismatchEmail(recipient, beacon, { proposedIp: observedIp, detectedRegion: detected?.label }));
 
   return { applied: false, detected };
@@ -248,7 +253,8 @@ const recordPing = async (beaconKey, providedSecret, observedIp) => {
 
   if (isFirstPing) {
     await applyNewIp(beacon, observedIp, { auditNote: 'first_ping' });
-    await notifyHrAdmins(beacon.company_id, (recipient) => emailService.beaconFirstPingEmail(recipient, beacon, observedIp));
+    // Not awaited: the beacon's ping does not wait on email.
+  notifyHrAdmins(beacon.company_id, (recipient) => emailService.beaconFirstPingEmail(recipient, beacon, observedIp));
     return { status: 'first_ping_whitelisted', ip: observedIp };
   }
 
