@@ -65,19 +65,60 @@ const resolveExpectedHours = (shift) => {
  * late, which takes priority over short-hours, so nobody gets two emails
  * for the same day.
  */
+/**
+ * Is this date one of the company's holidays — any type, public, optional or
+ * restricted. Nobody gets an absent/late/short-hours email for a holiday,
+ * and HR gets no digest for it.
+ *
+ * Fails closed: if the lookup errors it throws rather than answering "no",
+ * because "no" would email every employee an absent alert for a holiday.
+ * The cron counts the company as failed and its 3-hourly re-run retries.
+ * (Before this, a failed lookup — or two holidays on one date, which made
+ * maybeSingle() error — was silently read as "not a holiday".)
+ */
+const isCompanyHoliday = async (companyId, dateStr) => {
+  const { data, error } = await supabaseAdmin
+    .from('holidays')
+    .select('id')
+    .eq('company_id', companyId)
+    .eq('date', dateStr)
+    .limit(1);
+  if (error) throw new Error(`Holiday lookup failed: ${error.message}`);
+  return data.length > 0;
+};
+
+const LEAVE_LOOKUP_CHUNK = 100;
+
+/**
+ * Employees on approved leave covering this date. Chunked so a large roster
+ * does not overflow the request URL, and fails closed for the same reason
+ * as isCompanyHoliday: a silent error here used to send people on leave an
+ * absent alert.
+ */
+const employeesOnLeave = async (employeeIds, dateStr) => {
+  const onLeave = new Set();
+  for (let i = 0; i < employeeIds.length; i += LEAVE_LOOKUP_CHUNK) {
+    // eslint-disable-next-line no-await-in-loop
+    const { data, error } = await supabaseAdmin
+      .from('leaves')
+      .select('employee_id')
+      .eq('status', 'approved')
+      .lte('from_date', dateStr)
+      .gte('to_date', dateStr)
+      .in('employee_id', employeeIds.slice(i, i + LEAVE_LOOKUP_CHUNK));
+    if (error) throw new Error(`Leave lookup failed: ${error.message}`);
+    for (const l of data || []) onLeave.add(l.employee_id);
+  }
+  return onLeave;
+};
+
 const detectAnomaliesForCompanyDate = async (companyId, dateStr) => {
   const dayStart = moment.tz(dateStr, TIMEZONE).startOf('day');
   const dow = dayStart.day();
   // Same weekend definition already used by getMonthlySummary's workingDays calc.
   if (dow === 0 || dow === 6) return [];
 
-  const { data: holiday } = await supabaseAdmin
-    .from('holidays')
-    .select('id')
-    .eq('company_id', companyId)
-    .eq('date', dateStr)
-    .maybeSingle();
-  if (holiday) return [];
+  if (await isCompanyHoliday(companyId, dateStr)) return [];
 
   const { data: employees, error: empError } = await supabaseAdmin
     .from('employees')
@@ -87,14 +128,7 @@ const detectAnomaliesForCompanyDate = async (companyId, dateStr) => {
   if (empError) throw empError;
   if (!employees?.length) return [];
 
-  const { data: approvedLeaves } = await supabaseAdmin
-    .from('leaves')
-    .select('employee_id')
-    .eq('status', 'approved')
-    .lte('from_date', dateStr)
-    .gte('to_date', dateStr)
-    .in('employee_id', employees.map((e) => e.id));
-  const onLeave = new Set((approvedLeaves || []).map((l) => l.employee_id));
+  const onLeave = await employeesOnLeave(employees.map((e) => e.id), dateStr);
 
   const config = await getAttendanceConfig(companyId);
   const anomalies = [];
@@ -125,7 +159,7 @@ const detectAnomaliesForCompanyDate = async (companyId, dateStr) => {
     // if a biometric punch existed, `row` would exist and the type would
     // be late/short_hours/no-anomaly, not absent — so it's always sent as
     // the feature-agnostic alert it already is, no gating needed there.
-    const { data: rows } = await supabaseAdmin
+    const { data: rows, error: rowsError } = await supabaseAdmin
       .from('attendance')
       .select('status, check_in_time, total_hours, location, check_in_method, check_out_method, checkout_status')
       .eq('employee_id', emp.id)
@@ -133,6 +167,9 @@ const detectAnomaliesForCompanyDate = async (companyId, dateStr) => {
       .lt('check_in_time', windowEnd.toISOString())
       .order('check_in_time', { ascending: true })
       .limit(1);
+    // A failed read is not "no attendance" — that would email an absent
+    // alert to someone who was at work.
+    if (rowsError) throw new Error(`Attendance lookup failed: ${rowsError.message}`);
     const row = rows?.[0];
 
     if (!row) {

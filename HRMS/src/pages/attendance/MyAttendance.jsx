@@ -7,6 +7,8 @@ import {
   useMyAttendance, useMonthlyAttendanceSummary, useAttendanceMutations, useCheckContext,
 } from '../../hooks/useAttendance';
 import { useAuthStore } from '../../store/authStore';
+import { useQuery } from '@tanstack/react-query';
+import { fetchHolidaysByYearApi } from '../../api/holidays.api';
 import toast from 'react-hot-toast';
 import { useSelfieCapture } from '../../components/attendance/SelfieCapture';
 import { planWebCheckIn, requestGeolocation } from '../../lib/webCheckIn';
@@ -178,8 +180,20 @@ export default function MyAttendance() {
     present: 0, wfh: 0, late: 0, absent: 0, avgHours: 0, overtime: 0,
   };
 
+  // Same query key as the Holiday Calendar page, so the two share a cache.
+  const { data: holidays = [] } = useQuery({
+    queryKey: ['holidays', viewYear],
+    queryFn: () => fetchHolidaysByYearApi(viewYear),
+    staleTime: 5 * 60_000,
+  });
+
   const statusByDay = useMemo(() => {
     const map = {};
+    // Holidays first, so a day someone actually worked shows as worked.
+    holidays.forEach((h) => {
+      const [y, m, d] = String(h.date || '').slice(0, 10).split('-').map(Number);
+      if (y === viewYear && m === viewMonth && d) map[d] = 'holiday';
+    });
     const all = [...records, ...(monthly?.records || [])];
     all.forEach((a) => {
       if (!a.date) return;
@@ -187,7 +201,7 @@ export default function MyAttendance() {
       map[day] = a.status === 'early_departure' ? 'present' : a.status;
     });
     return map;
-  }, [records, monthly?.records]);
+  }, [records, monthly?.records, holidays, viewYear, viewMonth]);
 
   const ipAllowed = checkContext?.canCheckInFromThisIp !== false;
   const ipEnforced = checkContext?.officeIpRequired !== false && checkContext?.ipRequiredForWeb !== false;

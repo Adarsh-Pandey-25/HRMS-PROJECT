@@ -907,6 +907,20 @@ const getLast7DaysAttendance = async (employeeId) => {
     byDate[key] = row.status;
   }
 
+  // A missed company holiday is a holiday, not an absence. Best-effort: this
+  // strip is display only, so a failed lookup just shows no holidays.
+  const holidayByDate = {};
+  const { data: emp } = await supabaseAdmin.from('employees').select('company_id').eq('id', employeeId).maybeSingle();
+  if (emp?.company_id) {
+    const { data: holidays } = await supabaseAdmin
+      .from('holidays')
+      .select('date, title')
+      .eq('company_id', emp.company_id)
+      .gte('date', days[0].format('YYYY-MM-DD'))
+      .lte('date', days[6].format('YYYY-MM-DD'));
+    for (const h of holidays || []) holidayByDate[String(h.date).slice(0, 10)] = h.title || 'Holiday';
+  }
+
   return days.map((day) => {
     const key = day.format('YYYY-MM-DD');
     const dow = day.day();
@@ -916,6 +930,7 @@ const getLast7DaysAttendance = async (employeeId) => {
     if (day.isAfter(today, 'day')) state = 'future';
     else if (isWeekend) state = 'weekend';
     else if (byDate[key]) state = byDate[key] === 'late' ? 'late' : 'present';
+    else if (holidayByDate[key]) state = 'holiday';
     else if (day.isBefore(today, 'day')) state = 'absent';
 
     return {
@@ -923,6 +938,7 @@ const getLast7DaysAttendance = async (employeeId) => {
       dayLabel: day.format('ddd'),
       dateLabel: String(day.date()),
       state,
+      holidayName: holidayByDate[key] || null,
       isToday: day.isSame(today, 'day'),
     };
   });

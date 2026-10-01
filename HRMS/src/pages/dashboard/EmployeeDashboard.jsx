@@ -159,12 +159,13 @@ export default function EmployeeDashboard({ user }) {
  wfh: 'bg-primary/15 text-primary',
  late: 'bg-warning/15 text-warning',
  absent: 'bg-danger/15 text-danger',
+ holiday: 'bg-info/12 text-info',
  weekend: 'bg-muted text-fg-subtle',
  future: 'bg-muted/50 text-fg-subtle',
  none: 'bg-muted text-fg-subtle',
  }[a.state] || 'bg-muted text-fg-subtle';
  return (
- <div key={a.date} className={`rounded-lg py-2.5 text-center ${tone} ${a.isToday ? 'ring-2 ring-primary' : ''}`}>
+ <div key={a.date} title={a.holidayName || undefined} className={`rounded-lg py-2.5 text-center ${tone} ${a.isToday ? 'ring-2 ring-primary' : ''}`}>
  <p className="text-[10px] font-medium">{a.dayLabel}</p>
  <p className="text-xs font-semibold mt-1">{a.dateLabel}</p>
  </div>

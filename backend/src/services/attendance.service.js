@@ -804,6 +804,11 @@ const getMonthlySummary = async (employeeId, month, year) => {
     }
   }
 
+  // A company holiday is never an absence. It stays in workingDays (payroll's
+  // per-day rate counts it as a paid day) but must not reach the absent count
+  // that payroll turns into loss of pay.
+  const holidayDates = await getHolidayDatesForEmployee(employeeId, start.format('YYYY-MM-DD'), end.format('YYYY-MM-DD'));
+
   const today = nowIST();
   const cutoff = today.isBefore(end) ? today.clone().startOf('day') : end.clone();
   let absent = 0;
@@ -811,7 +816,7 @@ const getMonthlySummary = async (employeeId, month, year) => {
   while (absCursor.isSameOrBefore(cutoff, 'day')) {
     const dow = absCursor.day();
     const key = absCursor.format('YYYY-MM-DD');
-    if (dow !== 0 && dow !== 6 && !attendedDays.has(key) && !approvedLeaveDays.has(key)) absent += 1;
+    if (dow !== 0 && dow !== 6 && !attendedDays.has(key) && !approvedLeaveDays.has(key) && !holidayDates.has(key)) absent += 1;
     absCursor.add(1, 'day');
   }
 
@@ -824,6 +829,7 @@ const getMonthlySummary = async (employeeId, month, year) => {
     halfDay,
     earlyDeparture,
     absent,
+    holidays: holidayDates.size,
     onApprovedLeave: approvedLeaveDays.size,
     totalHours: Math.round(totalHours * 100) / 100,
     overtimeHours: Math.round(overtimeHours * 100) / 100,
@@ -917,6 +923,11 @@ const getRangeSummary = async (employeeId, fromDate, toDate) => {
     }
   }
 
+  // A company holiday is never an absence. It stays in workingDays (payroll's
+  // per-day rate counts it as a paid day) but must not reach the absent count
+  // that payroll turns into loss of pay.
+  const holidayDates = await getHolidayDatesForEmployee(employeeId, start.format('YYYY-MM-DD'), end.format('YYYY-MM-DD'));
+
   const today = nowIST();
   const cutoff = today.isBefore(end) ? today.clone().startOf('day') : end.clone();
   let absent = 0;
@@ -924,7 +935,7 @@ const getRangeSummary = async (employeeId, fromDate, toDate) => {
   while (absCursor.isSameOrBefore(cutoff, 'day')) {
     const dow = absCursor.day();
     const key = absCursor.format('YYYY-MM-DD');
-    if (dow !== 0 && dow !== 6 && !attendedDays.has(key) && !approvedLeaveDays.has(key)) absent += 1;
+    if (dow !== 0 && dow !== 6 && !attendedDays.has(key) && !approvedLeaveDays.has(key) && !holidayDates.has(key)) absent += 1;
     absCursor.add(1, 'day');
   }
 
@@ -936,6 +947,7 @@ const getRangeSummary = async (employeeId, fromDate, toDate) => {
     halfDay,
     earlyDeparture,
     absent,
+    holidays: holidayDates.size,
     leaveDays: approvedLeaveDays.size,
     totalHours: Math.round(totalHours * 100) / 100,
     overtimeHours: Math.round(overtimeHours * 100) / 100,
@@ -1027,6 +1039,26 @@ const processAutoCheckout = async () => {
 };
 
 /** The employee's assigned shift start ("HH:mm"), resolved from their address + company config. */
+/**
+ * The employee's company holidays between two dates (inclusive), as
+ * YYYY-MM-DD strings. Throws on a failed read: answering "no holidays"
+ * would turn every holiday into an absence and a loss-of-pay deduction.
+ */
+const getHolidayDatesForEmployee = async (employeeId, fromStr, toStr) => {
+  const { data: emp, error: empError } = await supabaseAdmin
+    .from('employees').select('company_id').eq('id', employeeId).maybeSingle();
+  if (empError) throw new BadRequestError(empError.message);
+  if (!emp?.company_id) return new Set();
+  const { data, error } = await supabaseAdmin
+    .from('holidays')
+    .select('date')
+    .eq('company_id', emp.company_id)
+    .gte('date', fromStr)
+    .lte('date', toStr);
+  if (error) throw new BadRequestError(error.message);
+  return new Set((data || []).map((h) => String(h.date).slice(0, 10)));
+};
+
 const getEmployeeShiftStart = async (employeeId) => {
   const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
   const { data: empRow } = await supabaseAdmin.from('employees').select('address').eq('id', employeeId).maybeSingle();
