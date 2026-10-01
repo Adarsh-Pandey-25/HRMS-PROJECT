@@ -152,13 +152,18 @@ const saveError = (error) => {
  * retried without updated_by if that column or its foreign key is what a
  * given database rejects — the switch itself matters more than who flipped it
  * (the audit log records that separately).
+ *
+ * Rows are addressed by (company_id, category), never by id: production's
+ * table predates 20260928 and was created without an id column, so
+ * CREATE TABLE IF NOT EXISTS left it as it was.
  */
-const writePreference = async (existingId, companyId, category, enabled, updatedBy) => {
+const writePreference = async (rowExists, companyId, category, enabled, updatedBy) => {
   const attempt = async (withActor) => {
     const fields = { enabled, updated_at: new Date().toISOString() };
     if (withActor) fields.updated_by = updatedBy;
-    if (existingId) {
-      return supabaseAdmin.from('company_email_preferences').update(fields).eq('id', existingId);
+    if (rowExists) {
+      return supabaseAdmin.from('company_email_preferences').update(fields)
+        .eq('company_id', companyId).eq('category', category);
     }
     return supabaseAdmin.from('company_email_preferences').insert({ company_id: companyId, category, ...fields });
   };
@@ -170,11 +175,8 @@ const writePreference = async (existingId, companyId, category, enabled, updated
     ({ error } = await attempt(false));
   }
   // 23505: a concurrent request inserted the row first — update it instead.
-  if (error && error.code === '23505' && !existingId) {
-    const { data: row } = await supabaseAdmin
-      .from('company_email_preferences').select('id')
-      .eq('company_id', companyId).eq('category', category).maybeSingle();
-    if (row?.id) return writePreference(row.id, companyId, category, enabled, updatedBy);
+  if (error && error.code === '23505' && !rowExists) {
+    return writePreference(true, companyId, category, enabled, updatedBy);
   }
   return error;
 };
@@ -186,7 +188,7 @@ const setEmailPreference = async (companyId, category, enabled, updatedBy) => {
 
   const { data: existing, error: readError } = await supabaseAdmin
     .from('company_email_preferences')
-    .select('id, enabled')
+    .select('enabled')
     .eq('company_id', companyId)
     .eq('category', category)
     .maybeSingle();
@@ -198,7 +200,7 @@ const setEmailPreference = async (companyId, category, enabled, updatedBy) => {
   const oldValue = existing?.enabled ?? true;
   if (oldValue === enabled) return { changed: false, oldValue, newValue: enabled };
 
-  const error = await writePreference(existing?.id || null, companyId, category, enabled, updatedBy);
+  const error = await writePreference(Boolean(existing), companyId, category, enabled, updatedBy);
   if (error) {
     logger.error('[EmailPrefs] Save failed', { companyId, category, code: error.code, error: error.message, details: error.details, hint: error.hint });
     throw saveError(error);
