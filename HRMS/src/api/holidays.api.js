@@ -28,3 +28,8 @@ export async function createHolidayApi({ name, date, type }) {
 export async function deleteHolidayApi(id) {
   return apiRequest({ method: 'DELETE', url: `/holidays/${id}` });
 }
+
+/** Import many holidays at once; with notify, each employee gets ONE email listing them all. */
+export async function bulkImportHolidaysApi(holidays, { notify = true } = {}) {
+  return apiRequest({ method: 'POST', url: '/holidays/bulk', data: { holidays, notify } });
+}

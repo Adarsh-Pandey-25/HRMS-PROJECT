@@ -1412,6 +1412,46 @@ const announcementEmail = (employee, announcement, options = {}) => {
   });
 };
 
+const HOLIDAY_TYPE_LABEL = { public: 'Public', optional: 'Optional', restricted: 'Restricted' };
+
+/**
+ * One email per employee for a whole imported holiday list — never one
+ * email per holiday. Wired: holiday.controller.js bulkCreate().
+ */
+const holidayListEmail = (employee, holidays, { companyName } = {}) => {
+  const sorted = [...holidays].sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  const years = [...new Set(sorted.map((h) => String(h.date).slice(0, 4)))];
+  const yearLabel = years.length === 1 ? years[0] : `${years[0]}–${years[years.length - 1]}`;
+  const count = sorted.length;
+  return sendEmail({
+    to: employee.email,
+    subject: `${companyName ? `${companyName} — ` : ''}Holiday list ${yearLabel} (${count} holiday${count === 1 ? '' : 's'})`,
+    text: `Hi ${employee.first_name || 'there'},\n\nThe holiday list for ${yearLabel}:\n\n${sorted.map((h) => `${formatDate(h.date, 'ddd, D MMM YYYY')} — ${h.title}${h.type && h.type !== 'public' ? ` (${HOLIDAY_TYPE_LABEL[h.type] || h.type})` : ''}`).join('\n')}\n\nView it in HRMS: ${getAppUrl()}/leave/holidays`,
+    html: etDocument({
+      preheader: `${count} holiday${count === 1 ? '' : 's'} added to the ${yearLabel} calendar.`,
+      gradient: GRADIENT.sky,
+      eyebrow: 'Holiday calendar',
+      titleHtml: `Holiday list ${escapeHtml(yearLabel)}`,
+      icon: '🗓️',
+      bodyHtml: `
+        ${etP(`Hi ${escapeHtml(employee.first_name || 'there')},`)}
+        ${etP(`${companyName ? `${escapeHtml(companyName)} has` : 'HR has'} published the holiday list — ${count} holiday${count === 1 ? '' : 's'}. Optional and restricted holidays may need to be applied for as leave.`)}
+        ${etTable(
+          [{ label: 'Date', width: '34%' }, { label: 'Holiday' }, { label: 'Type', width: '22%' }],
+          sorted.map((h) => [
+            `<strong>${escapeHtml(formatDate(h.date, 'ddd, D MMM YYYY'))}</strong>`,
+            escapeHtml(h.title),
+            h.type && h.type !== 'public'
+              ? etBadge(HOLIDAY_TYPE_LABEL[h.type] || h.type, { bg: COLOR.amberBg, color: COLOR.amber })
+              : etBadge('Public', { bg: COLOR.emeraldBg, color: COLOR.emerald }),
+          ]),
+        )}
+        ${etCta(`${getAppUrl()}/leave/holidays`, 'Open Holiday Calendar', COLOR.blue)}
+      `,
+    }),
+  });
+};
+
 const trainingAssignmentEmail = (employee, training) =>
   sendEmail({
     to: employee.email,
@@ -1714,6 +1754,7 @@ const beaconGeoMismatchEmail = ({ to, name }, beacon, { proposedIp, detectedRegi
   });
 
 const templates = {
+  holidayListEmail,
   // Marketing leads
   leadNotificationEmail,
   leadConfirmationEmail,

@@ -91,7 +91,7 @@ function readImportDateCell(row, kind) {
  * Accept DD-MM-YYYY (preferred), YYYY-MM-DD, or Excel serial dates.
  * Returns ISO YYYY-MM-DD for the API, or null if empty/invalid.
  */
-function parseImportDate(value) {
+export function parseImportDate(value) {
   if (value == null || value === '') return null;
 
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
@@ -137,7 +137,7 @@ function parseImportDate(value) {
   return null;
 }
 
-function downloadBlob(blob, filename) {
+export function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

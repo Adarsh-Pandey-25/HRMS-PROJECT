@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, Trash2, RefreshCw } from 'lucide-react';
+import { Plus, Trash2, RefreshCw, Upload } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { Card, CardHeader, Button, Input, Select, Toggle, Modal, Skeleton, SaveStatusIndicator } from '../../components/ui';
 import { useSettingsStore } from '../../store/settingsStore';
@@ -9,6 +9,7 @@ import { fetchHolidaysByYearApi, createHolidayApi, deleteHolidayApi } from '../.
 import { formatDate } from '../../lib/utils';
 import { invalidateAndRefetch } from '../../lib/queryCache';
 import { useAutosave } from '../../hooks/useAutosave';
+import { HolidayImportModal } from '../../components/shared/HolidayImportModal';
 
 const HOLIDAY_TYPE_OPTIONS = [
   { value: 'public', label: 'Public / National' },
@@ -174,6 +175,7 @@ export function LeavePolicySection() {
   });
   const [ltModal, setLtModal] = useState(false);
   const [holModal, setHolModal] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [applying, setApplying] = useState(false);
   const [holidays, setHolidays] = useState([]);
 
@@ -433,7 +435,12 @@ export function LeavePolicySection() {
         <CardHeader
           title={`Holiday List · ${year}`}
           subtitle="Synced with Holiday Calendar for all employees"
-          action={<Button size="sm" icon={Plus} onClick={() => setHolModal(true)}>Add Holiday</Button>}
+          action={(
+            <div className="flex gap-2">
+              <Button size="sm" variant="outline" icon={Upload} onClick={() => setImportOpen(true)}>Import list</Button>
+              <Button size="sm" icon={Plus} onClick={() => setHolModal(true)}>Add Holiday</Button>
+            </div>
+          )}
         />
         <div className="p-5 pt-3 overflow-x-auto">
           {holidaysQuery.isLoading ? (
@@ -484,6 +491,12 @@ export function LeavePolicySection() {
           setHolidays((prev) => [...prev, row].sort((a, b) => String(a.date).localeCompare(String(b.date))));
           invalidateAndRefetch(qc, ['holidays']);
         }}
+      />
+      <HolidayImportModal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        existing={holidays}
+        onImported={() => invalidateAndRefetch(qc, ['holidays'])}
       />
     </div>
   );

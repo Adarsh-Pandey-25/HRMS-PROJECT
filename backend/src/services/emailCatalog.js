@@ -134,6 +134,7 @@ const EMAIL_TYPES = [
 
   // ── Engagement ───────────────────────────────────────────────────────────
   { key: 'announcement', label: 'Announcement', audience: 'employee', trigger: 'HR publishes an announcement with email on.', preference: 'announcements', companyScoped: true },
+  { key: 'holiday_list', label: 'Holiday list', audience: 'employee', trigger: 'HR imports a holiday list with email on — one email listing every holiday, not one per holiday.', preference: 'announcements', companyScoped: true },
   { key: 'training_assignment', label: 'Training assigned', audience: 'employee', trigger: 'Nothing sends this yet.', preference: 'training', companyScoped: true, live: false },
   { key: 'notification', label: 'In-app notification copy', audience: 'employee', trigger: 'Any in-app notification the company has email copies on for.', preference: 'notification_copies', companyScoped: true },
 

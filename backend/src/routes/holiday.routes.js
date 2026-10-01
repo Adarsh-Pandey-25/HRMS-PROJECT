@@ -10,6 +10,7 @@ const router = express.Router();
 router.use(authenticate);
 
 router.post('/create', isHROrAdmin, holidayRules, validate, holidayController.create);
+router.post('/bulk', isHROrAdmin, holidayController.bulkCreate);
 router.get('/year/:year', isEmployee, holidayController.byYear);
 router.put('/:id/update', isHROrAdmin, uuidParam(), validate, holidayController.update);
 router.delete('/:id', isHROrAdmin, uuidParam(), validate, holidayController.remove);
