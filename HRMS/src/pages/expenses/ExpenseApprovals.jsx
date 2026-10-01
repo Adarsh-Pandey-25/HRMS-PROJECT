@@ -7,6 +7,8 @@ import { useCan } from '../../hooks/useCan';
 import { useAuthStore } from '../../store/authStore';
 import { formatCurrency, formatDate } from '../../lib/utils';
 import { CAT_ICON } from './catIcons';
+import { useSettingsStore } from '../../store/settingsStore';
+import { awaitingStage, normalizeFlow } from '../../lib/approvalFlow';
 import toast from 'react-hot-toast';
 
 export default function ExpenseApprovals() {
@@ -21,7 +23,14 @@ export default function ExpenseApprovals() {
  const isLoading = isHrOrAdmin ? allQuery.isLoading : teamQuery.isLoading;
 
  const { approve, reject } = useReimbursementMutations();
- const pending = expenses.filter((e) => e.status === 'pending');
+ // Each claim sits in the queue of whoever's turn it is under the company's
+ // approval flow (Settings → Expenses). HR used to see claims still waiting
+ // on the manager, and approving one only produced an error.
+ const flow = normalizeFlow(useSettingsStore((s) => s.expenseConfig?.approvalFlow));
+ const managerExcluded = !isHrOrAdmin && flow === 'hr-only';
+ const mine = isHrOrAdmin ? 'hr' : 'manager';
+ const pending = expenses.filter((e) => e.status === 'pending'
+ && awaitingStage(flow, { hasManager: Boolean(e.managerId), managerApproved: Boolean(e.managerApprovedBy) }) === mine);
 
  const openReceipt = async (id) => {
  try {
@@ -45,7 +54,7 @@ export default function ExpenseApprovals() {
 
  return (
  <div className="space-y-6 animate-fade-in">
- <PageHeader title="Approval Queue" subtitle="Pending expense claims awaiting your action" />
+ <PageHeader title="Approval Queue" subtitle={managerExcluded ? 'HR approves expense claims in your company' : 'Pending expense claims awaiting your action'} />
 
  <Card>
  <CardHeader title="Approval Queue" subtitle={`${pending.length} pending`} />
@@ -53,7 +62,7 @@ export default function ExpenseApprovals() {
  {isLoading ? (
  <Skeleton className="h-24 w-full" />
  ) : pending.length === 0 ? (
- <EmptyState icon={Check} title="All settled" message="No pending expense claims." />
+ <EmptyState icon={Check} title="All settled" message={managerExcluded ? "Your company has expense claims approved by HR only, so there's nothing for you to approve here." : 'No pending expense claims.'} />
  ) : (
  <div className="space-y-2">
  {pending.map((e) => {

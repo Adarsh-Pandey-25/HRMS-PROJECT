@@ -272,6 +272,9 @@ export function mapReimbursementFromApi(row) {
     submittedOn: c.createdAt,
     approvedBy: c.approvedBy,
     receiptUrl: c.receiptUrl,
+    // For the approval queues (lib/approvalFlow.js).
+    managerApprovedBy: c.managerApprovedBy || null,
+    managerId: emp.managerId || null,
   };
 }
 

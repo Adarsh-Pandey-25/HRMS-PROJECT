@@ -5,6 +5,7 @@ const settingsService = require('../services/settings.service');
 const { successResponse, paginate, buildMeta } = require('../utils/helpers');
 const { BadRequestError, NotFoundError, ForbiddenError } = require('../utils/errors');
 const notificationService = require('../services/notification.service');
+const approvalFlow = require('../services/approvalFlow.service');
 
 const companyEmployeeIds = (req) => {
   const tenant = require('../services/tenant.service');
@@ -78,14 +79,17 @@ const submit = async (req, res, next) => {
       throw new BadRequestError(error.message);
     }
 
-    // Notify manager (if any) else HR/Admin
+    // Notify whoever acts first under Settings → Expenses → Approval flow:
+    // the manager, or HR (HR only, or the employee has no manager).
     const { data: employee } = await supabaseAdmin
       .from('employees')
       .select('id, first_name, last_name, manager_id')
       .eq('id', req.user.id)
       .single();
+    const flow = await approvalFlow.getExpenseFlow(req.user.company_id);
+    const firstStage = approvalFlow.awaitingStage(flow, { hasManager: Boolean(employee?.manager_id), managerApproved: false });
 
-    if (employee?.manager_id) {
+    if (firstStage === 'manager') {
       await notificationService.createNotification({
         user_id: employee.manager_id,
         type: 'REIMBURSEMENT',
@@ -107,7 +111,7 @@ const submit = async (req, res, next) => {
           type: 'REIMBURSEMENT',
           title: 'Reimbursement submitted',
           message: `A reimbursement claim was submitted and needs review.`,
-          link: '/expenses/all',
+          link: '/expenses/approvals',
           meta: { reimbursement_id: data.id },
         });
       }
@@ -121,7 +125,7 @@ const listReimbursements = async (filters, query) => {
   const { page, limit, offset } = paginate(query);
   let dbQuery = supabaseAdmin
     .from('reimbursements')
-    .select('*, employee:employee_id(id, first_name, last_name, employee_code)', { count: 'exact' })
+    .select('*, employee:employee_id(id, first_name, last_name, employee_code, manager_id)', { count: 'exact' })
     .order('created_at', { ascending: false })
     .range(offset, offset + limit - 1);
 
@@ -158,47 +162,62 @@ const allReimbursements = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+/** The facts the approval rules need about a claim and the person acting on it. */
+const approvalContext = async (req, reimbursement) => {
+  const { data: employee } = await supabaseAdmin
+    .from('employees')
+    .select('manager_id')
+    .eq('id', reimbursement.employee_id)
+    .maybeSingle();
+  const managesEmployee = req.user.role === 'manager'
+    ? (await attendanceService.getTeamEmployeeIds(req.user.id, req.user.company_id)).includes(reimbursement.employee_id)
+    : false;
+  return {
+    flow: await approvalFlow.getExpenseFlow(req.user.company_id),
+    actorId: req.user.id,
+    employeeId: reimbursement.employee_id,
+    actorRole: req.user.role,
+    managesEmployee,
+    hasManager: Boolean(employee?.manager_id),
+    managerApproved: Boolean(reimbursement.manager_approved_by),
+    what: 'expense claim',
+  };
+};
+
 const approve = async (req, res, next) => {
   try {
     const reimbursement = await requireCompanyReimbursement(req);
+    if (reimbursement.status !== 'pending') throw new BadRequestError('This claim has already been decided');
 
-    if (req.user.role === 'manager') {
-      const teamIds = await attendanceService.getTeamEmployeeIds(req.user.id, req.user.company_id);
-      if (!teamIds.includes(reimbursement.employee_id)) {
-        throw new ForbiddenError('Not authorized to approve this reimbursement');
-      }
-    }
+    // Settings → Expenses → Approval flow. This setting used to be ignored:
+    // claims always went manager → HR whatever it said.
+    const ctx = await approvalContext(req, reimbursement);
+    const decision = approvalFlow.decideApproval(ctx.flow, ctx);
+    if (!decision.ok) throw decision.status === 403 ? new ForbiddenError(decision.message) : new BadRequestError(decision.message);
 
-    // Workflow:
-    // - Manager: records manager approval (does not finalize)
-    // - HR/Admin: final approval (optionally after manager approval if employee has a manager)
+    const now = new Date().toISOString();
+    const managerStep = req.user.role === 'manager';
     let updates;
-    if (req.user.role === 'manager') {
-      updates = { manager_approved_by: req.user.id, manager_approved_at: new Date().toISOString() };
+    if (managerStep && !decision.final) {
+      updates = { manager_approved_by: req.user.id, manager_approved_at: now }; // HR finalizes
+    } else if (managerStep) {
+      updates = { manager_approved_by: req.user.id, manager_approved_at: now, status: 'approved', approved_by: req.user.id, approval_date: now };
     } else {
-      const { data: employee } = await supabaseAdmin
-        .from('employees')
-        .select('manager_id')
-        .eq('id', reimbursement.employee_id)
-        .single();
-
-      if (employee?.manager_id && !reimbursement.manager_approved_by) {
-        throw new BadRequestError('Manager approval required before HR approval');
-      }
-
-      updates = { status: 'approved', approved_by: req.user.id, approval_date: new Date().toISOString() };
+      updates = { status: 'approved', approved_by: req.user.id, approval_date: now };
     }
 
     const { data, error } = await supabaseAdmin
       .from('reimbursements')
       .update(updates)
       .eq('id', req.params.id)
+      .eq('status', 'pending')
       .select()
-      .single();
+      .maybeSingle();
 
     if (error) throw new BadRequestError(error.message);
+    if (!data) throw new BadRequestError('This claim has already been decided');
 
-    if (req.user.role === 'manager') {
+    if (!decision.final) {
       // Notify HR/Admin for final approval
       const { data: hrs } = await supabaseAdmin
         .from('employees')
@@ -212,7 +231,7 @@ const approve = async (req, res, next) => {
           type: 'REIMBURSEMENT',
           title: 'Reimbursement needs HR approval',
           message: `Manager approved a reimbursement claim. Please review and approve/reject.`,
-          link: '/expenses/all',
+          link: '/expenses/approvals',
           meta: { reimbursement_id: reimbursement.id, employee_id: reimbursement.employee_id },
         });
       }
@@ -235,12 +254,10 @@ const approve = async (req, res, next) => {
 const reject = async (req, res, next) => {
   try {
     const reimbursement = await requireCompanyReimbursement(req);
-    if (req.user.role === 'manager') {
-      const teamIds = await attendanceService.getTeamEmployeeIds(req.user.id, req.user.company_id);
-      if (!teamIds.includes(reimbursement.employee_id)) {
-        throw new ForbiddenError('Not authorized to reject this reimbursement');
-      }
-    }
+    if (reimbursement.status !== 'pending') throw new BadRequestError('This claim has already been decided');
+    const ctx = await approvalContext(req, reimbursement);
+    const rejection = approvalFlow.decideRejection(ctx.flow, ctx);
+    if (!rejection.ok) throw new ForbiddenError(rejection.message);
 
     const { data, error } = await supabaseAdmin
       .from('reimbursements')
@@ -251,10 +268,12 @@ const reject = async (req, res, next) => {
         rejection_reason: req.body.rejection_reason,
       })
       .eq('id', req.params.id)
+      .eq('status', 'pending')
       .select()
-      .single();
+      .maybeSingle();
 
     if (error) throw new BadRequestError(error.message);
+    if (!data) throw new BadRequestError('This claim has already been decided');
 
     await notificationService.createNotification({
       user_id: reimbursement.employee_id,

@@ -7,6 +7,7 @@ const {
 const { calculateLeaveDays, paginate, buildMeta } = require('../utils/helpers');
 const { getTeamEmployeeIds } = require('./attendance.service');
 const logger = require('../utils/logger');
+const approvalFlow = require('./approvalFlow.service');
 const settingsService = require('./settings.service');
 const config = require('../config/database');
 const notificationService = require('./notification.service');
@@ -154,13 +155,17 @@ const applyLeave = async (employeeId, data) => {
   emailService.leaveAppliedEmail(employee, leave, { balanceAfterApproval }).catch((e) =>
     logger.warn('leaveAppliedEmail failed', { error: e.message }));
 
-  if (employee?.manager_id) {
+  // Whoever acts first under the company's approval flow: the manager, or
+  // HR (HR only, or the employee has no manager).
+  const flow = await approvalFlow.getLeaveFlow(companyId);
+  const firstStage = approvalFlow.awaitingStage(flow, { hasManager: Boolean(employee?.manager_id), managerApproved: false });
+  if (firstStage === 'manager') {
     await notificationService.createNotification({
       user_id: employee.manager_id,
       type: 'LEAVE',
       title: 'Leave request pending approval',
       message: `${employee.first_name} ${employee.last_name} applied for leave (${leave_type}) from ${from_date} to ${to_date}.`,
-      link: '/leave/team',
+      link: '/leave/approvals',
       meta: { leave_id: leave.id },
     });
 
@@ -284,14 +289,6 @@ const notifyLeaveApproved = async (leave, approver) => {
   }
 };
 
-/** Reads Settings → Leave Policy → Approval Flow (leave_policy_meta). */
-const getLeaveApprovalLevel = async (companyId = null) => {
-  const meta = await settingsService.getSetting('leave_policy_meta', null, companyId || DEFAULT_COMPANY_ID);
-  if (!meta || typeof meta !== 'object') return 'single';
-  const level = String(meta.approval_level || meta.approvalLevel || 'single').toLowerCase();
-  return level === 'two-level' || level === 'two_level' || level === 'two' ? 'two-level' : 'single';
-};
-
 const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
   const { data: leave } = await supabaseAdmin.from('leaves').select('*, employee:employee_id(id, first_name, last_name, email, employee_code, department, manager_id, company_id, address)').eq('id', leaveId).single();
   if (!leave) throw new NotFoundError('Leave not found');
@@ -310,17 +307,28 @@ const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
     throw new ForbiddenError('Not authorized to approve leave for another company');
   }
 
-  const approvalLevel = await getLeaveApprovalLevel(approverCompanyId);
-  const singleLevel = approvalLevel === 'single';
+  // Settings → Leave Policy → Approval flow (approvalFlow.service.js).
+  const flow = await approvalFlow.getLeaveFlow(approverCompanyId);
+  const actingAsManager = isManagerApproval && approver.role === 'manager';
+  const managesEmployee = actingAsManager
+    ? (await getTeamEmployeeIds(approver.id, approverCompanyId)).includes(leave.employee_id)
+    : false;
+  const decision = approvalFlow.decideApproval(flow, {
+    actorId: approver.id,
+    employeeId: leave.employee_id,
+    actorRole: actingAsManager ? 'manager' : approver.role,
+    managesEmployee,
+    hasManager: Boolean(leave.employee?.manager_id),
+    managerApproved: Boolean(leave.manager_approved_by),
+    what: 'leave request',
+  });
+  if (!decision.ok) {
+    throw decision.status === 403 ? new ForbiddenError(decision.message) : new BadRequestError(decision.message);
+  }
 
-  if (isManagerApproval && approver.role === 'manager') {
-    const teamIds = await getTeamEmployeeIds(approver.id, approverCompanyId);
-    if (!teamIds.includes(leave.employee_id)) {
-      throw new ForbiddenError('Not authorized to approve this leave');
-    }
-
-    // Single-level: manager approval is final
-    if (singleLevel) {
+  if (actingAsManager) {
+    // Manager only: the manager's approval is final.
+    if (decision.final) {
       // Audit finding N-05: .eq('status','pending') on the write itself
       // (not just the earlier read-time check) closes the TOCTOU window —
       // a double-click/retried request that loses the race updates zero
@@ -345,7 +353,7 @@ const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
       return updated;
     }
 
-    // Two-level: record manager approval, then HR finalizes
+    // Manager → HR: record the manager's approval; HR finalizes.
     const { data: updated } = await supabaseAdmin
       .from('leaves')
       .update({
@@ -353,8 +361,10 @@ const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
         manager_approved_at: new Date().toISOString(),
       })
       .eq('id', leaveId)
+      .eq('status', 'pending')
       .select()
-      .single();
+      .maybeSingle();
+    if (!updated) throw new ConflictError('This leave has already been processed');
 
     const tenantService = require('./tenant.service');
     const hrIds = await tenantService.getCompanyHrAdminIds(approverCompanyId);
@@ -372,11 +382,8 @@ const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
     return updated;
   }
 
-  // HR/Admin final approval
-  // Two-level only: require manager step first when employee has a manager
-  if (!singleLevel && leave.employee?.manager_id && !leave.manager_approved_by) {
-    throw new BadRequestError('Manager approval required before HR approval');
-  }
+  // HR/Admin final approval (decideApproval already required the manager
+  // step first under Manager → HR).
 
   // Audit finding N-05: same TOCTOU close as the manager branch above —
   // .eq('status','pending') on the write itself, not just the read-time
@@ -413,6 +420,15 @@ const rejectLeave = async (approver, leaveId, rejection_reason) => {
   if (leave.employee && getCompanyId(leave.employee) !== approverCompanyId) {
     throw new ForbiddenError('Not authorized to reject leave for another company');
   }
+  // A manager could previously reject ANY employee's leave in the company.
+  const flow = await approvalFlow.getLeaveFlow(approverCompanyId);
+  const managesEmployee = approver.role === 'manager'
+    ? (await getTeamEmployeeIds(approver.id, approverCompanyId)).includes(leave.employee_id)
+    : false;
+  const rejection = approvalFlow.decideRejection(flow, {
+    actorId: approver.id, employeeId: leave.employee_id, actorRole: approver.role, managesEmployee, what: 'leave request',
+  });
+  if (!rejection.ok) throw new ForbiddenError(rejection.message);
 
   const { data: updated, error } = await supabaseAdmin
     .from('leaves')

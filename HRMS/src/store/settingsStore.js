@@ -177,7 +177,7 @@ const DEFAULT_EXPENSE_CONFIG = {
     { type: 'internet_phone', name: 'Internet' },
     { type: 'other', name: 'Other' },
   ],
-  approvalFlow: 'manager-then-hr', // manager-only | manager-then-hr
+  approvalFlow: 'manager-then-hr', // manager-only | manager-then-hr | hr-only
   requireReceiptAbove: 500,
 };
 

@@ -6,13 +6,15 @@ import { useTeamLeaves, useAllLeaves, useLeaveMutations } from '../../hooks/useL
 import { useAuthStore } from '../../store/authStore';
 import { useSettingsStore } from '../../store/settingsStore';
 import { formatDate } from '../../lib/utils';
+import { awaitingStage, normalizeFlow } from '../../lib/approvalFlow';
 import toast from 'react-hot-toast';
 
 export default function LeaveApprovals() {
   const role = useAuthStore((s) => s.role);
   const isHrOrAdmin = role === 'hr' || role === 'admin';
   const approvalLevel = useSettingsStore((s) => s.leavePolicy?.approvalLevel || 'single');
-  const twoLevel = approvalLevel === 'two-level';
+  const flow = normalizeFlow(approvalLevel, 'manager-only');
+  const managerExcluded = !isHrOrAdmin && flow === 'hr-only';
 
   // HR/Admin need company-wide pending leaves — not just their direct reports
   const teamQuery = useTeamLeaves({ enabled: !isHrOrAdmin, status: 'pending' });
@@ -22,21 +24,13 @@ export default function LeaveApprovals() {
 
   const { approve, reject } = useLeaveMutations();
 
+  // Each request sits in the queue of whoever's turn it is under the
+  // company's approval flow (Settings → Leave Policy).
   const pending = useMemo(() => {
-    return requests.filter((r) => {
-      if (r.status !== 'pending') return false;
-      if (isHrOrAdmin) {
-        if (twoLevel) {
-          // Two-level: HR acts after manager approval, or when employee has no manager
-          return Boolean(r.managerApprovedBy) || !r.managerId;
-        }
-        // Single-level: managers finalize; HR only handles staff with no manager
-        return !r.managerId;
-      }
-      // Manager first-level queue: not yet manager-approved
-      return !r.managerApprovedBy;
-    });
-  }, [requests, isHrOrAdmin, twoLevel]);
+    const mine = isHrOrAdmin ? 'hr' : 'manager';
+    return requests.filter((r) => r.status === 'pending'
+      && awaitingStage(flow, { hasManager: Boolean(r.managerId), managerApproved: Boolean(r.managerApprovedBy) }) === mine);
+  }, [requests, isHrOrAdmin, flow]);
 
   const exportRows = useMemo(
     () => pending.map((l) => ({
@@ -62,10 +56,12 @@ export default function LeaveApprovals() {
   };
 
   const subtitle = isHrOrAdmin
-    ? (twoLevel
-      ? 'Leaves waiting for HR final approval (after manager)'
-      : 'Pending leave requests for employees without a manager')
-    : 'Team leave requests awaiting your approval';
+    ? {
+      'hr-only': 'Every leave request — HR approves all leave',
+      'manager-then-hr': 'Leaves waiting for HR final approval (after manager)',
+      'manager-only': 'Leave requests from employees without a manager — managers approve the rest',
+    }[flow]
+    : (managerExcluded ? 'HR approves leave requests in your company' : 'Team leave requests awaiting your approval');
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -88,7 +84,11 @@ export default function LeaveApprovals() {
           {isLoading ? (
             <Skeleton className="h-24 w-full" />
           ) : pending.length === 0 ? (
-            <EmptyState icon={Check} title="All clear" message="No pending leave requests." />
+            <EmptyState
+              icon={Check}
+              title="All clear"
+              message={managerExcluded ? "Your company has leave approved by HR only, so there's nothing for you to approve here." : 'No pending leave requests.'}
+            />
           ) : (
             <div className="space-y-3">
               {pending.map((l) => (

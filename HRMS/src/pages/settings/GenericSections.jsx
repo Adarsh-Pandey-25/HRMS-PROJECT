@@ -17,6 +17,7 @@ import { useAssetCategories, useAssetMutations } from '../../hooks/useModules';
 import { useCompanyFeatures } from '../../hooks/useCompanyFeatures';
 import { useAutosave } from '../../hooks/useAutosave';
 import { WebhooksSection } from './WebhooksSection';
+import { APPROVAL_FLOW_OPTIONS, normalizeFlow } from '../../lib/approvalFlow';
 
 /**
  * Item 4: replaces the old explicit "Save Changes" pattern. `form` still
@@ -286,14 +287,18 @@ export function ExpenseSettingsSection() {
     <div className="space-y-5">
       <div className="flex justify-end"><SaveStatusIndicator status={status} onRetry={retry} /></div>
       <Card>
-        <CardHeader title="Approval Flow" />
+        <CardHeader title="Approval Flow" subtitle="Who approves expense claims." />
         <div className="p-5 pt-3 space-y-2.5">
-          {[['manager-only', 'Manager approval only'], ['manager-then-hr', 'Manager → HR']].map(([val, label]) => (
-            <label key={val} className="flex items-center gap-2.5 text-sm text-fg cursor-pointer">
-              <input type="radio" name="expenseApprovalFlow" className="h-4 w-4 accent-primary" checked={form.approvalFlow === val} onChange={() => patch({ approvalFlow: val })} />
-              {label}
+          {APPROVAL_FLOW_OPTIONS.map((opt) => (
+            <label key={opt.value} className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-border px-3.5 py-3 text-sm text-fg has-[:checked]:border-primary has-[:checked]:bg-primary/5">
+              <input type="radio" name="expenseApprovalFlow" className="mt-0.5 h-4 w-4 accent-primary" checked={normalizeFlow(form.approvalFlow) === opt.value} onChange={() => patch({ approvalFlow: opt.value })} />
+              <span>
+                <span className="font-medium">{opt.label}</span>
+                <span className="mt-0.5 block text-xs text-fg-subtle">{opt.hint}</span>
+              </span>
             </label>
           ))}
+          <p className="pt-1 text-xs text-fg-subtle">Requests from people without a manager always go to HR.</p>
         </div>
       </Card>
       <Card className="p-5">

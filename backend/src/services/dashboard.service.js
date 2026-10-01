@@ -564,11 +564,8 @@ const getNewHiresTrendPercent = (employees) => {
 const getPendingLeaveList = async (limit = 5, employeeIds = [], companyId = null) => {
   if (!employeeIds.length) return [];
 
-  const settingsService = require('./settings.service');
-  const { DEFAULT_COMPANY_ID } = require('../utils/tenant');
-  const meta = await settingsService.getSetting('leave_policy_meta', null, companyId || DEFAULT_COMPANY_ID);
-  const level = String(meta?.approval_level || meta?.approvalLevel || 'single').toLowerCase();
-  const twoLevel = level === 'two-level' || level === 'two_level' || level === 'two';
+  const approvalFlow = require('./approvalFlow.service');
+  const flow = await approvalFlow.getLeaveFlow(companyId);
 
   let query = supabaseAdmin
     .from('leaves')
@@ -581,14 +578,11 @@ const getPendingLeaveList = async (limit = 5, employeeIds = [], companyId = null
   const { data, error } = await query;
   if (error) throw new BadRequestError(error.message);
 
-  const rows = (data || []).filter((row) => {
-    if (!twoLevel) {
-      // Single-level: HR dashboard only shows leaves for staff with no manager
-      return !row.employee?.manager_id;
-    }
-    // Two-level: ready for HR = manager already approved OR no manager
-    return Boolean(row.manager_approved_by) || !row.employee?.manager_id;
-  }).slice(0, limit);
+  // HR's queue: the requests that are HR's turn under the approval flow.
+  const rows = (data || []).filter((row) => approvalFlow.awaitingStage(flow, {
+    hasManager: Boolean(row.employee?.manager_id),
+    managerApproved: Boolean(row.manager_approved_by),
+  }) === 'hr').slice(0, limit);
 
   return rows.map((row) => {
     const emp = row.employee || {};
@@ -607,20 +601,28 @@ const getPendingLeaveList = async (limit = 5, employeeIds = [], companyId = null
   });
 };
 
-const getPendingExpenseList = async (limit = 5, employeeIds = []) => {
+const getPendingExpenseList = async (limit = 5, employeeIds = [], companyId = null) => {
   if (!employeeIds.length) return [];
 
+  const approvalFlow = require('./approvalFlow.service');
+  const flow = await approvalFlow.getExpenseFlow(companyId);
   const { data, error } = await supabaseAdmin
     .from('reimbursements')
-    .select('id, reimbursement_type, description, employee:employee_id(id, first_name, last_name)')
+    .select('id, reimbursement_type, description, manager_approved_by, employee:employee_id(id, first_name, last_name, manager_id)')
     .eq('status', 'pending')
     .in('employee_id', employeeIds)
     .order('created_at', { ascending: false })
-    .limit(limit);
+    .limit(Math.max(limit * 3, 20));
 
   if (error) throw new BadRequestError(error.message);
 
-  return (data || []).map((row) => {
+  // HR's queue: the claims that are HR's turn under the approval flow.
+  const hrTurn = (data || []).filter((row) => approvalFlow.awaitingStage(flow, {
+    hasManager: Boolean(row.employee?.manager_id),
+    managerApproved: Boolean(row.manager_approved_by),
+  }) === 'hr').slice(0, limit);
+
+  return hrTurn.map((row) => {
     const emp = row.employee || {};
     return {
       id: row.id,
@@ -775,7 +777,7 @@ const getHrDashboard = async (companyId = null) => {
     getTodayAttendanceSummary(teamIds),
     getOnLeaveTodayCount(companyEmployeeIds),
     getPendingLeaveList(5, companyEmployeeIds, companyId),
-    getPendingExpenseList(5, companyEmployeeIds),
+    getPendingExpenseList(5, companyEmployeeIds, companyId),
     getRecentAnnouncements(3, companyId),
     getPendingApprovals(companyEmployeeIds),
     getUpcomingInterviews(companyId, 5),
@@ -1140,8 +1142,10 @@ const getOnLeaveTodayForTeam = async (employeeIds) => {
   return count || 0;
 };
 
-const getPendingLeaveListForTeam = async (teamIds, limit = 5) => {
+const getPendingLeaveListForTeam = async (teamIds, limit = 5, companyId = null) => {
   if (!teamIds.length) return { count: 0, items: [] };
+  // HR only: nothing waits on the manager.
+  if (await require('./approvalFlow.service').getLeaveFlow(companyId) === 'hr-only') return { count: 0, items: [] };
 
   // Manager queue: pending leaves not yet manager-approved
   const [{ count }, { data, error }] = await Promise.all([
@@ -1180,19 +1184,25 @@ const getPendingLeaveListForTeam = async (teamIds, limit = 5) => {
   return { count: count || 0, items };
 };
 
-const getPendingExpenseListForTeam = async (teamIds, limit = 5) => {
+const getPendingExpenseListForTeam = async (teamIds, limit = 5, companyId = null) => {
   if (!teamIds.length) return { count: 0, items: [] };
+  // HR only: nothing waits on the manager.
+  if (await require('./approvalFlow.service').getExpenseFlow(companyId) === 'hr-only') return { count: 0, items: [] };
 
+  // Manager's queue: claims the manager has not approved yet (one they
+  // approved under Manager → HR is now waiting on HR, not on them).
   const [{ count }, { data, error }] = await Promise.all([
     supabaseAdmin
       .from('reimbursements')
       .select('id', { count: 'exact', head: true })
       .eq('status', 'pending')
+      .is('manager_approved_by', null)
       .in('employee_id', teamIds),
     supabaseAdmin
       .from('reimbursements')
       .select('id, reimbursement_type, description, employee:employee_id(id, first_name, last_name)')
       .eq('status', 'pending')
+      .is('manager_approved_by', null)
       .in('employee_id', teamIds)
       .order('created_at', { ascending: false })
       .limit(limit),
@@ -1291,8 +1301,8 @@ const getManagerDashboard = async (managerId) => {
   ] = await Promise.all([
     getTodayAttendanceSummary(teamIds),
     getOnLeaveTodayForTeam(teamIds),
-    getPendingLeaveListForTeam(teamIds, 5),
-    getPendingExpenseListForTeam(teamIds, 5),
+    getPendingLeaveListForTeam(teamIds, 5, companyId),
+    getPendingExpenseListForTeam(teamIds, 5, companyId),
     getRecentAnnouncements(3, companyId),
     getTeamPerformance(managerId, companyId, 4),
   ]);
