@@ -79,6 +79,37 @@ const sendViaResend = async (mail) => {
   return { success: true, messageId: body.id, mock: false };
 };
 
+/**
+ * Every email opens its own SMTP connection, so a burst — an announcement to
+ * the whole company fired at once — opened dozens in parallel and the mail
+ * server (Google) refused about half with "421 Temporary System Problem".
+ * Two guards, for every email the app sends:
+ *  - at most SMTP_MAX_PARALLEL (default 3) sends in flight at a time; the
+ *    rest queue in order;
+ *  - an SMTP "try again later" answer (any 4xx code) is retried after
+ *    2s, 6s and 15s before the email counts as failed. Nothing was accepted
+ *    by the server in that case, so a retry cannot send it twice.
+ */
+const MAX_PARALLEL = Math.max(1, parseInt(process.env.SMTP_MAX_PARALLEL, 10) || 3);
+const RETRY_DELAYS_MS = [2000, 6000, 15000];
+let inFlight = 0;
+const waiting = [];
+const acquireSlot = () => new Promise((resolve) => {
+  if (inFlight < MAX_PARALLEL) { inFlight += 1; resolve(); } else { waiting.push(resolve); }
+});
+const releaseSlot = () => {
+  const next = waiting.shift();
+  if (next) next(); else inFlight -= 1; // hand the slot straight to the next in line
+};
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** The server answered "not now" (SMTP 4xx) rather than "never" (5xx). */
+const isTemporaryRefusal = (err) => {
+  const code = Number(err?.responseCode);
+  if (code >= 400 && code < 500) return true;
+  return /^4\d\d[ -]/.test(String(err?.response || '')) || /\b4\d\d[- ]4\.\d\.\d\b/.test(String(err?.message || ''));
+};
+
 const sendWithFallback = async (mail) => {
   if (!process.env.SMTP_HOST || !process.env.SMTP_USER) {
     if (process.env.RESEND_API_KEY) return sendViaResend(mail);
@@ -94,7 +125,25 @@ const sendWithFallback = async (mail) => {
     return sendViaResend(mail);
   }
 
+  for (let attempt = 0; ; attempt += 1) {
+    await acquireSlot();
+    try {
+      return await sendOverSmtp(mail);
+    } catch (err) {
+      if (attempt >= RETRY_DELAYS_MS.length || !isTemporaryRefusal(err)) throw err;
+      logger.warn('SMTP said try again later — retrying', { attempt: attempt + 1, inMs: RETRY_DELAYS_MS[attempt], error: err.message });
+    } finally {
+      releaseSlot();
+    }
+    await sleep(RETRY_DELAYS_MS[attempt]);
+  }
+};
+
+const sendOverSmtp = async (mail) => {
   let lastErr;
+  // A "try again later" from any port decides the outcome — otherwise an
+  // unrelated error from the fallback port would hide it and skip the retry.
+  let temporary = null;
   for (const attempt of smtpAttempts()) {
     try {
       const t = buildTransport(attempt);
@@ -103,6 +152,7 @@ const sendWithFallback = async (mail) => {
       return { success: true, messageId: info.messageId, mock: false };
     } catch (err) {
       lastErr = err;
+      if (!temporary && isTemporaryRefusal(err)) temporary = err;
       logger.warn('SMTP attempt failed', { port: attempt.port, error: err.message });
     }
   }
@@ -115,7 +165,7 @@ const sendWithFallback = async (mail) => {
     logger.warn('Resend API failed', { error: err.message });
   }
 
-  throw lastErr;
+  throw temporary || lastErr;
 };
 
-module.exports = { createTransporter, sendWithFallback, buildTransport };
+module.exports = { createTransporter, sendWithFallback, buildTransport, isTemporaryRefusal };

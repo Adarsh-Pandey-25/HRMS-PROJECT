@@ -156,13 +156,16 @@ const notifyAnnouncementAudience = async (announcement, companyId, options = {})
       priority: announcement.priority,
       title: announcement.title,
     });
-    recipients
-      .filter((emp) => emp.email)
-      .forEach((emp) => {
-        announcementEmail(emp, announcement, { subject }).catch((err) => {
-          logger.error('Announcement email failed', { employeeId: emp.id, error: err.message });
-        });
-      });
+    // Two at a time in the background, not all at once: a company-wide
+    // burst made the mail server refuse about half of them (see
+    // config/email.js). Publishing still returns immediately.
+    const { forEachWithLimit } = require('../utils/concurrency');
+    forEachWithLimit(
+      recipients.filter((emp) => emp.email),
+      2,
+      (emp) => announcementEmail(emp, announcement, { subject }),
+      (err, emp) => logger.error('Announcement email failed', { employeeId: emp.id, error: err.message }),
+    ).catch(() => {});
   }
 };
 

@@ -1389,10 +1389,14 @@ const autoCheckoutEmail = (employee, attendance) =>
 const announcementEmail = (employee, announcement, options = {}) => {
   const priority = String(announcement.priority || 'medium').toUpperCase();
   const priorityColorMap = { URGENT: COLOR.rose, HIGH: COLOR.amber, LOW: COLOR.slate };
-  const contentHtml = escapeHtml(announcement.content).replace(/\n/g, '<br/>');
+  // The editor saves announcements as HTML; escaping it showed the raw tags
+  // to every reader. Rendered through a strict allow-list instead.
+  const { toEmailSafeHtml, toPlainText } = require('../utils/emailHtml');
+  const contentHtml = toEmailSafeHtml(announcement.content);
   return sendEmail({
     to: employee.email,
     subject: options.subject || `[${priority}] ${announcement.title}`,
+    text: `Hi ${employee.first_name || 'there'},\n\n${toPlainText(announcement.content)}\n\nView in HRMS: ${getAppUrl()}/announcements`,
     html: etDocument({
       preheader: announcement.title,
       gradient: GRADIENT.blueRoll,
@@ -1401,7 +1405,7 @@ const announcementEmail = (employee, announcement, options = {}) => {
       icon: '📣',
       bodyHtml: `
         ${etP(`Hi ${escapeHtml(employee.first_name || 'there')},`)}
-        ${etP(contentHtml)}
+        <div style="font-size:14px;line-height:1.75;color:${COLOR.ink};font-family:${FONT_SANS};">${contentHtml}</div>
         ${etCta(`${getAppUrl()}/announcements`, 'View in HRMS', priorityColorMap[priority] || COLOR.blue)}
       `,
     }),

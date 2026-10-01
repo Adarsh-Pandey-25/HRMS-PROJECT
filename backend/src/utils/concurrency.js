@@ -1,22 +1,19 @@
 /**
- * Runs `fn` over `items` with at most `limit` in flight at once, instead of
- * `Promise.all(items.map(fn))` firing every call simultaneously. A report
- * that fans out N queries per item (e.g. 4 lookups per employee) turns an
- * unbounded scope (a whole company) into an unbounded burst of concurrent
- * DB queries — this caps that burst regardless of how large `items` is.
+ * Run `worker` over `items` with at most `limit` running at once, in order.
+ * Resolves when all are done; a failing item is reported to `onError` and
+ * does not stop the rest. Used for mailing a list of people without a burst.
  */
-const mapWithConcurrency = async (items, limit, fn) => {
-  const results = new Array(items.length);
-  let cursor = 0;
-  const workerCount = Math.max(1, Math.min(limit, items.length));
-  const workers = Array.from({ length: workerCount }, async () => {
-    while (cursor < items.length) {
-      const index = cursor++;
-      results[index] = await fn(items[index], index);
+const forEachWithLimit = async (items, limit, worker, onError = () => {}) => {
+  let next = 0;
+  const lane = async () => {
+    while (next < items.length) {
+      const item = items[next];
+      next += 1;
+      // eslint-disable-next-line no-await-in-loop
+      try { await worker(item); } catch (err) { onError(err, item); }
     }
-  });
-  await Promise.all(workers);
-  return results;
+  };
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, limit), items.length) }, lane));
 };
 
-module.exports = { mapWithConcurrency };
+module.exports = { forEachWithLimit };
