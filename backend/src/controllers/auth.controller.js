@@ -267,6 +267,32 @@ const markInstallPromptSeen = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+/**
+ * First sign-in for someone HR/Admin added without their personal details:
+ * the employee fills them in here before reaching the rest of the app.
+ * Returns the refreshed profile so the client can lift the gate at once.
+ */
+const completeProfile = async (req, res, next) => {
+  try {
+    if (req.impersonation) throw new ForbiddenError('Personal details must be filled in by the employee themselves.');
+    const profileCompletion = require('../services/profileCompletion.service');
+    const changes = await profileCompletion.completeOwnProfile(req.user.id, req.body || {});
+    require('../services/auditLog.service').logAudit({
+      companyId: req.user.company_id,
+      actorId: req.user.id,
+      actorRole: req.user.role,
+      actionType: 'profile.complete',
+      targetType: 'employee',
+      targetId: req.user.id,
+      // Never write bank details into the audit trail.
+      afterState: { ...changes, bank_details: undefined },
+      ipAddress: req.ip,
+    }).catch(() => {});
+    const employee = await authService.getMe(req.user.id);
+    successResponse(res, 'Profile completed', employee);
+  } catch (err) { next(err); }
+};
+
 const changePassword = async (req, res, next) => {
   try {
     const { currentPassword, newPassword } = req.body || {};
@@ -275,6 +301,13 @@ const changePassword = async (req, res, next) => {
     }
     validatePassword(newPassword, BadRequestError);
     await authService.changePassword(req.user.id, currentPassword, newPassword);
+    // The change revoked every session, this one included — re-issue it so
+    // the person who changed it carries on (not an impersonating super admin,
+    // whose session must stay an impersonation session).
+    if (!req.impersonation) {
+      const { accessToken, refreshToken } = await authService.issueSessionFor(req.user.id);
+      issueSessionCookies(req, res, accessToken, refreshToken);
+    }
     successResponse(res, 'Password changed successfully');
   } catch (err) { next(err); }
 };
@@ -374,7 +407,7 @@ const peekOnboardingInvite = async (req, res, next) => {
 
 module.exports = {
   login, loginAdmin, loginHr, loginEmployee, workspaceInfo,
-  logout, refreshToken, getMe, changePassword, forgotPassword, resetPassword,
+  logout, refreshToken, getMe, completeProfile, changePassword, forgotPassword, resetPassword,
   sendOnboardingOtp, verifyOnboardingOtp, bootstrapAdmin, peekOnboardingInvite, onboardingSlugAvailability,
   markInstallPromptSeen, startImpersonationHandoff, endImpersonation,
   startEmployeeTwoFactor, confirmEmployeeTwoFactor, disableEmployeeTwoFactor, verifyTwoFaAndLogin,

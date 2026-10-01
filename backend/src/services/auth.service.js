@@ -560,6 +560,20 @@ const bumpTokenVersion = async (employeeId) => {
   }
 };
 
+/**
+ * A new session for the person who just changed their password. The change
+ * bumps token_version, which revokes every session including the one they
+ * are using; without this the next request after "Password updated" was a
+ * 401 and they were silently signed out. Every other session stays revoked.
+ */
+const issueSessionFor = async (employeeId) => {
+  const { data: employee, error } = await supabaseAdmin.from('employees').select('*').eq('id', employeeId).maybeSingle();
+  if (error || !employee) throw new NotFoundError('Employee not found');
+  const tokens = generateTokens(employee);
+  await storeRefreshToken(employee.id, tokens.refreshToken);
+  return tokens;
+};
+
 const logout = async (employeeId, refreshToken) => {
   if (refreshToken) {
     const tokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
@@ -1171,5 +1185,6 @@ module.exports = {
   bootstrapAdmin,
   bootstrapTrialSubscription,
   bumpTokenVersion,
+  issueSessionFor,
   markInstallPromptSeen,
 };
