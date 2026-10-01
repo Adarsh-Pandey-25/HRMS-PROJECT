@@ -527,10 +527,11 @@ const getLeaveBalance = async (employeeId, year, companyId = null) => {
   const byType = Object.fromEntries((filtered || []).map((b) => [b.leave_type, b]));
 
   // Keep totals in sync with latest policy on read (used/encashed preserved)
+  // — except an allocation HR/Admin set for this person individually.
   for (const p of activePolicy) {
     const b = byType[p.code];
     const alloc = Number(p.allocation || 0);
-    if (b && Number(b.total_allocated) !== alloc) {
+    if (b && b.allocation_override !== true && Number(b.total_allocated) !== alloc) {
       await supabaseAdmin
         .from('leave_balances')
         .update({ total_allocated: alloc })
@@ -551,9 +552,120 @@ const getLeaveBalance = async (employeeId, year, companyId = null) => {
     return {
       ...b,
       name: nameByCode[p.code] || p.code,
+      policy_allocation: Number(p.allocation || 0),
+      allocation_override: b.allocation_override === true,
       available: Number(b.total_allocated || 0) - Number(b.used || 0) - Number(b.encashed || 0),
     };
   });
+};
+
+const MAX_ALLOCATION_DAYS = 366;
+
+/**
+ * HR/Admin set one employee's allocation per leave type for a year.
+ * `allocations` maps leave code → days (a multiple of 0.5), or null to go
+ * back to the company policy amount.
+ *
+ * The first time someone's allocation is set individually is setup and
+ * emails nobody. Every later change emails the employee and the company's
+ * admins with what it was and what it is now. Every change is audit-logged.
+ */
+const setEmployeeAllocations = async ({ employeeId, year, allocations, actor, ipAddress = null }) => {
+  if (!allocations || typeof allocations !== 'object' || !Object.keys(allocations).length) {
+    throw new BadRequestError('Nothing to change');
+  }
+  const companyId = await resolveEmployeeCompanyId(employeeId);
+  // Creates any missing rows and brings non-individual ones up to policy.
+  await getLeaveBalance(employeeId, year, companyId);
+
+  const policy = (await getEffectiveLeavePolicy(year, companyId) || []).filter((p) => p && p.code && p.active !== false);
+  const policyByCode = Object.fromEntries(policy.map((p) => [p.code, p]));
+  const { data: rows, error } = await supabaseAdmin
+    .from('leave_balances').select('*').eq('employee_id', employeeId).eq('year', year);
+  if (error) throw new BadRequestError(error.message);
+  const rowByCode = Object.fromEntries((rows || []).map((r) => [r.leave_type, r]));
+  if ((rows || []).length && !('allocation_override' in rows[0])) {
+    throw new BadRequestError('Individual leave allocations need database migration 20261004_leave_balance_individual_allocation.sql. Ask your administrator to run it.');
+  }
+
+  const planned = [];
+  for (const [code, raw] of Object.entries(allocations)) {
+    const p = policyByCode[code];
+    const row = rowByCode[code];
+    if (!p || !row) throw new BadRequestError(`"${code}" is not an active leave type for ${year}`);
+    const resetToPolicy = raw === null || raw === '';
+    const value = resetToPolicy ? Number(p.allocation || 0) : Number(raw);
+    if (!Number.isFinite(value) || value < 0 || value > MAX_ALLOCATION_DAYS) {
+      throw new BadRequestError(`${p.name || code}: enter a number of days between 0 and ${MAX_ALLOCATION_DAYS}`);
+    }
+    if (Math.round(value * 2) !== value * 2) throw new BadRequestError(`${p.name || code}: use whole or half days`);
+    const from = Number(row.total_allocated || 0);
+    const wasIndividual = row.allocation_override === true;
+    const isIndividual = !resetToPolicy;
+    if (value === from && wasIndividual === isIndividual) continue;
+    planned.push({
+      code, name: p.name || code, row, from, to: value, wasIndividual, isIndividual,
+      used: Number(row.used || 0), encashed: Number(row.encashed || 0),
+    });
+  }
+  if (!planned.length) return { changes: [], notified: false };
+
+  const now = new Date().toISOString();
+  for (const c of planned) {
+    // eslint-disable-next-line no-await-in-loop
+    const { error: updError } = await supabaseAdmin
+      .from('leave_balances')
+      .update({
+        total_allocated: c.to,
+        allocation_override: c.isIndividual,
+        allocation_updated_at: now,
+        allocation_updated_by: actor?.id || null,
+      })
+      .eq('id', c.row.id);
+    if (updError) throw new BadRequestError(updError.message);
+  }
+
+  const changes = planned.map((c) => ({
+    code: c.code, name: c.name, from: c.from, to: c.to, used: c.used,
+    available: c.to - c.used - c.encashed,
+    // Setup = the first time this person's allocation is set individually.
+    setup: !c.wasIndividual && c.isIndividual,
+  }));
+
+  require('./auditLog.service').logAudit({
+    companyId,
+    actorId: actor?.id || null,
+    actorRole: actor?.role || null,
+    actionType: 'leave_balance.update',
+    targetType: 'employee',
+    targetId: employeeId,
+    beforeState: Object.fromEntries(changes.map((c) => [c.code, c.from])),
+    afterState: { year, ...Object.fromEntries(changes.map((c) => [c.code, c.to])) },
+    ipAddress,
+  }).catch(() => {});
+
+  const toNotify = changes.filter((c) => !c.setup && c.from !== c.to);
+  if (!toNotify.length) return { changes, notified: false };
+
+  const { data: employee } = await supabaseAdmin
+    .from('employees')
+    .select('id, first_name, last_name, email, employee_code, company_id, role')
+    .eq('id', employeeId)
+    .maybeSingle();
+  const changedByName = `${actor?.first_name || ''} ${actor?.last_name || ''}`.trim() || 'HR';
+  const emailService = require('./email.service');
+  const { getAdminEmailRecipients } = require('./emailRecipients.service');
+  const admins = await getAdminEmailRecipients(companyId).catch(() => []);
+  const sends = [];
+  if (employee?.email) {
+    sends.push(emailService.leaveBalanceChangedEmail(employee, toNotify, { year, changedByName }));
+  }
+  for (const admin of admins) {
+    sends.push(emailService.leaveBalanceChangedAdminEmail(admin, employee || { id: employeeId }, toNotify, { year, changedByName }));
+  }
+  const results = await Promise.allSettled(sends);
+  results.filter((r) => r.status === 'rejected').forEach((r) => logger.error('[Leave] balance-change email failed', { employeeId, error: r.reason?.message }));
+  return { changes, notified: true, emailedAdmins: admins.length };
 };
 
 const getLeaveCalendar = async (month, year, companyId = null) => {
@@ -595,6 +707,7 @@ module.exports = {
   rejectLeave,
   cancelLeave,
   getLeaveBalance,
+  setEmployeeAllocations,
   getLeaveCalendar,
   calculateEncashment,
   getEffectiveLeavePolicy,

@@ -2,7 +2,7 @@ const settingsService = require('../services/settings.service');
 const backupService = require('../services/backup.service');
 const { supabaseAdmin } = require('../config/supabase');
 const { uploadCompanyLogo, uploadCompanyBrandIcon, getSignedUrl, STORAGE_BUCKETS } = require('../services/storage.service');
-const { successResponse } = require('../utils/helpers');
+const { successResponse, isMissingColumnError } = require('../utils/helpers');
 const { BadRequestError, NotFoundError } = require('../utils/errors');
 const { LEAVE_CODE_PATTERN, normalizeLeaveCode } = require('../utils/constants');
 const { getCompanyId } = require('../utils/tenant');
@@ -369,6 +369,27 @@ const updateLeavePolicy = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+/**
+ * Set a leave type's allocation for many employees at once — skipping anyone
+ * whose allocation HR/Admin set individually (leave_balances.allocation_override).
+ * Before migration 20261004 that column does not exist and nobody is skipped.
+ */
+const updatePolicyAllocations = async ({ year, code, employeeIds, total }) => {
+  const run = (skipIndividual) => {
+    let q = supabaseAdmin
+      .from('leave_balances')
+      .update({ total_allocated: total })
+      .eq('year', year)
+      .eq('leave_type', code)
+      .in('employee_id', employeeIds);
+    if (skipIndividual) q = q.eq('allocation_override', false);
+    return q;
+  };
+  let { error } = await run(true);
+  if (error && isMissingColumnError(error.message, 'allocation_override')) ({ error } = await run(false));
+  return error || null;
+};
+
 const applyLeavePolicyToAll = async (req, res, next) => {
   try {
     const year = parseInt(req.query.year, 10);
@@ -413,12 +434,7 @@ const applyLeavePolicyToAll = async (req, res, next) => {
       }
 
       if (employeeIds.length) {
-        const { error: updErr } = await supabaseAdmin
-          .from('leave_balances')
-          .update({ total_allocated: active ? allocation : 0 })
-          .eq('year', year)
-          .eq('leave_type', code)
-          .in('employee_id', employeeIds);
+        const updErr = await updatePolicyAllocations({ year, code, employeeIds, total: active ? allocation : 0 });
         if (updErr) throw new BadRequestError(updErr.message);
       }
     }
@@ -446,12 +462,7 @@ const applyLeaveAllocationsToAll = async (req, res, next) => {
 
     const types = Object.keys(allocations);
     for (const t of types) {
-      await supabaseAdmin
-        .from('leave_balances')
-        .update({ total_allocated: Number(allocations[t] || 0) })
-        .eq('year', year)
-        .eq('leave_type', t)
-        .in('employee_id', employeeIds);
+      await updatePolicyAllocations({ year, code: t, employeeIds, total: Number(allocations[t] || 0) });
     }
 
     successResponse(res, 'Leave allocations applied to all employees', { year, types });

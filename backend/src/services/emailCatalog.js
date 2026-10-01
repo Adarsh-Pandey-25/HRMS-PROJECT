@@ -112,6 +112,8 @@ const EMAIL_TYPES = [
   { key: 'leave_approval_request', label: 'Leave needs approval', audience: 'manager', trigger: 'An employee applies for leave.', preference: 'leave_approval_requests', companyScoped: true },
   { key: 'leave_approved', label: 'Leave approved', audience: 'employee', trigger: 'Leave is approved.', preference: 'leave_updates', companyScoped: true },
   { key: 'leave_rejected', label: 'Leave rejected', audience: 'employee', trigger: 'Leave is rejected.', preference: 'leave_updates', companyScoped: true },
+  { key: 'leave_balance_changed', label: 'Leave balance changed', audience: 'employee', trigger: "HR/Admin change the employee's leave allocation after it was first set (the first allocation sends nothing).", preference: 'leave_updates', companyScoped: true },
+  { key: 'leave_balance_changed_admin', label: 'Leave balance changed (admin copy)', audience: 'company_admin', trigger: "Same change — tells the company's admins what it was and what it is now.", preference: 'leave_updates', companyScoped: true },
   { key: 'leave_balance_low', label: 'Low leave balance', audience: 'employee', trigger: 'Leave approval or weekly check finds the balance below threshold.', preference: 'leave_balance_low', companyScoped: true },
 
   // ── Payroll ──────────────────────────────────────────────────────────────

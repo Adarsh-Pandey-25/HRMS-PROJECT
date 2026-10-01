@@ -77,7 +77,12 @@ export function mapLeaveBalanceFromApi(rows = []) {
     const used = Number(c.used || 0);
     const remaining = Number(c.available ?? (total - used - Number(c.encashed || 0)));
     const name = leaveTypeLabel(code, c.name || c.leaveTypeName);
-    const item = { code, name, total, used, remaining };
+    const item = {
+      code, name, total, used, remaining,
+      // Set for this person individually (not the company policy amount).
+      custom: Boolean(c.allocationOverride),
+      policyTotal: c.policyAllocation != null ? Number(c.policyAllocation) : null,
+    };
     items.push(item);
     // Keep code as primary key; also mirror legacy keys for older UI
     balances[code] = item;

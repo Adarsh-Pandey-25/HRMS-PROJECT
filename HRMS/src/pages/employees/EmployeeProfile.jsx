@@ -23,6 +23,7 @@ import { useAllPayslipsForYear, downloadPayslipApi } from '../../hooks/usePayrol
 import { PayslipPreviewModal } from '../../components/payroll/PayslipPreviewModal';
 import { useCompanyStore } from '../../store/companyStore';
 import { useAuthStore } from '../../store/authStore';
+import { LeaveBalanceCard } from '../../components/leave/LeaveBalanceCard';
 import { useSettingsStore } from '../../store/settingsStore';
 import { useCan } from '../../hooks/useCan';
 import { formatDate, formatCurrency, humanize } from '../../lib/utils';
@@ -834,6 +835,16 @@ export default function EmployeeProfile() {
       )}
 
       {/* Leave */}
+      {tab === 'leave' && resolvedId && (isHrAdmin || isOwnProfile || role === 'manager') && (
+        <div className="mb-4">
+          <LeaveBalanceCard
+            employeeId={resolvedId}
+            employeeName={emp?.firstName || emp?.name}
+            // HR/Admin set allocations; HR not their own (the server refuses it too).
+            canEdit={isHrAdmin && !(role === 'hr' && isOwnProfile)}
+          />
+        </div>
+      )}
       {tab === 'leave' && (
         <Card>
           <CardHeader title="Leave History" subtitle={`${empLeaves.length} requests`} />

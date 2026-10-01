@@ -141,6 +141,36 @@ const types = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+/**
+ * HR/Admin set one employee's leave allocation for a year (per leave type,
+ * or null to go back to the company policy). HR cannot change their own.
+ */
+const setBalance = async (req, res, next) => {
+  try {
+    const year = parseInt(req.body?.year, 10) || moment().tz(TIMEZONE).year();
+    const { getCompanyId } = require('../utils/tenant');
+    const companyId = req.user.company_id || getCompanyId(req.user);
+    const tenantService = require('../services/tenant.service');
+    const targetId = req.params.employeeId;
+    if (!await tenantService.assertSameCompany(companyId, targetId)) {
+      throw new ForbiddenError('Not authorized to change this leave balance');
+    }
+    if (String(req.user.id) === String(targetId) && req.user.role !== 'admin') {
+      throw new ForbiddenError('You cannot change your own leave balance. Ask an admin.');
+    }
+    const result = await leaveService.setEmployeeAllocations({
+      employeeId: targetId,
+      year,
+      allocations: req.body?.allocations,
+      actor: req.user,
+      ipAddress: req.ip,
+    });
+    const balances = await leaveService.getLeaveBalance(targetId, year, companyId);
+    successResponse(res, result.changes.length ? 'Leave balance updated' : 'No changes', { ...result, balances });
+  } catch (err) { next(err); }
+};
+
 module.exports = {
+  setBalance,
   apply, myLeaves, teamLeaves, allLeaves, approve, reject, cancel, balance, calendar, types,
 };

@@ -17,6 +17,7 @@ router.put('/:id/approve', isManagerOrAbove, uuidParam(), validate, leaveControl
 router.put('/:id/reject', isManagerOrAbove, uuidParam(), validate, leaveController.reject);
 router.delete('/:id/cancel', isEmployee, uuidParam(), validate, leaveController.cancel);
 router.get('/balance/:employeeId', uuidParam('employeeId'), validate, leaveController.balance);
+router.put('/balance/:employeeId', isHROrAdmin, uuidParam('employeeId'), validate, leaveController.setBalance);
 router.get('/types', leaveController.types);
 router.get('/calendar', leaveController.calendar);
 

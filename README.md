@@ -95,6 +95,7 @@ function) and must go first on a fresh project; everything in
 22. `20261001_fix_company_email_preferences_shape.sql` — repairs a `company_email_preferences` table created before 20260928 in another shape (production's had no `id`); recreates it only if empty, refuses otherwise
 23. `20261002_one_biometric_id_per_employee.sql` — one biometric ID per employee, enforced in the database (the same ID on several devices is still allowed); refuses, changing nothing, if an employee already has two IDs
 24. `20261003_employee_profile_completion.sql` — `employees.profile_completed`: people HR adds without personal details fill them in on first sign-in; existing employees default to complete and are never asked
+25. `20261004_leave_balance_individual_allocation.sql` — `leave_balances.allocation_override`: an allocation HR/Admin set for one person is kept when the company policy is applied
 
 Migrations are idempotent (`IF NOT EXISTS` / `CREATE OR REPLACE`), so
 re-running one is safe.

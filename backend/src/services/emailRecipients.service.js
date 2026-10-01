@@ -70,4 +70,20 @@ const getHrEmailRecipients = async (companyId) => {
   return pool.filter((r) => !platform.has(normalizeEmail(r.email)));
 };
 
-module.exports = { getHrEmailRecipients, getPlatformAdminEmails };
+/**
+ * The company's active admins, minus platform super admins — for notices the
+ * account owner asked to see (e.g. a changed leave balance).
+ */
+const getAdminEmailRecipients = async (companyId) => {
+  const { data, error } = await supabaseAdmin
+    .from('employees')
+    .select('id, first_name, last_name, email, role, company_id')
+    .eq('company_id', companyId)
+    .eq('is_active', true)
+    .eq('role', 'admin');
+  if (error) throw new Error(error.message);
+  const platform = await getPlatformAdminEmails();
+  return (data || []).filter((r) => normalizeEmail(r.email) && !platform.has(normalizeEmail(r.email)));
+};
+
+module.exports = { getHrEmailRecipients, getAdminEmailRecipients, getPlatformAdminEmails };

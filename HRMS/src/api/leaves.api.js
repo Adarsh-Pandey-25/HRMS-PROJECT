@@ -21,6 +21,17 @@ export async function fetchLeaveBalanceApi(employeeId, year) {
   return mapLeaveBalanceFromApi(Array.isArray(rows) ? rows : []);
 }
 
+/** HR/Admin: set one employee's allocation per leave code (null = back to company policy). */
+export async function updateLeaveBalanceApi(employeeId, { year, allocations }) {
+  const data = await apiRequest({ method: 'PUT', url: `/leaves/balance/${employeeId}`, data: { year, allocations } });
+  return {
+    changes: data?.changes || [],
+    notified: Boolean(data?.notified),
+    emailedAdmins: data?.emailedAdmins || 0,
+    balance: mapLeaveBalanceFromApi(Array.isArray(data?.balances) ? data.balances : []),
+  };
+}
+
 export async function fetchLeaveTypesApi(year) {
   return apiRequest({ method: 'GET', url: '/leaves/types', params: { year } });
 }

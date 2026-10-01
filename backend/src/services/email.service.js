@@ -1452,6 +1452,63 @@ const holidayListEmail = (employee, holidays, { companyName } = {}) => {
   });
 };
 
+const fmtDays = (n) => {
+  const v = Math.round(Number(n || 0) * 10) / 10;
+  return `${v} day${v === 1 ? '' : 's'}`;
+};
+
+const leaveBalanceChangeRows = (changes) => changes.map((c) => [
+  `<strong>${escapeHtml(c.name || c.code)}</strong>`,
+  escapeHtml(fmtDays(c.from)),
+  `<strong>${escapeHtml(fmtDays(c.to))}</strong>`,
+  escapeHtml(fmtDays(c.available)),
+]);
+const LEAVE_CHANGE_COLUMNS = [{ label: 'Leave type' }, { label: 'Was' }, { label: 'Now' }, { label: 'Available' }];
+
+/**
+ * An employee's leave allocation was changed after it had first been set
+ * (the first allocation is setup and sends nothing). Wired:
+ * leave.service.js setEmployeeAllocations().
+ */
+const leaveBalanceChangedEmail = (employee, changes, { year, changedByName } = {}) => sendEmail({
+  to: employee.email,
+  subject: `Your ${year} leave balance has been updated`,
+  html: etDocument({
+    preheader: `Your ${year} leave allocation was changed by ${changedByName || 'HR'}.`,
+    gradient: GRADIENT.emeraldSolid,
+    eyebrow: 'Leave balance',
+    titleHtml: 'Your leave balance<br>has been updated',
+    icon: '🧾',
+    bodyHtml: `
+      ${etP(`Hi ${escapeHtml(employee.first_name || 'there')}, ${escapeHtml(changedByName || 'HR')} changed your ${escapeHtml(String(year))} leave allocation:`)}
+      ${etTable(LEAVE_CHANGE_COLUMNS, leaveBalanceChangeRows(changes))}
+      ${etP('If this looks wrong, please contact HR.', { color: COLOR.slate })}
+      ${etCta(`${getAppUrl()}/leave/me`, 'View my leave', COLOR.emerald)}
+    `,
+  }),
+});
+
+/** Same change, for the company's admins. Wired: leave.service.js setEmployeeAllocations(). */
+const leaveBalanceChangedAdminEmail = (admin, employee, changes, { year, changedByName } = {}) => {
+  const name = `${employee.first_name || ''} ${employee.last_name || ''}`.trim() || 'An employee';
+  return sendEmail({
+    to: admin.email,
+    subject: `Leave balance changed — ${name} (${year})`,
+    html: etDocument({
+      preheader: `${changedByName || 'HR'} changed ${name}'s ${year} leave allocation.`,
+      gradient: GRADIENT.slateDark,
+      eyebrow: 'Leave balance modified',
+      titleHtml: `${escapeHtml(name)}'s leave<br>balance was changed`,
+      icon: '🧾',
+      bodyHtml: `
+        ${etP(`Hi ${escapeHtml(admin.first_name || 'there')}, ${escapeHtml(changedByName || 'HR')} modified the ${escapeHtml(String(year))} leave allocation for <strong>${escapeHtml(name)}</strong>${employee.employee_code ? ` (${escapeHtml(employee.employee_code)})` : ''}:`)}
+        ${etTable(LEAVE_CHANGE_COLUMNS, leaveBalanceChangeRows(changes))}
+        ${etCta(`${getAppUrl()}/employees/${encodeURIComponent(employee.id)}?tab=leave`, 'View employee', COLOR.blue)}
+      `,
+    }),
+  });
+};
+
 const trainingAssignmentEmail = (employee, training) =>
   sendEmail({
     to: employee.email,
@@ -1755,6 +1812,8 @@ const beaconGeoMismatchEmail = ({ to, name }, beacon, { proposedIp, detectedRegi
 
 const templates = {
   holidayListEmail,
+  leaveBalanceChangedEmail,
+  leaveBalanceChangedAdminEmail,
   // Marketing leads
   leadNotificationEmail,
   leadConfirmationEmail,
