@@ -267,7 +267,16 @@ const checkContext = async (req, res, next) => {
     const todayDate = wfhRequestService.todayIST();
     const wfhReq = await wfhRequestService.getRequestForDate(req.user.id, todayDate);
     const dailyWfhStatus = wfhReq?.status || null;
-    const dailyWfhApproved = attendanceMode === 'wfh' || attendanceMode === 'hybrid' || dailyWfhStatus === 'approved';
+    const webMode = methods.webMode;
+    // Under 'wfh_only' a hybrid employee is WFH only on an approved day; in
+    // every other mode hybrid keeps counting as WFH every day, as before.
+    const dailyWfhApproved = attendanceMode === 'wfh'
+      || (attendanceMode === 'hybrid' && webMode !== 'wfh_only')
+      || dailyWfhStatus === 'approved';
+    // The same rule checkIn enforces, so the button and the server agree.
+    const webDecision = attendanceService.webCheckInDecision({
+      webMode, attendanceMode, approvedDailyWfh: dailyWfhStatus === 'approved',
+    });
 
     // Source of truth for My Attendance clock UI (avoid relying only on month list)
     const shiftStart = attendanceService.resolveShiftStart(emp?.address, attendanceConfig.shifts);
@@ -292,7 +301,9 @@ const checkContext = async (req, res, next) => {
       canCheckInFromThisIp,
       ipBasedWebOn: ipWebOn,
       gpsGeofenceOn: gpsOn,
-      canEnableDailyWfh: attendanceMode === 'office',
+      // Hybrid staff need an approved day under 'wfh_only', so they must be
+      // able to ask for one.
+      canEnableDailyWfh: attendanceMode === 'office' || (attendanceMode === 'hybrid' && webMode === 'wfh_only'),
       dailyWfhStatus,
       dailyWfhApproved,
       dailyWfhRequestId: wfhReq?.id || null,
@@ -300,11 +311,24 @@ const checkContext = async (req, res, next) => {
       methods,
       selfieRequired: attendanceConfig.selfieRequired,
       appCheckInEnabled: methods.app !== false,
-      webCheckInEnabled: methods.web !== false,
+      webCheckInEnabled: webMode !== 'off',
+      webMode,
+      // Whether THIS employee may check in on the web today, and if not why.
+      webCheckInAllowedToday: webDecision.allowed,
+      webBlockedReason: webDecision.allowed ? null : webDecision.message,
+      // Proof a WFH web check-in must carry (selfie / location).
+      wfhProof: {
+        requireSelfie: methods.wfhRequireSelfie === true,
+        recordLocation: methods.wfhRecordLocation === true,
+      },
       ipRequiredForWeb: methods.ipWeb !== false,
       ipRequiredForApp: methods.ipApp === true,
       hint: attendanceMode === 'wfh'
         ? 'WFH employee — check-in allowed from any network'
+        : attendanceMode === 'hybrid' && webMode === 'wfh_only'
+          ? (dailyWfhStatus === 'approved'
+            ? 'WFH approved for today — web check-in allowed'
+            : 'Hybrid employee — use the biometric device on office days, or request WFH for today')
         : attendanceMode === 'hybrid'
           ? 'Hybrid employee — check-in allowed from any network'
           : dailyWfhStatus === 'approved'

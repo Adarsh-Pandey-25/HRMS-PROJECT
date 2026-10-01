@@ -112,11 +112,58 @@ const DEFAULT_ATTENDANCE_METHODS = {
   ipApp: false,
 };
 
+/**
+ * Web check-in has three settings: 'everyone', 'wfh_only', or 'off'. Configs
+ * saved before this only carry the boolean `web`, so false reads as 'off'
+ * and anything else as 'everyone' — no company's behaviour changes until
+ * someone picks the new mode.
+ */
+const WEB_MODES = ['everyone', 'wfh_only', 'off'];
+const resolveWebMode = (methods = {}) => {
+  if (WEB_MODES.includes(methods.webMode)) return methods.webMode;
+  return methods.web === false ? 'off' : 'everyone';
+};
+
+const WEB_BLOCK_MESSAGE = {
+  off: 'Web check-in is turned off for your company. Please use the biometric device.',
+  wfh_only: "Office days use the biometric device. If you're working remotely today, request WFH.",
+};
+
+/**
+ * May this employee check in on the web today? The one rule both checkIn
+ * (which enforces it) and check-context (which the screens read) use, so
+ * the UI and the server cannot disagree.
+ *
+ * 'wfh_only' admits permanent-WFH employees, and anyone else only on a day
+ * with an APPROVED WFH request. Hybrid employees count as anyone else here:
+ * the device on office days, the web on approved WFH days. No role is
+ * exempt — admin and HR included, like 'off' — they request WFH the same
+ * way, and cannot approve their own (wfhRequest.service.js review()).
+ *
+ * `approvedDailyWfh` must be an actual approved request for today, not the
+ * looser "WFH-ish" flag check-context also computes.
+ */
+const webCheckInDecision = ({ webMode, attendanceMode, approvedDailyWfh }) => {
+  if (webMode === 'off') return { allowed: false, reason: 'off', message: WEB_BLOCK_MESSAGE.off };
+  if (webMode === 'wfh_only') {
+    if (attendanceMode === 'wfh' || approvedDailyWfh) return { allowed: true, isWfhDay: true };
+    return { allowed: false, reason: 'wfh_only', message: WEB_BLOCK_MESSAGE.wfh_only };
+  }
+  return { allowed: true, isWfhDay: false };
+};
+
 /** Load company attendance_config with safe defaults. */
 const getAttendanceConfig = async (companyId = null) => {
   const raw = await settingsService.getSetting('attendance_config', null, companyId);
   const cfg = (raw && typeof raw === 'object') ? raw : {};
   const methods = { ...DEFAULT_ATTENDANCE_METHODS, ...(cfg.methods || {}) };
+  methods.webMode = resolveWebMode(methods);
+  // Keep the legacy boolean in step for anything that still reads it.
+  methods.web = methods.webMode !== 'off';
+  // Optional proof on a WFH web check-in, where neither the office network
+  // nor the geofence applies. Default off.
+  methods.wfhRequireSelfie = methods.wfhRequireSelfie === true;
+  methods.wfhRecordLocation = methods.wfhRecordLocation === true;
   return {
     methods,
     selfieRequired: Boolean(cfg.selfieRequired ?? cfg.selfie_required),
@@ -177,15 +224,11 @@ const methodChannel = (method) => (normalizeCheckInMethod(method) === 'biometric
 
 const CHANNEL_LABEL = { biometric: 'the biometric device', web: 'the web app' };
 
-const assertMethodAllowed = (normalizedMethod, methods) => {
-  if (normalizedMethod === 'biometric') {
-    if (methods.biometric === false) {
-      throw new ForbiddenError('Biometric check-in is disabled in Attendance Config');
-    }
-    return;
-  }
-  if (methods.web === false) {
-    throw new ForbiddenError('Web check-in is disabled in Attendance Config');
+/** Biometric only — the web rule needs the employee's WFH status, so it is
+ *  decided later in checkIn by webCheckInDecision. */
+const assertBiometricAllowed = (methods) => {
+  if (methods.biometric === false) {
+    throw new ForbiddenError('Biometric check-in is disabled in Attendance Config');
   }
 };
 
@@ -254,7 +297,8 @@ const checkIn = async (employeeId, { method, device_id, location, clientIp, clie
   const attendanceConfig = await getAttendanceConfig(companyId);
   const shiftStart = resolveShiftStart(emp?.address, attendanceConfig.shifts);
   const normalizedMethod = normalizeCheckInMethod(method);
-  assertMethodAllowed(normalizedMethod, attendanceConfig.methods);
+  const isBiometric = normalizedMethod === 'biometric';
+  if (isBiometric) assertBiometricAllowed(attendanceConfig.methods);
 
   const baseLocation = (location && typeof location === 'object') ? { ...location } : {};
 
@@ -262,7 +306,24 @@ const checkIn = async (employeeId, { method, device_id, location, clientIp, clie
   const isPrivilegedRole = ['admin', 'hr'].includes(emp?.role);
   const wfhRequestService = require('./wfhRequest.service');
   const approvedDailyWfh = await wfhRequestService.isApprovedForDate(employeeId);
-  const wantsWfh = attendanceMode === 'wfh' || attendanceMode === 'hybrid' || (Boolean(is_wfh) && approvedDailyWfh);
+
+  // The web rule needs WFH status, so it runs here rather than up front —
+  // deciding it before the approved-WFH lookup is what used to lock remote
+  // staff out entirely whenever web check-in was off.
+  let wfhWebDay = false;
+  if (!isBiometric) {
+    const decision = webCheckInDecision({
+      webMode: attendanceConfig.methods.webMode, attendanceMode, approvedDailyWfh,
+    });
+    if (!decision.allowed) throw new ForbiddenError(decision.message);
+    // Under 'wfh_only' every web check-in that gets this far IS a WFH day,
+    // whether or not the client remembered to send is_wfh.
+    wfhWebDay = decision.isWfhDay === true;
+  }
+  const wantsWfh = wfhWebDay
+    || attendanceMode === 'wfh'
+    || attendanceMode === 'hybrid'
+    || (Boolean(is_wfh) && approvedDailyWfh);
 
   if (Boolean(is_wfh) && attendanceMode === 'office' && !approvedDailyWfh && !isPrivilegedRole) {
     throw new ForbiddenError(
@@ -277,10 +338,23 @@ const checkIn = async (employeeId, { method, device_id, location, clientIp, clie
   // even usable at all, the toggle decides whether it's actually required
   // day to day. Default OR (either sufficient) unless requireBothLocationChecks
   // is explicitly turned on — see Section E's report for this choice.
-  const isBiometric = normalizedMethod === 'biometric';
   const selfiePath = selfie_token && !isBiometric ? resolveSelfiePath(employeeId, selfie_token) : null;
   if (attendanceConfig.selfieRequired && !isBiometric && !selfiePath) {
     throw new BadRequestError('Your company requires a selfie to check in. Take a selfie and try again.');
+  }
+
+  // Optional proof for a WFH web check-in — the one kind the office network
+  // and geofence never cover. Location is recorded, never checked against
+  // an office: the point is where they worked from, not that it was the office.
+  const isWfhWebCheckIn = !isBiometric && wantsWfh;
+  if (isWfhWebCheckIn && attendanceConfig.methods.wfhRequireSelfie && !selfiePath) {
+    throw new BadRequestError('Your company requires a selfie for work-from-home check-in. Take a selfie and try again.');
+  }
+  const hasCoords = location
+    && location.latitude != null && location.longitude != null
+    && Number.isFinite(Number(location.latitude)) && Number.isFinite(Number(location.longitude));
+  if (isWfhWebCheckIn && attendanceConfig.methods.wfhRecordLocation && !hasCoords) {
+    throw new BadRequestError('Your company records your location for work-from-home check-in. Allow location access and try again.');
   }
 
   if (attendanceMode === 'office' && !wantsWfh && !isPrivilegedRole && !isBiometric) {
@@ -1216,6 +1290,8 @@ const stripBiometricRows = (rows) => (rows || []).filter((r) => !isBiometricRow(
 
 module.exports = {
   checkIn,
+  webCheckInDecision,
+  resolveWebMode,
   uploadCheckInSelfie,
   attachSelfieUrls,
   checkOut,

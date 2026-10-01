@@ -197,6 +197,13 @@ const review = async (reviewer, requestId, { status, review_note } = {}) => {
     .single();
   if (!row) throw new NotFoundError('WFH request not found');
   if (row.status !== 'pending') throw new BadRequestError('Request is not pending');
+  // Nobody approves their own WFH. Under the 'wfh_only' web check-in mode an
+  // approved WFH day is what unlocks web check-in, so self-approval would let
+  // HR or an admin skip the biometric device at will. Same rule manualEntry
+  // applies to attendance (audit finding N-03).
+  if (row.employee_id === reviewer.id) {
+    throw new ForbiddenError('You cannot review your own WFH request — another HR member or admin has to.');
+  }
 
   const role = reviewer.role;
   if (role === 'manager') {
