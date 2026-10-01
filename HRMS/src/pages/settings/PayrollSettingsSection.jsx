@@ -313,7 +313,16 @@ export function PayrollSettingsSection() {
         <div className="p-5 pt-3 space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <Input label="Working days / month" type="number" min={1} max={31} value={form.workingDaysPerMonth ?? 26} onChange={(e) => setForm({ ...form, workingDaysPerMonth: Number(e.target.value) })} onBlur={saveNow} />
-            <Input label="Payroll run date (day of month)" type="number" min={1} max={28} value={form.runDate} onChange={(e) => setForm({ ...form, runDate: Number(e.target.value) })} onBlur={saveNow} />
+            <Input
+              label="Payroll run date (day of month)"
+              type="number"
+              min={1}
+              max={31}
+              value={form.runDate}
+              onChange={(e) => setForm({ ...form, runDate: Math.min(31, Math.max(1, Number(e.target.value) || 1)) })}
+              onBlur={saveNow}
+              hint="1–31. In a shorter month (e.g. 30 or 31 in February) payroll runs on the month's last day."
+            />
             <Input label="Auto-lock attendance (days after month end)" type="number" value={form.autoLockDays} onChange={(e) => setForm({ ...form, autoLockDays: Number(e.target.value) })} onBlur={saveNow} />
             <Select label="Bank file format" options={['NEFT', 'RTGS', 'Bank-specific']} value={form.bankFileFormat} onChange={(e) => patch({ bankFileFormat: e.target.value })} />
           </div>

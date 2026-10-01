@@ -158,7 +158,8 @@ export function useSettingsBootstrap() {
       if (components && typeof components === 'object') patch.components = components;
       if (hraPct != null) patch.hraPercent = Number(hraPct);
       if (daPct != null) patch.daPercent = Number(daPct);
-      if (runDate != null) patch.runDate = Math.min(28, Math.max(1, Number(runDate) || 25));
+      // 1–31; the server runs on the month's last day when it is shorter.
+      if (runDate != null) patch.runDate = Math.min(31, Math.max(1, Number(runDate) || 25));
       if (autoProcess != null) patch.autoProcess = Boolean(autoProcess);
       if (autoLockDays != null) patch.autoLockDays = Number(autoLockDays) || 20;
       if (bankFileFormat) patch.bankFileFormat = String(bankFileFormat);
