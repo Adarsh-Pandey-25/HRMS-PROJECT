@@ -30,6 +30,12 @@ export function Topbar() {
   const { acknowledge } = useAnnouncementMutations();
   const publishedFeed = activeAnnouncements.filter((a) => a.status === 'published');
   const annPreview = publishedFeed.slice(0, 5);
+  // The badge counts what you have not read yet — opening an announcement
+  // marks it read (acknowledged). It used to count every active
+  // announcement, so it never went down. Your own posts don't count.
+  const myId = useAuthStore((s) => s.user?.id);
+  const isUnreadAnnouncement = (a) => !a.isAcknowledged && String(a.createdBy || '') !== String(myId || '');
+  const unreadAnnouncements = publishedFeed.filter(isUnreadAnnouncement).length;
 
   const signOut = async () => {
     // Must await: logout() clears the session cookie server-side.
@@ -72,14 +78,14 @@ export function Topbar() {
             aria-haspopup="menu"
             aria-expanded={ann.open}
             aria-controls="announcements-menu"
-            aria-label="Announcements"
+            aria-label={`Announcements${unreadAnnouncements ? ` (${unreadAnnouncements} unread)` : ''}`}
             className="relative h-10 w-10 rounded-xl flex items-center justify-center text-fg-muted hover:bg-muted hover:text-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             title="Announcements"
           >
             <Megaphone className="h-5 w-5" />
-            {publishedFeed.length > 0 && (
+            {unreadAnnouncements > 0 && (
               <span className="absolute top-1.5 right-1.5 h-4 min-w-4 px-1 rounded-full bg-primary text-on-primary text-[10px] font-semibold flex items-center justify-center">
-                {publishedFeed.length}
+                {unreadAnnouncements}
               </span>
             )}
           </button>
@@ -116,7 +122,7 @@ export function Topbar() {
                     >
                       <div className="flex items-center gap-2 mb-1">
                         <span className={cn('h-1.5 w-1.5 rounded-full shrink-0', PRIORITY_DOT[a.priority] || 'bg-fg-subtle')} />
-                        <p className="text-sm font-medium text-fg truncate flex-1">{a.title}</p>
+                        <p className={cn('text-sm text-fg truncate flex-1', isUnreadAnnouncement(a) ? 'font-semibold' : 'font-medium text-fg-muted')}>{a.title}</p>
                       </div>
                       <p className="text-xs text-fg-subtle">{timeAgo(a.publishedAt)}</p>
                     </Link>
