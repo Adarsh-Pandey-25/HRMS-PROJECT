@@ -70,16 +70,24 @@ if (config.env === 'production') {
 const server = app.listen(PORT, config.host, () => {
   logger.info(`HRMS Backend running on ${config.host}:${PORT} [${config.env}]`);
   logger.info(`Timezone: ${config.timezone}`);
-  startAutoCheckoutCron();
-  startAutoPayrollCron();
-  startSubscriptionBillingCron();
-  startAttendanceAnomalyCron();
-  startBackupCron();
-  startBiometricWindowTransitionCron();
-  startBirthdayAnniversaryCron();
-  startOnboardingCron();
-  startWeeklyDigestCrons();
-  startSalaryRevisionCron();
+  // DISABLE_CRONS=true skips every scheduled job. For a local run pointed at
+  // a live database: those jobs mail employees, run billing and payroll and
+  // mark trials expired, and a second instance would do it alongside
+  // production. Default (unset) runs them, as before.
+  if (process.env.DISABLE_CRONS === 'true') {
+    logger.warn('DISABLE_CRONS=true — scheduled jobs are NOT running in this instance');
+  } else {
+    startAutoCheckoutCron();
+    startAutoPayrollCron();
+    startSubscriptionBillingCron();
+    startAttendanceAnomalyCron();
+    startBackupCron();
+    startBiometricWindowTransitionCron();
+    startBirthdayAnniversaryCron();
+    startOnboardingCron();
+    startWeeklyDigestCrons();
+    startSalaryRevisionCron();
+  }
   // Tag legacy employees under the default company so new workspaces stay empty
   require('./services/tenant.service').ensureTenantBackfill()
     .then(() => require('./services/settings.service').migrateLegacySettingsToDefaultCompany())
