@@ -4,6 +4,7 @@ const { successResponse, paginate, buildMeta } = require('../utils/helpers');
 const { BadRequestError, NotFoundError, ForbiddenError } = require('../utils/errors');
 const notificationService = require('../services/notification.service');
 const { logAudit } = require('../services/auditLog.service');
+const { auditFromRequest } = require('../services/auditLog.service');
 const logger = require('../utils/logger');
 
 const companyEmployeeIds = (req) => {
@@ -225,6 +226,9 @@ const remove = async (req, res, next) => {
 
     await deleteFile(STORAGE_BUCKETS.documents, doc.document_url);
     await supabaseAdmin.from('documents').delete().eq('id', req.params.id);
+        auditFromRequest(req, {
+      actionType: 'document.delete', targetType: 'document', targetId: req.params.id,
+    });
     successResponse(res, 'Document deleted');
   } catch (err) { next(err); }
 };
@@ -273,6 +277,10 @@ const verify = async (req, res, next) => {
       meta: { document_id: doc.id },
     });
 
+        auditFromRequest(req, {
+      actionType: 'document.verify', targetType: 'document', targetId: req.params.id,
+      afterState: { status: data?.status },
+    });
     successResponse(res, 'Document verified', data);
   } catch (err) { next(err); }
 };

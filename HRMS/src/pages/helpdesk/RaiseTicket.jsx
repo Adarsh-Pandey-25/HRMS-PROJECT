@@ -22,9 +22,11 @@ export default function RaiseTicket() {
   }));
   const allowed = categoryOptions.map((o) => o.value);
   const initialCategory = toCategoryValue(searchParams.get('category') || 'it');
+  // Asset tickets are handled by HR, so ?category=assets lands on HR rather
+  // than falling through to Admin (or to whatever happens to be first).
   const category = allowed.includes(initialCategory)
     ? initialCategory
-    : (initialCategory === 'assets' && allowed.includes('admin') ? 'admin' : (allowed[0] || 'it'));
+    : (initialCategory === 'assets' && allowed.includes('hr') ? 'hr' : (allowed[0] || 'it'));
   const [form, setForm] = useState({
     subject: searchParams.get('subject') || '',
     category,

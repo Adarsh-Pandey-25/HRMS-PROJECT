@@ -1,5 +1,7 @@
 const helpdeskService = require('../services/helpdesk.service');
 const { successResponse } = require('../utils/helpers');
+const { auditFromRequest } = require('../services/auditLog.service');
+const { isAssetReturnTicket, parseAssetReturnAssetId } = require('../utils/assetReturn');
 const { getCompanyId } = require('../utils/tenant');
 const logger = require('../utils/logger');
 
@@ -95,6 +97,12 @@ const myTickets = async (req, res, next) => {
 const create = async (req, res, next) => {
   try {
     const data = await helpdeskService.createTicket(req.user.id, req.body, companyIdOf(req));
+        auditFromRequest(req, {
+      actionType: isRegularizationTicket(data) ? 'regularization.request' : 'ticket.create',
+      targetType: isRegularizationTicket(data) ? 'regularization' : 'ticket',
+      targetId: data?.id,
+      afterState: { subject: data?.subject, category: data?.category, priority: data?.priority, status: data?.status },
+    });
     successResponse(res, 'Ticket created', data, null, 201);
   } catch (err) { next(err); }
 };
@@ -123,6 +131,45 @@ const updateStatus = async (req, res, next) => {
     }
     maybeSendRegularizationEmail(data, req.body.status, approverName, rejectionReason)
       .catch((e) => logger.warn('[Helpdesk] Regularization email dispatch failed', { error: e.message }));
+
+    // An asset return request only moves the asset when it is actually
+    // approved. 'resolved' is approve and 'closed' is reject, the same
+    // mapping regularization uses — the ticket model has no 'rejected'
+    // status. Failure here must not undo the status change the reviewer
+    // just made, so it is logged rather than thrown.
+    if (isAssetReturnTicket(data)) {
+      const assetId = parseAssetReturnAssetId(data);
+      const decided = String(req.body.status || '').toLowerCase();
+      if (assetId && decided === 'resolved') {
+        try {
+          const returned = await require('../services/assets.service')
+            .returnAsset(assetId, companyIdOf(req));
+          auditFromRequest(req, {
+            actionType: 'asset.return.approve', targetType: 'asset', targetId: assetId,
+            afterState: { name: returned?.name, status: returned?.status, ticketId: req.params.id },
+          });
+        } catch (e) {
+          logger.error('[Helpdesk] Approved return but failed to release the asset', {
+            ticketId: req.params.id, assetId, error: e.message,
+          });
+        }
+      } else if (assetId && decided === 'closed') {
+        auditFromRequest(req, {
+          actionType: 'asset.return.reject', targetType: 'asset', targetId: assetId,
+          afterState: { ticketId: req.params.id, reason: rejectionReason || undefined },
+        });
+      }
+    }
+        // A regularization request is a specially-tagged ticket (see
+    // isRegularizationTicket above), not its own table — label it as such in
+    // the audit trail so attendance corrections are findable on their own
+    // rather than buried among general tickets.
+    auditFromRequest(req, {
+      actionType: `${isRegularizationTicket(data) ? 'regularization' : 'ticket'}.${String(req.body.status || 'update').toLowerCase()}`,
+      targetType: isRegularizationTicket(data) ? 'regularization' : 'ticket',
+      targetId: req.params.id,
+      afterState: { status: data?.status, subject: data?.subject, rejectionReason: rejectionReason || undefined },
+    });
     successResponse(res, 'Ticket updated', data);
   } catch (err) { next(err); }
 };
@@ -138,6 +185,10 @@ const comment = async (req, res, next) => {
       at: new Date().toISOString(),
     }, ids, companyIdOf(req));
     if (!data) return res.status(404).json({ success: false, error: { message: 'Ticket not found' } });
+        auditFromRequest(req, {
+      actionType: 'ticket.comment', targetType: 'ticket', targetId: req.params.id,
+      afterState: { subject: data?.subject },
+    });
     successResponse(res, 'Comment added', data);
   } catch (err) { next(err); }
 };

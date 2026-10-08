@@ -4,6 +4,7 @@ const { successResponse, getShiftDayWindow, isMissingColumnError } = require('..
 const { TIMEZONE } = require('../utils/constants');
 const { BadRequestError, NotFoundError, ConflictError } = require('../utils/errors');
 const logger = require('../utils/logger');
+const { auditFromRequest } = require('../services/auditLog.service');
 
 /**
  * device_heartbeats.claimed_at (migration 20260907_device_heartbeats_claimed_at.sql)
@@ -266,6 +267,10 @@ const create = async (req, res, next) => {
 
     const backfill = await backfillPunchesForMapping(serial, deviceUserId, employeeId, req.user.company_id, device.claimed_at);
 
+        auditFromRequest(req, {
+      actionType: 'device_mapping.create', targetType: 'device_mapping', targetId: data?.id,
+      afterState: { deviceUserId: data?.device_user_id, employeeId: data?.employee_id, deviceSerial: data?.device_serial },
+    });
     successResponse(res, 'Mapping created', { ...withEmployeeName(data), backfill }, null, 201);
   } catch (err) { next(err); }
 };
@@ -316,6 +321,9 @@ const remove = async (req, res, next) => {
     const { error } = await supabaseAdmin.from('device_employee_mapping').delete().eq('id', existing.id);
     if (error) throw error;
 
+        auditFromRequest(req, {
+      actionType: 'device_mapping.remove', targetType: 'device_mapping', targetId: req.params.id,
+    });
     successResponse(res, 'Mapping removed');
   } catch (err) { next(err); }
 };

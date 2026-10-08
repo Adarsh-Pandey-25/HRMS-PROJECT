@@ -3,7 +3,7 @@ import { useAuthStore } from '../store/authStore';
 import {
   fetchMyAssetsApi, fetchAssetsApi, fetchAssetRequestsApi, submitAssetRequestApi,
   updateAssetRequestApi, createAssetApi, updateAssetApi, assignAssetApi, returnAssetApi,
-  fetchAssetCategoriesApi, createAssetCategoryApi,
+  fetchAssetCategoriesApi, createAssetCategoryApi, requestAssetReturnApi,
 } from '../api/assets.api';
 import {
   fetchMyTicketsApi, fetchAllTicketsApi, createTicketApi,
@@ -70,6 +70,11 @@ export function useAssetMutations() {
     updateAsset: useMutation({ mutationFn: ({ id, ...payload }) => updateAssetApi(id, payload), onSuccess: invalidate }),
     assignAsset: useMutation({ mutationFn: ({ id, employeeId }) => assignAssetApi(id, employeeId), onSuccess: invalidate }),
     returnAsset: useMutation({ mutationFn: returnAssetApi, onSuccess: invalidate }),
+    requestAssetReturn: useMutation({
+      mutationFn: ({ id, reason }) => requestAssetReturnApi(id, reason),
+      // Refresh tickets too: My Assets reads the request's status from them.
+      onSuccess: async (...a) => { await invalidate(...a); await invalidateAndRefetch(qc, ['helpdesk']); },
+    }),
     createCategory: useMutation({ mutationFn: createAssetCategoryApi, onSuccess: invalidateCategories }),
   };
 }

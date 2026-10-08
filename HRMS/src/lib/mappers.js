@@ -335,6 +335,9 @@ export function mapAssetFromApi(row) {
     assignedTo: c.assignedTo,
     assignedOn: c.assignedOn,
     location: c.location,
+    // Rows created before the ownership column existed read as purchased,
+    // matching the migration's backfill.
+    ownership: c.ownership || 'purchased',
   };
 }
 

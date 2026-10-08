@@ -53,6 +53,7 @@ export const NAV_ITEMS = [
     children: [
       { label: 'My Attendance', path: '/attendance/me', permission: { module: 'attendance', action: 'view' }, ...SELF_SERVICE },
       { label: 'Team Attendance', path: '/attendance/team', permission: { module: 'attendance', action: 'view' }, roles: ['admin', 'hr', 'manager'] },
+      { label: 'Work From Home', path: '/attendance/wfh', permission: { module: 'attendance', action: 'view' }, ...SELF_SERVICE },
       { label: 'WFH Approvals', path: '/attendance/wfh-approvals', permission: { module: 'attendance', action: 'approve' } },
       { label: 'Regularization', path: '/attendance/regularize', permission: { module: 'attendance', action: 'view' }, roles: ['employee', 'manager', 'hr', 'admin'] },
       { label: 'Shifts', path: '/attendance/shifts', permission: { module: 'attendance', action: 'manage' } },

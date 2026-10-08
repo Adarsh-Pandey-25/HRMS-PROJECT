@@ -1,5 +1,5 @@
 const { supabaseAdmin } = require('../config/supabase');
-const { BadRequestError, NotFoundError } = require('../utils/errors');
+const { BadRequestError, NotFoundError, ForbiddenError, ConflictError } = require('../utils/errors');
 const { DEFAULT_COMPANY_ID } = require('../utils/tenant');
 const moment = require('moment-timezone');
 const { TIMEZONE } = require('../utils/constants');
@@ -226,10 +226,23 @@ const updateRequestStatus = async (id, status, companyEmployeeIds = null, compan
   return data;
 };
 
+const { buildAssetReturnTicket } = require('../utils/assetReturn');
+
 const emptyToNull = (value) => (value === '' || value === undefined ? null : value);
+
+/** Only these two are storable; anything else falls back to 'purchased'. */
+const ASSET_OWNERSHIP = new Set(['purchased', 'rented']);
+const normalizeOwnership = (value) => {
+  const v = String(value ?? '').trim().toLowerCase();
+  if (!v) return undefined;              // left unset — column default applies
+  if (v === 'owned' || v === 'own' || v === 'purchase') return 'purchased';
+  if (v === 'rent' || v === 'lease' || v === 'leased') return 'rented';
+  return ASSET_OWNERSHIP.has(v) ? v : undefined;
+};
 
 const pickAssetFields = (body) => ({
   name: String(body.name || '').trim(),
+  ownership: normalizeOwnership(body.ownership),
   category: emptyToNull(body.category),
   brand: emptyToNull(body.brand),
   model: emptyToNull(body.model),
@@ -249,6 +262,8 @@ const createAsset = async (body, companyId) => {
 
   if (fields.category) await ensureCategory(fields.category, cid);
 
+  if (fields.ownership === undefined) delete fields.ownership;
+
   const row = {
     ...fields,
     status: 'available',
@@ -264,6 +279,43 @@ const createAsset = async (body, companyId) => {
     .single();
   if (error) throw new BadRequestError(error.message);
   return data;
+};
+
+/**
+ * An employee asks to hand an asset back. Creates the tagged helpdesk ticket
+ * HR/Admin approve from (see utils/assetReturn.js) — the asset itself is not
+ * touched until that approval, so nothing leaves someone's name on a guess.
+ */
+const requestAssetReturn = async (assetId, employeeId, companyId, reason) => {
+  const cid = resolveCompanyId(companyId);
+  const { data: asset, error } = await supabaseAdmin
+    .from('assets')
+    .select('*')
+    .eq('id', assetId)
+    .eq('company_id', cid)
+    .maybeSingle();
+  if (error) throw new BadRequestError(error.message);
+  if (!asset) throw new NotFoundError('Asset not found');
+  if (asset.assigned_to !== employeeId) {
+    throw new ForbiddenError('You can only request a return for an asset assigned to you');
+  }
+
+  // One open request at a time, so approving twice can't double-return.
+  const { data: open } = await supabaseAdmin
+    .from('helpdesk_tickets')
+    .select('id, status, description')
+    .eq('raised_by', employeeId)
+    .eq('company_id', cid)
+    .in('status', ['open', 'in_progress']);
+  const alreadyOpen = (open || []).some((t) => String(t.description || '').includes(assetId));
+  if (alreadyOpen) {
+    throw new ConflictError('A return request for this asset is already awaiting approval');
+  }
+
+  const body = buildAssetReturnTicket(asset, reason);
+  const helpdeskService = require('./helpdesk.service');
+  const ticket = await helpdeskService.createTicket(employeeId, body, cid);
+  return { ticket, asset };
 };
 
 const updateAsset = async (id, body, companyId, companyEmployeeIds = null) => {
@@ -285,6 +337,7 @@ const updateAsset = async (id, body, companyId, companyEmployeeIds = null) => {
   if (body.purchase_cost !== undefined || body.purchaseCost !== undefined) patch.purchase_cost = fields.purchase_cost;
   if (body.warranty_expiry !== undefined || body.warrantyExpiry !== undefined) patch.warranty_expiry = fields.warranty_expiry;
   if (body.location !== undefined) patch.location = fields.location;
+  if (body.ownership !== undefined && fields.ownership !== undefined) patch.ownership = fields.ownership;
   if (body.status !== undefined) {
     const st = String(body.status).toLowerCase();
     if (!ASSET_STATUSES.has(st)) throw new BadRequestError('Invalid asset status');
@@ -421,6 +474,7 @@ module.exports = {
   updateRequestStatus,
   createAsset,
   updateAsset,
+  requestAssetReturn,
   assignAsset,
   returnAsset,
   listCategories,

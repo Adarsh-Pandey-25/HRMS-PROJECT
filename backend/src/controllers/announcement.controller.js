@@ -6,6 +6,7 @@ const { successResponse, paginate, buildMeta } = require('../utils/helpers');
 const { BadRequestError } = require('../utils/errors');
 const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
 const logger = require('../utils/logger');
+const { auditFromRequest } = require('../services/auditLog.service');
 
 const companyIdOf = (req) => req.user.company_id || getCompanyId(req.user) || DEFAULT_COMPANY_ID;
 
@@ -222,6 +223,11 @@ const create = async (req, res, next) => {
       }
     }
 
+        auditFromRequest(req, {
+      actionType: pendingApproval ? 'announcement.submit' : 'announcement.create',
+      targetType: 'announcement', targetId: data?.id,
+      afterState: { title: data?.title, audience: data?.audience, pendingApproval },
+    });
     successResponse(
       res,
       pendingApproval ? 'Announcement submitted for admin approval' : 'Announcement created',
@@ -324,6 +330,10 @@ const update = async (req, res, next) => {
       }
     }
 
+        auditFromRequest(req, {
+      actionType: 'announcement.update', targetType: 'announcement', targetId: req.params.id,
+      afterState: { title: data?.title, status: data?.status },
+    });
     successResponse(res, 'Announcement updated', data);
   } catch (err) { next(err); }
 };
@@ -352,6 +362,9 @@ const remove = async (req, res, next) => {
       .delete()
       .eq('id', req.params.id)
       .eq('company_id', companyIdOf(req));
+        auditFromRequest(req, {
+      actionType: 'announcement.delete', targetType: 'announcement', targetId: req.params.id,
+    });
     successResponse(res, 'Announcement deleted');
   } catch (err) { next(err); }
 };
@@ -369,6 +382,9 @@ const acknowledge = async (req, res, next) => {
       .single();
 
     if (error) throw new BadRequestError(error.message);
+        auditFromRequest(req, {
+      actionType: 'announcement.acknowledge', targetType: 'announcement', targetId: req.params.id,
+    });
     successResponse(res, 'Announcement acknowledged', data);
   } catch (err) { next(err); }
 };

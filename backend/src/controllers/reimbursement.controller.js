@@ -3,6 +3,7 @@ const { uploadReceipt, getSignedUrl, STORAGE_BUCKETS } = require('../services/st
 const attendanceService = require('../services/attendance.service');
 const settingsService = require('../services/settings.service');
 const { successResponse, paginate, buildMeta } = require('../utils/helpers');
+const { auditFromRequest } = require('../services/auditLog.service');
 const { BadRequestError, NotFoundError, ForbiddenError } = require('../utils/errors');
 const notificationService = require('../services/notification.service');
 const approvalFlow = require('../services/approvalFlow.service');
@@ -117,6 +118,10 @@ const submit = async (req, res, next) => {
       }
     }
 
+        auditFromRequest(req, {
+      actionType: 'reimbursement.submit', targetType: 'reimbursement', targetId: data?.id,
+      afterState: { amount: data?.amount, category: data?.category, status: data?.status },
+    });
     successResponse(res, 'Reimbursement submitted', data, null, 201);
   } catch (err) { next(err); }
 };
@@ -247,6 +252,10 @@ const approve = async (req, res, next) => {
       });
     }
 
+        auditFromRequest(req, {
+      actionType: 'reimbursement.approve', targetType: 'reimbursement', targetId: req.params.id,
+      afterState: { status: data?.status, amount: data?.amount, employeeId: data?.employee_id },
+    });
     successResponse(res, 'Reimbursement approved', data);
   } catch (err) { next(err); }
 };
@@ -284,6 +293,10 @@ const reject = async (req, res, next) => {
       meta: { reimbursement_id: reimbursement.id },
     });
 
+        auditFromRequest(req, {
+      actionType: 'reimbursement.reject', targetType: 'reimbursement', targetId: req.params.id,
+      afterState: { status: data?.status, amount: data?.amount, employeeId: data?.employee_id },
+    });
     successResponse(res, 'Reimbursement rejected', data);
   } catch (err) { next(err); }
 };
@@ -295,6 +308,9 @@ const remove = async (req, res, next) => {
     if (reimbursement.status !== 'pending') throw new BadRequestError('Only pending reimbursements can be deleted');
 
     await supabaseAdmin.from('reimbursements').delete().eq('id', req.params.id);
+        auditFromRequest(req, {
+      actionType: 'reimbursement.delete', targetType: 'reimbursement', targetId: req.params.id,
+    });
     successResponse(res, 'Reimbursement deleted');
   } catch (err) { next(err); }
 };

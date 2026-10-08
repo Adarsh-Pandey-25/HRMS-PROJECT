@@ -1,9 +1,14 @@
 const wfhRequestService = require('../services/wfhRequest.service');
 const { successResponse } = require('../utils/helpers');
+const { auditFromRequest } = require('../services/auditLog.service');
 
 const request = async (req, res, next) => {
   try {
     const data = await wfhRequestService.requestWfh(req.user.id, req.body);
+        auditFromRequest(req, {
+      actionType: 'wfh.request', targetType: 'wfh_request', targetId: data?.id,
+      afterState: { fromDate: data?.from_date, toDate: data?.to_date, totalDays: data?.total_days, status: data?.status },
+    });
     successResponse(res, 'WFH request submitted', data, null, 201);
   } catch (err) { next(err); }
 };
@@ -11,6 +16,10 @@ const request = async (req, res, next) => {
 const cancel = async (req, res, next) => {
   try {
     const data = await wfhRequestService.cancelRequest(req.user.id, req.params.id);
+        auditFromRequest(req, {
+      actionType: 'wfh.cancel', targetType: 'wfh_request', targetId: req.params.id,
+      afterState: { fromDate: data?.from_date, toDate: data?.to_date, status: data?.status },
+    });
     successResponse(res, 'WFH request cancelled', data);
   } catch (err) { next(err); }
 };
@@ -32,6 +41,12 @@ const pending = async (req, res, next) => {
 const review = async (req, res, next) => {
   try {
     const data = await wfhRequestService.review(req.user, req.params.id, req.body);
+        auditFromRequest(req, {
+      actionType: `wfh.${String(req.body.status || '').toLowerCase()}`,
+      targetType: 'wfh_request', targetId: req.params.id,
+      afterState: { fromDate: data?.from_date, toDate: data?.to_date, totalDays: data?.total_days,
+        status: data?.status, reviewNote: req.body.review_note || undefined },
+    });
     successResponse(res, `WFH request ${req.body.status}`, data);
   } catch (err) { next(err); }
 };

@@ -1,6 +1,7 @@
 const { supabaseAdmin } = require('../config/supabase');
 const { successResponse } = require('../utils/helpers');
 const { BadRequestError, NotFoundError, ConflictError } = require('../utils/errors');
+const { auditFromRequest } = require('../services/auditLog.service');
 
 /**
  * Admin-configurable onboarding checklist templates — the company-wide list
@@ -48,6 +49,10 @@ const create = async (req, res, next) => {
       if (error.code === '23505') throw new ConflictError('A checklist item with this label already exists');
       throw error;
     }
+        auditFromRequest(req, {
+      actionType: 'onboarding.template.create', targetType: 'onboarding_template', targetId: data?.id,
+      afterState: { name: data?.name },
+    });
     successResponse(res, 'Checklist template created', data, null, 201);
   } catch (err) { next(err); }
 };
@@ -95,6 +100,10 @@ const update = async (req, res, next) => {
       if (error.code === '23505') throw new ConflictError('A checklist item with this label already exists');
       throw error;
     }
+        auditFromRequest(req, {
+      actionType: 'onboarding.template.update', targetType: 'onboarding_template', targetId: req.params.id,
+      afterState: { name: data?.name },
+    });
     successResponse(res, 'Checklist template updated', data);
   } catch (err) { next(err); }
 };
@@ -108,6 +117,9 @@ const remove = async (req, res, next) => {
       .eq('id', req.params.id)
       .eq('company_id', req.user.company_id);
     if (error) throw error;
+        auditFromRequest(req, {
+      actionType: 'onboarding.template.delete', targetType: 'onboarding_template', targetId: req.params.id,
+    });
     successResponse(res, 'Checklist template removed');
   } catch (err) { next(err); }
 };

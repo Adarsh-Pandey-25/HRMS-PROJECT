@@ -5,6 +5,7 @@ import {
   fetchMyAttendanceApi, fetchTeamAttendanceApi, fetchAllAttendanceApi,
   fetchMonthlySummaryApi, fetchEmployeeAttendanceReportApi,
   requestWfhDayApi, cancelWfhDayApi, fetchPendingWfhRequestsApi, reviewWfhRequestApi,
+  fetchMyWfhRequestsApi,
   manualAttendanceEntryApi, fetchDevicePunchesTodayApi, fetchAdmsStatusApi, updateAdmsDeviceApi,
 } from '../api/attendance.api';
 import { fetchTeamEmployeesApi } from '../api/employees.api';
@@ -139,6 +140,17 @@ export function usePendingWfhRequests() {
     queryKey: ['attendance', 'wfh-pending'],
     queryFn: () => fetchPendingWfhRequestsApi(),
     enabled: isAuthenticated && canReview,
+    staleTime: 15_000,
+  });
+}
+
+/** The signed-in employee's own WFH requests, newest range first. */
+export function useMyWfhRequests() {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  return useQuery({
+    queryKey: ['attendance', 'wfh-mine'],
+    queryFn: () => fetchMyWfhRequestsApi(),
+    enabled: isAuthenticated,
     staleTime: 15_000,
   });
 }

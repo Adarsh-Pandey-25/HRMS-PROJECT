@@ -48,6 +48,8 @@ const EmployeeImport = lazy(loaders['/employees/import']);
 const MyAttendance = lazy(loaders['/attendance/me']);
 const TeamAttendance = lazy(loaders['/attendance/team']);
 const WfhApprovals = lazy(() => import('./pages/attendance/WfhApprovals'));
+const MyWfh = lazy(loaders['/attendance/wfh']);
+const ApplyWfh = lazy(loaders['/attendance/wfh/apply']);
 const Regularization = lazy(loaders['/attendance/regularize']);
 const Shifts = lazy(loaders['/attendance/shifts']);
 
@@ -221,6 +223,8 @@ export default function App() {
             <Route path="/attendance" element={<Navigate to={role === 'admin' || role === 'hr' ? '/attendance/team' : '/attendance/me'} replace />} />
             <Route path="/attendance/me" element={page(MyAttendance, SELF_SERVICE_ROLES)} />
             <Route path="/attendance/team" element={page(TeamAttendance, ['admin', 'hr', 'manager'])} />
+            <Route path="/attendance/wfh" element={page(MyWfh, SELF_SERVICE_ROLES)} />
+            <Route path="/attendance/wfh/apply" element={page(ApplyWfh, SELF_SERVICE_ROLES)} />
             <Route path="/attendance/wfh-approvals" element={page(WfhApprovals, { module: 'attendance', action: 'approve' })} />
             <Route path="/attendance/regularize" element={page(Regularization, { module: 'attendance', action: 'view' })} />
             <Route path="/attendance/shifts" element={page(Shifts, { module: 'attendance', action: 'manage' })} />

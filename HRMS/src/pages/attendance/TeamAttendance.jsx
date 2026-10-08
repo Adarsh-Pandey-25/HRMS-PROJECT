@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect } from 'react';
-import { UserCheck, Home, Clock, UserX, X, Loader2, Columns3, ChevronDown } from 'lucide-react';
+import { UserCheck, Home, Clock, UserX, X, Loader2, Columns3, ChevronDown, Building2 } from 'lucide-react';
 import { PageHeader, Card, CardHeader, Button, Avatar, StatusBadge, DataTable, Skeleton, Input, Badge, StatCard } from '../../components/ui';
 import { useTeamAttendance, useTeamMembers } from '../../hooks/useAttendance';
 import { useEmployees } from '../../hooks/useEmployees';
@@ -7,13 +7,23 @@ import { useAuthStore } from '../../store/authStore';
 import { ExportButton } from '../../components/shared/ExportButton';
 import { formatDate, cn } from '../../lib/utils';
 
+/**
+ * Present is the total who turned up, and WFO + WFH split it — so
+ * Present = WFO + WFH always reads true (e.g. 10 = 8 + 2). Late and Absent
+ * stay their own mutually-exclusive buckets, as before.
+ */
 const KPI_CARDS = [
  { key: 'present', label: 'Present', tone: 'success', icon: UserCheck },
- { key: 'inProgress', label: 'Awaiting Checkout', tone: 'info', icon: Loader2 },
+ { key: 'wfo', label: 'WFO', tone: 'info', icon: Building2 },
  { key: 'wfh', label: 'WFH', tone: 'primary', icon: Home },
  { key: 'late', label: 'Late', tone: 'warning', icon: Clock },
  { key: 'absent', label: 'Absent', tone: 'danger', icon: UserX },
 ];
+
+/** Turned up today, wherever they worked from. */
+const isPresentRow = (a) => ['present', 'early_departure', 'half_day', 'wfh'].includes(a.status);
+/** Worked from home — either the dedicated status or the per-record flag. */
+const isWfhRow = (a) => Boolean(a.isWfh) || a.status === 'wfh';
 
 const ALL_COLUMNS = [
  { key: 'employeeName', label: 'Employee', defaultVisible: true },
@@ -130,24 +140,33 @@ export default function TeamAttendance() {
  }, [records, roster, date]);
 
  const attendanceKpis = useMemo(() => {
- const kpis = { present: 0, wfh: 0, late: 0, absent: 0, inProgress: 0 };
+ const kpis = { present: 0, wfo: 0, wfh: 0, late: 0, absent: 0 };
  for (const a of teamAttendance) {
- if (a.checkoutStatus === 'pending') { kpis.inProgress += 1; continue; }
- if (a.status === 'present' || a.status === 'early_departure' || a.status === 'half_day') kpis.present += 1;
- else if (kpis[a.status] !== undefined) kpis[a.status] += 1;
+ // Someone still checked in counts under where they are working today;
+ // previously an awaiting-checkout row was pulled out of every other
+ // bucket, so Present under-reported until people clocked out.
+ if (isPresentRow(a)) {
+ kpis.present += 1;
+ if (isWfhRow(a)) kpis.wfh += 1;
+ else kpis.wfo += 1;
+ } else if (kpis[a.status] !== undefined) {
+ kpis[a.status] += 1;
+ }
  }
  return kpis;
  }, [teamAttendance]);
 
  const filteredTeam = useMemo(() => {
  let list = teamAttendance;
- if (statusFilter === 'inProgress') {
- list = list.filter((a) => a.checkoutStatus === 'pending');
- } else if (statusFilter === 'present') {
- list = list.filter((a) => a.checkoutStatus !== 'pending'
- && (a.status === 'present' || a.status === 'early_departure' || a.status === 'half_day'));
+ // Each card filters to exactly the rows it counted above.
+ if (statusFilter === 'present') {
+ list = list.filter(isPresentRow);
+ } else if (statusFilter === 'wfo') {
+ list = list.filter((a) => isPresentRow(a) && !isWfhRow(a));
+ } else if (statusFilter === 'wfh') {
+ list = list.filter((a) => isPresentRow(a) && isWfhRow(a));
  } else if (statusFilter) {
- list = list.filter((a) => a.checkoutStatus !== 'pending' && a.status === statusFilter);
+ list = list.filter((a) => a.status === statusFilter);
  }
  const q = search.trim().toLowerCase();
  if (q) {

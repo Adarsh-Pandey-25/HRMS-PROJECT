@@ -4,6 +4,7 @@ const { BadRequestError, NotFoundError } = require('../utils/errors');
 const moment = require('moment-timezone');
 const { TIMEZONE } = require('../utils/constants');
 const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
+const { auditFromRequest } = require('../services/auditLog.service');
 const logger = require('../utils/logger');
 
 const companyIdOf = (req) => req.user.company_id || getCompanyId(req.user) || DEFAULT_COMPANY_ID;
@@ -41,6 +42,10 @@ const create = async (req, res, next) => {
       .single();
 
     if (error) throw new BadRequestError(error.message);
+        auditFromRequest(req, {
+      actionType: 'holiday.create', targetType: 'holiday', targetId: data?.id,
+      afterState: { name: data?.name, date: data?.date, type: data?.type },
+    });
     successResponse(res, 'Holiday created', data, null, 201);
   } catch (err) { next(err); }
 };
@@ -79,6 +84,10 @@ const update = async (req, res, next) => {
       .single();
 
     if (error) throw new BadRequestError(error.message);
+        auditFromRequest(req, {
+      actionType: 'holiday.update', targetType: 'holiday', targetId: req.params.id,
+      afterState: { name: data?.name, date: data?.date, type: data?.type },
+    });
     successResponse(res, 'Holiday updated', data);
   } catch (err) { next(err); }
 };
@@ -92,6 +101,9 @@ const remove = async (req, res, next) => {
       .delete()
       .eq('id', req.params.id)
       .eq('company_id', companyId);
+        auditFromRequest(req, {
+      actionType: 'holiday.delete', targetType: 'holiday', targetId: req.params.id,
+    });
     successResponse(res, 'Holiday deleted');
   } catch (err) { next(err); }
 };

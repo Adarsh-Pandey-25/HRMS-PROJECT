@@ -96,6 +96,8 @@ function) and must go first on a fresh project; everything in
 23. `20261002_one_biometric_id_per_employee.sql` — one biometric ID per employee, enforced in the database (the same ID on several devices is still allowed); refuses, changing nothing, if an employee already has two IDs
 24. `20261003_employee_profile_completion.sql` — `employees.profile_completed`: people HR adds without personal details fill them in on first sign-in; existing employees default to complete and are never asked
 25. `20261004_leave_balance_individual_allocation.sql` — `leave_balances.allocation_override`: an allocation HR/Admin set for one person is kept when the company policy is applied
+26. `20261007_wfh_date_range_requests.sql` — **adds `wfh_day_requests.batch_id`**, which groups the per-day rows of one multi-day WFH request. Until it runs, submitting any WFH request fails — the table still stays one row per day, so approved-WFH check-in is unaffected either way
+27. `20261008_assets_ownership.sql` — **adds `assets.ownership`** (`purchased` / `rented`), which bulk import and the Add Asset form now send. Until it runs, creating an asset fails; existing assets are backfilled to `purchased`
 
 Migrations are idempotent (`IF NOT EXISTS` / `CREATE OR REPLACE`), so
 re-running one is safe.

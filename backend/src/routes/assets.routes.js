@@ -19,6 +19,7 @@ router.post('/requests', isEmployee, assetsController.submitRequest);
 router.put('/requests/:id', isHROrAdmin, assetsController.actOnRequest);
 router.post('/categories', isHROrAdmin, assetsController.createCategory);
 router.post('/', isHROrAdmin, assetsController.create);
+router.post('/:id/return-request', isEmployee, assetsController.requestReturn);
 router.put('/:id/assign', isHROrAdmin, assetsController.assign);
 router.put('/:id/return', isHROrAdmin, assetsController.returnAsset);
 router.put('/:id', isHROrAdmin, assetsController.update);

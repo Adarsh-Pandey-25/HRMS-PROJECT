@@ -1,5 +1,6 @@
 const courseService = require('../services/course.service');
 const { logAudit } = require('../services/auditLog.service');
+const { auditFromRequest } = require('../services/auditLog.service');
 const { successResponse } = require('../utils/helpers');
 const { getCompanyId } = require('../utils/tenant');
 const logger = require('../utils/logger');
@@ -25,6 +26,10 @@ const createCourse = async (req, res, next) => {
       req.file,
       companyIdOf(req),
     );
+        auditFromRequest(req, {
+      actionType: 'course.create', targetType: 'course', targetId: data?.id,
+      afterState: { title: data?.title, category: data?.category },
+    });
     successResponse(res, 'Course created', data, null, 201);
   } catch (err) { next(err); }
 };
@@ -42,6 +47,10 @@ const updateCourse = async (req, res, next) => {
       req.file,
       companyIdOf(req),
     );
+        auditFromRequest(req, {
+      actionType: 'course.update', targetType: 'course', targetId: req.params.id,
+      afterState: { title: data?.title, category: data?.category },
+    });
     successResponse(res, 'Course updated', data);
   } catch (err) { next(err); }
 };
@@ -139,6 +148,10 @@ const addLesson = async (req, res, next) => {
 const enrollCourse = async (req, res, next) => {
   try {
     const data = await courseService.enrollCourse(req.params.id, req.user);
+        auditFromRequest(req, {
+      actionType: 'course.enroll', targetType: 'course_enrollment', targetId: data?.id,
+      afterState: { courseId: data?.course_id, employeeId: data?.employee_id },
+    });
     successResponse(res, 'Enrolled in course', data, null, 201);
   } catch (err) { next(err); }
 };
@@ -172,6 +185,9 @@ const listEnrollments = async (req, res, next) => {
 const archiveEnrollment = async (req, res, next) => {
   try {
     const data = await courseService.archiveEnrollment(req.params.id, companyIdOf(req));
+        auditFromRequest(req, {
+      actionType: 'course.enrollment.archive', targetType: 'course_enrollment', targetId: req.params.id,
+    });
     successResponse(res, 'Enrollment archived', data);
   } catch (err) { next(err); }
 };

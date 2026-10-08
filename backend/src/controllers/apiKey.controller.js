@@ -1,5 +1,6 @@
 const apiKeyService = require('../services/apiKey.service');
 const { successResponse } = require('../utils/helpers');
+const { auditFromRequest } = require('../services/auditLog.service');
 
 const list = async (req, res, next) => {
   try {
@@ -18,6 +19,10 @@ const create = async (req, res, next) => {
       environment: req.body.environment,
       expires_at: req.body.expires_at || req.body.expiresAt || null,
     });
+        auditFromRequest(req, {
+      actionType: 'api_key.create', targetType: 'api_key', targetId: data?.id,
+      afterState: { name: data?.name, scopes: data?.scopes, environment: data?.environment },
+    });
     successResponse(
       res,
       'API key created. Copy plaintextKey now — it will not be shown again.',
@@ -33,6 +38,10 @@ const create = async (req, res, next) => {
 const revoke = async (req, res, next) => {
   try {
     const data = await apiKeyService.revokeApiKey(req.user, req.params.id);
+        auditFromRequest(req, {
+      actionType: 'api_key.revoke', targetType: 'api_key', targetId: req.params.id,
+      afterState: { name: data?.name },
+    });
     successResponse(res, 'API key revoked', data);
   } catch (err) {
     next(err);

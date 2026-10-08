@@ -6,6 +6,7 @@ const config = require('../config/database');
 const { successResponse, getClientIp, getClientIps } = require('../utils/helpers');
 const moment = require('moment-timezone');
 const { TIMEZONE } = require('../utils/constants');
+const { auditFromRequest } = require('../services/auditLog.service');
 
 /**
  * Item 8: display-layer-only biometric visibility gate. Reused across every
@@ -186,6 +187,11 @@ const manualEntry = async (req, res, next) => {
       throw new (require('../utils/errors').NotFoundError)('Employee not found');
     }
     const record = await attendanceService.manualEntry(req.user.id, req.body);
+        auditFromRequest(req, {
+      actionType: 'attendance.manual_entry', targetType: 'attendance', targetId: record?.id,
+      afterState: { employeeId: record?.employee_id, date: record?.date, status: record?.status,
+        checkIn: record?.check_in, checkOut: record?.check_out },
+    });
     successResponse(res, 'Manual entry created', record, null, 201);
   } catch (err) { next(err); }
 };

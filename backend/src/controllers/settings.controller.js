@@ -6,6 +6,7 @@ const { successResponse, isMissingColumnError } = require('../utils/helpers');
 const { BadRequestError, NotFoundError } = require('../utils/errors');
 const { LEAVE_CODE_PATTERN, normalizeLeaveCode } = require('../utils/constants');
 const { getCompanyId } = require('../utils/tenant');
+const { auditFromRequest } = require('../services/auditLog.service');
 const logger = require('../utils/logger');
 
 /** Item 6: real on-demand backup — used to be a disabled "Not yet implemented" button. */
@@ -160,6 +161,10 @@ const updateKey = async (req, res, next) => {
       responseValue = await enrichCompanyProfileValue(value);
     }
 
+        auditFromRequest(req, {
+      actionType: 'settings.update', targetType: 'setting',
+      afterState: { key, value: responseValue },
+    });
     successResponse(res, 'Setting updated', data ? { ...data, key, value: responseValue } : { key, value: responseValue });
   } catch (err) {
     next(err);
@@ -199,6 +204,9 @@ const uploadCompanyLogoHandler = async (req, res, next) => {
     await settingsService.setSetting('company_profile', profile, req.user.id, companyId);
     const logoUrl = await getSignedUrl(STORAGE_BUCKETS.documents, path, 86400);
     const enriched = await enrichCompanyProfileValue(profile);
+        auditFromRequest(req, {
+      actionType: 'settings.logo.upload', targetType: 'company_branding',
+    });
     successResponse(res, 'Company logo uploaded', {
       logoPath: path,
       logoUrl,
@@ -232,6 +240,9 @@ const uploadCompanyBrandIconHandler = async (req, res, next) => {
     await settingsService.setSetting('company_profile', profile, req.user.id, companyId);
     const brandIconUrl = await getSignedUrl(STORAGE_BUCKETS.documents, path, 86400);
     const enriched = await enrichCompanyProfileValue(profile);
+        auditFromRequest(req, {
+      actionType: 'settings.brand_icon.upload', targetType: 'company_branding',
+    });
     successResponse(res, 'Brand icon uploaded', {
       brandIconPath: path,
       brandIconUrl,
@@ -279,6 +290,10 @@ const createPayrollComponent = async (req, res, next) => {
       .select()
       .single();
     if (error) throw new BadRequestError(error.message);
+        auditFromRequest(req, {
+      actionType: 'settings.payroll_component.create', targetType: 'payroll_component', targetId: data?.id,
+      afterState: { name: data?.name, code: data?.code, type: data?.type },
+    });
     successResponse(res, 'Payroll component created', data, null, 201);
   } catch (err) { next(err); }
 };
@@ -308,6 +323,10 @@ const updatePayrollComponent = async (req, res, next) => {
       .maybeSingle();
     if (error) throw new BadRequestError(error.message);
     if (!data) throw new NotFoundError('Payroll component not found');
+        auditFromRequest(req, {
+      actionType: 'settings.payroll_component.update', targetType: 'payroll_component', targetId: req.params.id,
+      afterState: { name: data?.name, code: data?.code, type: data?.type },
+    });
     successResponse(res, 'Payroll component updated', data);
   } catch (err) { next(err); }
 };
@@ -323,6 +342,9 @@ const deletePayrollComponent = async (req, res, next) => {
       .maybeSingle();
     if (error) throw new BadRequestError(error.message);
     if (!data) throw new NotFoundError('Payroll component not found');
+        auditFromRequest(req, {
+      actionType: 'settings.payroll_component.delete', targetType: 'payroll_component', targetId: req.params.id,
+    });
     successResponse(res, 'Payroll component deleted');
   } catch (err) { next(err); }
 };
@@ -345,6 +367,10 @@ const updateLeaveAllocations = async (req, res, next) => {
       'leave_allocations', allocations, req.user.id, req.user.company_id
     );
     if (error) throw new BadRequestError(error.message);
+        auditFromRequest(req, {
+      actionType: 'settings.leave_allocation.update', targetType: 'leave_allocation',
+      afterState: { allocations: req.body?.allocations },
+    });
     successResponse(res, 'Leave allocations updated', data);
   } catch (err) { next(err); }
 };
@@ -365,6 +391,10 @@ const updateLeavePolicy = async (req, res, next) => {
       'leave_policy', policy, req.user.id, req.user.company_id
     );
     if (error) throw new BadRequestError(error.message);
+        auditFromRequest(req, {
+      actionType: 'settings.leave_policy.update', targetType: 'leave_policy',
+      afterState: { policy: data },
+    });
     successResponse(res, 'Leave policy updated', data);
   } catch (err) { next(err); }
 };
@@ -439,6 +469,10 @@ const applyLeavePolicyToAll = async (req, res, next) => {
       }
     }
 
+        auditFromRequest(req, {
+      actionType: 'settings.leave_policy.apply_all', targetType: 'leave_policy',
+      afterState: { year },
+    });
     successResponse(res, 'Leave policy applied to all employees', { year });
   } catch (err) { next(err); }
 };

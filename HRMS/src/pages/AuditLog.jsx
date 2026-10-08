@@ -5,15 +5,52 @@ import { PageHeader, Card, CardHeader, Select, Input, Skeleton, EmptyState, Badg
 import { listAuditLogsApi } from '../api/auditLog.api';
 import { formatDateTime, humanize } from '../lib/utils';
 
+/**
+ * Toned by the last segment of the action type. Covers both tenses, because
+ * review actions build their type from the status the reviewer sent
+ * ("wfh.approved", "asset.request.rejected") while fixed actions read as
+ * verbs ("leave.approve", "asset.assign").
+ */
 const ACTION_TONE = {
-  offboard: 'danger', erase: 'danger', reject: 'danger',
-  approve: 'success', publish: 'success',
-  update: 'info', self_edit: 'primary', upload: 'primary', assign: 'primary',
+  // destructive / negative
+  offboard: 'danger', erase: 'danger', delete: 'danger', remove: 'danger',
+  revoke: 'danger', deactivate: 'danger', reject: 'danger', rejected: 'danger',
+  // approvals and completions
+  approve: 'success', approved: 'success', publish: 'success', resolve: 'success',
+  resolved: 'success', verify: 'success', complete: 'success', acknowledge: 'success',
+  apply_all: 'success', fulfilled: 'success',
+  // creation
+  create: 'info', submit: 'info', request: 'info', apply: 'info', enroll: 'info',
+  schedule: 'info', open: 'info',
+  // changes and movement
+  update: 'info', move: 'primary', assign: 'primary', self_edit: 'primary',
+  upload: 'primary', comment: 'primary', outcome: 'primary',
+  // reversals / neutral endings
+  cancel: 'warning', cancelled: 'warning', closed: 'warning', return: 'warning',
+  archive: 'neutral',
 };
 
 function actionTone(actionType) {
   const suffix = String(actionType || '').split('.').pop();
   return ACTION_TONE[suffix] || 'neutral';
+}
+
+/**
+ * The one-line "what changed" summary. after_state is a small, hand-picked
+ * object at each call site (never the whole row), so showing a few of its
+ * fields turns "asset.assign" into something readable without opening
+ * anything.
+ */
+function detailSummary(state) {
+  if (!state || typeof state !== 'object') return '';
+  // Keys arrive camelCased (the API camelCases JSONB too), which humanize()
+  // alone would render as "AssignedTo" — split on the capitals first.
+  const label = (k) => humanize(String(k).replace(/([a-z0-9])([A-Z])/g, '$1 $2'));
+  return Object.entries(state)
+    .filter(([, v]) => v !== null && v !== undefined && v !== '')
+    .slice(0, 3)
+    .map(([k, v]) => `${label(k)}: ${typeof v === 'object' ? JSON.stringify(v).slice(0, 40) : String(v).slice(0, 40)}`)
+    .join(' · ');
 }
 
 export default function AuditLog() {
@@ -62,7 +99,7 @@ export default function AuditLog() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border text-left">
-                    {['When', 'Actor', 'Action', 'Target', 'IP'].map((h) => (
+                    {['When', 'Actor', 'Action', 'Details', 'Target', 'IP'].map((h) => (
                       <th key={h} className="py-2.5 pr-3 font-semibold text-fg-subtle text-xs uppercase tracking-wide">{h}</th>
                     ))}
                   </tr>
@@ -76,6 +113,9 @@ export default function AuditLog() {
                         <span className="ml-1.5 text-xs text-fg-subtle">({humanize(r.actorRole)})</span>
                       </td>
                       <td className="py-3 pr-3"><Badge tone={actionTone(r.actionType)}>{r.actionType}</Badge></td>
+                      <td className="py-3 pr-3 text-fg-muted text-xs max-w-xs truncate" title={detailSummary(r.afterState)}>
+                        {detailSummary(r.afterState) || '—'}
+                      </td>
                       <td className="py-3 pr-3 text-fg-muted text-xs">{r.targetType}{r.targetId ? ` · ${String(r.targetId).slice(0, 8)}…` : ''}</td>
                       <td className="py-3 pr-3 font-mono text-xs text-fg-subtle">{r.ipAddress || '—'}</td>
                     </tr>

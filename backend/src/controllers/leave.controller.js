@@ -1,6 +1,7 @@
 const leaveService = require('../services/leave.service');
 const attendanceService = require('../services/attendance.service');
 const { logAudit } = require('../services/auditLog.service');
+const { auditFromRequest } = require('../services/auditLog.service');
 const { successResponse } = require('../utils/helpers');
 const { ForbiddenError } = require('../utils/errors');
 const moment = require('moment-timezone');
@@ -13,6 +14,11 @@ const apply = async (req, res, next) => {
     require('../services/webhook.service').dispatchWebhookEvent(req.user.company_id, 'leave.applied', {
       leaveId: leave.id, employeeId: req.user.id, leaveType: leave.leave_type || leave.leaveType,
       fromDate: leave.from_date || leave.fromDate, toDate: leave.to_date || leave.toDate,
+    });
+        auditFromRequest(req, {
+      actionType: 'leave.apply', targetType: 'leave', targetId: leave?.id,
+      afterState: { leaveType: leave?.leave_type, fromDate: leave?.from_date, toDate: leave?.to_date,
+        totalDays: leave?.total_days, status: leave?.status },
     });
     successResponse(res, 'Leave applied successfully', leave, null, 201);
   } catch (err) { next(err); }
@@ -81,6 +87,10 @@ const reject = async (req, res, next) => {
 const cancel = async (req, res, next) => {
   try {
     const leave = await leaveService.cancelLeave(req.user.id, req.params.id);
+        auditFromRequest(req, {
+      actionType: 'leave.cancel', targetType: 'leave', targetId: req.params.id,
+      afterState: { status: leave?.status },
+    });
     successResponse(res, 'Leave cancelled', leave);
   } catch (err) { next(err); }
 };

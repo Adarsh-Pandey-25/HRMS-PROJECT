@@ -38,6 +38,35 @@ const logAudit = async ({ companyId, actorId, actorRole, actionType, targetType,
 };
 
 /**
+ * Fire-and-forget audit write for a request handler.
+ *
+ * Takes the actor/company/IP straight off `req` so call sites only name what
+ * happened, and returns immediately — the response is never delayed by, nor
+ * failed by, the audit write. logAudit already swallows insert errors; the
+ * extra catch here covers anything thrown before the insert (a bad signature
+ * key, say), keeping the guarantee that logging can never break the action
+ * it describes.
+ *
+ * `actionType` is dot-notation — `asset.assign`, `ticket.create` — matching
+ * the convention the Audit Log screen filters on.
+ */
+const auditFromRequest = (req, { actionType, targetType, targetId, beforeState, afterState }) => {
+  Promise.resolve()
+    .then(() => logAudit({
+      companyId: req?.user?.company_id,
+      actorId: req?.user?.id,
+      actorRole: req?.user?.role,
+      actionType,
+      targetType,
+      targetId,
+      beforeState,
+      afterState,
+      ipAddress: req?.ip,
+    }))
+    .catch((err) => logger.warn('[AuditLog] write failed', { actionType, targetType, error: err.message }));
+};
+
+/**
  * Same table, super-admin actor. actor_id (FK -> employees) is left null —
  * a super_admins.id would violate that FK — super_admin_actor_id carries
  * attribution instead. is_impersonated marks actions taken while the
@@ -128,4 +157,4 @@ const logPlatformAudit = async ({ superAdminId, actionType, targetType, targetId
   }
 };
 
-module.exports = { logAudit, logSuperAdminAudit, logPlatformAudit, listAuditLogs };
+module.exports = { logAudit, auditFromRequest, logSuperAdminAudit, logPlatformAudit, listAuditLogs };

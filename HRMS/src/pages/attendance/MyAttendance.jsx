@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { LogIn, LogOut, Clock, UserCheck, Home, UserX, CheckCircle2, MapPin, Fingerprint } from 'lucide-react';
 import { PageHeader, Card, Button, Modal, EmptyState, Skeleton, StatusBadge } from '../../components/ui';
 import { AttendanceCalendar } from '../../components/shared/AttendanceCalendar';
@@ -382,6 +383,14 @@ export default function MyAttendance() {
                   Cancel request
                 </Button>
               )}
+              {/* The button above covers today in one tap; a range or a future
+                  date goes through Apply for WFH, same as applying for leave. */}
+              <Link
+                to="/attendance/wfh/apply"
+                className="block text-center text-[11px] font-medium text-primary hover:underline"
+              >
+                Apply for other dates →
+              </Link>
             </div>
           )}
 

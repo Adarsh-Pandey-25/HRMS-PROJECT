@@ -40,8 +40,23 @@ export async function fetchCheckContextApi() {
   };
 }
 
+/**
+ * Submit WFH for a single day or a date range.
+ *
+ * Accepts `{ from, to, reason }` (Apply WFH) or `{ reason }` alone, which the
+ * server reads as today — the same-day request My Attendance has always sent.
+ */
 export async function requestWfhDayApi(body = {}) {
-  return apiRequest({ method: 'POST', url: '/attendance/wfh-requests', data: body });
+  const from = body.from || body.fromDate || body.workDate || body.work_date;
+  const to = body.to || body.toDate || from;
+  return apiRequest({
+    method: 'POST',
+    url: '/attendance/wfh-requests',
+    data: {
+      ...(from ? { from_date: from, to_date: to } : {}),
+      reason: body.reason,
+    },
+  });
 }
 
 export async function cancelWfhDayApi(id) {

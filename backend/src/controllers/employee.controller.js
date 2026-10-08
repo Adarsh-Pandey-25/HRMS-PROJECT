@@ -3,6 +3,7 @@ const authService = require('../services/auth.service');
 const { successResponse, paginate, buildMeta, omitSensitive, generateDefaultPassword, isMissingColumnError } = require('../utils/helpers');
 const { BadRequestError, NotFoundError, ConflictError, ForbiddenError } = require('../utils/errors');
 const { getCompanyId, withCompanyId, companyIdFields } = require('../utils/tenant');
+const { auditFromRequest } = require('../services/auditLog.service');
 const {
   employeeBelongsToCompany,
   getOrgCompanyIds,
@@ -293,6 +294,11 @@ const create = async (req, res, next) => {
     // Never return tempPassword in the API body — credentials go by email only.
     const responseBody = { employee };
     if (onboardingLink) responseBody.onboardingLink = onboardingLink;
+        auditFromRequest(req, {
+      actionType: 'employee.create', targetType: 'employee', targetId: responseBody?.employee?.id,
+      afterState: { email: responseBody?.employee?.email, role: responseBody?.employee?.role,
+        department: responseBody?.employee?.department, designation: responseBody?.employee?.designation },
+    });
     successResponse(res, 'Employee created. Temporary password sent by email.', responseBody, null, 201);
   } catch (err) { next(err); }
 };
@@ -897,6 +903,10 @@ const deactivate = async (req, res, next) => {
     // authenticate()'s live re-check, but bump token_version too for a
     // redundant, independent revocation path.
     await authService.bumpTokenVersion(req.params.id);
+        auditFromRequest(req, {
+      actionType: 'employee.deactivate', targetType: 'employee', targetId: req.params.id,
+      afterState: { isActive: data?.is_active },
+    });
     successResponse(res, 'Employee deactivated', omitSensitive(data, ['password_hash']));
   } catch (err) { next(err); }
 };

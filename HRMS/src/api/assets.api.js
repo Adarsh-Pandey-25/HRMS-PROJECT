@@ -46,6 +46,14 @@ export async function assignAssetApi(id, employeeId) {
   return mapAssetFromApi(data);
 }
 
+/**
+ * Employee asks to hand an asset back. This does NOT return it — it raises
+ * the request HR/Admin approve from Helpdesk; the asset moves only then.
+ */
+export async function requestAssetReturnApi(id, reason) {
+  return apiRequest({ method: 'POST', url: `/assets/${id}/return-request`, data: { reason } });
+}
+
 export async function returnAssetApi(id) {
   const data = await apiRequest({ method: 'PUT', url: `/assets/${id}/return` });
   return mapAssetFromApi(data);

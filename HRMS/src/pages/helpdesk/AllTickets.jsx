@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { AlertTriangle, Send } from 'lucide-react';
+import { AlertTriangle, Send, Check, X, PackageCheck } from 'lucide-react';
 import {
   PageHeader, Card, CardHeader, Button, StatusBadge, Badge, Drawer, Input,
   DataTable, Skeleton, Avatar, Select, SearchInput, EmptyState,
@@ -9,6 +9,7 @@ import { useAllTickets, useHelpdeskMutations } from '../../hooks/useModules';
 import { useEmployeeMap } from '../../hooks/useEmployees';
 import { useSettingsStore } from '../../store/settingsStore';
 import { formatDateTime, timeAgo, humanize, stripHtml } from '../../lib/utils';
+import { isAssetReturnTicket } from '../../lib/assetReturn';
 import toast from 'react-hot-toast';
 
 const STATUSES = ['open', 'in_progress', 'resolved', 'closed'];
@@ -209,6 +210,30 @@ export default function AllTickets() {
         subtitle={selectedTicket && `${selectedTicket.id?.slice(0, 8)} · ${humanize(selectedTicket.category)}`}
         width="w-[500px]"
         footer={selectedTicket && (
+          isAssetReturnTicket(selectedTicket) && !['resolved', 'closed'].includes(selectedTicket.status) ? (
+            /* An asset return needs a decision, not a status dropdown:
+               approving it actually releases the asset back to inventory,
+               so the two outcomes are spelled out instead of hidden behind
+               "resolved" / "closed". */
+            <>
+              <Button
+                variant="outline"
+                icon={X}
+                onClick={() => changeStatus('closed')}
+                disabled={updateStatus.isPending}
+              >
+                Reject return
+              </Button>
+              <Button
+                icon={Check}
+                onClick={() => changeStatus('resolved')}
+                loading={updateStatus.isPending}
+                disabled={updateStatus.isPending}
+              >
+                Approve return
+              </Button>
+            </>
+          ) : (
           <>
             <Select
               label="Update status"
@@ -229,10 +254,23 @@ export default function AllTickets() {
               </Button>
             )}
           </>
+          )
         )}
       >
         {selectedTicket && (
           <div className="space-y-5">
+            {isAssetReturnTicket(selectedTicket) && (
+              <div className="flex gap-2 rounded-xl border border-primary/30 bg-primary/5 px-3 py-2.5 text-sm">
+                <PackageCheck className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                <span className="text-fg-muted">
+                  {['resolved', 'closed'].includes(selectedTicket.status)
+                    ? (selectedTicket.status === 'resolved'
+                      ? 'Return approved — the asset is back in inventory.'
+                      : 'Return rejected — the asset stays with the employee.')
+                    : 'Asset return request. Approving releases the asset back to inventory and unassigns it.'}
+                </span>
+              </div>
+            )}
             <div className="flex items-center gap-2 flex-wrap">
               <StatusBadge status={selectedTicket.status} />
               <StatusBadge status={selectedTicket.priority} dot />

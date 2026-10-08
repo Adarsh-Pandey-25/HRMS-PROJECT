@@ -1,14 +1,17 @@
 import { useState, useMemo } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   Monitor, Plus, Laptop, Smartphone, Tablet, Armchair, Mouse, Package,
-  User, Boxes, Check, UserPlus, RotateCcw,
+  User, Boxes, Check, UserPlus, RotateCcw, Upload, Download,
 } from 'lucide-react';
-import { PageHeader, Card, CardHeader, Button, StatusBadge, Modal, Input, Select, DataTable, Skeleton } from '../../components/ui';
+import { PageHeader, Card, CardHeader, Button, StatusBadge, Badge, Modal, Input, Select, DataTable, Skeleton } from '../../components/ui';
 import { useAssets, useAssetCategories, useAssetMutations } from '../../hooks/useModules';
 import { useEmployeeMap, useEmployees } from '../../hooks/useEmployees';
 import { resolveCategoryOptions } from '../../api/assets.api';
-import { formatCurrency } from '../../lib/utils';
+import { formatCurrency, formatDate } from '../../lib/utils';
+import { invalidateAndRefetch } from '../../lib/queryCache';
 import { ExportButton } from '../../components/shared/ExportButton';
+import { AssetImportModal, downloadAssetExcelTemplate } from '../../components/shared/AssetImportModal';
 import toast from 'react-hot-toast';
 
 const CAT_ICON = {
@@ -16,6 +19,7 @@ const CAT_ICON = {
 };
 
 export default function AssetInventory() {
+  const queryClient = useQueryClient();
   const { data: assets = [], isLoading } = useAssets();
   const { data: categories = [] } = useAssetCategories();
   const { createAsset, assignAsset, returnAsset } = useAssetMutations();
@@ -26,11 +30,18 @@ export default function AssetInventory() {
   const [category, setCategory] = useState('');
   const [status, setStatus] = useState('');
   const [modal, setModal] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [assignModal, setAssignModal] = useState(null);
   const [assignEmployeeId, setAssignEmployeeId] = useState('');
   const [form, setForm] = useState({
-    name: '', category: '', brand: '', serialNumber: '', purchaseCost: '', purchaseDate: '', warrantyExpiry: '',
+    name: '', category: '', brand: '', model: '', serialNumber: '', location: '',
+    ownership: 'purchased', purchaseCost: '', purchaseDate: '', warrantyExpiry: '',
   });
+
+  const refreshAfterImport = async () => {
+    await invalidateAndRefetch(queryClient, ['assets']);
+    await invalidateAndRefetch(queryClient, ['dashboard']);
+  };
 
   const employeeOptions = useMemo(
     () => employees
@@ -58,13 +69,16 @@ export default function AssetInventory() {
         name: form.name.trim(),
         category: form.category || undefined,
         brand: form.brand.trim() || undefined,
+        model: form.model.trim() || undefined,
         serialNumber: form.serialNumber.trim() || undefined,
+        location: form.location.trim() || undefined,
+        ownership: form.ownership || 'purchased',
         purchaseCost: Number(form.purchaseCost || 0),
         purchaseDate: form.purchaseDate || null,
         warrantyExpiry: form.warrantyExpiry || null,
       });
       setModal(false);
-      setForm({ name: '', category: '', brand: '', serialNumber: '', purchaseCost: '', purchaseDate: '', warrantyExpiry: '' });
+      setForm({ name: '', category: '', brand: '', model: '', serialNumber: '', location: '', ownership: 'purchased', purchaseCost: '', purchaseDate: '', warrantyExpiry: '' });
       toast.success('Asset added to inventory');
     } catch (err) {
       toast.error(err.message || 'Failed to add asset');
@@ -111,6 +125,20 @@ export default function AssetInventory() {
       },
     },
     { accessorKey: 'category', header: 'Category' },
+    // Every column the bulk-import template collects is shown here, in the
+    // same order, so what you fill in is what you see back.
+    { accessorKey: 'brand', header: 'Brand', cell: ({ getValue }) => getValue() || '—' },
+    { accessorKey: 'model', header: 'Model', cell: ({ getValue }) => getValue() || '—' },
+    { accessorKey: 'serialNumber', header: 'Serial', cell: ({ getValue }) => getValue() || '—' },
+    {
+      accessorKey: 'ownership',
+      header: 'Ownership',
+      cell: ({ getValue }) => (
+        <Badge tone={getValue() === 'rented' ? 'warning' : 'neutral'}>
+          {getValue() === 'rented' ? 'Rented' : 'Purchased'}
+        </Badge>
+      ),
+    },
     { accessorKey: 'status', header: 'Status', cell: ({ getValue }) => <StatusBadge status={getValue()} /> },
     {
       accessorKey: 'assignedTo', header: 'Assigned to',
@@ -129,6 +157,11 @@ export default function AssetInventory() {
         ) : '—';
       },
     },
+    {
+      accessorKey: 'purchaseDate',
+      header: 'Purchased on',
+      cell: ({ getValue }) => (getValue() ? formatDate(getValue()) : '—'),
+    },
     { accessorKey: 'purchaseCost', header: 'Cost', cell: ({ getValue }) => formatCurrency(getValue() || 0) },
     {
       accessorKey: 'currentValue',
@@ -139,6 +172,12 @@ export default function AssetInventory() {
         </span>
       ),
     },
+    {
+      accessorKey: 'warrantyExpiry',
+      header: 'Warranty expiry',
+      cell: ({ getValue }) => (getValue() ? formatDate(getValue()) : '—'),
+    },
+    { accessorKey: 'location', header: 'Location', cell: ({ getValue }) => getValue() || '—' },
     {
       id: 'actions',
       header: '',
@@ -172,10 +211,16 @@ export default function AssetInventory() {
     () => filtered.map((a) => ({
       name: a.name,
       category: a.category,
+      brand: a.brand || '',
+      model: a.model || '',
       serial: a.serialNumber,
+      ownership: a.ownership,
+      purchaseDate: a.purchaseDate || '',
+      cost: a.purchaseCost || 0,
+      warrantyExpiry: a.warrantyExpiry || '',
+      location: a.location || '',
       status: a.status,
       assignedTo: a.assignedTo ? (employeeMap[a.assignedTo]?.name || a.assignedTo) : '',
-      cost: a.purchaseCost || 0,
     })),
     [filtered, employeeMap],
   );
@@ -185,7 +230,17 @@ export default function AssetInventory() {
       <PageHeader
         title="Asset Inventory"
         subtitle="Track company equipment, assignments and lifecycle"
-        actions={<Button icon={Plus} onClick={() => setModal(true)}>Add Asset</Button>}
+        actions={(
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Template download sits here, not inside the dialog — the sheet
+                has to be filled in before there is anything to import. */}
+            <Button variant="ghost" icon={Download} onClick={downloadAssetExcelTemplate}>
+              Excel Template
+            </Button>
+            <Button variant="outline" icon={Upload} onClick={() => setImportOpen(true)}>Bulk Import</Button>
+            <Button icon={Plus} onClick={() => setModal(true)}>Add Asset</Button>
+          </div>
+        )}
       />
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -221,9 +276,25 @@ export default function AssetInventory() {
         <div className="space-y-4">
           <Input label="Name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           <Select label="Category" options={categoryOptions} value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} placeholder="Select category" />
-          <Input label="Brand" value={form.brand} onChange={(e) => setForm({ ...form, brand: e.target.value })} />
-          <Input label="Serial number" value={form.serialNumber} onChange={(e) => setForm({ ...form, serialNumber: e.target.value })} />
-          <Input label="Purchase cost" type="number" value={form.purchaseCost} onChange={(e) => setForm({ ...form, purchaseCost: e.target.value })} />
+          {/* Same fields the bulk-import template collects, so an asset added
+              by hand records exactly as much as an imported one. */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Input label="Brand" value={form.brand} onChange={(e) => setForm({ ...form, brand: e.target.value })} />
+            <Input label="Model" value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Input label="Serial number" value={form.serialNumber} onChange={(e) => setForm({ ...form, serialNumber: e.target.value })} />
+            <Input label="Location" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Select
+              label="Ownership"
+              value={form.ownership}
+              onChange={(e) => setForm({ ...form, ownership: e.target.value })}
+              options={[{ value: 'purchased', label: 'Purchased' }, { value: 'rented', label: 'Rented' }]}
+            />
+            <Input label="Purchase cost" type="number" value={form.purchaseCost} onChange={(e) => setForm({ ...form, purchaseCost: e.target.value })} />
+          </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <Input label="Purchase date" type="date" value={form.purchaseDate} onChange={(e) => setForm({ ...form, purchaseDate: e.target.value })} />
             <Input label="Warranty expiry" type="date" value={form.warrantyExpiry} onChange={(e) => setForm({ ...form, warrantyExpiry: e.target.value })} />
@@ -245,6 +316,17 @@ export default function AssetInventory() {
           onChange={(e) => setAssignEmployeeId(e.target.value)}
         />
       </Modal>
+
+      {/* Bulk import writes straight through the assets API rather than the
+          mutation hooks, so refresh the list (and the category filter, which
+          grows when an imported asset introduces a new category) here. */}
+      <AssetImportModal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        existingAssets={assets}
+        employees={employees}
+        onImported={refreshAfterImport}
+      />
     </div>
   );
 }

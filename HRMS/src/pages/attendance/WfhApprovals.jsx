@@ -4,6 +4,20 @@ import { usePendingWfhRequests, useAttendanceMutations } from '../../hooks/useAt
 import { formatDate } from '../../lib/utils';
 import toast from 'react-hot-toast';
 
+/**
+ * A request's dates as one label. The API groups a multi-day request's
+ * per-day rows into a single object, so a range shows as one card and one
+ * Approve/Reject acts on every day in it.
+ */
+const dateRange = (r) => {
+  const from = r.fromDate || r.workDate || r.work_date;
+  const to = r.toDate || r.workDate || r.work_date;
+  if (!from) return '—';
+  if (!to || to === from) return formatDate(from);
+  const days = Number(r.totalDays || 0);
+  return `${formatDate(from)} → ${formatDate(to)}${days > 1 ? ` · ${days} days` : ''}`;
+};
+
 export default function WfhApprovals() {
   const { data: rows = [], isLoading } = usePendingWfhRequests();
   const { reviewWfh } = useAttendanceMutations();
@@ -21,7 +35,7 @@ export default function WfhApprovals() {
     <div className="space-y-6 animate-fade-in">
       <PageHeader
         title="WFH Approvals"
-        subtitle="Approve or reject employees’ work-from-home requests for today"
+        subtitle="Approve or reject employees’ work-from-home requests"
       />
 
       <Card>
@@ -30,7 +44,7 @@ export default function WfhApprovals() {
           {isLoading ? (
             <Skeleton className="h-32 rounded-xl" />
           ) : rows.length === 0 ? (
-            <EmptyState icon={Home} title="No pending WFH requests" message="When employees request WFH for today, they will appear here." />
+            <EmptyState icon={Home} title="No pending WFH requests" message="When employees request WFH, they will appear here." />
           ) : (
             <div className="space-y-2">
               {rows.map((r) => {
@@ -46,7 +60,7 @@ export default function WfhApprovals() {
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-fg">{name}</p>
                       <p className="text-xs text-fg-subtle">
-                        {formatDate(r.work_date || r.workDate)} · {emp.department || emp.designation || '—'}
+                        {dateRange(r)} · {emp.department || emp.designation || '—'}
                       </p>
                       {(r.reason) && <p className="text-xs text-fg-muted mt-0.5 truncate">{r.reason}</p>}
                     </div>
