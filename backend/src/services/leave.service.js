@@ -717,6 +717,7 @@ const calculateEncashment = async (employeeId, leaveType, days) => {
 
 module.exports = {
   applyLeave,
+  adjustLeaveBalanceUsed,
   getLeaves,
   approveLeave,
   rejectLeave,

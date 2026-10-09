@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { DEFAULT_PAY_RULES, DEFAULT_WORK_WEEK } from '../lib/payRules';
 import { persist } from 'zustand/middleware';
 import { buildDefaultRolePermissions, mergeRolePermissions, PERMISSION_ACTIONS } from '../lib/permissions';
 
@@ -110,6 +111,12 @@ const DEFAULT_PAYROLL_CONFIG = {
   autoLockDays: 20,
   autoProcess: false,
   bankFileFormat: 'NEFT',
+  /** Pay rules — see lib/payRules.js (mirrors backend utils/payrollRules.js). */
+  rules: DEFAULT_PAY_RULES,
+  /** Weekly offs — see lib/payRules.js (mirrors backend utils/workWeek.js). */
+  workWeek: DEFAULT_WORK_WEEK,
+  /** Leaving before the shift ends counts as a half day. */
+  halfDayBeforeGoal: false,
 };
 
 const DEFAULT_NOTIFICATION_TRIGGERS = [

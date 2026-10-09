@@ -25,6 +25,7 @@ import { PayslipPreviewModal } from '../../components/payroll/PayslipPreviewModa
 import { useCompanyStore } from '../../store/companyStore';
 import { useAuthStore } from '../../store/authStore';
 import { LeaveBalanceCard } from '../../components/leave/LeaveBalanceCard';
+import { PayrollSetupCard } from '../../components/payroll/PayrollSetupCard';
 import { fetchSalaryPreviewApi } from '../../api/payroll.api';
 import { useSettingsStore } from '../../store/settingsStore';
 import { useCan } from '../../hooks/useCan';
@@ -883,6 +884,14 @@ export default function EmployeeProfile() {
       {/* Payroll */}
       {tab === 'payroll' && (
         <div className="space-y-4">
+          {isHrAdmin && resolvedId && (
+            <PayrollSetupCard
+              employeeId={resolvedId}
+              employeeName={emp?.firstName || emp?.name}
+              // HR/Admin set it; HR not their own (the server refuses it too).
+              canEdit={!(role === 'hr' && isOwnProfile)}
+            />
+          )}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             {[
               ['Gross (monthly)', salaryPreview?.gross ?? gross],

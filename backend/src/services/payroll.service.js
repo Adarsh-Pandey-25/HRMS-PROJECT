@@ -89,60 +89,197 @@ const getProfessionalTaxForState = (state, gross, { month, gender } = {}) => {
   }
 };
 
+const flagOn = (v, def = true) => {
+  if (v === undefined || v === null || v === '') return def;
+  if (typeof v === 'boolean') return v;
+  const s = String(v).toLowerCase();
+  if (['false', '0', 'no', 'off'].includes(s)) return false;
+  if (['true', '1', 'yes', 'on'].includes(s)) return true;
+  return Boolean(v);
+};
+
 /**
- * Perfect contract payroll calculation.
+ * One employee's payroll setup — which statutory deductions apply to them
+ * and which of the company's extra deductions they are opted out of
+ * (Employee → Payroll → Payroll setup). Read from salary_details.
  *
- * Earnings: Basic + HRA + DA + Special (+ salary custom allowances)
- * Gross    = sum(earnings)
- * LOP      = (Gross / weekdayCount) × (absent + 0.5×halfDay)   [from attendance]
- * PF       = Basic × rate (company payroll_pf_rate or employee pf_percent) unless pf_applicable=false
- * PT       = payroll_professional_tax (flat ₹) unless pt_applicable=false
- * TDS      = employee tds_mode company|fixed|none; company uses settings auto/manual
- * Custom   = from Settings → payroll_config.custom_payroll_options + payroll_components
- * Net      = Gross − all deductions
+ * ESI follows its switch only once someone has actually set it
+ * (esi_set = true): the Edit Employee form used to save
+ * esi_applicable = false for everyone, so that old value is not a choice
+ * anybody made and must not switch ESI off.
  */
-const calculateContractPayslip = async (employee, attendanceSummary, month = null) => {
+const resolvePayrollSetup = (salary = {}) => {
+  const sd = salary || {};
+  const optouts = Array.isArray(sd.deduction_optouts) ? sd.deduction_optouts.map(String) : [];
+  const pfPercent = sd.pf_percent ?? sd.pfPercent;
+  return {
+    pf: flagOn(sd.pf_applicable ?? sd.pfApplicable, true),
+    esi: sd.esi_set === true ? flagOn(sd.esi_applicable ?? sd.esiApplicable, true) : true,
+    pt: flagOn(sd.pt_applicable ?? sd.ptApplicable, true),
+    tdsMode: (() => {
+      const m = String(sd.tds_mode ?? sd.tdsMode ?? 'company').toLowerCase();
+      if (m === 'exempt') return 'none';
+      if (m === 'manual') return 'fixed';
+      return ['company', 'fixed', 'none'].includes(m) ? m : 'company';
+    })(),
+    tdsFixed: round2(Number(sd.tds_fixed ?? sd.tdsFixed ?? sd.tds ?? 0) || 0),
+    pfPercent: pfPercent != null && pfPercent !== '' && Number.isFinite(Number(pfPercent)) ? Number(pfPercent) : null,
+    optouts,
+  };
+};
+
+/** A custom payroll option's stable key — its id, or its name for options saved before ids. */
+const optionKey = (opt) => String(opt?.id || String(opt?.name || '').trim().toLowerCase());
+
+/**
+ * Everything company-wide a payslip needs — loaded once and reused for every
+ * employee in a run (and by the pay simulator).
+ */
+const loadPayrollContext = async (companyId) => {
+  const { getPayrollRules } = require('../utils/payrollRules');
+  const { getWorkWeek } = require('../utils/workWeek');
+  const [
+    workingDaysSetting, pfRate, tdsPercent, esiEmployeePercent, esiThreshold, ptFlatAmount,
+    payrollConfigRaw, rules, workWeek, leaveMeta,
+  ] = await Promise.all([
+    settingsService.getNumber('payroll_working_days', WORKING_DAYS_PER_MONTH, companyId),
+    settingsService.getNumber('payroll_pf_rate', 0.12, companyId),
+    settingsService.getNumber('payroll_tds_percent', 8, companyId),
+    settingsService.getNumber('payroll_esi_employee_percent', 0.75, companyId),
+    settingsService.getNumber('payroll_esi_threshold', 21000, companyId),
+    settingsService.getNumber('payroll_professional_tax', 200, companyId),
+    settingsService.getSetting('payroll_config', null, companyId),
+    getPayrollRules(companyId),
+    getWorkWeek(companyId),
+    settingsService.getSetting('leave_policy_meta', null, companyId),
+  ]);
+  const payrollConfig = payrollConfigRaw || {};
+  const { data: components, error: compErr } = await supabaseAdmin
+    .from('payroll_components')
+    .select('*')
+    .eq('is_active', true)
+    .eq('company_id', companyId)
+    .order('display_order', { ascending: true });
+  if (compErr) throw new BadRequestError(compErr.message);
+  return {
+    companyId,
+    workingDaysSetting: Math.max(1, workingDaysSetting),
+    pfRate: Math.max(0, pfRate),
+    tdsPercent: Math.max(0, tdsPercent),
+    esiEmployeePercent: Math.max(0, esiEmployeePercent),
+    esiThreshold: Math.max(0, esiThreshold),
+    ptFlatAmount: Math.max(0, ptFlatAmount),
+    payrollConfig,
+    pfWageCeiling: payrollConfig.pf_wage_ceiling != null && payrollConfig.pf_wage_ceiling !== ''
+      ? Number(payrollConfig.pf_wage_ceiling) : null,
+    companyTdsMode: String(payrollConfig.tds_mode || 'auto'),
+    ptState: String(payrollConfig.pt_state ?? payrollConfig.ptState ?? '').trim(),
+    rules,
+    workWeek,
+    // Settings → Leave Policy → "Auto-deduct casual leave for unplanned absence".
+    leaveFirst: flagOn(leaveMeta?.auto_deduct ?? leaveMeta?.autoDeduct, false),
+    components: components || [],
+  };
+};
+
+/** Casual Leave this employee could still spend this year: allocated − used − encashed. */
+const LEAVE_FIRST_TYPE = 'CL';
+const availableLeaveDays = async (employeeId, year, companyId) => {
+  const { data: row, error } = await supabaseAdmin
+    .from('leave_balances')
+    .select('total_allocated, used, encashed')
+    .eq('employee_id', employeeId)
+    .eq('year', year)
+    .eq('leave_type', LEAVE_FIRST_TYPE)
+    .maybeSingle();
+  if (error) throw new BadRequestError(error.message);
+  let allocated = row ? Number(row.total_allocated || 0) : null;
+  if (allocated == null) {
+    const leaveService = require('./leave.service');
+    const policy = await leaveService.getEffectiveLeavePolicy(year, companyId);
+    const cl = (policy || []).find((p) => p?.code === LEAVE_FIRST_TYPE && p.active !== false);
+    allocated = cl ? Number(cl.allocation || 0) : 0;
+  }
+  return Math.max(0, allocated - Number(row?.used || 0) - Number(row?.encashed || 0));
+};
+
+/**
+ * Which absences casual leave covers: whole absent days first, then half
+ * days, oldest first, while the balance lasts. Pure — nothing is spent here;
+ * the leave is taken only when the payslip is published.
+ */
+const planLeaveCover = (summary, available) => {
+  let left = Math.max(0, Number(available || 0));
+  const absentDates = [];
+  const halfDayDates = [];
+  for (const d of summary?.absentDates || []) {
+    if (left < 1) break;
+    absentDates.push(d);
+    left -= 1;
+  }
+  for (const d of summary?.halfDayDates || []) {
+    if (left < 0.5) break;
+    halfDayDates.push(d);
+    left -= 0.5;
+  }
+  return { type: LEAVE_FIRST_TYPE, absentDates, halfDayDates, days: absentDates.length + halfDayDates.length * 0.5 };
+};
+
+/** Overtime hours that count this month, from the attendance records. */
+const eligibleOvertimeHours = (records, otRule) => {
+  let hours = 0;
+  let days = 0;
+  for (const r of records || []) {
+    const final = !r.checkout_status || r.checkout_status === 'finalized';
+    if (!final || r.is_auto_checkout || !r.check_out_time) continue;
+    const ot = Number(r.overtime_hours || 0);
+    if (ot <= 0 || ot * 60 < Number(otRule.minMinutes || 0)) continue;
+    hours += ot;
+    days += 1;
+  }
+  const cap = Number(otRule.monthlyCapHours || 0);
+  const capped = cap > 0 ? Math.min(hours, cap) : hours;
+  return { hours: round2(capped), uncappedHours: round2(hours), days };
+};
+
+/**
+ * The payslip calculation itself — pure, so the pay simulator shows exactly
+ * what payroll will produce.
+ *
+ *   Gross        Basic + HRA + DA + Special + Transport + Medical + custom allowances
+ *   Day rate     Gross ÷ days, per the company's day-rate basis (working / calendar / fixed)
+ *   Unpaid days  absences not covered by casual leave (if "use leave first" is on)
+ *                + ½ × uncovered half days + late-arrival penalty + days before joining
+ *   LOP          Day rate × unpaid days
+ *   Overtime     eligible hours × (day rate ÷ shift hours) × multiplier, when paid
+ *   PF           earned Basic (capped at the wage ceiling) × rate          — if PF applies
+ *   ESI          earned gross × rate, when contract gross ≤ the threshold  — if ESI applies
+ *   PT           state slab on earned gross (or the flat amount)           — if PT applies
+ *   TDS          company % of earned gross, a fixed amount, or none
+ *   Custom       company extra deductions the employee isn't opted out of
+ *   Net          Gross + overtime − LOP − deductions, never below 0
+ *
+ * "Earned" = what is left after loss of pay: statutory deductions follow the
+ * pay actually earned, not the contract figure.
+ */
+const computePayslip = (ctx, {
+  employee, summary = {}, records = [], month, year, leaveAvailable = 0, published = false, previousConfig = null,
+}) => {
+  const { latePenaltyDays } = require('../utils/payrollRules');
+  const { countWorkingDays } = require('../utils/workWeek');
   const payslipMonth = Number(month) || (moment.tz(TIMEZONE).month() + 1);
-  const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
-  const companyId = getCompanyId(employee) || DEFAULT_COMPANY_ID;
+  const payslipYear = Number(year) || moment.tz(TIMEZONE).year();
+  const { rules, payrollConfig } = ctx;
+  const setup = resolvePayrollSetup(employee?.salary_details);
+  const salary = employee?.salary_details || {};
 
-  const workingDaysSetting = Math.max(1, await settingsService.getNumber('payroll_working_days', WORKING_DAYS_PER_MONTH, companyId));
-  const pfRate = Math.max(0, await settingsService.getNumber('payroll_pf_rate', 0.12, companyId));
-  const tdsPercent = Math.max(0, await settingsService.getNumber('payroll_tds_percent', 8, companyId));
-  const esiEmployeePercent = Math.max(0, await settingsService.getNumber('payroll_esi_employee_percent', 0.75, companyId));
-  const esiThreshold = Math.max(0, await settingsService.getNumber('payroll_esi_threshold', 21000, companyId));
-
-  const payrollConfig = (await settingsService.getSetting('payroll_config', null, companyId)) || {};
-  const pfWageCeiling = payrollConfig.pf_wage_ceiling != null
-    ? Number(payrollConfig.pf_wage_ceiling)
-    : null;
-  const companyTdsMode = String(payrollConfig.tds_mode || 'auto');
-
-  const salary = employee.salary_details || {};
   const basic = round2(Number(salary.basic || 0));
   const hra = round2(Number(salary.hra || 0));
   const da = round2(Number(salary.da || 0));
   const special = round2(Number(salary.special || 0));
   const transport = round2(Number(salary.transport || 0));
   const medical = round2(Number(salary.medical || 0));
-
-  // Per-employee exceptions (defaults = follow company policy)
-  const flagOn = (v, def = true) => {
-    if (v === undefined || v === null || v === '') return def;
-    if (typeof v === 'boolean') return v;
-    const s = String(v).toLowerCase();
-    if (['false', '0', 'no', 'off'].includes(s)) return false;
-    if (['true', '1', 'yes', 'on'].includes(s)) return true;
-    return Boolean(v);
-  };
-  const pfApplicable = flagOn(salary.pf_applicable ?? salary.pfApplicable, true);
-  const ptApplicable = flagOn(salary.pt_applicable ?? salary.ptApplicable, true);
-  const empPfPercent = salary.pf_percent ?? salary.pfPercent;
-  const empPfRate = empPfPercent != null && empPfPercent !== ''
-    ? Math.max(0, Number(empPfPercent) / 100)
-    : pfRate;
-  const empTdsMode = String(salary.tds_mode ?? salary.tdsMode ?? 'company').toLowerCase();
-  // company | fixed | none — "company" follows payroll settings auto/manual
+  const empPfRate = setup.pfPercent != null ? Math.max(0, setup.pfPercent / 100) : ctx.pfRate;
 
   const earnings = [
     { name: 'Basic', amount: basic },
@@ -152,89 +289,120 @@ const calculateContractPayslip = async (employee, attendanceSummary, month = nul
   if (special > 0) earnings.push({ name: 'Special Allowance', amount: special });
   if (transport > 0) earnings.push({ name: 'Transport Allowance', amount: transport });
   if (medical > 0) earnings.push({ name: 'Medical Allowance', amount: medical });
+  let gross = round2(earnings.reduce((sum, e) => sum + Number(e.amount || 0), 0));
 
-  let gross = round2(earnings.reduce((s, e) => s + Number(e.amount || 0), 0));
-
-  // Custom allowances first so TDS/LOP use final gross
-  const customOptions = Array.isArray(payrollConfig.custom_payroll_options)
-    ? payrollConfig.custom_payroll_options
-    : [];
-  const pendingCustomDeductions = [];
+  // Custom allowances join gross before the day rate; custom deductions wait
+  // until the earned figures are known.
+  const customOptions = Array.isArray(payrollConfig.custom_payroll_options) ? payrollConfig.custom_payroll_options : [];
+  const customDeductionDefs = [];
   for (const opt of customOptions) {
     if (!opt || opt.active === false || !String(opt.name || '').trim()) continue;
-    const name = String(opt.name).trim();
     const kind = String(opt.kind || opt.type || 'deduction').toLowerCase();
-    const valueType = String(opt.value_type || opt.valueType || 'fixed').toLowerCase();
-    const value = Number(opt.value || 0);
-    const baseKey = String(opt.base || 'basic').toLowerCase();
-    const baseAmt = baseKey === 'gross' ? gross : basic;
-    const amount = valueType === 'percent'
-      ? round2(baseAmt * (value / 100))
-      : round2(value);
-    if (amount <= 0) continue;
-
     if (kind === 'allowance' || kind === 'earning') {
-      earnings.push({ name, amount });
-      gross = round2(gross + amount);
+      const valueType = String(opt.value_type || opt.valueType || 'fixed').toLowerCase();
+      const baseAmt = String(opt.base || 'basic').toLowerCase() === 'gross' ? gross : basic;
+      const amount = valueType === 'percent' ? round2(baseAmt * (Number(opt.value || 0) / 100)) : round2(Number(opt.value || 0));
+      if (amount > 0) {
+        earnings.push({ name: String(opt.name).trim(), amount });
+        gross = round2(gross + amount);
+      }
     } else {
-      pendingCustomDeductions.push({ name, amount });
+      customDeductionDefs.push(opt);
+    }
+  }
+  const contractGross = gross;
+
+  // ── Day rate ────────────────────────────────────────────────────────────
+  const monthStart = moment.tz({ year: payslipYear, month: payslipMonth - 1, day: 1 }, TIMEZONE);
+  const daysInMonth = monthStart.daysInMonth();
+  const workingDaysInMonth = Number(summary.workingDays) > 0
+    ? Number(summary.workingDays)
+    : countWorkingDays(monthStart, monthStart.clone().endOf('month'), ctx.workWeek);
+  let dayBase;
+  if (rules.dayRateBasis === 'calendar') dayBase = daysInMonth;
+  else if (rules.dayRateBasis === 'fixed') dayBase = ctx.workingDaysSetting;
+  else dayBase = workingDaysInMonth;
+  dayBase = Math.max(1, dayBase);
+  const perDay = gross / dayBase;
+
+  // ── Unpaid days ─────────────────────────────────────────────────────────
+  const absent = Number(summary.absent || 0);
+  const halfDay = Number(summary.halfDay || 0);
+  const lateCount = Number(summary.late || 0);
+  const latePenalty = latePenaltyDays(lateCount, rules.late);
+
+  // Casual leave first: planned on drafts, frozen once published (the
+  // covered days became approved leave at publish, so they are no longer
+  // absences and nothing is planned twice).
+  let leaveCover = { type: LEAVE_FIRST_TYPE, absentDates: [], halfDayDates: [], days: 0 };
+  if (published) {
+    const frozen = previousConfig?.leave_cover;
+    if (frozen && frozen.applied) leaveCover = { ...frozen };
+  } else if (ctx.leaveFirst && (absent > 0 || halfDay > 0)) {
+    leaveCover = planLeaveCover(summary, leaveAvailable);
+  }
+  const coveredAbsent = published ? 0 : leaveCover.absentDates.length;
+  const coveredHalf = published ? 0 : leaveCover.halfDayDates.length;
+
+  // Days before joining are unpaid — every calendar day of them under the
+  // calendar basis, otherwise the working days.
+  let notJoined = Number(summary.notJoined || 0);
+  if (rules.dayRateBasis === 'calendar' && summary.joinedOn) {
+    const joined = moment.tz(summary.joinedOn, TIMEZONE);
+    if (joined.isAfter(monthStart, 'day') && joined.isSameOrBefore(monthStart.clone().endOf('month'), 'day')) {
+      notJoined = joined.diff(monthStart, 'days');
     }
   }
 
-  // LOP from real calendar weekdays + attendance absences (not setting − present)
-  const weekdayCount = Math.max(
-    1,
-    Number(attendanceSummary?.workingDays || workingDaysSetting)
-  );
-  const absent = Number(attendanceSummary?.absent || 0);
-  const halfDay = Number(attendanceSummary?.halfDay || 0);
-  const unpaid_leave_days = round2(Math.max(0, absent + halfDay * 0.5));
-  const lop_deduction = round2((gross / weekdayCount) * unpaid_leave_days);
+  const unpaidDays = round2(Math.min(
+    dayBase,
+    Math.max(0, absent - coveredAbsent) + 0.5 * Math.max(0, halfDay - coveredHalf) + latePenalty + notJoined,
+  ));
+  const lop_deduction = round2(Math.min(gross, perDay * unpaidDays));
+  const earnedRatio = Math.max(0, 1 - unpaidDays / dayBase);
+  const earnedBasic = round2(basic * earnedRatio);
+  const earnedGross = round2(Math.max(0, gross - lop_deduction));
 
-  // PF on Basic (capped if wage ceiling configured) — skip if employee exempt
-  const pfBase = pfWageCeiling != null && pfWageCeiling > 0
-    ? Math.min(basic, pfWageCeiling)
-    : basic;
-  const pf_deduction = pfApplicable ? round2(pfBase * empPfRate) : 0;
-
-  // Professional Tax — state-specific slab on gross when the configured PT state
-  // has a known slab table; otherwise fall back to the flat configured amount.
-  const ptState = String(payrollConfig.pt_state ?? payrollConfig.ptState ?? '').trim();
-  const ptByState = getProfessionalTaxForState(ptState, gross, { month: payslipMonth, gender: employee?.gender });
-  const ptFlatAmount = Math.max(0, await settingsService.getNumber('payroll_professional_tax', 200, companyId));
-  const ptAmount = ptByState != null ? ptByState : ptFlatAmount;
-  const professional_tax = ptApplicable ? round2(ptAmount) : 0;
-
-  // ESI: employee-side percentage of gross, only when gross is at/below the configured threshold.
-  const esi_deduction = gross <= esiThreshold ? round2(gross * (esiEmployeePercent / 100)) : 0;
-
-  // TDS: per-employee mode overrides company when set to fixed/none
-  let tds_deduction = 0;
-  if (empTdsMode === 'none' || empTdsMode === 'exempt') {
-    tds_deduction = 0;
-  } else if (empTdsMode === 'fixed' || empTdsMode === 'manual') {
-    tds_deduction = round2(Number(salary.tds_fixed ?? salary.tdsFixed ?? salary.tds ?? 0));
-  } else if (salary.tds != null && Number(salary.tds) > 0 && companyTdsMode === 'manual') {
-    tds_deduction = round2(Number(salary.tds));
-  } else if (tdsPercent > 0) {
-    // tdsPercent is stored as whole number (e.g. 8) from FE
-    tds_deduction = round2(gross * (tdsPercent / 100));
+  // ── Overtime ────────────────────────────────────────────────────────────
+  const otRule = rules.overtime;
+  const shiftHours = Number(summary.expectedHours) > 0 ? Number(summary.expectedHours) : 9;
+  const ot = otRule.mode === 'off' ? { hours: 0, uncappedHours: 0, days: 0 } : eligibleOvertimeHours(records, otRule);
+  const hourlyRate = perDay / shiftHours;
+  let overtime_pay = 0;
+  let compOffDays = 0;
+  if (otRule.mode === 'pay' && ot.hours > 0) {
+    overtime_pay = round2(ot.hours * hourlyRate * otRule.multiplier);
+    earnings.push({ name: 'Overtime', amount: overtime_pay });
+  } else if (otRule.mode === 'comp_off' && ot.hours > 0) {
+    compOffDays = Math.floor((ot.hours * 2) / otRule.compOffHours) / 2;
   }
+  if (published && previousConfig?.overtime?.comp_off_credited != null) {
+    compOffDays = Number(previousConfig.overtime.comp_off_days || 0);
+  }
+  gross = round2(gross + overtime_pay);
+  const taxable = round2(earnedGross + overtime_pay);
 
-  const vars = {
-    basic_salary: basic,
-    hra,
-    da,
-    special,
-    gross_salary: gross,
-    unpaid_leave_days,
-    working_days: weekdayCount,
-    lop_deduction,
-    pf_deduction,
-    professional_tax,
-    tds_deduction,
-    esi_deduction,
-  };
+  // ── Statutory deductions, on earned pay ──────────────────────────────────
+  const pfBase = ctx.pfWageCeiling != null && ctx.pfWageCeiling > 0 ? Math.min(earnedBasic, ctx.pfWageCeiling) : earnedBasic;
+  const pf_deduction = setup.pf ? round2(pfBase * empPfRate) : 0;
+
+  const esiEligible = contractGross <= ctx.esiThreshold;
+  const esi_deduction = setup.esi && esiEligible ? round2(taxable * (ctx.esiEmployeePercent / 100)) : 0;
+
+  const ptByState = getProfessionalTaxForState(ctx.ptState, taxable, { month: payslipMonth, gender: employee?.gender });
+  const ptAmount = ptByState != null ? ptByState : ctx.ptFlatAmount;
+  const professional_tax = setup.pt && taxable > 0 ? round2(ptAmount) : 0;
+
+  let tds_deduction = 0;
+  if (setup.tdsMode === 'none') {
+    tds_deduction = 0;
+  } else if (setup.tdsMode === 'fixed') {
+    tds_deduction = setup.tdsFixed;
+  } else if (salary.tds != null && Number(salary.tds) > 0 && ctx.companyTdsMode === 'manual') {
+    tds_deduction = round2(Number(salary.tds));
+  } else if (ctx.tdsPercent > 0) {
+    tds_deduction = round2(taxable * (ctx.tdsPercent / 100));
+  }
 
   const deductions = [];
   if (lop_deduction > 0) deductions.push({ name: 'LOP', amount: lop_deduction });
@@ -242,27 +410,31 @@ const calculateContractPayslip = async (employee, attendanceSummary, month = nul
   if (professional_tax > 0) deductions.push({ name: 'Professional Tax', amount: professional_tax });
   if (esi_deduction > 0) deductions.push({ name: 'ESI', amount: esi_deduction });
   if (tds_deduction > 0) deductions.push({ name: 'TDS', amount: tds_deduction });
-  for (const d of pendingCustomDeductions) deductions.push(d);
 
-  // Legacy / DB payroll_components (if configured)
-  const { data: components, error: compErr } = await supabaseAdmin
-    .from('payroll_components')
-    .select('*')
-    .eq('is_active', true)
-    .eq('company_id', companyId)
-    .order('display_order', { ascending: true });
-  if (compErr) throw new BadRequestError(compErr.message);
+  const optedOut = new Set(setup.optouts);
+  const skippedOptions = [];
+  for (const opt of customDeductionDefs) {
+    const name = String(opt.name).trim();
+    if (optedOut.has(optionKey(opt)) || optedOut.has(name.toLowerCase())) {
+      skippedOptions.push(name);
+      continue;
+    }
+    const valueType = String(opt.value_type || opt.valueType || 'fixed').toLowerCase();
+    const baseAmt = String(opt.base || 'basic').toLowerCase() === 'gross' ? taxable : earnedBasic;
+    const amount = valueType === 'percent' ? round2(baseAmt * (Number(opt.value || 0) / 100)) : round2(Number(opt.value || 0));
+    if (amount > 0) deductions.push({ name, amount });
+  }
 
-  const skipNames = new Set([
-    'basic', 'hra', 'da', 'special', 'special allowance', 'lop', 'pf',
-    'professional tax', 'pt', 'tds', 'esi', 'esic',
-  ]);
-  for (const c of components || []) {
+  // Legacy payroll_components (Settings → Salary Structure), if configured.
+  const vars = {
+    basic_salary: basic, hra, da, special, gross_salary: gross, unpaid_leave_days: unpaidDays,
+    working_days: dayBase, lop_deduction, pf_deduction, professional_tax, tds_deduction, esi_deduction,
+  };
+  const skipNames = new Set(['basic', 'hra', 'da', 'special', 'special allowance', 'lop', 'pf', 'professional tax', 'pt', 'tds', 'esi', 'esic', 'overtime']);
+  for (const c of ctx.components || []) {
     const name = String(c.name || '').trim().toLowerCase();
     if (skipNames.has(name)) continue;
-    // Skip if already added via custom options
     if (customOptions.some((o) => String(o.name || '').trim().toLowerCase() === name)) continue;
-
     const amount = computeRule(vars, c);
     if (amount <= 0) continue;
     if (c.type === 'EARNING') {
@@ -276,7 +448,7 @@ const calculateContractPayslip = async (employee, attendanceSummary, month = nul
   }
 
   const gross_final = round2(gross);
-  const total_deductions = round2(deductions.reduce((s, d) => s + Number(d.amount || 0), 0));
+  const total_deductions = round2(deductions.reduce((sum, d) => sum + Number(d.amount || 0), 0));
   const net_pay = round2(Math.max(0, gross_final - total_deductions));
 
   const breakdown_json = {
@@ -284,21 +456,49 @@ const calculateContractPayslip = async (employee, attendanceSummary, month = nul
     deductions,
     totals: { gross_salary: gross_final, total_deductions, net_pay },
     config: {
-      working_days: weekdayCount,
-      working_days_setting: workingDaysSetting,
+      working_days: dayBase,
+      working_days_in_month: workingDaysInMonth,
+      days_in_month: daysInMonth,
+      day_rate_basis: rules.dayRateBasis,
+      per_day_rate: round2(perDay),
+      working_days_setting: ctx.workingDaysSetting,
       pf_rate: empPfRate,
-      company_pf_rate: pfRate,
-      professional_tax: professional_tax,
-      pt_state: ptState || null,
+      company_pf_rate: ctx.pfRate,
+      professional_tax,
+      pt_state: ctx.ptState || null,
       esi_deduction,
-      esi_threshold: esiThreshold,
-      tds_percent: tdsPercent,
-      unpaid_leave_days,
+      esi_threshold: ctx.esiThreshold,
+      esi_eligible: esiEligible,
+      tds_percent: ctx.tdsPercent,
+      unpaid_leave_days: unpaidDays,
       absent,
       half_day: halfDay,
-      pf_applicable: pfApplicable,
-      pt_applicable: ptApplicable,
-      tds_mode: empTdsMode,
+      not_joined_days: notJoined,
+      late_count: lateCount,
+      late_penalty_days: latePenalty,
+      late_rule: rules.late,
+      leave_cover: leaveCover.days > 0 || leaveCover.applied
+        ? { ...leaveCover, applied: Boolean(leaveCover.applied) }
+        : null,
+      overtime: {
+        mode: otRule.mode,
+        hours: ot.hours,
+        uncapped_hours: ot.uncappedHours,
+        days: ot.days,
+        hourly_rate: round2(hourlyRate),
+        multiplier: otRule.multiplier,
+        pay: overtime_pay,
+        comp_off_days: compOffDays,
+        comp_off_credited: published ? (previousConfig?.overtime?.comp_off_credited ?? null) : null,
+      },
+      earned_basic: earnedBasic,
+      earned_gross: earnedGross,
+      contract_gross: contractGross,
+      pf_applicable: setup.pf,
+      esi_applicable: setup.esi,
+      pt_applicable: setup.pt,
+      tds_mode: setup.tdsMode,
+      opted_out: skippedOptions,
     },
   };
 
@@ -306,14 +506,46 @@ const calculateContractPayslip = async (employee, attendanceSummary, month = nul
     basic_salary: basic,
     hra,
     gross_salary: gross_final,
-    unpaid_leave_days,
+    unpaid_leave_days: unpaidDays,
     lop_deduction,
     pf_deduction,
     professional_tax,
     esi_deduction,
+    // Columns the Payroll Summary report reads (they were never filled, so
+    // its Overtime column was always ₹0).
+    overtime_pay,
+    tds: tds_deduction,
+    total_deductions,
     net_salary: net_pay,
     breakdown_json,
   };
+};
+
+/**
+ * A payslip for one employee and month. `summary`/`records` come from
+ * attendanceService.getMonthlySummary. opts: { year, records, ctx (reuse a
+ * loaded payroll context), published, previousConfig }.
+ */
+const calculateContractPayslip = async (employee, attendanceSummary, month = null, opts = {}) => {
+  const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
+  const companyId = getCompanyId(employee) || DEFAULT_COMPANY_ID;
+  const year = Number(opts.year) || moment.tz(TIMEZONE).year();
+  const ctx = opts.ctx || await loadPayrollContext(companyId);
+  const summary = attendanceSummary || {};
+  let leaveAvailable = 0;
+  if (!opts.published && ctx.leaveFirst && (Number(summary.absent || 0) > 0 || Number(summary.halfDay || 0) > 0) && employee?.id) {
+    leaveAvailable = await availableLeaveDays(employee.id, year, companyId);
+  }
+  return computePayslip(ctx, {
+    employee,
+    summary,
+    records: opts.records || [],
+    month,
+    year,
+    leaveAvailable,
+    published: Boolean(opts.published),
+    previousConfig: opts.previousConfig || null,
+  });
 };
 
 /**
@@ -339,6 +571,353 @@ const previewEmployeeSalary = async (employeeId) => {
     net: calc.net_salary,
     earnings: calc.breakdown_json?.earnings || [],
   };
+};
+
+// ── Per-employee payroll setup (Employee → Payroll → Payroll setup) ───────
+
+const PF_STATUTORY_BASIC = 15000;
+const MAX_FIXED_TDS = 10000000;
+
+const customDeductionOptions = (payrollConfig) => (Array.isArray(payrollConfig?.custom_payroll_options)
+  ? payrollConfig.custom_payroll_options
+  : []
+).filter((o) => o && o.active !== false && String(o.name || '').trim()
+  && !['allowance', 'earning'].includes(String(o.kind || o.type || 'deduction').toLowerCase()));
+
+const tdsLabel = (mode, fixed) => {
+  if (mode === 'none') return 'None';
+  if (mode === 'fixed') return `Fixed ₹${Number(fixed || 0).toLocaleString('en-IN')}`;
+  return 'Company rate';
+};
+
+/** Human-readable state of every switch, keyed for comparing before/after. */
+const describeSetup = (setup, options) => {
+  const rows = [
+    { key: 'pf', label: 'PF', value: setup.pf ? 'Deducted' : 'Not deducted' },
+    { key: 'esi', label: 'ESI', value: setup.esi ? 'Deducted' : 'Not deducted' },
+    { key: 'pt', label: 'Professional Tax', value: setup.pt ? 'Deducted' : 'Not deducted' },
+    { key: 'tds', label: 'TDS', value: tdsLabel(setup.tdsMode, setup.tdsFixed) },
+  ];
+  const optedOut = new Set(setup.optouts);
+  for (const opt of options) {
+    rows.push({
+      key: `opt:${optionKey(opt)}`,
+      label: String(opt.name).trim(),
+      value: optedOut.has(optionKey(opt)) || optedOut.has(String(opt.name).trim().toLowerCase()) ? 'Not deducted' : 'Deducted',
+    });
+  }
+  return rows;
+};
+
+/** Legal reminders shown next to a switch that is off — warnings, never blocks. */
+const setupWarnings = (setup, { basic, contractGross, esiThreshold }) => {
+  const w = [];
+  if (!setup.pf && basic <= PF_STATUTORY_BASIC) {
+    w.push({ key: 'pf', message: `PF is compulsory when Basic is ₹${PF_STATUTORY_BASIC.toLocaleString('en-IN')} or less (Basic here is ₹${Math.round(basic).toLocaleString('en-IN')}), if your company is registered with EPF.` });
+  }
+  if (!setup.esi && contractGross <= esiThreshold) {
+    w.push({ key: 'esi', message: `ESI is compulsory when monthly gross is ₹${Math.round(esiThreshold).toLocaleString('en-IN')} or less (gross here is ₹${Math.round(contractGross).toLocaleString('en-IN')}), if your company is covered by ESIC.` });
+  }
+  if (!setup.pt) {
+    w.push({ key: 'pt', message: 'Professional Tax is set by state law — switch it off only where the state exempts this employee.' });
+  }
+  if (setup.tdsMode === 'none') {
+    w.push({ key: 'tds', message: 'No TDS will be deducted. Make sure the employee\'s tax declarations support this.' });
+  }
+  return w;
+};
+
+const loadEmployeeForPayroll = async (employeeId) => {
+  const { data: employee, error } = await supabaseAdmin
+    .from('employees').select(PAYSLIP_EMPLOYEE_SELECT).eq('id', employeeId).maybeSingle();
+  if (error) throw new BadRequestError(error.message);
+  if (!employee) throw new NotFoundError('Employee not found');
+  return employee;
+};
+
+const getPayrollSetup = async (employeeId) => {
+  const employee = await loadEmployeeForPayroll(employeeId);
+  const { getCompanyId } = require('../utils/tenant');
+  const ctx = await loadPayrollContext(getCompanyId(employee));
+  const setup = resolvePayrollSetup(employee.salary_details);
+  const preview = computePayslip(ctx, { employee, summary: {}, records: [] });
+  const cfg = preview.breakdown_json.config;
+  const options = customDeductionOptions(ctx.payrollConfig);
+  const amountOf = (name) => preview.breakdown_json.deductions.find((d) => d.name === name)?.amount ?? null;
+  const optedOut = new Set(setup.optouts);
+  const sd = employee.salary_details || {};
+  return {
+    employeeId,
+    pf: setup.pf,
+    esi: setup.esi,
+    esiChosen: sd.esi_set === true,
+    pt: setup.pt,
+    tdsMode: setup.tdsMode,
+    tdsFixed: setup.tdsFixed,
+    customDeductions: options.map((o) => ({
+      key: optionKey(o),
+      name: String(o.name).trim(),
+      optedOut: optedOut.has(optionKey(o)) || optedOut.has(String(o.name).trim().toLowerCase()),
+      amount: amountOf(String(o.name).trim()),
+      valueType: String(o.value_type || o.valueType || 'fixed').toLowerCase(),
+      value: Number(o.value || 0),
+    })),
+    facts: {
+      basic: preview.basic_salary,
+      gross: cfg.contract_gross,
+      esiThreshold: ctx.esiThreshold,
+      esiEligible: cfg.esi_eligible,
+      pfStatutoryBasic: PF_STATUTORY_BASIC,
+    },
+    amounts: {
+      pf: amountOf('PF'), esi: amountOf('ESI'), pt: amountOf('Professional Tax'), tds: amountOf('TDS'),
+    },
+    preview: { gross: preview.gross_salary, net: preview.net_salary, totalDeductions: preview.breakdown_json.totals.total_deductions },
+    warnings: setupWarnings(setup, { basic: preview.basic_salary, contractGross: cfg.contract_gross, esiThreshold: ctx.esiThreshold }),
+    updatedAt: sd.payroll_setup_updated_at || null,
+  };
+};
+
+/**
+ * Tell the company's admins that one employee's deductions changed, with old
+ * and new, and audit it. Used by the Payroll setup card and by Edit Employee
+ * (which still has the PF / PT / TDS controls). Returns the changes.
+ */
+const notifyPayrollSetupChange = async ({ employee, beforeSalary, afterSalary, actor, ipAddress = null, payrollConfig = null }) => {
+  const { getCompanyId } = require('../utils/tenant');
+  const companyId = getCompanyId(employee);
+  const cfg = payrollConfig || (await settingsService.getSetting('payroll_config', null, companyId)) || {};
+  const options = customDeductionOptions(cfg);
+  const beforeRows = describeSetup(resolvePayrollSetup(beforeSalary), options);
+  const afterRows = describeSetup(resolvePayrollSetup(afterSalary), options);
+  const changeList = afterRows
+    .map((r) => ({ label: r.label, from: beforeRows.find((b) => b.key === r.key)?.value, to: r.value }))
+    .filter((r) => r.from !== r.to);
+  if (!changeList.length) return [];
+
+  require('./auditLog.service').logAudit({
+    companyId,
+    actorId: actor?.id || null,
+    actorRole: actor?.role || null,
+    actionType: 'payroll_setup.update',
+    targetType: 'employee',
+    targetId: employee.id,
+    beforeState: Object.fromEntries(changeList.map((c) => [c.label, c.from])),
+    afterState: Object.fromEntries(changeList.map((c) => [c.label, c.to])),
+    ipAddress,
+  }).catch(() => {});
+
+  const { runInBackground } = require('../utils/background');
+  const { getAdminEmailRecipients } = require('./emailRecipients.service');
+  const admins = await getAdminEmailRecipients(companyId).catch(() => []);
+  const changedByName = `${actor?.first_name || ''} ${actor?.last_name || ''}`.trim() || 'HR';
+  for (const admin of admins) {
+    runInBackground('payroll setup change admin email', () => emailService.payrollSetupChangedAdminEmail(admin, employee, changeList, { changedByName }));
+  }
+  changeList.emailedAdmins = admins.length;
+  return changeList;
+};
+
+/**
+ * HR/Admin change one employee's payroll setup. Every change is audited and
+ * emailed to the company's admins with the old and new setting. Their open
+ * draft payslips are recalculated in the background.
+ */
+const updatePayrollSetup = async ({ employeeId, changes = {}, actor, ipAddress = null }) => {
+  const employee = await loadEmployeeForPayroll(employeeId);
+  const { getCompanyId } = require('../utils/tenant');
+  const companyId = getCompanyId(employee);
+  const ctx = await loadPayrollContext(companyId);
+  const options = customDeductionOptions(ctx.payrollConfig);
+  const before = resolvePayrollSetup(employee.salary_details);
+  const next = { ...before, optouts: [...before.optouts] };
+
+  const bool = (v, label) => {
+    if (typeof v !== 'boolean') throw new BadRequestError(`${label} must be on or off`);
+    return v;
+  };
+  if (changes.pf !== undefined) next.pf = bool(changes.pf, 'PF');
+  if (changes.esi !== undefined) next.esi = bool(changes.esi, 'ESI');
+  if (changes.pt !== undefined) next.pt = bool(changes.pt, 'Professional Tax');
+  if (changes.tdsMode !== undefined) {
+    if (!['company', 'fixed', 'none'].includes(changes.tdsMode)) throw new BadRequestError('TDS must be company rate, fixed or none');
+    next.tdsMode = changes.tdsMode;
+  }
+  if (changes.tdsFixed !== undefined) {
+    const n = Number(changes.tdsFixed);
+    if (!Number.isFinite(n) || n < 0 || n > MAX_FIXED_TDS) throw new BadRequestError('Enter a fixed TDS amount between ₹0 and ₹1,00,00,000');
+    next.tdsFixed = round2(n);
+  }
+  if (next.tdsMode === 'fixed' && !(next.tdsFixed > 0)) throw new BadRequestError('Enter the fixed monthly TDS amount');
+  if (changes.optouts !== undefined) {
+    if (!Array.isArray(changes.optouts)) throw new BadRequestError('optouts must be a list');
+    const known = new Map(options.map((o) => [optionKey(o), o]));
+    for (const k of changes.optouts) {
+      if (!known.has(String(k))) throw new BadRequestError('Unknown deduction in opt-outs — reload and try again');
+    }
+    // Keep opt-outs for options that are switched off company-wide right now.
+    const inactive = before.optouts.filter((k) => !known.has(k));
+    next.optouts = [...new Set([...inactive, ...changes.optouts.map(String)])];
+  }
+
+  const beforeRows = describeSetup(before, options);
+  const afterRows = describeSetup(next, options);
+  const diff = afterRows
+    .map((r) => ({ ...r, from: beforeRows.find((b) => b.key === r.key)?.value }))
+    .filter((r) => r.from !== r.value);
+  const esiNewlyChosen = changes.esi !== undefined && employee.salary_details?.esi_set !== true;
+  if (!diff.length && !esiNewlyChosen) return { changes: [], setup: await getPayrollSetup(employeeId), notified: false };
+
+  const nowIso = new Date().toISOString();
+  const salaryDetails = {
+    ...(employee.salary_details || {}),
+    pf_applicable: next.pf,
+    pt_applicable: next.pt,
+    esi_applicable: next.esi,
+    ...(changes.esi !== undefined ? { esi_set: true } : {}),
+    tds_mode: next.tdsMode,
+    tds_fixed: next.tdsFixed,
+    deduction_optouts: next.optouts,
+    payroll_setup_updated_at: nowIso,
+    payroll_setup_updated_by: actor?.id || null,
+  };
+  const { error } = await supabaseAdmin.from('employees')
+    .update({ salary_details: salaryDetails, updated_at: nowIso }).eq('id', employeeId);
+  if (error) throw new BadRequestError(error.message);
+
+  const changeList = await notifyPayrollSetupChange({
+    employee, beforeSalary: employee.salary_details, afterSalary: salaryDetails, actor, ipAddress, payrollConfig: ctx.payrollConfig,
+  });
+  const emailedAdmins = changeList.emailedAdmins || 0;
+  const { runInBackground } = require('../utils/background');
+  // Their open payslips follow the new setup.
+  runInBackground('payroll setup recalculation', () => recalculatePayslipsFromSettings({ employeeId, companyId, draftsOnly: true }));
+
+  return { changes: [...changeList], setup: await getPayrollSetup(employeeId), notified: emailedAdmins > 0, emailedAdmins };
+};
+
+// ── Pay rules & weekly offs (Settings → Payroll) ────────────────────────────
+
+/** Saves the company's pay rules. Comp-off overtime needs a Comp Off leave type, so it is switched on if needed. */
+const savePayrollRules = async (companyId, rawRules, actor) => {
+  const { normalizePayrollRules } = require('../utils/payrollRules');
+  const rules = normalizePayrollRules(rawRules);
+  const { error } = await settingsService.setSetting('payroll_rules', rules, actor?.id || null, companyId);
+  if (error) throw new BadRequestError(error.message);
+  let compOffEnabled = false;
+  if (rules.overtime.mode === 'comp_off') {
+    const policy = await settingsService.getSetting('leave_policy', null, companyId);
+    if (Array.isArray(policy) && policy.length) {
+      const idx = policy.findIndex((p) => p?.code === COMP_OFF_TYPE);
+      if (idx === -1 || policy[idx].active === false) {
+        const nextPolicy = idx === -1
+          ? [...policy, { code: COMP_OFF_TYPE, name: 'Comp Off', allocation: 0, active: true }]
+          : policy.map((p, i) => (i === idx ? { ...p, active: true } : p));
+        await settingsService.setSetting('leave_policy', nextPolicy, actor?.id || null, companyId);
+        compOffEnabled = true;
+      }
+    }
+  }
+  // "Use casual leave first" lives in the leave policy (Settings → Leave
+  // Policy shows the same switch). Merged in, never replacing the rest of it.
+  let leaveFirst;
+  if (typeof rawRules?.leaveFirst === 'boolean') {
+    const meta = (await settingsService.getSetting('leave_policy_meta', null, companyId)) || {};
+    const next = { ...meta, auto_deduct: rawRules.leaveFirst };
+    delete next.autoDeduct;
+    const { error: metaErr } = await settingsService.setSetting('leave_policy_meta', next, actor?.id || null, companyId);
+    if (metaErr) throw new BadRequestError(metaErr.message);
+    leaveFirst = rawRules.leaveFirst;
+  }
+  return { rules, compOffEnabled, leaveFirst };
+};
+
+// ── Pay simulator ───────────────────────────────────────────────────────────
+
+const SIM_LIMITS = { absent: 31, halfDays: 31, lates: 31, overtimeHours: 300, overtimeDays: 31, notJoined: 31 };
+const simNum = (v, max) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.min(max, Math.max(0, n)) : 0;
+};
+
+/**
+ * What a month's pay would be — for one real employee or a sample salary —
+ * under the settings on screen, saved or not. Uses the same calculation as
+ * real payslips; nothing is stored.
+ */
+const simulatePay = async (companyId, body = {}) => {
+  const { normalizePayrollRules } = require('../utils/payrollRules');
+  const { normalizeWorkWeek, countWorkingDays } = require('../utils/workWeek');
+  const ctx = { ...(await loadPayrollContext(companyId)) };
+  const o = body.overrides && typeof body.overrides === 'object' ? body.overrides : {};
+  if (o.rules) ctx.rules = normalizePayrollRules(o.rules);
+  if (o.workWeek) ctx.workWeek = normalizeWorkWeek(o.workWeek);
+  if (typeof o.leaveFirst === 'boolean') ctx.leaveFirst = o.leaveFirst;
+  const pctOverride = (v, max) => (v === undefined || v === null || v === '' || !Number.isFinite(Number(v)) ? undefined : Math.min(max, Math.max(0, Number(v))));
+  const pf = pctOverride(o.pfPercent, 100);
+  if (pf !== undefined) ctx.pfRate = pf / 100;
+  const tds = pctOverride(o.tdsPercent, 100);
+  if (tds !== undefined) ctx.tdsPercent = tds;
+  const esi = pctOverride(o.esiPercent, 100);
+  if (esi !== undefined) ctx.esiEmployeePercent = esi;
+  const esiThr = pctOverride(o.esiThreshold, 10000000);
+  if (esiThr !== undefined) ctx.esiThreshold = esiThr;
+  const pt = pctOverride(o.ptAmount, 100000);
+  if (pt !== undefined) ctx.ptFlatAmount = pt;
+  if (typeof o.ptState === 'string') ctx.ptState = o.ptState.trim();
+  if (o.pfWageCeiling === null || o.pfWageCeiling === '') ctx.pfWageCeiling = null;
+  else if (o.pfWageCeiling !== undefined) ctx.pfWageCeiling = pctOverride(o.pfWageCeiling, 10000000) ?? ctx.pfWageCeiling;
+  const fixedDays = pctOverride(o.workingDaysSetting, 31);
+  if (fixedDays) ctx.workingDaysSetting = Math.max(1, fixedDays);
+  if (Array.isArray(o.customOptions)) {
+    ctx.payrollConfig = {
+      ...ctx.payrollConfig,
+      custom_payroll_options: o.customOptions.slice(0, 50).map((c) => ({
+        id: c.id, name: String(c.name || '').slice(0, 80), kind: c.kind, value_type: c.valueType || c.value_type,
+        value: Number(c.value) || 0, base: c.base, active: c.active !== false,
+      })),
+    };
+  }
+
+  // Whose pay: a real employee (their salary and setup), or a sample salary.
+  let employee;
+  if (body.employeeId) {
+    employee = await loadEmployeeForPayroll(body.employeeId);
+  } else {
+    const gross = simNum(body.gross ?? 30000, 10000000);
+    const basic = round2(gross * 0.5);
+    const hra = round2(basic * 0.4);
+    employee = { id: null, gender: null, salary_details: { basic, hra, special: round2(gross - basic - hra) } };
+  }
+
+  const now = moment.tz(TIMEZONE);
+  const month = Number(body.month) >= 1 && Number(body.month) <= 12 ? Number(body.month) : now.month() + 1;
+  const year = Number(body.year) >= 2000 && Number(body.year) <= 2100 ? Number(body.year) : now.year();
+  const sc = body.scenario && typeof body.scenario === 'object' ? body.scenario : {};
+  const absent = simNum(sc.absent, SIM_LIMITS.absent);
+  const halfDays = simNum(sc.halfDays, SIM_LIMITS.halfDays);
+  const lates = simNum(sc.lates, SIM_LIMITS.lates);
+  const otHours = simNum(sc.overtimeHours, SIM_LIMITS.overtimeHours);
+  const otDays = Math.max(otHours > 0 ? 1 : 0, Math.round(simNum(sc.overtimeDays ?? Math.ceil(otHours / 2), SIM_LIMITS.overtimeDays)));
+  const monthStart = moment.tz({ year, month: month - 1, day: 1 }, TIMEZONE);
+  const workingDays = countWorkingDays(monthStart, monthStart.clone().endOf('month'), ctx.workWeek);
+  const fakeDates = (n) => Array.from({ length: Math.floor(n) }, (_, i) => monthStart.clone().add(i, 'days').format('YYYY-MM-DD'));
+  const summary = {
+    workingDays,
+    absent: Math.floor(absent),
+    halfDay: Math.floor(halfDays),
+    late: Math.floor(lates),
+    notJoined: 0,
+    absentDates: fakeDates(absent),
+    halfDayDates: fakeDates(halfDays),
+    expectedHours: 9,
+  };
+  const records = otDays > 0
+    ? Array.from({ length: otDays }, () => ({ overtime_hours: round2(otHours / otDays), check_out_time: 'x', checkout_status: 'finalized' }))
+    : [];
+  const leaveAvailable = sc.leaveBalance != null ? simNum(sc.leaveBalance, 366) : 12;
+  const result = computePayslip(ctx, { employee, summary, records, month, year, leaveAvailable });
+  return { ...result, month, year, workingDays, sample: !body.employeeId };
 };
 
 const computeRule = (vars, component) => {
@@ -414,86 +993,6 @@ const enrichPayslipBreakdown = async (employee, calc, month, year) => {
   return calc;
 };
 
-/**
- * Dynamic payroll engine
- * - Rules are managed by Admin in Settings → Salary Structure (payroll_components table)
- * - Generated breakdown is persisted in payroll.breakdown_json for frontend + PDF rendering
- */
-const calculateDynamicPayslip = async (employee, attendanceSummary) => {
-  const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
-  const companyId = getCompanyId(employee) || DEFAULT_COMPANY_ID;
-  const salary = employee.salary_details || {};
-
-  const presentDays = (attendanceSummary?.present || 0) + (attendanceSummary?.halfDay || 0) * 0.5;
-  const unpaid_leave_days = Math.max(0, WORKING_DAYS_PER_MONTH - presentDays);
-
-  const vars = {
-    // base variables from employee profile
-    employee_basic: Number(salary.basic || 0),
-    employee_hra: Number(salary.hra || 0),
-    unpaid_leave_days,
-    working_days: WORKING_DAYS_PER_MONTH,
-  };
-
-  // Defensive company filter — this path has no live caller today, but without
-  // it a future caller would leak every tenant's salary-structure components.
-  const { data: components, error } = await supabaseAdmin
-    .from('payroll_components')
-    .select('*')
-    .eq('is_active', true)
-    .eq('company_id', companyId)
-    .order('display_order', { ascending: true });
-  if (error) throw new BadRequestError(error.message);
-
-  if (!components || !components.length) {
-    throw new BadRequestError('No payroll components configured. Please add salary structure in Settings.');
-  }
-
-  const earnings = [];
-  const deductions = [];
-
-  // Admin defines everything. We compute in display_order sequence and allow chaining via output_field.
-  for (const c of components || []) {
-    const amount = computeRule(vars, c);
-    const row = { name: c.name, amount, display_order: c.display_order, output_field: c.output_field || null };
-
-    if (c.type === 'EARNING') earnings.push(row);
-    else deductions.push(row);
-
-    // Allow explicit chaining: store output in vars for downstream rules
-    if (c.output_field) {
-      vars[String(c.output_field)] = amount;
-    }
-
-    // Also maintain gross salary automatically from earnings
-    if (c.type === 'EARNING') {
-      vars.gross_salary = Number(vars.gross_salary || 0) + amount;
-    }
-  }
-
-  vars.gross_salary = Number(vars.gross_salary || 0);
-
-  const gross_salary = round2(vars.gross_salary);
-  const total_deductions = round2(deductions.reduce((s, d) => s + Number(d.amount || 0), 0));
-  const net_pay = round2(Math.max(0, gross_salary - total_deductions));
-
-  const breakdown_json = {
-    earnings: earnings.map((e) => ({ name: e.name, amount: e.amount })),
-    deductions: deductions.map((d) => ({ name: d.name, amount: d.amount })),
-    totals: { gross_salary, total_deductions, net_pay },
-  };
-
-  return {
-    basic_salary: round2(vars.basic_salary ?? vars.employee_basic ?? 0),
-    hra: round2(vars.hra ?? vars.employee_hra ?? 0),
-    gross_salary,
-    unpaid_leave_days: round2(unpaid_leave_days),
-    total_deductions,
-    net_salary: net_pay,
-    breakdown_json,
-  };
-};
-
 const mapPayslipRow = (row) => ({
   id: row.id,
   payroll_month_id: row.payroll_month_id,
@@ -566,7 +1065,7 @@ const getMonthStatus = async (month, year, companyId = null) => {
   return data || null;
 };
 
-const generateDraftPayslip = async (payrollMonthId, userId, companyId = null) => {
+const generateDraftPayslip = async (payrollMonthId, userId, companyId = null, opts = {}) => {
   const { data: payrollMonth } = await supabaseAdmin
     .from('payroll_months')
     .select('*')
@@ -613,10 +1112,10 @@ const generateDraftPayslip = async (payrollMonthId, userId, companyId = null) =>
       throw new ConflictError('Payslip already published for this employee and month');
     }
 
-    const { summary } = await attendanceService.getMonthlySummary(userId, payrollMonth.month, payrollMonth.year);
+    const { summary, records } = await attendanceService.getMonthlySummary(userId, payrollMonth.month, payrollMonth.year);
     const calc = await enrichPayslipBreakdown(
       employee,
-      await calculateContractPayslip(employee, summary, payrollMonth.month),
+      await calculateContractPayslip(employee, summary, payrollMonth.month, { year: payrollMonth.year, records, ctx: opts.ctx }),
       payrollMonth.month,
       payrollMonth.year,
     );
@@ -636,10 +1135,10 @@ const generateDraftPayslip = async (payrollMonthId, userId, companyId = null) =>
     return mapPayslipRow(updated);
   }
 
-  const { summary } = await attendanceService.getMonthlySummary(userId, payrollMonth.month, payrollMonth.year);
+  const { summary, records } = await attendanceService.getMonthlySummary(userId, payrollMonth.month, payrollMonth.year);
   const calc = await enrichPayslipBreakdown(
     employee,
-    await calculateContractPayslip(employee, summary, payrollMonth.month),
+    await calculateContractPayslip(employee, summary, payrollMonth.month, { year: payrollMonth.year, records, ctx: opts.ctx }),
     payrollMonth.month,
     payrollMonth.year,
   );
@@ -674,9 +1173,11 @@ const generateAllDraftPayslips = async (payrollMonthId, companyId = null) => {
   const employees = ids.map((id) => ({ id }));
 
   const results = [];
+  const ctx = await loadPayrollContext(companyId);
   for (const emp of employees) {
     try {
-      const payslip = await generateDraftPayslip(payrollMonthId, emp.id, companyId);
+      // eslint-disable-next-line no-await-in-loop
+      const payslip = await generateDraftPayslip(payrollMonthId, emp.id, companyId, { ctx });
       results.push({ user_id: emp.id, status: 'generated', payslip });
     } catch (err) {
       results.push({ user_id: emp.id, status: 'skipped', reason: err.message });
@@ -714,6 +1215,99 @@ const maybeCloseMonth = async (payrollMonthId) => {
       .from('payroll_months')
       .update({ status: MONTH_STATUS.COMPLETED })
       .eq('id', payrollMonthId);
+  }
+};
+
+/**
+ * What publishing a payslip does beyond the payslip itself, applied once —
+ * the draft→published update is atomic, so a second publish never gets here:
+ *  - "Use casual leave first": the absences the draft covered become
+ *    approved Casual Leave (one record per day, marked as payroll's) and the
+ *    leave balance is charged. From then on those days are leave, not
+ *    absences, so recalculating the slip can't cover them twice.
+ *  - Overtime as comp-off: the earned days are added to the employee's
+ *    Comp Off balance for the year.
+ * Returns the updated breakdown config (with applied flags) to store.
+ */
+const applyPublishEffects = async (payslip, publisher) => {
+  const config = { ...(payslip.breakdown_json?.config || {}) };
+  const monthLabel = moment.tz({ year: payslip.year, month: payslip.month - 1 }, TIMEZONE).format('MMMM YYYY');
+  const nowIso = new Date().toISOString();
+  const { getCompanyId } = require('../utils/tenant');
+  const companyId = getCompanyId(payslip.employee) || publisher.company_id;
+
+  const cover = config.leave_cover;
+  if (cover && !cover.applied && Number(cover.days) > 0) {
+    const rows = [
+      ...(cover.absentDates || []).map((d) => ({ date: d, half: false })),
+      ...(cover.halfDayDates || []).map((d) => ({ date: d, half: true })),
+    ].map(({ date, half }) => ({
+      employee_id: payslip.employee_id,
+      company_id: companyId,
+      leave_type: cover.type || LEAVE_FIRST_TYPE,
+      from_date: date,
+      to_date: date,
+      total_days: half ? 0.5 : 1,
+      is_half_day: half,
+      reason: `Unplanned ${half ? 'half-day ' : ''}absence covered by casual leave (${monthLabel} payroll)`,
+      status: 'approved',
+      approved_by: publisher.id,
+      approved_at: nowIso,
+    }));
+    try {
+      const { error } = await supabaseAdmin.from('leaves').insert(rows);
+      if (error) throw new Error(error.message);
+      await require('./leave.service').adjustLeaveBalanceUsed(
+        payslip.employee_id, `${payslip.year}-01-01`, cover.type || LEAVE_FIRST_TYPE, Number(cover.days),
+      );
+      config.leave_cover = { ...cover, applied: true, applied_at: nowIso };
+    } catch (err) {
+      logger.error('Payslip published but casual leave could not be recorded', { payslipId: payslip.id, error: err.message });
+      config.leave_cover = { ...cover, applied: false, apply_error: err.message };
+    }
+  }
+
+  const ot = config.overtime;
+  if (ot && ot.mode === 'comp_off' && Number(ot.comp_off_days) > 0 && ot.comp_off_credited == null) {
+    try {
+      await creditCompOff(payslip.employee_id, payslip.year, Number(ot.comp_off_days), publisher);
+      config.overtime = { ...ot, comp_off_credited: Number(ot.comp_off_days), comp_off_credited_at: nowIso };
+    } catch (err) {
+      logger.error('Payslip published but comp-off could not be credited', { payslipId: payslip.id, error: err.message });
+      config.overtime = { ...ot, comp_off_error: err.message };
+    }
+  }
+  return config;
+};
+
+const COMP_OFF_TYPE = 'COMP_OFF';
+/** Adds earned comp-off days to the employee's Comp Off balance for the year. */
+const creditCompOff = async (employeeId, year, days, actor) => {
+  const { data: row, error } = await supabaseAdmin
+    .from('leave_balances')
+    .select('id, total_allocated')
+    .eq('employee_id', employeeId)
+    .eq('year', year)
+    .eq('leave_type', COMP_OFF_TYPE)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  // allocation_override keeps the credit: balances not set individually are
+  // reset to the leave policy's allocation (0 for Comp Off) on every read.
+  const patch = {
+    allocation_override: true,
+    allocation_updated_at: new Date().toISOString(),
+    allocation_updated_by: actor?.id || null,
+  };
+  if (row) {
+    const { error: e } = await supabaseAdmin.from('leave_balances')
+      .update({ total_allocated: round2(Number(row.total_allocated || 0) + days), ...patch })
+      .eq('id', row.id);
+    if (e) throw new Error(e.message);
+  } else {
+    const { error: e } = await supabaseAdmin.from('leave_balances').insert({
+      employee_id: employeeId, year, leave_type: COMP_OFF_TYPE, total_allocated: days, used: 0, encashed: 0, ...patch,
+    });
+    if (e) throw new Error(e.message);
   }
 };
 
@@ -793,6 +1387,19 @@ const publishPayslip = async (payslipId, publisher) => {
     payslip.payroll_month_id = payrollMonth.id;
   }
 
+  // The draft planned to cover some absences with casual leave. If the
+  // balance has dropped since (leave taken in between), the draft's numbers
+  // are out of date — regenerate it rather than publish pay the balance
+  // can't back.
+  const plannedCover = payslip.breakdown_json?.config?.leave_cover;
+  if (plannedCover && !plannedCover.applied && Number(plannedCover.days) > 0) {
+    const { getCompanyId } = require('../utils/tenant');
+    const available = await availableLeaveDays(payslip.employee_id, payslip.year, getCompanyId(payslip.employee) || publisher.company_id);
+    if (available < Number(plannedCover.days)) {
+      throw new ConflictError(`This draft covers ${plannedCover.days} day(s) of absence with casual leave, but only ${available} day(s) are left now. Regenerate the draft, then publish.`);
+    }
+  }
+
   const pdfBuffer = await generatePayslipPdf(payslip.employee, payslip, payrollMonth, publisher.company_id);
   const { path } = await uploadPayslip(pdfBuffer, payslip.employee_id, payslip.month, payslip.year);
   // Audit finding N-09: was a 1-year TTL — this URL is a bearer credential
@@ -842,6 +1449,15 @@ const publishPayslip = async (payslipId, publisher) => {
 
   if (error) throw new BadRequestError(error.message);
   if (!updated) throw new ConflictError('Payslip is already published');
+
+  const appliedConfig = await applyPublishEffects(payslip, publisher);
+  if (appliedConfig !== payslip.breakdown_json?.config) {
+    const { error: cfgErr } = await supabaseAdmin
+      .from('payroll')
+      .update({ breakdown_json: { ...(payslip.breakdown_json || {}), config: appliedConfig } })
+      .eq('id', payslipId);
+    if (cfgErr) logger.error('Could not record what publishing applied', { payslipId, error: cfgErr.message });
+  }
 
   await maybeCloseMonth(payslip.payroll_month_id);
   logger.info('Payslip published', { payslipId, publisherId: publisher.id });
@@ -933,7 +1549,7 @@ const listPayslips = async ({
  * Published slips keep PUBLISHED status; PDF is regenerated when present.
  */
 const recalculatePayslipsFromSettings = async ({
-  month, year, employeeId, companyId,
+  month, year, employeeId, companyId, draftsOnly = false,
 } = {}) => {
   const now = moment.tz(TIMEZONE);
   const focusMonth = Number(month) || now.month() + 1;
@@ -966,6 +1582,7 @@ const recalculatePayslipsFromSettings = async ({
       .select(`*, employee:employee_id(${PAYSLIP_EMPLOYEE_SELECT})`)
       .eq('month', t.month)
       .eq('year', t.year);
+    if (draftsOnly) query = query.neq('payslip_status', PAYSLIP_STATUS.PUBLISHED);
     if (employeeId) query = query.eq('employee_id', employeeId);
     else if (companyEmployeeIds) {
       query = query.in(
@@ -980,6 +1597,7 @@ const recalculatePayslipsFromSettings = async ({
 
     if (error) throw new BadRequestError(error.message);
 
+    const ctxByCompany = new Map();
     // Four at a time rather than one by one: each slip is ~10 database round
     // trips, and in series a company's open month took minutes.
     const { forEachWithLimit } = require('../utils/concurrency');
@@ -991,18 +1609,29 @@ const recalculatePayslipsFromSettings = async ({
           return;
         }
 
-        const { summary } = await attendanceService.getMonthlySummary(
+        const { summary, records } = await attendanceService.getMonthlySummary(
           row.employee_id,
           row.month,
           row.year
         );
+        const wasPublished = String(row.payslip_status || '').toUpperCase() === PAYSLIP_STATUS.PUBLISHED;
+        const { getCompanyId: companyOf } = require('../utils/tenant');
+        const cid = companyOf(employee);
+        if (!ctxByCompany.has(cid)) ctxByCompany.set(cid, loadPayrollContext(cid));
         const calc = await enrichPayslipBreakdown(
           employee,
-          await calculateContractPayslip(employee, summary, row.month),
+          await calculateContractPayslip(employee, summary, row.month, {
+            year: row.year,
+            records,
+            ctx: await ctxByCompany.get(cid),
+            // A published slip keeps what publishing did (leave taken,
+            // comp-off credited) — only a draft plans them afresh.
+            published: wasPublished,
+            previousConfig: row.breakdown_json?.config || null,
+          }),
           row.month,
           row.year,
         );
-        const wasPublished = String(row.payslip_status || '').toUpperCase() === PAYSLIP_STATUS.PUBLISHED;
 
         const patch = {
           ...calc,
@@ -1242,8 +1871,17 @@ const processAutoPayroll = async (reason = 'cron') => {
 };
 
 module.exports = {
-  calculateDynamicPayslip,
   calculateContractPayslip,
+  getPayrollSetup,
+  updatePayrollSetup,
+  notifyPayrollSetupChange,
+  savePayrollRules,
+  simulatePay,
+  computePayslip,
+  loadPayrollContext,
+  resolvePayrollSetup,
+  planLeaveCover,
+  eligibleOvertimeHours,
   initializeMonth,
   getMonthStatus,
   generateDraftPayslip,

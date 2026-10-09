@@ -5,7 +5,7 @@ import { useTeamAttendance, useTeamMembers } from '../../hooks/useAttendance';
 import { useEmployees } from '../../hooks/useEmployees';
 import { useAuthStore } from '../../store/authStore';
 import { ExportButton } from '../../components/shared/ExportButton';
-import { formatDate, cn } from '../../lib/utils';
+import { formatDate, cn, formatHours as formatHoursMinutes } from '../../lib/utils';
 
 /**
  * Present is the total who turned up, and WFO + WFH split it — so
@@ -38,11 +38,7 @@ const ALL_COLUMNS = [
 
 const STORAGE_KEY = 'attendance_visible_columns';
 
-function formatHours(h) {
- const n = Number(h);
- if (!Number.isFinite(n) || n <= 0) return '—';
- return `${n.toFixed(2)}h`;
-}
+const formatHours = (h) => formatHoursMinutes(h, { empty: '—' });
 
 function ipCell(value) {
  return value ? <span className="font-mono text-xs text-fg">{value}</span> : <span className="text-fg-subtle">—</span>;

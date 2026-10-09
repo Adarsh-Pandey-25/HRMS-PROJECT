@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { normalizePayRules, normalizeWorkWeek } from '../lib/payRules';
 import { useQuery } from '@tanstack/react-query';
 import { useAuthStore } from '../store/authStore';
 import { useSettingsStore } from '../store/settingsStore';
@@ -174,6 +175,14 @@ export function useSettingsBootstrap() {
           active: o.active !== false,
         }));
       }
+    }
+
+    // Pay rules, weekly offs and the early-leave rule (Settings → Payroll).
+    if (map.payroll_rules && typeof map.payroll_rules === 'object') patch.rules = normalizePayRules(map.payroll_rules);
+    if (map.work_week && typeof map.work_week === 'object') patch.workWeek = normalizeWorkWeek(map.work_week);
+    if (map.payroll_halfday_before_goal_enabled != null) {
+      const v = map.payroll_halfday_before_goal_enabled;
+      patch.halfDayBeforeGoal = v === true || v === 'true' || v === 1 || v === '1';
     }
 
     if (Object.keys(patch).length) updatePayrollConfig(patch);

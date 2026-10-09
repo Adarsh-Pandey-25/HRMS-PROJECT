@@ -170,33 +170,94 @@ const calculateWorkingHours = (checkIn, checkOut) => {
 };
 
 /**
+ * How far before a shift's start its attendance day begins. A punch up to
+ * this many hours early is an early arrival for that shift; before it, the
+ * punch is the tail of the previous day (a late check-out, or the end of an
+ * overnight shift).
+ *
+ * The day used to begin exactly at shift start, so anyone arriving even a
+ * minute early — a 09:13 punch for a 09:30 shift — was filed under the
+ * previous day: it became yesterday's check-out (a "22h 37m" day) and today
+ * started from their evening punch, or showed as absent.
+ */
+const SHIFT_WINDOW_LEAD_HOURS = 6;
+
+const parseHm = (hm, fallbackHour = 9, fallbackMinute = 30) => {
+ const [h, m] = String(hm || '').split(':').map(Number);
+ return {
+  hour: Number.isFinite(h) ? h : fallbackHour,
+  minute: Number.isFinite(m) ? m : fallbackMinute,
+ };
+};
+
+/**
  * standardStartTime is "HH:mm" — the employee's assigned shift start, or the default 09:30.
- * Returns the 24h window — starting at the shift's OWN start time, not midnight — that
- * contains `referenceMoment`. This handles every shift timing the same way, including ones
- * that cross midnight: a 22:00-07:00 shift's window starts *today* for a 22:15 reference
- * time, but *yesterday* for a 00:10 reference time (the tail end of the same overnight
- * shift), instead of wrongly comparing against a "22:00 today" that hasn't happened yet.
+ * Returns the attendance day (a 24h window) that contains `referenceMoment`:
+ *  - windowStart / windowEnd: the day's bounds — from SHIFT_WINDOW_LEAD_HOURS before
+ *    the shift starts, for 24 hours;
+ *  - shiftStart: when that day's shift starts (lateness is measured from here);
+ *  - workDate: the date the day belongs to (the shift start's date).
+ * Works the same for every shift timing, including ones that cross midnight: for a
+ * 22:00-07:00 shift a 06:50 punch belongs to yesterday's shift and a 21:45 punch to today's.
  */
 const getShiftDayWindow = (referenceMoment, standardStartTime = '09:30') => {
  const ref = moment(referenceMoment).tz(TIMEZONE);
- const [startHour, startMinute] = String(standardStartTime).split(':').map(Number);
- const hour = Number.isFinite(startHour) ? startHour : 9;
- const minute = Number.isFinite(startMinute) ? startMinute : 30;
+ const { hour, minute } = parseHm(standardStartTime);
 
- const startToday = ref.clone().hour(hour).minute(minute).second(0).millisecond(0);
- const windowStart = ref.isBefore(startToday) ? startToday.clone().subtract(1, 'day') : startToday;
+ let shiftStart = ref.clone().hour(hour).minute(minute).second(0).millisecond(0);
+ let windowStart = shiftStart.clone().subtract(SHIFT_WINDOW_LEAD_HOURS, 'hours');
+ if (ref.isBefore(windowStart)) {
+  shiftStart = shiftStart.subtract(1, 'day');
+ } else if (!ref.isBefore(windowStart.clone().add(1, 'day'))) {
+  shiftStart = shiftStart.add(1, 'day');
+ }
+ windowStart = shiftStart.clone().subtract(SHIFT_WINDOW_LEAD_HOURS, 'hours');
  const windowEnd = windowStart.clone().add(1, 'day');
- return { windowStart, windowEnd };
+ return { windowStart, windowEnd, shiftStart, workDate: shiftStart.format('YYYY-MM-DD') };
 };
 
-const determineAttendanceStatus = (checkIn, totalHours, isLateThreshold = 30, standardStartTime = '09:30') => {
- const checkInMoment = moment(checkIn).tz(TIMEZONE);
- const { windowStart } = getShiftDayWindow(checkInMoment, standardStartTime);
- const isLate = checkInMoment.isAfter(windowStart.clone().add(isLateThreshold, 'minutes'));
+/** The attendance day for a calendar date (YYYY-MM-DD) — same bounds as getShiftDayWindow. */
+const getShiftDayWindowForDate = (dateStr, standardStartTime = '09:30') => {
+ const { hour, minute } = parseHm(standardStartTime);
+ const shiftStart = moment.tz(dateStr, 'YYYY-MM-DD', TIMEZONE).hour(hour).minute(minute).second(0).millisecond(0);
+ const windowStart = shiftStart.clone().subtract(SHIFT_WINDOW_LEAD_HOURS, 'hours');
+ return { windowStart, windowEnd: windowStart.clone().add(1, 'day'), shiftStart, workDate: dateStr };
+};
 
- if (isLate && totalHours < WORK_HOURS) return 'late';
- if (totalHours < WORK_HOURS / 2) return 'half_day';
- if (totalHours < WORK_HOURS) return 'early_departure';
+/** The shift start time of the attendance day a window begins (inverse of getShiftDayWindow). */
+const shiftStartOfWindow = (windowStart) => moment(windowStart).tz(TIMEZONE).add(SHIFT_WINDOW_LEAD_HOURS, 'hours');
+
+/**
+ * Whether a check-in is late: after the day's shift start plus the grace period.
+ */
+const isLateCheckIn = (checkIn, gracePeriodMinutes = 15, standardStartTime = '09:30') => {
+ const checkInMoment = moment(checkIn).tz(TIMEZONE);
+ const { shiftStart } = getShiftDayWindow(checkInMoment, standardStartTime);
+ return checkInMoment.isAfter(shiftStart.clone().add(Number(gracePeriodMinutes) || 0, 'minutes'));
+};
+
+/**
+ * The day's status from when someone arrived and how long they worked —
+ * one rule for every check-in method (web, office network, biometric, HR
+ * entry). Short hours decide first: half the shift or less is a half day
+ * whether or not they were also late. (Web check-in used to test "late"
+ * first, so arriving late and leaving early was paid as a full day.)
+ *
+ *   < halfDayPercent of the shift  → half_day
+ *   < the shift                    → early_departure
+ *   full shift, but arrived late   → late
+ *   otherwise                      → present
+ */
+const determineAttendanceStatus = (
+ checkIn, totalHours, isLateThreshold = 30, standardStartTime = '09:30',
+ { expectedHours = WORK_HOURS, halfDayPercent = 50 } = {},
+) => {
+ const expected = Number(expectedHours) > 0 ? Number(expectedHours) : WORK_HOURS;
+ const halfDayHours = expected * ((Number(halfDayPercent) > 0 ? Number(halfDayPercent) : 50) / 100);
+ const hours = Number(totalHours) || 0;
+ if (hours < halfDayHours) return 'half_day';
+ if (hours < expected) return 'early_departure';
+ if (isLateCheckIn(checkIn, isLateThreshold, standardStartTime)) return 'late';
  return 'present';
 };
 
@@ -297,6 +358,10 @@ module.exports = {
  toIST,
  calculateWorkingHours,
  getShiftDayWindow,
+ getShiftDayWindowForDate,
+ shiftStartOfWindow,
+ isLateCheckIn,
+ SHIFT_WINDOW_LEAD_HOURS,
  determineAttendanceStatus,
  calculateLeaveDays,
  paginate,

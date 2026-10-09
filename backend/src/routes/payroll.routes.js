@@ -31,6 +31,10 @@ router.put('/payslips/:id/publish', isHROrAdmin, uuidParam(), validate, payrollC
 router.get('/payslips', isEmployee, payrollListQueryRules, validate, payrollController.listPayslips);
 router.get('/payslips/:id/download', uuidParam(), validate, payrollController.downloadPayslip);
 router.get('/salary-preview/:employeeId', isEmployee, uuidParam('employeeId'), validate, payrollController.salaryPreview);
+router.get('/setup/:employeeId', isHROrAdmin, uuidParam('employeeId'), validate, payrollController.getPayrollSetup);
+router.put('/setup/:employeeId', isHROrAdmin, uuidParam('employeeId'), validate, payrollController.updatePayrollSetup);
+router.put('/rules', isHROrAdmin, payrollController.saveRules);
+router.post('/simulate', isHROrAdmin, payrollController.simulate);
 
 router.get('/revisions', isHROrAdmin, salaryRevisionListQueryRules, validate, salaryRevisionController.list);
 router.post('/revisions', isHROrAdmin, salaryRevisionCreateRules, validate, salaryRevisionController.create);

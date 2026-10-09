@@ -146,3 +146,27 @@ export async function createSalaryRevisionApi({ employeeId, components, effectiv
 export async function cancelSalaryRevisionApi(id) {
   return apiRequest({ method: 'POST', url: `/payroll/revisions/${id}/cancel` });
 }
+
+/** Company pay rules (late arrivals, overtime, day rate, missed check-out).
+ *  `leaveFirst` (optional) switches "use casual leave first" in the leave policy. */
+export async function savePayrollRulesApi(rules, { leaveFirst } = {}) {
+  return apiRequest({
+    method: 'PUT',
+    url: '/payroll/rules',
+    data: { rules: { ...rules, ...(typeof leaveFirst === 'boolean' ? { leaveFirst } : {}) } },
+  });
+}
+
+/** What a month's pay would be under the settings on screen — nothing is saved. */
+export async function simulatePayApi(body) {
+  return apiRequest({ method: 'POST', url: '/payroll/simulate', data: body });
+}
+
+/** Which deductions apply to one employee (Employee → Payroll → Payroll setup). */
+export async function fetchPayrollSetupApi(employeeId) {
+  return apiRequest({ method: 'GET', url: `/payroll/setup/${employeeId}` });
+}
+
+export async function updatePayrollSetupApi(employeeId, changes) {
+  return apiRequest({ method: 'PUT', url: `/payroll/setup/${employeeId}`, data: changes });
+}

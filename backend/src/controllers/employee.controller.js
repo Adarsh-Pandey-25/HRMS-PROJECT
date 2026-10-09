@@ -538,6 +538,19 @@ const update = async (req, res, next) => {
       allowedFields.address = withCompanyId(existing.address, stampCompanyId);
     }
 
+    // The Edit Employee form sends the whole salary record. Keep what the
+    // Payroll setup card owns (ESI choice, extra-deduction opt-outs), so a
+    // form save never undoes it.
+    const previousSalary = existing.salary_details || null;
+    if (allowedFields.salary_details && typeof allowedFields.salary_details === 'object' && previousSalary) {
+      const merged = { ...previousSalary, ...allowedFields.salary_details };
+      for (const k of ['deduction_optouts', 'esi_applicable', 'esi_set', 'payroll_setup_updated_at', 'payroll_setup_updated_by']) {
+        if (previousSalary[k] !== undefined) merged[k] = previousSalary[k];
+        else delete merged[k];
+      }
+      allowedFields.salary_details = merged;
+    }
+
     // Item 3: the attempt itself consumes the one-time self-edit allowance,
     // atomically with the field changes — set unconditionally on any
     // successful narrow-self-edit submission, not just when bank_details
@@ -569,6 +582,18 @@ const update = async (req, res, next) => {
     // to provide — then they are not asked again on sign-in.
     if (isPrivileged && !isSelf && data?.profile_completed === false) {
       if (await profileCompletion.markCompleteIfFilled(req.params.id)) data.profile_completed = true;
+    }
+
+    // PF / PT / TDS changed from this form — admins hear about it the same
+    // way as from the Payroll setup card. (A first salary is setup: nothing sent.)
+    if (isPrivileged && !isSelf && previousSalary && allowedFields.salary_details) {
+      require('../services/payroll.service').notifyPayrollSetupChange({
+        employee: data,
+        beforeSalary: previousSalary,
+        afterSalary: allowedFields.salary_details,
+        actor: req.user,
+        ipAddress: req.ip,
+      }).catch((e) => logger.warn('Payroll setup change notice failed', { error: e.message }));
     }
 
     if (isPrivileged) {

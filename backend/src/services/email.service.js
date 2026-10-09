@@ -1509,6 +1509,37 @@ const leaveBalanceChangedAdminEmail = (admin, employee, changes, { year, changed
   });
 };
 
+/**
+ * HR/Admin changed which deductions apply to one employee (Employee →
+ * Payroll → Payroll setup). To the company's admins, with old and new.
+ * Wired: payroll.service.js updatePayrollSetup().
+ */
+const PAYROLL_SETUP_COLUMNS = [{ label: 'Deduction' }, { label: 'Was' }, { label: 'Now' }];
+const payrollSetupChangedAdminEmail = (admin, employee, changes, { changedByName } = {}) => {
+  const name = `${employee.first_name || ''} ${employee.last_name || ''}`.trim() || 'An employee';
+  return sendEmail({
+    to: admin.email,
+    subject: `Payroll setup changed — ${name}`,
+    html: etDocument({
+      preheader: `${changedByName || 'HR'} changed which deductions apply to ${name}.`,
+      gradient: GRADIENT.slateDark,
+      eyebrow: 'Payroll setup modified',
+      titleHtml: `${escapeHtml(name)}'s payroll<br>setup was changed`,
+      icon: '🧮',
+      bodyHtml: `
+        ${etP(`Hi ${escapeHtml(admin.first_name || 'there')}, ${escapeHtml(changedByName || 'HR')} changed the deductions for <strong>${escapeHtml(name)}</strong>${employee.employee_code ? ` (${escapeHtml(employee.employee_code)})` : ''}:`)}
+        ${etTable(PAYROLL_SETUP_COLUMNS, changes.map((c) => [
+          `<strong>${escapeHtml(c.label)}</strong>`,
+          escapeHtml(c.from || '—'),
+          `<strong>${escapeHtml(c.to || '—')}</strong>`,
+        ]))}
+        ${etP('Their open payslips have been recalculated with the new setup.', { color: COLOR.slate })}
+        ${etCta(`${getAppUrl()}/employees/${encodeURIComponent(employee.id)}?tab=payroll`, 'View employee', COLOR.blue)}
+      `,
+    }),
+  });
+};
+
 const trainingAssignmentEmail = (employee, training) =>
   sendEmail({
     to: employee.email,
@@ -1814,6 +1845,7 @@ const templates = {
   holidayListEmail,
   leaveBalanceChangedEmail,
   leaveBalanceChangedAdminEmail,
+  payrollSetupChangedAdminEmail,
   // Marketing leads
   leadNotificationEmail,
   leadConfirmationEmail,

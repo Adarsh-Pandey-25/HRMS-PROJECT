@@ -37,12 +37,24 @@ const isWfhRow = (row) => {
   return row.status === 'wfh' || Boolean(loc.is_wfh || loc.wfh);
 };
 
+/**
+ * The employee's shift: the one assigned to them, else the company's default
+ * — the shift marked default, or the first active one. (Unassigned employees
+ * used to fall back to a hard-coded 09:30 / 9 h day even when the company had
+ * set up its own shift, so lateness and short hours were measured against a
+ * day the company doesn't work.) null when the company has no shifts.
+ */
 const resolveShift = (employeeAddress, shifts) => {
+  const list = Array.isArray(shifts) ? shifts.filter((s) => s && s.start) : [];
   const addr = (employeeAddress && typeof employeeAddress === 'object') ? employeeAddress : {};
   const shiftId = addr.shift_id || addr.shiftId;
   const shiftName = addr.shift;
-  if (!shiftId && !shiftName) return null;
-  return (shifts || []).find((s) => (shiftId && s.id === shiftId) || (shiftName && s.name === shiftName)) || null;
+  if (shiftId || shiftName) {
+    const assigned = list.find((s) => (shiftId && s.id === shiftId) || (shiftName && s.name === shiftName));
+    if (assigned) return assigned;
+  }
+  const active = list.filter((s) => s.active !== false);
+  return active.find((s) => s.isDefault || s.is_default) || active[0] || null;
 };
 
 /** Expected shift duration in hours — end minus start, wrapping past midnight for overnight shifts. Falls back to the global WORK_HOURS when no shift is assigned. */
@@ -114,9 +126,10 @@ const employeesOnLeave = async (employeeIds, dateStr) => {
 
 const detectAnomaliesForCompanyDate = async (companyId, dateStr) => {
   const dayStart = moment.tz(dateStr, TIMEZONE).startOf('day');
-  const dow = dayStart.day();
-  // Same weekend definition already used by getMonthlySummary's workingDays calc.
-  if (dow === 0 || dow === 6) return [];
+  // The company's weekly offs (Settings → Payroll → Weekly offs) — the same
+  // definition attendance and payroll use. Nobody is absent on one.
+  const { getWorkWeek, isWeeklyOff } = require('../utils/workWeek');
+  if (isWeeklyOff(dayStart, await getWorkWeek(companyId))) return [];
 
   if (await isCompanyHoliday(companyId, dateStr)) return [];
 
@@ -141,15 +154,12 @@ const detectAnomaliesForCompanyDate = async (companyId, dateStr) => {
     const shift = resolveShift(emp.address, config.shifts);
     const shiftStart = shift?.start || '09:30';
     const expectedHours = resolveExpectedHours(shift);
-    // The shift-day window for THIS calendar date is [this date's shift
-    // start, next date's shift start) — built directly from the date being
-    // checked rather than via getShiftDayWindow (which classifies an
-    // arbitrary check-in timestamp into a shift-day, a different job; using
-    // it here with a fixed "noon" anchor would misclassify any shift whose
-    // start time falls after noon, e.g. a 22:00 Night Shift).
-    const [shiftHour, shiftMinute] = shiftStart.split(':').map(Number);
-    const windowStart = dayStart.clone().hour(shiftHour || 0).minute(shiftMinute || 0).second(0).millisecond(0);
-    const windowEnd = windowStart.clone().add(1, 'day');
+    // This date's attendance day — the same window every other part of
+    // attendance uses, which opens a few hours before the shift so an early
+    // arrival counts for today. (It used to open exactly at shift start, so
+    // someone who checked in at 09:20 for a 09:30 shift was emailed as absent.)
+    const { getShiftDayWindowForDate } = require('../utils/helpers');
+    const { windowStart, windowEnd, shiftStart: shiftStartsAt } = getShiftDayWindowForDate(dateStr, shiftStart);
 
     // Section G1: check_in_method/check_out_method read here (unfiltered —
     // this cron queries `attendance` directly, never through item 8's
@@ -191,7 +201,7 @@ const detectAnomaliesForCompanyDate = async (companyId, dateStr) => {
 
     if (row.status === 'late') {
       const checkIn = moment(row.check_in_time).tz(TIMEZONE);
-      const graceEnd = windowStart.clone().add(config.gracePeriodMinutes, 'minutes');
+      const graceEnd = shiftStartsAt.clone().add(config.gracePeriodMinutes, 'minutes');
       const minutesLate = Math.max(0, checkIn.diff(graceEnd, 'minutes'));
       anomalies.push({ employee: emp, type: 'late', minutesLate, sourceIsBiometric });
       continue;

@@ -135,6 +135,8 @@ function mapAttendanceSummaryFromApi(data) {
     incomplete: Number(summary.incomplete || 0),
     workingDays: Number(summary.workingDays || 0),
     totalDays,
+    // The employee's shift length — the day's goal on My Attendance.
+    expectedHours: Number(summary.expectedHours) > 0 ? Number(summary.expectedHours) : null,
   };
 }
 

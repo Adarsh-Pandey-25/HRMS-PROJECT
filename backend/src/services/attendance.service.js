@@ -7,7 +7,8 @@ const {
   BadRequestError, NotFoundError, ConflictError, ForbiddenError,
 } = require('../utils/errors');
 const {
-  calculateWorkingHours, determineAttendanceStatus, getShiftDayWindow, nowIST, paginate, buildMeta, ipInCidr,
+  calculateWorkingHours, determineAttendanceStatus, getShiftDayWindow, shiftStartOfWindow,
+  isLateCheckIn, nowIST, paginate, buildMeta, ipInCidr,
 } = require('../utils/helpers');
 const { autoCheckoutEmail } = require('./email.service');
 const logger = require('../utils/logger');
@@ -195,13 +196,31 @@ const getAttendanceConfig = async (companyId = null) => {
 
 /** The employee's assigned shift start time ("HH:mm"), or the default 09:30 if none is assigned/found. */
 const resolveShiftStart = (employeeAddress, shifts) => {
-  const addr = (employeeAddress && typeof employeeAddress === 'object') ? employeeAddress : {};
-  const shiftId = addr.shift_id || addr.shiftId;
-  const shiftName = addr.shift;
-  if (!shiftId && !shiftName) return '09:30';
-  const matched = (shifts || []).find((s) => (shiftId && s.id === shiftId) || (shiftName && s.name === shiftName));
-  return matched?.start || '09:30';
+  const { resolveShift } = require('./attendanceAnomaly.service');
+  return resolveShift(employeeAddress, shifts)?.start || '09:30';
 };
+
+/**
+ * Everything the day-status rules need about one employee's shift:
+ * start, length, late grace, half-day threshold and when overtime starts.
+ */
+const shiftRulesFor = (employeeAddress, attendanceConfig) => {
+  const { resolveShift, resolveExpectedHours } = require('./attendanceAnomaly.service');
+  const shift = resolveShift(employeeAddress, attendanceConfig.shifts);
+  return {
+    shiftStart: resolveShiftStart(employeeAddress, attendanceConfig.shifts),
+    expectedHours: resolveExpectedHours(shift),
+    gracePeriodMinutes: attendanceConfig.gracePeriodMinutes,
+    halfDayPercent: attendanceConfig.halfDayThresholdPercent,
+    overtimeAfterHours: attendanceConfig.overtimeAfterHours,
+  };
+};
+
+/** determineAttendanceStatus with this employee's own shift length and thresholds. */
+const statusFor = (checkIn, totalHours, rules) => determineAttendanceStatus(
+  checkIn, totalHours, rules.gracePeriodMinutes, rules.shiftStart,
+  { expectedHours: rules.expectedHours, halfDayPercent: rules.halfDayPercent },
+);
 
 /** Map client method names → DB check_in_method values.
  *  Phone and desktop both use web check-in; office IP is the gate (no GPS). */
@@ -497,9 +516,11 @@ const checkOut = async (employeeId, { method, clientIp, break_minutes = 0, locat
   }
 
   const overtimeHours = Math.max(0, totalHours - attendanceConfig.overtimeAfterHours);
-  let status = determineAttendanceStatus(active.check_in_time, totalHours, attendanceConfig.gracePeriodMinutes, shiftStart);
+  const rules = shiftRulesFor(empRow?.address, attendanceConfig);
+  let status = statusFor(active.check_in_time, totalHours, rules);
+  // Pay rule: leaving before the shift ends is a half day, not an early departure.
   const halfDayBeforeGoal = await settingsService.getBoolean('payroll_halfday_before_goal_enabled', false, companyId);
-  if (!wasWfh && halfDayBeforeGoal && totalHours < WORK_HOURS && totalHours > 0) {
+  if (!wasWfh && halfDayBeforeGoal && totalHours < rules.expectedHours && totalHours > 0) {
     status = 'half_day';
   }
   // Preserve native wfh enum when the check-in used it
@@ -599,7 +620,7 @@ const manualEntry = async (hrUserId, data) => {
     break_minutes,
     total_hours: totalHours ? Math.round(totalHours * 100) / 100 : null,
     overtime_hours: totalHours ? Math.max(0, Math.round((totalHours - attendanceConfig.overtimeAfterHours) * 100) / 100) : 0,
-    status: totalHours ? determineAttendanceStatus(check_in_time, totalHours, attendanceConfig.gracePeriodMinutes, shiftStart) : 'present',
+    status: totalHours ? statusFor(check_in_time, totalHours, shiftRulesFor(empRow?.address, attendanceConfig)) : 'present',
     remarks: remarks || `Manual entry by HR (${hrUserId})`,
   };
 
@@ -725,57 +746,74 @@ const getAttendance = async (filters, query) => {
  return { data: enrichedRows, meta: buildMeta(page, limit, count) };
 };
 
-const getMonthlySummary = async (employeeId, month, year) => {
-  const start = moment.tz({ year, month: month - 1, day: 1 }, TIMEZONE).startOf('month');
-  const end = start.clone().endOf('month');
-
-  const { data, error } = await supabaseAdmin
-    .from('attendance')
-    .select('*')
-    .eq('employee_id', employeeId)
-    .gte('check_in_time', start.toISOString())
-    .lte('check_in_time', end.toISOString());
-
+/**
+ * Who this employee is for attendance purposes: their company, shift rules,
+ * the company's weekly offs, and when they joined.
+ */
+const getEmployeeAttendanceContext = async (employeeId) => {
+  const { getCompanyId } = require('../utils/tenant');
+  const { getWorkWeek } = require('../utils/workWeek');
+  const { data: empRow, error } = await supabaseAdmin
+    .from('employees').select('id, company_id, address, date_of_joining').eq('id', employeeId).maybeSingle();
   if (error) throw new BadRequestError(error.message);
+  const companyId = getCompanyId(empRow);
+  const [attendanceConfig, workWeek] = await Promise.all([getAttendanceConfig(companyId), getWorkWeek(companyId)]);
+  return {
+    companyId,
+    rules: shiftRulesFor(empRow?.address, attendanceConfig),
+    workWeek,
+    joinedOn: empRow?.date_of_joining ? String(empRow.date_of_joining).slice(0, 10) : null,
+  };
+};
 
-  const rows = data || [];
+/**
+ * Attendance for one employee over [start, end] — what My Attendance shows
+ * and what payroll turns into pay. One function for the monthly and the
+ * date-range summary (they were two copies that had to be kept in step).
+ *
+ *  - Each record counts for its attendance day (getShiftDayWindow), so an
+ *    early arrival or a night shift lands on the right date.
+ *  - Working days and absences skip the company's weekly offs (work_week
+ *    setting) and holidays; approved leave (except UNPAID) is not an
+ *    absence; days before the employee joined are reported separately as
+ *    notJoined, never as absences.
+ *  - late = late arrivals by the clock (after shift start + grace), on
+ *    office days that were not half days — what the late rule in payroll
+ *    counts. (It used to count only rows whose status was 'late', which
+ *    missed anyone who was late and also left early.)
+ *  - A biometric day that has not closed yet is never treated as final.
+ */
+const summarizeAttendance = async (employeeId, start, end, rows) => {
+  const ctx = await getEmployeeAttendanceContext(employeeId);
+  const { isWeeklyOff } = require('../utils/workWeek');
+  const { rules, workWeek, joinedOn } = ctx;
+
   const rowIsWfh = (a) => a.status === 'wfh' || isWfhLocation(a.location);
-  // A biometric row that hasn't finalized yet (checkout_status defaults to
-  // 'finalized' on every non-biometric row) has a status/total_hours that
-  // can still change — LOP/payroll (this function feeds payroll.service.js's
-  // LOP calc directly) must never treat a provisional value as authoritative.
-  // Falls through to the same "still open, counts as present-in-progress"
-  // treatment a 'pending' row already gets via `!a.check_out_time` below.
   const isFinal = (a) => !a.checkout_status || a.checkout_status === 'finalized';
+  const workDateOf = (a) => getShiftDayWindow(moment(a.check_in_time).tz(TIMEZONE), rules.shiftStart).workDate;
+
   // Present = office days showed up (on-time, late, or left early). WFH counted separately.
   const present = rows.filter((a) =>
     !rowIsWfh(a) && ((isFinal(a) && ['present', 'late', 'early_departure'].includes(a.status)) || !isFinal(a) || !a.check_out_time)
   ).length;
-  const late = rows.filter((a) => isFinal(a) && a.status === 'late' && !rowIsWfh(a)).length;
-  const halfDay = rows.filter((a) => isFinal(a) && a.status === 'half_day').length;
+  const halfDayRows = rows.filter((a) => isFinal(a) && a.status === 'half_day');
   const earlyDeparture = rows.filter((a) => isFinal(a) && a.status === 'early_departure').length;
   const incomplete = rows.filter((a) => !a.check_out_time).length;
+  const lateRows = rows.filter((a) => !rowIsWfh(a) && isFinal(a) && a.status !== 'half_day'
+    && isLateCheckIn(a.check_in_time, rules.gracePeriodMinutes, rules.shiftStart));
   const totalHours = rows.reduce((sum, a) => sum + (parseFloat(a.total_hours) || 0), 0);
   const overtimeHours = rows.reduce((sum, a) => sum + (parseFloat(a.overtime_hours) || 0), 0);
   const daysWithHours = rows.filter((a) => parseFloat(a.total_hours) > 0).length;
 
-  // Working weekdays in month without an attendance record ≈ absent
-  let workingDays = 0;
-  const cursor = start.clone();
-  while (cursor.isSameOrBefore(end, 'day')) {
-    const dow = cursor.day();
-    if (dow !== 0 && dow !== 6) workingDays += 1;
-    cursor.add(1, 'day');
+  const attendedDays = new Set(rows.map(workDateOf));
+  // Each record says which day it counts for and whether it was a late
+  // arrival — the same answers the counts above use, so a list of "late"
+  // days always matches the Late number.
+  const lateSet = new Set(lateRows);
+  for (const a of rows) {
+    a.work_date = workDateOf(a);
+    a.is_late = lateSet.has(a);
   }
-  // Bucket each record by its shift-anchored day (the same day the record was
-  // actually created/looked-up under), not the raw calendar date of the
-  // check-in instant — otherwise a night-shift employee whose check-in lands
-  // just after local midnight gets counted a day late here despite every
-  // write path already anchoring it correctly.
-  const shiftStart = await getEmployeeShiftStart(employeeId);
-  const attendedDays = new Set(
-    rows.map((a) => getShiftDayWindow(moment(a.check_in_time).tz(TIMEZONE), shiftStart).windowStart.format('YYYY-MM-DD'))
-  );
 
   // Days covered by HR-approved leave must not be counted as absent (they
   // already feed loss-of-pay through the LOP calc, not the AWOL "absent" bucket).
@@ -795,8 +833,8 @@ const getMonthlySummary = async (employeeId, month, year) => {
     if (lv.leave_type === 'UNPAID') continue;
     const leaveFrom = moment.tz(lv.from_date, TIMEZONE).startOf('day');
     const leaveTo = moment.tz(lv.to_date, TIMEZONE).startOf('day');
-    const rangeStart = moment.max(leaveFrom, start);
-    const rangeEnd = moment.min(leaveTo, end);
+    const rangeStart = moment.max(leaveFrom, start.clone().startOf('day'));
+    const rangeEnd = moment.min(leaveTo, end.clone().startOf('day'));
     const leaveCursor = rangeStart.clone();
     while (leaveCursor.isSameOrBefore(rangeEnd, 'day')) {
       approvedLeaveDays.add(leaveCursor.format('YYYY-MM-DD'));
@@ -808,150 +846,111 @@ const getMonthlySummary = async (employeeId, month, year) => {
   // per-day rate counts it as a paid day) but must not reach the absent count
   // that payroll turns into loss of pay.
   const holidayDates = await getHolidayDatesForEmployee(employeeId, start.format('YYYY-MM-DD'), end.format('YYYY-MM-DD'));
-
-  const today = nowIST();
-  const cutoff = today.isBefore(end) ? today.clone().startOf('day') : end.clone();
-  let absent = 0;
-  const absCursor = start.clone();
-  while (absCursor.isSameOrBefore(cutoff, 'day')) {
-    const dow = absCursor.day();
-    const key = absCursor.format('YYYY-MM-DD');
-    if (dow !== 0 && dow !== 6 && !attendedDays.has(key) && !approvedLeaveDays.has(key) && !holidayDates.has(key)) absent += 1;
-    absCursor.add(1, 'day');
-  }
-
-  const summary = {
-    totalDays: rows.length,
-    workingDays,
-    present,
-    wfh: rows.filter((a) => rowIsWfh(a)).length,
-    late,
-    halfDay,
-    earlyDeparture,
-    absent,
-    holidays: holidayDates.size,
-    onApprovedLeave: approvedLeaveDays.size,
-    totalHours: Math.round(totalHours * 100) / 100,
-    overtimeHours: Math.round(overtimeHours * 100) / 100,
-    avgHours: daysWithHours ? Math.round((totalHours / daysWithHours) * 10) / 10 : 0,
-    incomplete,
-  };
-
-  const formattedRows = rows.map((a) => {
-    const checkInFormatted = a.check_in_time ? moment(a.check_in_time).tz(TIMEZONE).format('HH:mm') : null;
-    const checkOutFormatted = a.check_out_time ? moment(a.check_out_time).tz(TIMEZONE).format('HH:mm') : null;
-    let duration = null;
-    if (a.check_in_time && a.check_out_time) {
-      const diffMs = moment(a.check_out_time).tz(TIMEZONE).diff(moment(a.check_in_time).tz(TIMEZONE));
-      const diffMin = Math.floor(diffMs / 60000);
-      duration = `${Math.floor(diffMin / 60)}h ${diffMin % 60}m`;
-    }
-    // Same as getAttendance above — never clobber the raw timestamps.
-    return { ...a, check_in_display: checkInFormatted, check_out_display: checkOutFormatted, duration };
-  });
-
-  return { records: formattedRows, summary };
-};
-
-/**
- * Same aggregation as getMonthlySummary (present/absent/late/half-day/leave-days,
- * total + overtime hours, incl. the approved-leave-excludes-absent carve-out) but
- * over an arbitrary [from, to] date range instead of a calendar month — used by
- * the Attendance Summary report, which takes a free date range rather than month/year.
- */
-const getRangeSummary = async (employeeId, fromDate, toDate) => {
-  const start = moment.tz(fromDate, TIMEZONE).startOf('day');
-  const end = moment.tz(toDate, TIMEZONE).endOf('day');
-
-  const { data, error } = await supabaseAdmin
-    .from('attendance')
-    .select('*')
-    .eq('employee_id', employeeId)
-    .gte('check_in_time', start.toISOString())
-    .lte('check_in_time', end.toISOString());
-
-  if (error) throw new BadRequestError(error.message);
-
-  const rows = data || [];
-  const rowIsWfh = (a) => a.status === 'wfh' || isWfhLocation(a.location);
-  // Same finalized-only gate as getMonthlySummary — see its comment.
-  const isFinal = (a) => !a.checkout_status || a.checkout_status === 'finalized';
-  const present = rows.filter((a) =>
-    !rowIsWfh(a) && ((isFinal(a) && ['present', 'late', 'early_departure'].includes(a.status)) || !isFinal(a) || !a.check_out_time)
-  ).length;
-  const late = rows.filter((a) => isFinal(a) && a.status === 'late' && !rowIsWfh(a)).length;
-  const halfDay = rows.filter((a) => isFinal(a) && a.status === 'half_day').length;
-  const earlyDeparture = rows.filter((a) => isFinal(a) && a.status === 'early_departure').length;
-  const totalHours = rows.reduce((sum, a) => sum + (parseFloat(a.total_hours) || 0), 0);
-  const overtimeHours = rows.reduce((sum, a) => sum + (parseFloat(a.overtime_hours) || 0), 0);
 
   let workingDays = 0;
-  const cursor = start.clone();
+  let weeklyOffs = 0;
+  const cursor = start.clone().startOf('day');
   while (cursor.isSameOrBefore(end, 'day')) {
-    const dow = cursor.day();
-    if (dow !== 0 && dow !== 6) workingDays += 1;
+    if (isWeeklyOff(cursor, workWeek)) weeklyOffs += 1;
+    else workingDays += 1;
     cursor.add(1, 'day');
   }
-  // Same shift-anchored bucketing as getMonthlySummary — see its comment.
-  const shiftStart = await getEmployeeShiftStart(employeeId);
-  const attendedDays = new Set(
-    rows.map((a) => getShiftDayWindow(moment(a.check_in_time).tz(TIMEZONE), shiftStart).windowStart.format('YYYY-MM-DD'))
-  );
-
-  // Same carve-out as getMonthlySummary: HR-approved (non-UNPAID) leave days are
-  // "on leave", not "absent" — UNPAID stays counted as absent for LOP purposes.
-  const { data: approvedLeaves, error: leavesError } = await supabaseAdmin
-    .from('leaves')
-    .select('from_date, to_date, leave_type')
-    .eq('employee_id', employeeId)
-    .eq('status', 'approved')
-    .lte('from_date', end.format('YYYY-MM-DD'))
-    .gte('to_date', start.format('YYYY-MM-DD'));
-  if (leavesError) throw new BadRequestError(leavesError.message);
-
-  const approvedLeaveDays = new Set();
-  for (const lv of approvedLeaves || []) {
-    if (lv.leave_type === 'UNPAID') continue;
-    const leaveFrom = moment.tz(lv.from_date, TIMEZONE).startOf('day');
-    const leaveTo = moment.tz(lv.to_date, TIMEZONE).startOf('day');
-    const rangeStart = moment.max(leaveFrom, start);
-    const rangeEnd = moment.min(leaveTo, end);
-    const leaveCursor = rangeStart.clone();
-    while (leaveCursor.isSameOrBefore(rangeEnd, 'day')) {
-      approvedLeaveDays.add(leaveCursor.format('YYYY-MM-DD'));
-      leaveCursor.add(1, 'day');
-    }
-  }
-
-  // A company holiday is never an absence. It stays in workingDays (payroll's
-  // per-day rate counts it as a paid day) but must not reach the absent count
-  // that payroll turns into loss of pay.
-  const holidayDates = await getHolidayDatesForEmployee(employeeId, start.format('YYYY-MM-DD'), end.format('YYYY-MM-DD'));
 
   const today = nowIST();
   const cutoff = today.isBefore(end) ? today.clone().startOf('day') : end.clone();
-  let absent = 0;
-  const absCursor = start.clone();
+  // Every working day before the joining date is unpaid — a holiday too:
+  // they were not employed yet. Never an absence, though (no casual leave
+  // is spent on it, no absent email).
+  const notJoinedDates = [];
+  if (joinedOn) {
+    const c = start.clone().startOf('day');
+    const joined = moment.tz(joinedOn, TIMEZONE);
+    while (c.isSameOrBefore(end, 'day') && c.isBefore(joined, 'day')) {
+      if (!isWeeklyOff(c, workWeek)) notJoinedDates.push(c.format('YYYY-MM-DD'));
+      c.add(1, 'day');
+    }
+  }
+  const beforeJoining = new Set(notJoinedDates);
+  const absentDates = [];
+  const absCursor = start.clone().startOf('day');
   while (absCursor.isSameOrBefore(cutoff, 'day')) {
-    const dow = absCursor.day();
     const key = absCursor.format('YYYY-MM-DD');
-    if (dow !== 0 && dow !== 6 && !attendedDays.has(key) && !approvedLeaveDays.has(key) && !holidayDates.has(key)) absent += 1;
+    if (!beforeJoining.has(key) && !isWeeklyOff(absCursor, workWeek) && !attendedDays.has(key)
+      && !approvedLeaveDays.has(key) && !holidayDates.has(key)) {
+      absentDates.push(key);
+    }
     absCursor.add(1, 'day');
   }
 
   return {
     workingDays,
+    weeklyOffs,
     present,
     wfh: rows.filter((a) => rowIsWfh(a)).length,
-    late,
-    halfDay,
+    late: lateRows.length,
+    halfDay: halfDayRows.length,
     earlyDeparture,
-    absent,
+    absent: absentDates.length,
+    notJoined: notJoinedDates.length,
     holidays: holidayDates.size,
+    onApprovedLeave: approvedLeaveDays.size,
     leaveDays: approvedLeaveDays.size,
     totalHours: Math.round(totalHours * 100) / 100,
     overtimeHours: Math.round(overtimeHours * 100) / 100,
+    avgHours: daysWithHours ? Math.round((totalHours / daysWithHours) * 100) / 100 : 0,
+    incomplete,
+    totalDays: rows.length,
+    absentDates,
+    halfDayDates: halfDayRows.map(workDateOf).sort(),
+    lateDates: lateRows.map(workDateOf).sort(),
+    expectedHours: rules.expectedHours,
+    joinedOn,
   };
+};
+
+const formatRecordTimes = (a) => {
+  const checkInFormatted = a.check_in_time ? moment(a.check_in_time).tz(TIMEZONE).format('HH:mm') : null;
+  const checkOutFormatted = a.check_out_time ? moment(a.check_out_time).tz(TIMEZONE).format('HH:mm') : null;
+  let duration = null;
+  if (a.check_in_time && a.check_out_time) {
+    const diffMs = moment(a.check_out_time).tz(TIMEZONE).diff(moment(a.check_in_time).tz(TIMEZONE));
+    const diffMin = Math.floor(diffMs / 60000);
+    duration = `${Math.floor(diffMin / 60)}h ${diffMin % 60}m`;
+  }
+  // Same as getAttendance above — never clobber the raw timestamps.
+  return { ...a, check_in_display: checkInFormatted, check_out_display: checkOutFormatted, duration };
+};
+
+const fetchRowsBetween = async (employeeId, start, end) => {
+  const { data, error } = await supabaseAdmin
+    .from('attendance')
+    .select('*')
+    .eq('employee_id', employeeId)
+    .gte('check_in_time', start.toISOString())
+    .lte('check_in_time', end.toISOString())
+    .order('check_in_time', { ascending: true });
+  if (error) throw new BadRequestError(error.message);
+  return data || [];
+};
+
+const getMonthlySummary = async (employeeId, month, year) => {
+  const start = moment.tz({ year, month: month - 1, day: 1 }, TIMEZONE).startOf('month');
+  const end = start.clone().endOf('month');
+  const rows = await fetchRowsBetween(employeeId, start, end);
+  const summary = await summarizeAttendance(employeeId, start, end, rows);
+  return { records: rows.map(formatRecordTimes), summary };
+};
+
+/**
+ * Same aggregation as getMonthlySummary but over an arbitrary [from, to]
+ * date range — used by the Attendance Summary report, which takes a free
+ * date range rather than month/year.
+ */
+const getRangeSummary = async (employeeId, fromDate, toDate) => {
+  const start = moment.tz(fromDate, TIMEZONE).startOf('day');
+  const end = moment.tz(toDate, TIMEZONE).endOf('day');
+  const rows = await fetchRowsBetween(employeeId, start, end);
+  return summarizeAttendance(employeeId, start, end, rows);
 };
 
 /** Next 4:00 AM IST boundary after check-in (daily auto-checkout cutoff). */
@@ -970,16 +969,19 @@ const processAutoCheckout = async () => {
   const { data: activeRecords, error } = await supabaseAdmin
     .from('attendance')
     .select('*, employee:employee_id(id, email, first_name, last_name, address)')
-    .is('check_out_time', null);
+    .is('check_out_time', null)
+    // Biometric days close on their own (recomputeBiometricWindow), with the
+    // same missed check-out rule.
+    .neq('check_in_method', 'biometric');
 
   if (error) {
     logger.error('Auto checkout fetch failed', { error: error.message });
     return { processed: 0 };
   }
 
-  const halfDayBeforeGoalByCompany = new Map();
-  const attendanceConfigByCompany = new Map();
+  const companyRules = new Map();
   const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
+  const { getPayrollRules } = require('../utils/payrollRules');
 
   let processed = 0;
   for (const record of activeRecords || []) {
@@ -988,36 +990,36 @@ const processAutoCheckout = async () => {
     if (now.isBefore(deadline)) continue;
 
     const companyId = record.employee ? getCompanyId(record.employee) : DEFAULT_COMPANY_ID;
-    if (!halfDayBeforeGoalByCompany.has(companyId)) {
+    if (!companyRules.has(companyId)) {
       // eslint-disable-next-line no-await-in-loop
-      halfDayBeforeGoalByCompany.set(
-        companyId,
-        await settingsService.getBoolean('payroll_halfday_before_goal_enabled', false, companyId)
-      );
+      const [attendanceConfig, payrollRules] = await Promise.all([getAttendanceConfig(companyId), getPayrollRules(companyId)]);
+      companyRules.set(companyId, { attendanceConfig, payrollRules });
     }
-    if (!attendanceConfigByCompany.has(companyId)) {
-      // eslint-disable-next-line no-await-in-loop
-      attendanceConfigByCompany.set(companyId, await getAttendanceConfig(companyId));
-    }
-    const halfDayBeforeGoal = halfDayBeforeGoalByCompany.get(companyId);
-    const attendanceConfig = attendanceConfigByCompany.get(companyId);
-    const shiftStart = resolveShiftStart(record.employee?.address, attendanceConfig.shifts);
+    const { attendanceConfig, payrollRules } = companyRules.get(companyId);
+    const rules = shiftRulesFor(record.employee?.address, attendanceConfig);
 
+    // Nobody checked out, so the real hours are unknown — the clock ran
+    // until the 4 AM cut-off. Counting that (15-17 h) paid a forgotten
+    // check-out as a long day with overtime. The day counts as the shift's
+    // length instead, never overtime, or as a half day if the company's pay
+    // rules say so.
     const checkoutIso = deadline.toISOString();
-    const totalHours = calculateWorkingHours(record.check_in_time, checkoutIso);
-    let status = determineAttendanceStatus(record.check_in_time, totalHours, attendanceConfig.gracePeriodMinutes, shiftStart);
+    const clockHours = calculateWorkingHours(record.check_in_time, checkoutIso);
+    const totalHours = payrollRules.missedCheckout === 'half'
+      ? Math.min(clockHours, rules.expectedHours / 2)
+      : Math.min(clockHours, rules.expectedHours);
+    let status = statusFor(record.check_in_time, totalHours, rules);
+    if (payrollRules.missedCheckout === 'half') status = 'half_day';
+    if (record.status === 'wfh') status = 'wfh';
 
-    if (halfDayBeforeGoal && totalHours < WORK_HOURS && totalHours > 0) {
-      status = 'half_day';
-    }
-
+    // eslint-disable-next-line no-await-in-loop
     await supabaseAdmin
       .from('attendance')
       .update({
         check_out_time: checkoutIso,
         check_out_method: record.check_in_method,
         total_hours: Math.round(totalHours * 100) / 100,
-        overtime_hours: Math.max(0, Math.round((totalHours - attendanceConfig.overtimeAfterHours) * 100) / 100),
+        overtime_hours: 0,
         status,
         is_auto_checkout: true,
         remarks: 'auto_checkout',
@@ -1078,16 +1080,11 @@ const getEmployeeShiftStart = async (employeeId) => {
  * determineAttendanceStatus deliberately — that function is still used
  * as-is by web/manual/office_ip check-in/out, untouched by this rework.
  */
-const evaluateBiometricStatus = (checkInTime, totalHours, shiftStart, gracePeriodMinutes, expectedHours, halfDayThresholdPercent) => {
-  const checkInMoment = moment(checkInTime).tz(TIMEZONE);
-  const { windowStart } = getShiftDayWindow(checkInMoment, shiftStart);
-  const isLate = checkInMoment.isAfter(windowStart.clone().add(gracePeriodMinutes, 'minutes'));
-  const halfDayThresholdHours = expectedHours * (halfDayThresholdPercent / 100);
-  if (totalHours < halfDayThresholdHours) return 'half_day';
-  if (totalHours < expectedHours) return 'early_departure';
-  if (isLate) return 'late';
-  return 'present';
-};
+const evaluateBiometricStatus = (checkInTime, totalHours, shiftStart, gracePeriodMinutes, expectedHours, halfDayThresholdPercent) => (
+  determineAttendanceStatus(checkInTime, totalHours, gracePeriodMinutes, shiftStart, {
+    expectedHours, halfDayPercent: halfDayThresholdPercent,
+  })
+);
 
 /**
  * THE shared recomputation function for biometric attendance — triggered on
@@ -1170,7 +1167,9 @@ const recomputeBiometricWindow = async (employeeId, windowStartIso) => {
   const expectedHours = resolveExpectedHours(shift);
 
   const now = nowIST();
-  const shiftEnd = windowStart.clone().add(expectedHours, 'hours');
+  // The window opens a few hours before the shift (early arrivals) — the
+  // shift itself, and so its end, starts later.
+  const shiftEnd = shiftStartOfWindow(windowStart).add(expectedHours, 'hours');
   const graceDeadline = shiftEnd.clone().add(attendanceConfig.checkoutGracePeriodMinutes, 'minutes');
 
   let payload;
@@ -1192,11 +1191,24 @@ const recomputeBiometricWindow = async (employeeId, windowStartIso) => {
       last_punch_at: latestPunchTime,
     };
   } else {
-    const totalHours = calculateWorkingHours(checkInTime, latestPunchTime);
-    const status = evaluateBiometricStatus(
+    let totalHours = calculateWorkingHours(checkInTime, latestPunchTime);
+    let status = evaluateBiometricStatus(
       checkInTime, totalHours, shiftStart,
       attendanceConfig.gracePeriodMinutes, expectedHours, attendanceConfig.halfDayThresholdPercent
     );
+    // One punch all day = a forgotten check-out. Once the day closes it
+    // follows the company's missed check-out rule, the same as a web day
+    // closed at 4 AM: a full shift (no overtime) or a half day.
+    const missedCheckout = punches.length === 1 && now.isSameOrAfter(windowEnd);
+    if (missedCheckout) {
+      const { getPayrollRules } = require('../utils/payrollRules');
+      const payrollRules = await getPayrollRules(companyId);
+      totalHours = payrollRules.missedCheckout === 'half' ? expectedHours / 2 : expectedHours;
+      status = payrollRules.missedCheckout === 'half'
+        ? 'half_day'
+        : evaluateBiometricStatus(checkInTime, totalHours, shiftStart,
+          attendanceConfig.gracePeriodMinutes, expectedHours, attendanceConfig.halfDayThresholdPercent);
+    }
     payload = {
       employee_id: employeeId,
       company_id: companyId,
@@ -1205,8 +1217,9 @@ const recomputeBiometricWindow = async (employeeId, windowStartIso) => {
       check_in_method: 'biometric',
       check_out_method: 'biometric',
       total_hours: Math.round(totalHours * 100) / 100,
-      overtime_hours: Math.max(0, Math.round((totalHours - attendanceConfig.overtimeAfterHours) * 100) / 100),
+      overtime_hours: missedCheckout ? 0 : Math.max(0, Math.round((totalHours - attendanceConfig.overtimeAfterHours) * 100) / 100),
       status,
+      ...(missedCheckout ? { is_auto_checkout: true } : {}),
       // Only now, at (or after) window close, does this lock permanently.
       checkout_status: now.isSameOrAfter(windowEnd) ? 'finalized' : 'provisional',
       last_punch_at: latestPunchTime,
@@ -1342,6 +1355,9 @@ module.exports = {
   transitionPendingBiometricWindows,
   recomputeCurrentBiometricWindow,
   getEmployeeShiftStart,
+  getEmployeeAttendanceContext,
+  statusForRules: statusFor,
+  shiftRulesFor,
   resolveShiftStart,
   isBiometricRow,
   stripBiometricRows,

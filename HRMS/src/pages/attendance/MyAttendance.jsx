@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { LogIn, LogOut, Clock, UserCheck, Home, UserX, CheckCircle2, MapPin, Fingerprint } from 'lucide-react';
 import { PageHeader, Card, Button, Modal, EmptyState, Skeleton, StatusBadge } from '../../components/ui';
 import { AttendanceCalendar } from '../../components/shared/AttendanceCalendar';
-import { cn, formatDate } from '../../lib/utils';
+import { cn, formatDate, formatHours } from '../../lib/utils';
 import {
   useMyAttendance, useMonthlyAttendanceSummary, useAttendanceMutations, useCheckContext,
 } from '../../hooks/useAttendance';
@@ -14,13 +14,13 @@ import toast from 'react-hot-toast';
 import { useSelfieCapture } from '../../components/attendance/SelfieCapture';
 import { planWebCheckIn, requestGeolocation } from '../../lib/webCheckIn';
 
-const GOAL_HOURS = 9;
-const GOAL_MS = GOAL_HOURS * 60 * 60 * 1000;
+/** The day's goal when the shift length isn't known yet. */
+const DEFAULT_GOAL_HOURS = 9;
 
 const STAT_CARDS = [
   { key: 'present', label: 'Present', tone: 'text-success', icon: UserCheck, filter: (a) => a.status !== 'wfh' && ['present', 'late', 'early_departure'].includes(a.status) },
   { key: 'wfh', label: 'WFH', tone: 'text-primary', icon: Home, filter: (a) => a.status === 'wfh' },
-  { key: 'late', label: 'Late', tone: 'text-warning', icon: Clock, filter: (a) => a.status === 'late' },
+  { key: 'late', label: 'Late', tone: 'text-warning', icon: Clock, filter: (a) => a.isLate },
   { key: 'absent', label: 'Absent', tone: 'text-danger', icon: UserX, filter: (a) => a.status === 'absent' },
   { key: 'avgHours', label: 'Avg hours', tone: 'text-fg', icon: Clock, filter: (a) => a.workHours > 0, sort: (a, b) => b.workHours - a.workHours },
   { key: 'overtime', label: 'Overtime', tone: 'text-teal', icon: CheckCircle2, filter: (a) => a.overtime > 0, sort: (a, b) => b.overtime - a.overtime },
@@ -131,6 +131,11 @@ export default function MyAttendance() {
   const todayIsWfh = Boolean(todayRecord?.status === 'wfh' || todayRecord?.isWfh || wfhApproved);
   const showWfhControls = canRequestDailyWfh && !clockedIn && !todayRecord?.checkOut && !permanentWfh;
 
+  // The day's goal is the employee's own shift length (from the server).
+  const GOAL_HOURS = monthly?.summary?.expectedHours || DEFAULT_GOAL_HOURS;
+  const GOAL_MS = GOAL_HOURS * 60 * 60 * 1000;
+  const goalLabel = formatHours(GOAL_HOURS);
+
   const goalTimer = useMemo(() => {
     void tick;
     if (clockedIn && todayRecord?.checkInAt) {
@@ -145,7 +150,7 @@ export default function MyAttendance() {
         remaining: formatDuration(remaining),
         progress,
         overtime,
-        label: overtime > 0 ? 'Overtime' : 'Toward 9h goal',
+        label: overtime > 0 ? 'Overtime' : `Toward ${goalLabel} goal`,
         sub: overtime > 0
           ? `+${formatDuration(overtime)} past goal`
           : `${formatDuration(remaining)} left`,
@@ -161,9 +166,11 @@ export default function MyAttendance() {
         progress,
         overtime: Number(todayRecord.overtime || 0) * 3600 * 1000,
         label: 'Hours worked today',
-        sub: Number(todayRecord.workHours) >= GOAL_HOURS
-          ? `Goal met · ${GOAL_HOURS}h`
-          : `${(GOAL_HOURS - Number(todayRecord.workHours)).toFixed(1)}h short of goal`,
+        sub: todayRecord.isAutoCheckout
+          ? 'Missed check-out — closed automatically'
+          : Number(todayRecord.workHours) >= GOAL_HOURS
+            ? `Goal met · ${goalLabel}`
+            : `${formatHours(GOAL_HOURS - Number(todayRecord.workHours))} short of goal`,
       };
     }
     return {
@@ -172,10 +179,10 @@ export default function MyAttendance() {
       remaining: formatDuration(GOAL_MS),
       progress: 0,
       overtime: 0,
-      label: `${GOAL_HOURS}h work goal`,
+      label: `${goalLabel} work goal`,
       sub: 'Clock in to start the timer',
     };
-  }, [tick, clockedIn, todayRecord]);
+  }, [tick, clockedIn, todayRecord, GOAL_HOURS, GOAL_MS, goalLabel]);
 
   const myAttendanceSummary = monthly?.summary || {
     present: 0, wfh: 0, late: 0, absent: 0, avgHours: 0, overtime: 0,
@@ -476,7 +483,7 @@ export default function MyAttendance() {
                 >
                   <Icon className={cn('h-4 w-4 mb-2', tone)} />
                   <p className={cn('text-xl font-semibold tabular-nums', tone)}>
-                    {key === 'avgHours' ? `${myAttendanceSummary.avgHours}h` : key === 'overtime' ? `${myAttendanceSummary.overtime}h` : myAttendanceSummary[key]}
+                    {key === 'avgHours' ? formatHours(myAttendanceSummary.avgHours) : key === 'overtime' ? formatHours(myAttendanceSummary.overtime) : myAttendanceSummary[key]}
                   </p>
                   <p className="text-xs text-fg-subtle">{label}</p>
                 </button>
@@ -500,7 +507,10 @@ export default function MyAttendance() {
 
       {activeStat && (() => {
         const stat = STAT_CARDS.find((s) => s.key === activeStat);
-        const days = records.filter(stat.filter).sort(stat.sort || ((a, b) => a.date.localeCompare(b.date)));
+        // The same records the counts above come from, so a card's list
+        // always matches its number.
+        const source = monthly?.records?.length ? monthly.records : records;
+        const days = source.filter(stat.filter).sort(stat.sort || ((a, b) => a.date.localeCompare(b.date)));
         return (
           <Modal open onClose={() => setActiveStat(null)} title={`${stat.label} — ${isCurrentMonth ? 'this month' : `${viewMonthLabel} ${viewYear}`}`} subtitle={`${days.length} day${days.length === 1 ? '' : 's'}`}>
             {days.length === 0 ? (
@@ -511,10 +521,12 @@ export default function MyAttendance() {
                   <div key={a.id || a.date} className="flex items-center justify-between rounded-lg bg-muted/40 px-3 py-2 text-sm">
                     <span className="font-medium text-fg">{formatDate(a.date, 'EEE, d MMM')}</span>
                     <span className="text-fg-muted tabular-nums">
-                      {a.checkIn ? `${formatClockLabel(a.checkIn)} – ${formatClockLabel(a.checkOut)}` : '—'}
+                      {a.checkIn ? `${formatClockLabel(a.checkIn)} – ${a.isAutoCheckout ? 'missed' : formatClockLabel(a.checkOut)}` : '—'}
                     </span>
                     <span className={cn('font-semibold tabular-nums', stat.tone)}>
-                      {activeStat === 'overtime' ? `+${a.overtime}h OT` : `${a.workHours}h`}
+                      {activeStat === 'overtime'
+                        ? `+${formatHours(a.overtime)} OT`
+                        : !a.checkOut ? <span className="font-medium text-info">In progress</span> : formatHours(a.workHours)}
                     </span>
                   </div>
                 ))}

@@ -903,9 +903,14 @@ const getLast7DaysAttendance = async (employeeId) => {
     .gte('check_in_time', start)
     .lte('check_in_time', end);
 
+  // Each record counts for its attendance day (an early arrival or a night
+  // shift's check-out can sit on a different calendar date).
+  const { getShiftDayWindow } = require('../utils/helpers');
+  const attendanceService = require('./attendance.service');
+  const shiftStart = await attendanceService.getEmployeeShiftStart(employeeId).catch(() => '09:30');
   const byDate = {};
   for (const row of records || []) {
-    const key = moment(row.check_in_time).tz(TIMEZONE).format('YYYY-MM-DD');
+    const key = getShiftDayWindow(moment(row.check_in_time).tz(TIMEZONE), shiftStart).workDate;
     byDate[key] = row.status;
   }
 
@@ -924,10 +929,13 @@ const getLast7DaysAttendance = async (employeeId) => {
     for (const h of holidays || []) holidayByDate[String(h.date).slice(0, 10)] = h.title || 'Holiday';
   }
 
+  const { getWorkWeek, isWeeklyOff } = require('../utils/workWeek');
+  const workWeek = await getWorkWeek(emp?.company_id || null).catch(() => undefined);
+
   return days.map((day) => {
     const key = day.format('YYYY-MM-DD');
-    const dow = day.day();
-    const isWeekend = dow === 0 || dow === 6;
+    // The company's weekly offs (Settings → Payroll → Weekly offs).
+    const isWeekend = isWeeklyOff(day, workWeek);
     let state = 'none';
 
     if (day.isAfter(today, 'day')) state = 'future';

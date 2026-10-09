@@ -107,9 +107,11 @@ export function mapAttendanceFromApi(row) {
   const checkIn = toDate(c.checkInTime);
   const checkOut = toDate(c.checkOutTime);
   const tzOpts = { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
-  const date = checkIn
-    ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(checkIn)
-    : c.date;
+  // The day the record counts for (server-computed: an early arrival or a
+  // night shift's check-out can sit on another calendar date), else the
+  // check-in's calendar date.
+  const date = c.workDate
+    || (checkIn ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(checkIn) : c.date);
   const emp = c.employee || {};
   const employeeName = emp.firstName
     ? `${emp.firstName} ${emp.lastName || ''}`.trim()
@@ -138,6 +140,8 @@ export function mapAttendanceFromApi(row) {
     checkOutIp: c.checkOutIp || null,
     checkInMethod: c.checkInMethod || null,
     checkOutMethod: c.checkOutMethod || null,
+    isLate: c.isLate ?? status === 'late',
+    isAutoCheckout: Boolean(c.isAutoCheckout),
     // Only meaningful for biometric-sourced rows — web/manual/office_ip
     // rows are always 'finalized' at the DB level.
     checkoutStatus: c.checkoutStatus || 'finalized',

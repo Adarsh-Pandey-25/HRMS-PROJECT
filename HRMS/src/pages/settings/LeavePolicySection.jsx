@@ -433,7 +433,12 @@ export function LeavePolicySection() {
       </Card>
 
       <Card className="p-5">
-        <Toggle label="Auto-deduct casual leave for unplanned absence" checked={form.autoDeduct} onChange={(v) => patchMeta({ autoDeduct: v })} />
+        <Toggle
+          label="Auto-deduct casual leave for unplanned absence"
+          hint="Absences use the employee's Casual Leave before they cost pay. The leave is taken when the payslip is published. Same switch as Settings → Payroll."
+          checked={form.autoDeduct}
+          onChange={(v) => patchMeta({ autoDeduct: v })}
+        />
       </Card>
 
       <Card>

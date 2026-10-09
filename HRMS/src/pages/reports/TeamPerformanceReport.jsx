@@ -5,7 +5,7 @@ import { ExportButton } from '../../components/shared/ExportButton';
 import { useTeamPerformanceReport } from '../../hooks/useReports';
 import { useAuthStore } from '../../store/authStore';
 import { DEPARTMENTS } from '../../lib/constants';
-import { formatCurrency } from '../../lib/utils';
+import { formatCurrency, formatHours } from '../../lib/utils';
 import { MONTH_OPTIONS, buildYearOptions, employeeName } from './reportUtils';
 
 export default function TeamPerformanceReport() {
@@ -60,8 +60,8 @@ export default function TeamPerformanceReport() {
     { accessorKey: 'late', header: 'Late', cell: ({ getValue }) => <span className="tabular-nums">{getValue()}</span> },
     { accessorKey: 'absent', header: 'Absent', cell: ({ getValue }) => <span className={getValue() > 0 ? 'tabular-nums text-danger font-medium' : 'tabular-nums'}>{getValue()}</span> },
     { accessorKey: 'onLeave', header: 'On Leave', cell: ({ getValue }) => <span className="tabular-nums">{getValue()}</span> },
-    { accessorKey: 'totalHours', header: 'Total Hrs', cell: ({ getValue }) => <span className="tabular-nums">{Number(getValue() || 0).toFixed(1)}</span> },
-    { accessorKey: 'overtimeHours', header: 'OT Hrs', cell: ({ getValue }) => <span className="tabular-nums">{Number(getValue() || 0).toFixed(1)}</span> },
+    { accessorKey: 'totalHours', header: 'Total hours', cell: ({ getValue }) => <span className="tabular-nums">{formatHours(getValue(), { empty: '—' })}</span> },
+    { accessorKey: 'overtimeHours', header: 'Overtime', cell: ({ getValue }) => <span className="tabular-nums">{formatHours(getValue(), { empty: '—' })}</span> },
     {
       accessorKey: 'leaveRequests',
       header: 'Leave Requests',

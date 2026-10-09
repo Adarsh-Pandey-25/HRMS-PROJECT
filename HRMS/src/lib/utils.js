@@ -53,6 +53,21 @@ export function daysBetween(from, to) {
   return Math.abs(differenceInDays(b, a)) + 1;
 }
 
+/**
+ * Hours as hours and minutes: 7.99 → "7h 59m", 8.2 → "8h 12m", 9 → "9h".
+ * Hours were shown as decimals ("7.99h"), which reads as a clock time.
+ * `empty` is returned for a missing or zero value.
+ */
+export function formatHours(hours, { empty = '0h' } = {}) {
+  const n = Number(hours);
+  if (!Number.isFinite(n) || n <= 0) return empty;
+  const totalMinutes = Math.round(n * 60);
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  if (!h) return `${m}m`;
+  return m ? `${h}h ${m}m` : `${h}h`;
+}
+
 /** Indian rupee formatting: 101300 -> "₹1,01,300". */
 export function formatCurrency(amount, currency = 'INR') {
   if (amount == null || isNaN(amount)) return '—';

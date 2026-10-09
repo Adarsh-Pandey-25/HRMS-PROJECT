@@ -139,7 +139,6 @@ function buildSalaryDetails(data, payrollConfig) {
     salary_period: period,
     pf_applicable: overrides.pfApplicable,
     pt_applicable: overrides.ptApplicable,
-    esi_applicable: false,
     pf_percent: overrides.pfPercentOverride,
     tds_mode: overrides.tdsMode,
     tds_fixed: overrides.tdsFixed,

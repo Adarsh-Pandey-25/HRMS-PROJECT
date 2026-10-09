@@ -5,7 +5,7 @@ import { ExportButton } from '../../components/shared/ExportButton';
 import { useAttendanceSummaryReport } from '../../hooks/useReports';
 import { useAuthStore } from '../../store/authStore';
 import { DEPARTMENTS } from '../../lib/constants';
-import { formatDate } from '../../lib/utils';
+import { formatDate, formatHours } from '../../lib/utils';
 import { currentMonthRange, employeeName } from './reportUtils';
 
 export default function AttendanceSummaryReport() {
@@ -54,8 +54,8 @@ export default function AttendanceSummaryReport() {
     { accessorKey: 'halfDay', header: 'Half-day', cell: ({ getValue }) => <span className="tabular-nums">{getValue()}</span> },
     { accessorKey: 'absent', header: 'Absent', cell: ({ getValue }) => <span className={getValue() > 0 ? 'tabular-nums text-danger font-medium' : 'tabular-nums'}>{getValue()}</span> },
     { accessorKey: 'leaveDays', header: 'Leave Days', cell: ({ getValue }) => <span className="tabular-nums">{getValue()}</span> },
-    { accessorKey: 'totalHours', header: 'Total Hrs', cell: ({ getValue }) => <span className="tabular-nums font-medium">{Number(getValue() || 0).toFixed(1)}</span> },
-    { accessorKey: 'overtimeHours', header: 'OT Hrs', cell: ({ getValue }) => <span className="tabular-nums">{Number(getValue() || 0).toFixed(1)}</span> },
+    { accessorKey: 'totalHours', header: 'Total hours', cell: ({ getValue }) => <span className="tabular-nums font-medium">{formatHours(getValue(), { empty: '—' })}</span> },
+    { accessorKey: 'overtimeHours', header: 'Overtime', cell: ({ getValue }) => <span className="tabular-nums">{formatHours(getValue(), { empty: '—' })}</span> },
   ], []);
 
   const exportRows = useMemo(() => tableRows.map((r) => ({

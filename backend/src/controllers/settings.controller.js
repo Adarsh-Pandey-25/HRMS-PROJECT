@@ -140,6 +140,10 @@ const updateKey = async (req, res, next) => {
       delete value.brandIconUrl;
       delete value.brand_icon_url;
     }
+    // Weekly offs and pay rules drive attendance and pay — store only what
+    // the server can read back (normalized), never a hand-edited shape.
+    if (key === 'work_week') value = require('../utils/workWeek').normalizeWorkWeek(value);
+    if (key === 'payroll_rules') value = require('../utils/payrollRules').normalizePayrollRules(value);
     if (key === 'asset_config' && value && typeof value === 'object') {
       const names = Array.isArray(value.categories) ? value.categories : [];
       const assetsService = require('../services/assets.service');

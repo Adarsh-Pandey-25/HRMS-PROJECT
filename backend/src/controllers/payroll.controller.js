@@ -121,7 +121,67 @@ const salaryPreview = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+/** An employee in the caller's organisation, or 404. */
+const assertInOrg = async (req, employeeId) => {
+  const ids = await require('../services/tenant.service').getOrgEmployeeIds(req.user.company_id);
+  if (!ids.includes(employeeId)) throw new (require('../utils/errors').NotFoundError)('Employee not found');
+};
+
+/** Which deductions apply to one employee. HR/Admin only. */
+const getPayrollSetup = async (req, res, next) => {
+  try {
+    await assertInOrg(req, req.params.employeeId);
+    successResponse(res, 'Payroll setup', await payrollService.getPayrollSetup(req.params.employeeId));
+  } catch (err) { next(err); }
+};
+
+/** Switch an employee's PF / ESI / PT / TDS / extra deductions. HR can't change their own. */
+const updatePayrollSetup = async (req, res, next) => {
+  try {
+    const employeeId = req.params.employeeId;
+    await assertInOrg(req, employeeId);
+    if (req.user.role === 'hr' && String(employeeId) === String(req.user.id)) {
+      throw new (require('../utils/errors').ForbiddenError)('You cannot change your own payroll setup — an admin has to.');
+    }
+    const b = req.body || {};
+    const result = await payrollService.updatePayrollSetup({
+      employeeId,
+      changes: {
+        pf: b.pf, esi: b.esi, pt: b.pt, tdsMode: b.tdsMode, tdsFixed: b.tdsFixed, optouts: b.optouts,
+      },
+      actor: req.user,
+      ipAddress: req.ip,
+    });
+    successResponse(res, result.changes.length ? 'Payroll setup updated' : 'Nothing changed', result);
+  } catch (err) { next(err); }
+};
+
+const saveRules = async (req, res, next) => {
+  try {
+    const result = await payrollService.savePayrollRules(req.user.company_id, req.body?.rules ?? req.body, req.user);
+    logAudit({
+      companyId: req.user.company_id, actorId: req.user.id, actorRole: req.user.role,
+      actionType: 'settings.payroll_rules.update', targetType: 'settings', targetId: null,
+      afterState: result.rules, ipAddress: req.ip,
+    }).catch(() => {});
+    successResponse(res, 'Pay rules saved', result);
+  } catch (err) { next(err); }
+};
+
+/** Pay simulator — nothing is stored. A real employee must be in the caller's organisation. */
+const simulate = async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    if (body.employeeId) await assertInOrg(req, body.employeeId);
+    successResponse(res, 'Simulated pay', await payrollService.simulatePay(req.user.company_id, body));
+  } catch (err) { next(err); }
+};
+
 module.exports = {
+  getPayrollSetup,
+  updatePayrollSetup,
+  saveRules,
+  simulate,
   salaryPreview,
   initializeMonth,
   getMonthStatus,

@@ -119,6 +119,7 @@ const EMAIL_TYPES = [
   // ── Payroll ──────────────────────────────────────────────────────────────
   { key: 'payslip', label: 'Payslip published', audience: 'employee', trigger: 'HR publishes a payslip.', preference: 'payslip', companyScoped: true },
   { key: 'salary_revised', label: 'Salary revised', audience: 'employee', trigger: 'A salary revision takes effect.', preference: 'salary_revision', companyScoped: true },
+  { key: 'payroll_setup_changed_admin', label: 'Payroll setup changed (admin copy)', audience: 'company_admin', trigger: "HR/Admin switch an employee's PF, ESI, PT, TDS or an extra deduction on or off — old and new setting.", preference: 'salary_revision', companyScoped: true },
   { key: 'payslip_failed', label: 'Payslip generation failed', audience: 'hr', trigger: 'Nothing sends this yet.', preference: 'payroll_alerts', companyScoped: true, live: false },
 
   // ── HR digests ───────────────────────────────────────────────────────────
