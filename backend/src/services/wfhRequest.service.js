@@ -108,7 +108,7 @@ const resolveRequestedDates = ({ from_date, to_date, work_date } = {}) => {
  */
 const requestWfh = async (employeeId, body = {}) => {
   const dates = resolveRequestedDates(body);
-  const reason = body.reason || 'Working from home';
+  const reason = String(body.reason || '').trim().slice(0, 500) || 'Working from home';
 
   const { data: existingRows, error: existingErr } = await supabaseAdmin
     .from('wfh_day_requests')
@@ -263,7 +263,7 @@ const notifyReviewers = async (employeeId, dates, batchId) => {
 const loadBatchRows = async (requestId, { pendingOnly = false } = {}) => {
   const { data: row } = await supabaseAdmin
     .from('wfh_day_requests')
-    .select('*, employee:employee_id(id, first_name, last_name, manager_id, address)')
+    .select('*, employee:employee_id(id, company_id, first_name, last_name, manager_id, address)')
     .eq('id', requestId)
     .maybeSingle();
   if (!row) throw new NotFoundError('WFH request not found');
@@ -292,6 +292,7 @@ const cancelRequest = async (employeeId, requestId) => {
     .from('wfh_day_requests')
     .update({ status: 'cancelled', updated_at: new Date().toISOString() })
     .in('id', pending.map((r) => r.id))
+    .eq('status', 'pending')
     .select();
   if (error) throw new BadRequestError(error.message);
   return toRequestGroup(data || []);
@@ -381,7 +382,7 @@ const review = async (reviewer, requestId, { status, review_note } = {}) => {
   } else if (['hr', 'admin'].includes(role)) {
     const { getCompanyId } = require('../utils/tenant');
     const reviewerCompany = reviewer.company_id || getCompanyId(reviewer);
-    if (anchor.employee && getCompanyId(anchor.employee) !== reviewerCompany) {
+    if (!anchor.employee || getCompanyId(anchor.employee) !== reviewerCompany) {
       throw new ForbiddenError('Not authorized to review WFH for another company');
     }
   } else {
@@ -394,11 +395,13 @@ const review = async (reviewer, requestId, { status, review_note } = {}) => {
       status,
       reviewed_by: reviewer.id,
       reviewed_at: new Date().toISOString(),
-      review_note: review_note || null,
+      review_note: review_note ? String(review_note).slice(0, 1000) : null,
       updated_at: new Date().toISOString(),
     })
     .in('id', pending.map((r) => r.id))
+    .eq('status', 'pending') // a second reviewer acting at the same moment changes nothing
     .select();
+  if (!error && !(data || []).length) throw new ConflictError('This request was already reviewed');
   if (error) throw new BadRequestError(error.message);
 
   const reviewed = toRequestGroup(data || []);

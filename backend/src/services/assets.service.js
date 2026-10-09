@@ -390,10 +390,16 @@ const assignAsset = async (id, employeeId, companyId, companyEmployeeIds = null)
   return data;
 };
 
-const returnAsset = async (id, companyId) => {
+/**
+ * Puts an asset back in inventory. `expectedAssigneeId` is for an approved
+ * return request: the asset is released only while it is still assigned to
+ * the employee who asked — so a ticket naming someone else's asset, or an
+ * asset reassigned since the request, changes nothing.
+ */
+const returnAsset = async (id, companyId, { expectedAssigneeId = null } = {}) => {
   await assertInCompany('assets', id, companyId);
 
-  const { data, error } = await supabaseAdmin
+  let q = supabaseAdmin
     .from('assets')
     .update({
       assigned_to: null,
@@ -402,11 +408,14 @@ const returnAsset = async (id, companyId) => {
       updated_at: new Date().toISOString(),
     })
     .eq('id', id)
-    .eq('company_id', resolveCompanyId(companyId))
-    .select()
-    .single();
+    .eq('company_id', resolveCompanyId(companyId));
+  if (expectedAssigneeId) q = q.eq('assigned_to', expectedAssigneeId);
+  const { data, error } = await q.select().maybeSingle();
   if (error) throw new BadRequestError(error.message);
-  if (!data) throw new NotFoundError('Asset not found');
+  if (!data) {
+    if (expectedAssigneeId) throw new ConflictError('This asset is not assigned to the person who asked to return it');
+    throw new NotFoundError('Asset not found');
+  }
   return data;
 };
 

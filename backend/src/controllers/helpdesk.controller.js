@@ -96,6 +96,14 @@ const myTickets = async (req, res, next) => {
 
 const create = async (req, res, next) => {
   try {
+    // Return requests are composed by the server (POST /assets/:id/return-request)
+    // so the asset ID in them is checked; a hand-written one is refused.
+    if (isAssetReturnTicket(req.body)) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'To return an asset, use My Assets → Request return' },
+      });
+    }
     const data = await helpdeskService.createTicket(req.user.id, req.body, companyIdOf(req));
         auditFromRequest(req, {
       actionType: isRegularizationTicket(data) ? 'regularization.request' : 'ticket.create',
@@ -143,7 +151,7 @@ const updateStatus = async (req, res, next) => {
       if (assetId && decided === 'resolved') {
         try {
           const returned = await require('../services/assets.service')
-            .returnAsset(assetId, companyIdOf(req));
+            .returnAsset(assetId, companyIdOf(req), { expectedAssigneeId: data.raised_by });
           auditFromRequest(req, {
             actionType: 'asset.return.approve', targetType: 'asset', targetId: assetId,
             afterState: { name: returned?.name, status: returned?.status, ticketId: req.params.id },
@@ -152,6 +160,10 @@ const updateStatus = async (req, res, next) => {
           logger.error('[Helpdesk] Approved return but failed to release the asset', {
             ticketId: req.params.id, assetId, error: e.message,
           });
+          // Say so on the ticket, so the reviewer sees the asset did not move.
+          helpdeskService.addComment(req.params.id, {
+            by: req.user.id, text: `Asset not returned: ${e.message}`, at: new Date().toISOString(),
+          }, ids, companyIdOf(req)).catch(() => {});
         }
       } else if (assetId && decided === 'closed') {
         auditFromRequest(req, {
