@@ -459,7 +459,7 @@ function SalaryPreview({ basic, hra, da, special, transport, medical, payrollCon
   );
 }
 
-function PersonalStep({ register, errors, photoFile, setPhotoFile, watch, setValue, isAdd = false, detailsOptional = isAdd }) {
+function PersonalStep({ register, errors, photoFile, setPhotoFile, watch, setValue, isAdd = false, detailsOptional = isAdd, detailsPending = false }) {
   const firstNameReg = register('firstName', {
     onChange: (e) => {
       const cleaned = e.target.value.replace(/[^A-Za-z\s.'-]/g, '');
@@ -515,7 +515,9 @@ function PersonalStep({ register, errors, photoFile, setPhotoFile, watch, setVal
           <p className="text-sm text-fg-muted">
             {isAdd
               ? <>Only the <span className="font-medium text-fg">name</span> is needed here. {personName} will be asked for their date of birth, contact, address, emergency contact and bank details the first time they sign in. Anything you fill in now is pre-filled for them.</>
-              : <>{personName} hasn&apos;t filled in their personal details yet — they&apos;ll be asked on their next sign-in. Whatever you fill in here is used instead.</>}
+              : detailsPending
+                ? <>{personName} hasn&apos;t filled in their personal details yet — they&apos;ll be asked on their next sign-in. Whatever you fill in here is used instead.</>
+                : <>Personal details are optional here. Whatever is still missing when you save, {personName} is asked to fill in on their next sign-in.</>}
           </p>
         </div>
       )}
@@ -1272,6 +1274,9 @@ function EditEmployeeForm({ navigate, existing }) {
   const [step, setStep] = useState(0);
   // Added without personal details and not signed in to fill them yet.
   const detailsPending = existing.profileCompleted === false;
+  // Personal details are optional for HR/Admin here, the same as when adding
+  // someone: whatever is missing, the employee fills in on their next
+  // sign-in (the server asks them — profileCompletion.syncAfterHrEdit).
   const role = useAuthStore((s) => s.role);
   const canAssignCompany = role === 'admin' || role === 'hr';
   const { employees } = useEmployees();
@@ -1301,7 +1306,7 @@ function EditEmployeeForm({ navigate, existing }) {
   } = useForm({
     resolver: zodResolver(employeeSchema.omit({ employeeId: true }).extend({
       employeeId: z.string().optional(),
-      ...(detailsPending ? optionalPersonalFields : {}),
+      ...optionalPersonalFields,
     })),
     defaultValues: {
       firstName: existing.firstName,
@@ -1370,8 +1375,8 @@ function EditEmployeeForm({ navigate, existing }) {
           firstName: data.firstName,
           lastName: data.lastName,
           email: data.workEmail,
-          // Blank only while the employee's own details are still pending —
-          // left unchanged then, rather than written as an invalid ''.
+          // Personal details are optional here: a blank field is left
+          // unchanged, never written as an invalid ''.
           phone: data.phone || undefined,
           dateOfBirth: data.dob || undefined,
           gender: data.gender || undefined,
@@ -1420,7 +1425,7 @@ function EditEmployeeForm({ navigate, existing }) {
 
       <form onSubmit={handleSubmit(onSubmit, onInvalid)}>
         <Card className="p-6">
-          {step === 0 && <PersonalStep register={register} errors={errors} watch={watch} setValue={setValue} detailsOptional={detailsPending} />}
+          {step === 0 && <PersonalStep register={register} errors={errors} watch={watch} setValue={setValue} detailsOptional detailsPending={detailsPending} />}
           {step === 1 && (
             <JobStep
               register={register}

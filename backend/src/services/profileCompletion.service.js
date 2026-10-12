@@ -145,27 +145,32 @@ const completeOwnProfile = async (employeeId, body) => {
 };
 
 /**
- * After HR/Admin edit someone whose profile was still pending: if HR has
- * now filled in everything, the employee is not asked again. Best-effort —
- * never fails the HR save (e.g. before migration 20261003 is applied).
+ * After HR/Admin save someone's record: personal details are optional for
+ * them, so whatever is still missing the employee is asked for on their next
+ * sign-in — the same as a new hire. If everything is now filled in, they are
+ * not asked. Returns the resulting profile_completed value (null if unknown).
  */
-const markCompleteIfFilled = async (employeeId) => {
+const syncAfterHrEdit = async (employeeId) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('employees')
       .select(`id, date_of_birth, gender, phone, address, emergency_contact, bank_details, ${PROFILE_COLUMN}`)
       .eq('id', employeeId)
       .maybeSingle();
-    if (error || !data || data[PROFILE_COLUMN] !== false || !isProfileComplete(data)) return false;
+    if (error || !data || !(PROFILE_COLUMN in data)) return null;
+    const complete = isProfileComplete(data);
+    if (complete === (data[PROFILE_COLUMN] !== false)) return complete;
     const { error: updateError } = await supabaseAdmin
       .from('employees')
-      .update({ [PROFILE_COLUMN]: true, profile_completed_at: new Date().toISOString() })
-      .eq('id', employeeId)
-      .eq(PROFILE_COLUMN, false);
-    return !updateError;
+      .update(complete
+        ? { [PROFILE_COLUMN]: true, profile_completed_at: new Date().toISOString() }
+        : { [PROFILE_COLUMN]: false, profile_completed_at: null })
+      .eq('id', employeeId);
+    if (updateError) return null;
+    return complete;
   } catch (err) {
-    logger.warn('[ProfileCompletion] markCompleteIfFilled failed', { employeeId, error: err.message });
-    return false;
+    logger.warn('[ProfileCompletion] syncAfterHrEdit failed', { employeeId, error: err.message });
+    return null;
   }
 };
 
@@ -178,7 +183,7 @@ module.exports = {
   isProfileComplete,
   buildProfileUpdate,
   completeOwnProfile,
-  markCompleteIfFilled,
+  syncAfterHrEdit,
   isMissingProfileColumn,
   PROFILE_COLUMN,
 };

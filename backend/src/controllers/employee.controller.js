@@ -578,10 +578,12 @@ const update = async (req, res, next) => {
 
     if (error) throw new BadRequestError(error.message);
 
-    // HR/Admin may have filled in the details the employee was still due
-    // to provide — then they are not asked again on sign-in.
-    if (isPrivileged && !isSelf && data?.profile_completed === false) {
-      if (await profileCompletion.markCompleteIfFilled(req.params.id)) data.profile_completed = true;
+    // Personal details are optional for HR/Admin, on edit as on add. If they
+    // filled everything in, the employee isn't asked; if anything is still
+    // missing, the employee is asked for it on their next sign-in.
+    if (isPrivileged && !isSelf) {
+      const complete = await profileCompletion.syncAfterHrEdit(req.params.id);
+      if (complete != null && data) data.profile_completed = complete;
     }
 
     // PF / PT / TDS changed from this form — admins hear about it the same
