@@ -1,11 +1,11 @@
-import { useMemo } from 'react';
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Send } from 'lucide-react';
 import { PageHeader, Card, Button, Select, Textarea, DateRangePicker, Skeleton } from '../../components/ui';
 import { useLeaveMutations, useLeaveTypes } from '../../hooks/useLeaves';
 import { leaveTypeLabel } from '../../lib/mappers';
-import { daysBetween } from '../../lib/utils';
+import { fetchLeaveDayCountApi } from '../../api/leaves.api';
+import { formatDate } from '../../lib/utils';
 import toast from 'react-hot-toast';
 
 export default function ApplyLeave() {
@@ -13,6 +13,19 @@ export default function ApplyLeave() {
   const { apply } = useLeaveMutations();
   const { data: leaveTypes, isLoading } = useLeaveTypes();
   const [form, setForm] = useState({ type: '', from: '', to: '', reason: '' });
+  // What the server will charge: weekly offs and holidays in the range are free.
+  const [count, setCount] = useState(null);
+  useEffect(() => {
+    if (!form.from || !form.to || form.to < form.from) { setCount(null); return undefined; }
+    let alive = true;
+    const t = setTimeout(() => {
+      fetchLeaveDayCountApi({ from: form.from, to: form.to })
+        .then((c) => { if (alive) setCount(c); })
+        .catch(() => { if (alive) setCount(null); });
+    }, 250);
+    return () => { alive = false; clearTimeout(t); };
+  }, [form.from, form.to]);
+  const freeDays = count?.excluded || [];
 
   const typeOptions = useMemo(() => {
     const rows = Array.isArray(leaveTypes) ? leaveTypes : leaveTypes?.types || [];
@@ -37,6 +50,7 @@ export default function ApplyLeave() {
   const submit = async () => {
     const type = form.type || typeOptions[0]?.value;
     if (!type || !form.from || !form.to || !form.reason) return toast.error('Please fill all fields');
+    if (count && count.days === 0) return toast.error('Every day you picked is a weekly off or a holiday — no leave needed');
     try {
       await apply.mutateAsync({ ...form, type, leaveType: type });
       toast.success('Leave request submitted');
@@ -73,8 +87,19 @@ export default function ApplyLeave() {
             onFromChange={(v) => setForm({ ...form, from: v })}
             onToChange={(v) => setForm({ ...form, to: v })}
           />
-          {form.from && form.to && (
-            <p className="text-xs text-primary font-medium">{daysBetween(form.from, form.to)} day(s) selected</p>
+          {form.from && form.to && count && (
+            <div className="rounded-xl bg-primary/5 px-3 py-2 text-xs">
+              <p className="font-semibold text-primary">
+                {count.days === 0
+                  ? 'No leave needed — these are all weekly offs or holidays'
+                  : `${count.days} day${count.days === 1 ? '' : 's'} of leave`}
+              </p>
+              {freeDays.length > 0 && (
+                <p className="mt-0.5 text-fg-subtle">
+                  Not counted: {freeDays.map((d) => `${formatDate(d.date, 'EEE d MMM')} (${d.reason === 'holiday' ? d.name : 'weekly off'})`).join(', ')}
+                </p>
+              )}
+            </div>
           )}
           <Textarea
             label="Reason"

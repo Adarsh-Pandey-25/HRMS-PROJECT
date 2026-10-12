@@ -4,7 +4,7 @@ const { TIMEZONE, normalizeLeaveCode } = require('../utils/constants');
 const {
   BadRequestError, NotFoundError, ForbiddenError, ConflictError,
 } = require('../utils/errors');
-const { calculateLeaveDays, paginate, buildMeta } = require('../utils/helpers');
+const { paginate, buildMeta } = require('../utils/helpers');
 const { getTeamEmployeeIds } = require('./attendance.service');
 const logger = require('../utils/logger');
 const approvalFlow = require('./approvalFlow.service');
@@ -16,17 +16,70 @@ const { getCompanyId, DEFAULT_COMPANY_ID } = require('../utils/tenant');
 
 /** Real per-employee balance after the transaction — same table/formula getLeaveBalance reads, so the number shown in the email always matches what the UI shows (N-04). */
 const remainingBalanceFor = async (employeeId, leaveType, year, companyId) => {
+  const row = await balanceRowFor(employeeId, leaveType, year, companyId);
+  return row ? row.remaining : null;
+};
+
+/** { allocated, remaining } for one leave type, or null. */
+const balanceRowFor = async (employeeId, leaveType, year, companyId) => {
   try {
     const balances = await getLeaveBalance(employeeId, year, companyId);
     const row = (balances || []).find((b) => b.leave_type === leaveType);
     if (!row) return null;
-    return Number(row.total_allocated || 0) - Number(row.used || 0) - Number(row.encashed || 0);
+    const allocated = Number(row.total_allocated || 0);
+    return { allocated, remaining: allocated - Number(row.used || 0) - Number(row.encashed || 0) };
   } catch {
     return null;
   }
 };
 
 const LOW_BALANCE_THRESHOLD = 3;
+
+const MAX_LEAVE_SPAN_DAYS = 366;
+
+/**
+ * How many days a leave costs: only working days count. Weekly offs
+ * (Settings → Payroll → Weekly offs) and company holidays inside the range
+ * are free — a Friday-to-Monday leave over a weekend is 2 days, not 4. (It
+ * used to count every calendar day.) A half day is 0.5, and only on a
+ * working day.
+ * Returns { days, workingDates, excluded: [{ date, reason, name }] }.
+ */
+const countLeaveDays = async (companyId, fromDate, toDate, isHalfDay = false) => {
+  const from = moment.tz(fromDate, 'YYYY-MM-DD', TIMEZONE);
+  const to = moment.tz(toDate, 'YYYY-MM-DD', TIMEZONE);
+  if (!from.isValid() || !to.isValid()) throw new BadRequestError('Enter valid dates');
+  if (to.isBefore(from, 'day')) throw new BadRequestError('To date must be after from date');
+  if (to.diff(from, 'days') + 1 > MAX_LEAVE_SPAN_DAYS) throw new BadRequestError('A leave can span at most a year');
+
+  const { getWorkWeek, isWeeklyOff } = require('../utils/workWeek');
+  const workWeek = await getWorkWeek(companyId);
+  const { data: holidays, error } = await supabaseAdmin
+    .from('holidays')
+    .select('date, title')
+    .eq('company_id', companyId)
+    .gte('date', from.format('YYYY-MM-DD'))
+    .lte('date', to.format('YYYY-MM-DD'));
+  if (error) throw new BadRequestError(error.message);
+  const holidayByDate = new Map((holidays || []).map((h) => [String(h.date).slice(0, 10), h.title || 'Holiday']));
+
+  const workingDates = [];
+  const excluded = [];
+  for (const c = from.clone(); c.isSameOrBefore(to, 'day'); c.add(1, 'day')) {
+    const key = c.format('YYYY-MM-DD');
+    if (isWeeklyOff(c, workWeek)) excluded.push({ date: key, reason: 'weekly_off', name: c.format('dddd') });
+    else if (holidayByDate.has(key)) excluded.push({ date: key, reason: 'holiday', name: holidayByDate.get(key) });
+    else workingDates.push(key);
+  }
+  const days = isHalfDay ? (workingDates.length ? 0.5 : 0) : workingDates.length;
+  return { days, workingDates, excluded };
+};
+
+/** What applying for these dates would cost — for the Apply Leave form. */
+const previewLeaveDays = async (employeeId, fromDate, toDate, isHalfDay = false) => {
+  const companyId = await resolveEmployeeCompanyId(employeeId);
+  return countLeaveDays(companyId, fromDate, toDate, isHalfDay);
+};
 
 const resolveEmployeeCompanyId = async (employeeId) => {
   const { data } = await supabaseAdmin
@@ -70,7 +123,14 @@ const applyLeave = async (employeeId, data) => {
     throw new BadRequestError('To date must be after from date');
   }
 
-  const totalDays = calculateLeaveDays(from_date, to_date, is_half_day);
+  // Only working days cost leave — weekly offs and holidays in between are free.
+  const companyId = await resolveEmployeeCompanyId(employeeId);
+  const { days: totalDays } = await countLeaveDays(companyId, from_date, to_date, is_half_day);
+  if (totalDays <= 0) {
+    throw new BadRequestError(is_half_day
+      ? 'That day is a weekly off or a holiday — no leave needed'
+      : 'Every day you picked is a weekly off or a holiday — no leave needed');
+  }
 
   // Audit finding N-13: block a new application that overlaps an existing
   // pending/approved leave for the same employee — standard interval
@@ -90,7 +150,6 @@ const applyLeave = async (employeeId, data) => {
     throw new BadRequestError('You already have a pending or approved leave request that overlaps these dates');
   }
 
-  const companyId = await resolveEmployeeCompanyId(employeeId);
 
   // Block applying for disabled leave types
   const year = moment(from_date).year();
@@ -277,15 +336,35 @@ const notifyLeaveApproved = async (leave, approver) => {
     const year = moment(leave.from_date).year();
     const companyId = getCompanyId(leave.employee) || leave.employee.company_id;
     const approverName = approver ? `${approver.first_name || ''} ${approver.last_name || ''}`.trim() : undefined;
-    const remaining = await remainingBalanceFor(leave.employee_id, leave.leave_type, year, companyId);
+    const balance = await balanceRowFor(leave.employee_id, leave.leave_type, year, companyId);
+    const remaining = balance ? balance.remaining : null;
 
     emailService.leaveApprovedEmail(leave.employee, leave, { approverName, remainingBalance: remaining }).catch((e) =>
       logger.warn('leaveApprovedEmail failed', { error: e.message }));
 
-    if (remaining != null && remaining <= LOW_BALANCE_THRESHOLD) {
+    // A one-off notice when this leave brought a real balance low — never
+    // for a type the employee has no allocation of (Unpaid, Comp Off…),
+    // where "0 left" is not news.
+    if (balance && balance.allocated > 0 && remaining <= LOW_BALANCE_THRESHOLD) {
       emailService.leaveBalanceLowEmail(leave.employee, { leaveType: leave.leave_type, remaining, threshold: LOW_BALANCE_THRESHOLD }).catch((e) =>
         logger.warn('leaveBalanceLowEmail failed', { error: e.message }));
     }
+  }
+};
+
+/**
+ * The days an approval charges — recounted now, so a request made before
+ * weekly offs and holidays were left out (or before a holiday was added)
+ * is charged correctly.
+ */
+const chargeableDaysFor = async (leave) => {
+  try {
+    const companyId = leave.company_id || await resolveEmployeeCompanyId(leave.employee_id);
+    const { days } = await countLeaveDays(companyId, String(leave.from_date).slice(0, 10), String(leave.to_date).slice(0, 10), leave.is_half_day);
+    return days;
+  } catch (err) {
+    logger.warn('Leave day recount failed — charging the stored count', { leaveId: leave.id, error: err.message });
+    return Number(leave.total_days || 0);
   }
 };
 
@@ -333,6 +412,7 @@ const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
       // (not just the earlier read-time check) closes the TOCTOU window —
       // a double-click/retried request that loses the race updates zero
       // rows instead of double-approving and double-deducting balance.
+      const chargeDays = await chargeableDaysFor(leave);
       const { data: updated, error } = await supabaseAdmin
         .from('leaves')
         .update({
@@ -341,6 +421,7 @@ const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
           manager_approved_at: new Date().toISOString(),
           approved_by: approver.id,
           approved_at: new Date().toISOString(),
+          total_days: chargeDays,
         })
         .eq('id', leaveId)
         .eq('status', 'pending')
@@ -348,8 +429,8 @@ const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
         .maybeSingle();
       if (error) throw new BadRequestError(error.message);
       if (!updated) throw new ConflictError('This leave has already been processed');
-      await adjustLeaveBalanceUsed(leave.employee_id, leave.from_date, leave.leave_type, leave.total_days);
-      await notifyLeaveApproved({ ...leave, id: leaveId }, approver);
+      await adjustLeaveBalanceUsed(leave.employee_id, leave.from_date, leave.leave_type, chargeDays);
+      await notifyLeaveApproved({ ...leave, total_days: chargeDays, id: leaveId }, approver);
       return updated;
     }
 
@@ -388,12 +469,14 @@ const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
   // Audit finding N-05: same TOCTOU close as the manager branch above —
   // .eq('status','pending') on the write itself, not just the read-time
   // check, so a lost race updates zero rows instead of double-approving.
+  const chargeDays = await chargeableDaysFor(leave);
   const { data: updated, error } = await supabaseAdmin
     .from('leaves')
     .update({
       status: 'approved',
       approved_by: approver.id,
       approved_at: new Date().toISOString(),
+      total_days: chargeDays,
     })
     .eq('id', leaveId)
     .eq('status', 'pending')
@@ -403,8 +486,8 @@ const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
   if (error) throw new BadRequestError(error.message);
   if (!updated) throw new ConflictError('This leave has already been processed');
 
-  await adjustLeaveBalanceUsed(leave.employee_id, leave.from_date, leave.leave_type, leave.total_days);
-  await notifyLeaveApproved({ ...leave, id: leaveId }, approver);
+  await adjustLeaveBalanceUsed(leave.employee_id, leave.from_date, leave.leave_type, chargeDays);
+  await notifyLeaveApproved({ ...leave, total_days: chargeDays, id: leaveId }, approver);
 
   return updated;
 };
@@ -717,6 +800,8 @@ const calculateEncashment = async (employeeId, leaveType, days) => {
 
 module.exports = {
   applyLeave,
+  countLeaveDays,
+  previewLeaveDays,
   adjustLeaveBalanceUsed,
   getLeaves,
   approveLeave,

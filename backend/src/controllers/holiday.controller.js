@@ -56,6 +56,10 @@ const byYear = async (req, res, next) => {
     const start = `${year}-01-01`;
     const end = `${year}-12-31`;
     const companyId = companyIdOf(req);
+    // The national holidays are there by default (added once per year, no
+    // email). A failure here never blocks showing the calendar.
+    await require('../services/nationalHolidays.service').ensureNationalHolidays(companyId, year)
+      .catch((err) => logger.warn('[Holidays] National holidays not added', { companyId, year, error: err.message }));
 
     const { data, error } = await supabaseAdmin
       .from('holidays')

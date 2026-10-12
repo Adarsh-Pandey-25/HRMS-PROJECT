@@ -4,7 +4,6 @@ const { supabaseAdmin } = require('../config/supabase');
 const {
   pendingApprovalsDigestEmail,
   joinerDigestEmail,
-  leaveBalanceLowEmail,
 } = require('../services/email.service');
 const emailPreferencesService = require('../services/emailPreferences.service');
 const { getHrEmailRecipients } = require('../services/emailRecipients.service');
@@ -188,104 +187,24 @@ const runJoinerDigest = withCronLock('digest_joiners', 10 * 60 * 1000, async (re
   return summary;
 });
 
-/**
- * FIX 6F — Leave balance low alert: weekly (Monday 8AM).
- * Emails each active employee whose remaining balance for any leave type is below threshold.
- * Threshold: 3 days (remaining = total_allocated - used - encashed).
- */
-const BALANCE_LOW_THRESHOLD = parseInt(process.env.LEAVE_LOW_THRESHOLD ?? '3', 10);
-
-const runLeaveBalanceLowCheck = withCronLock('digest_leave_balance_low', 10 * 60 * 1000, async (reason = 'cron') => {
-  const year = moment().tz(TIMEZONE).year();
-  const summary = { reason, year, sent: 0, skipped: 0, errors: 0 };
-
-  try {
-    const tenantService = require('../services/tenant.service');
-    const companies = await tenantService.listActiveCompanies();
-
-    for (const company of companies || []) {
-      const companyId = String(company.id);
-      if (!await emailPreferencesService.isEmailEnabled(companyId, 'leave_balance_low')) {
-        summary.skipped += 1;
-        continue;
-      }
-
-      const { data: balances, error: balancesError } = await supabaseAdmin
-        .from('leave_balances')
-        .select('employee_id, leave_type, total_allocated, used, encashed, employee:employee_id(id, first_name, last_name, email, company_id, is_active)')
-        .eq('year', year);
-
-      if (balancesError) {
-        logger.warn('[WeeklyDigest] Leave balances query failed', { companyId, error: balancesError.message });
-        summary.errors += 1;
-        continue;
-      }
-
-      // Group by employee, filter to company and active
-      const byEmployee = new Map();
-      for (const b of balances || []) {
-        const emp = b.employee;
-        if (!emp || !emp.is_active) continue;
-        if (String(emp.company_id || DEFAULT_COMPANY_ID) !== companyId) continue;
-        if (!emp.email) continue;
-
-        const remaining = Number(b.total_allocated || 0) - Number(b.used || 0) - Number(b.encashed || 0);
-        if (remaining > BALANCE_LOW_THRESHOLD) continue;
-
-        if (!byEmployee.has(emp.id)) byEmployee.set(emp.id, { emp, lowBalances: [] });
-        byEmployee.get(emp.id).lowBalances.push({
-          leaveType: b.leave_type,
-          remaining,
-        });
-      }
-
-      for (const { emp, lowBalances } of byEmployee.values()) {
-        if (!lowBalances.length) continue;
-        // Send one email per employee — primary type is the lowest balance
-        const sorted = [...lowBalances].sort((a, b) => a.remaining - b.remaining);
-        const primary = sorted[0];
-        const otherBalances = sorted.slice(1).map((lb) => ({ type: lb.leaveType, remaining: lb.remaining }));
-        try {
-          await leaveBalanceLowEmail(emp, {
-            leaveType: primary.leaveType,
-            remaining: primary.remaining,
-            threshold: BALANCE_LOW_THRESHOLD,
-            otherBalances,
-          });
-          summary.sent += 1;
-        } catch (err) {
-          summary.errors += 1;
-          logger.warn('[WeeklyDigest] Leave balance low email failed', {
-            companyId, employeeId: emp.id, error: err.message,
-          });
-        }
-      }
-    }
-  } catch (err) {
-    summary.errors += 1;
-    logger.error('[WeeklyDigest] Leave balance low check failed', { reason, error: err.message });
-    await alertOnCronFailure('digest_leave_balance_low', err.message).catch((e) =>
-      logger.error('[CRON] alertOnCronFailure failed', { job: 'digest_leave_balance_low', error: e.message }));
-  }
-
-  logger.info('[WeeklyDigest] Leave balance low check completed', summary);
-  return summary;
-});
+// There is no recurring "leave balance low" reminder. It emailed every
+// employee every Monday, and anyone with a leave type allocated 0 days (Earned
+// Leave before it accrues, WFH, Comp Off, Unpaid…) was told that balance was
+// "running low" every single week. The only low-balance email now is the
+// one-off notice when an approved leave actually brings a real balance down
+// (leave.service.js notifyLeaveApproved).
 
 const startWeeklyDigestCrons = () => {
   // Pending approvals: daily at 8:30 AM
   cron.schedule('30 8 * * *', () => runPendingApprovalsDigest('cron').catch(() => {}), { timezone: config.timezone });
   // Joiner digest: Mondays at 9 AM
   cron.schedule('0 9 * * 1', () => runJoinerDigest('cron').catch(() => {}), { timezone: config.timezone });
-  // Leave balance low: Mondays at 8 AM
-  cron.schedule('0 8 * * 1', () => runLeaveBalanceLowCheck('cron').catch(() => {}), { timezone: config.timezone });
 
-  logger.info(`Weekly digest crons scheduled (pending approvals: daily 8:30AM, joiner digest + leave balance: Mondays) ${config.timezone}`);
+  logger.info(`Weekly digest crons scheduled (pending approvals: daily 8:30AM, joiner digest: Mondays) ${config.timezone}`);
 };
 
 module.exports = {
   startWeeklyDigestCrons,
   runPendingApprovalsDigest,
   runJoinerDigest,
-  runLeaveBalanceLowCheck,
 };

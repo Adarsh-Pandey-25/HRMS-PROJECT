@@ -12,6 +12,7 @@ const { startBirthdayAnniversaryCron } = require('./cron/birthdayAnniversary.cro
 const { startOnboardingCron } = require('./cron/onboarding.cron');
 const { startWeeklyDigestCrons } = require('./cron/weeklyDigest.cron');
 const { startSalaryRevisionCron } = require('./cron/salaryRevision.cron');
+const { startNationalHolidaysCron } = require('./cron/nationalHolidays.cron');
 
 const PORT = config.port;
 
@@ -87,6 +88,7 @@ const server = app.listen(PORT, config.host, () => {
     startOnboardingCron();
     startWeeklyDigestCrons();
     startSalaryRevisionCron();
+    startNationalHolidaysCron();
   }
   // Tag legacy employees under the default company so new workspaces stay empty
   require('./services/tenant.service').ensureTenantBackfill()

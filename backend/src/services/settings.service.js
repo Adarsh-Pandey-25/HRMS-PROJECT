@@ -214,6 +214,16 @@ const seedCompanySettings = async (companyId, companyProfile, updatedBy = null, 
   for (const [key, value] of Object.entries(defaults)) {
     await setSetting(key, value, updatedBy, companyId);
   }
+
+  // A new workspace starts with the national holidays (this year and next) —
+  // in the background, no email.
+  const { runInBackground } = require('../utils/background');
+  runInBackground('national holidays for new company', async () => {
+    const { ensureNationalHolidays } = require('./nationalHolidays.service');
+    const year = new Date().getFullYear();
+    await ensureNationalHolidays(companyId, year);
+    await ensureNationalHolidays(companyId, year + 1);
+  });
 };
 
 module.exports = {

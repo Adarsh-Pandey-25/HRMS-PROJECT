@@ -75,3 +75,8 @@ export async function cancelLeaveApi(id) {
 export async function fetchLeaveCalendarApi(month, year) {
   return apiRequest({ method: 'GET', url: '/leaves/calendar', params: { month, year } });
 }
+
+/** How many leave days a date range costs — weekly offs and holidays are free. */
+export async function fetchLeaveDayCountApi({ from, to, halfDay = false }) {
+  return apiRequest({ method: 'GET', url: '/leaves/day-count', params: { from_date: from, to_date: to || from, is_half_day: halfDay } });
+}

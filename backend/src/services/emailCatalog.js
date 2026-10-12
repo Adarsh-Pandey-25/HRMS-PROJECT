@@ -55,7 +55,7 @@ const PREFERENCES = {
   // Leave
   leave_updates: { group: 'Leave', label: 'Leave status updates', description: 'To the employee when they apply, and when their leave is approved or rejected.' },
   leave_approval_requests: { group: 'Leave', label: 'Leave approval request', description: "To the employee's manager when leave needs their approval." },
-  leave_balance_low: { group: 'Leave', label: 'Low leave balance', description: 'When an employee\'s leave balance drops below the threshold.' },
+  leave_balance_low: { group: 'Leave', label: 'Low leave balance', description: 'Once, when an approved leave brings a balance down to 3 days or fewer. No recurring reminder.' },
   // Payroll
   payslip: { group: 'Payroll', label: 'Payslip published', description: 'To the employee when their payslip is published.' },
   salary_revision: { group: 'Payroll', label: 'Salary revision', description: 'To the employee when a salary revision takes effect.' },
@@ -114,7 +114,7 @@ const EMAIL_TYPES = [
   { key: 'leave_rejected', label: 'Leave rejected', audience: 'employee', trigger: 'Leave is rejected.', preference: 'leave_updates', companyScoped: true },
   { key: 'leave_balance_changed', label: 'Leave balance changed', audience: 'employee', trigger: "HR/Admin change the employee's leave allocation after it was first set (the first allocation sends nothing).", preference: 'leave_updates', companyScoped: true },
   { key: 'leave_balance_changed_admin', label: 'Leave balance changed (admin copy)', audience: 'company_admin', trigger: "Same change — tells the company's admins what it was and what it is now.", preference: 'leave_updates', companyScoped: true },
-  { key: 'leave_balance_low', label: 'Low leave balance', audience: 'employee', trigger: 'Leave approval or weekly check finds the balance below threshold.', preference: 'leave_balance_low', companyScoped: true },
+  { key: 'leave_balance_low', label: 'Low leave balance', audience: 'employee', trigger: 'An approved leave brings a leave type that has an allocation down to 3 days or fewer. (No recurring reminder.)', preference: 'leave_balance_low', companyScoped: true },
 
   // ── Payroll ──────────────────────────────────────────────────────────────
   { key: 'payslip', label: 'Payslip published', audience: 'employee', trigger: 'HR publishes a payslip.', preference: 'payslip', companyScoped: true },

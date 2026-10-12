@@ -180,7 +180,18 @@ const setBalance = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+/** How many leave days these dates would cost (weekly offs and holidays are free). */
+const dayCount = async (req, res, next) => {
+  try {
+    const { from_date: from, to_date: to } = req.query;
+    const half = req.query.is_half_day === 'true' || req.query.is_half_day === true;
+    const data = await leaveService.previewLeaveDays(req.user.id, from, to || from, half);
+    successResponse(res, 'Leave day count', data);
+  } catch (err) { next(err); }
+};
+
 module.exports = {
+  dayCount,
   setBalance,
   apply, myLeaves, teamLeaves, allLeaves, approve, reject, cancel, balance, calendar, types,
 };
