@@ -60,29 +60,51 @@ async function findCelebrants(dateStr) {
   return celebrants;
 }
 
+const startOfTodayIso = () => moment().tz(TIMEZONE).startOf('day').toISOString();
+
 /**
- * Wish the celebrant directly: a dedicated branded email plus one in-app
- * notification. The notification is created with skipEmail because the
- * branded email above is already this event's email — without it the
- * notification service would send a second, generic copy of the same news.
+ * True when the celebrant has already been wished today. Their own in-app
+ * notification (written before any email, see celebrate) is the record.
+ * A failed lookup counts as "already wished": skipping one run is fine —
+ * the 4-hourly sweep tries again — while guessing wrong means a repeat email.
+ */
+async function alreadyWishedToday(celebrant) {
+  const { count, error } = await supabaseAdmin
+    .from('notifications')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', celebrant.id)
+    .in('type', [TYPE_BIRTHDAY, TYPE_ANNIVERSARY])
+    .eq('meta->>employee_id', celebrant.id)
+    .gte('created_at', startOfTodayIso());
+  if (error) {
+    logger.warn('[BirthdayAnniversary] Could not check earlier wishes, skipping this run', {
+      employeeId: celebrant.id, error: error.message,
+    });
+    return true;
+  }
+  return count > 0;
+}
+
+/**
+ * Wish the celebrant directly: one in-app notification plus a dedicated
+ * branded email, once per day.
+ *
+ * This job runs at 8 AM, on every server start and every 4 hours, so each
+ * celebrant is reached several times a day. Before this check the email went
+ * out on every run — up to 7 copies of the same birthday wish in one day.
+ * The notification is written first and is the "already wished" record; if
+ * it cannot be written, no email is sent and a later run tries again.
+ *
+ * The notification is created with skipEmail because the branded email is
+ * already this event's email — without it the notification service would
+ * send a second, generic copy of the same news.
  */
 async function celebrate(celebrant) {
+  if (await alreadyWishedToday(celebrant)) return false;
+
   const name = displayName(celebrant);
   const years = celebrant.yearsOfService;
   const companyId = String(celebrant.company_id || DEFAULT_COMPANY_ID);
-
-  if (celebrant.isBirthday && celebrant.email) {
-    if (await emailPreferencesService.isEmailEnabled(companyId, 'birthday_wishes')) {
-      await birthdayWishEmail(celebrant).catch((err) =>
-        logger.warn('[BirthdayAnniversary] Birthday email failed', { employeeId: celebrant.id, error: err.message }));
-    }
-  }
-  if (celebrant.isAnniversary && celebrant.email) {
-    if (await emailPreferencesService.isEmailEnabled(companyId, 'work_anniversary_wishes')) {
-      await workAnniversaryEmail(celebrant, years).catch((err) =>
-        logger.warn('[BirthdayAnniversary] Anniversary email failed', { employeeId: celebrant.id, error: err.message }));
-    }
-  }
 
   let title;
   let message;
@@ -113,8 +135,25 @@ async function celebrate(celebrant) {
       skipEmail: true,
     });
   } catch (err) {
-    logger.warn('[BirthdayAnniversary] Celebrant notification failed', { employeeId: celebrant.id, error: err.message });
+    logger.warn('[BirthdayAnniversary] Celebrant notification failed, will retry next run', {
+      employeeId: celebrant.id, error: err.message,
+    });
+    return false;
   }
+
+  if (celebrant.isBirthday && celebrant.email) {
+    if (await emailPreferencesService.isEmailEnabled(companyId, 'birthday_wishes')) {
+      await birthdayWishEmail(celebrant).catch((err) =>
+        logger.warn('[BirthdayAnniversary] Birthday email failed', { employeeId: celebrant.id, error: err.message }));
+    }
+  }
+  if (celebrant.isAnniversary && celebrant.email) {
+    if (await emailPreferencesService.isEmailEnabled(companyId, 'work_anniversary_wishes')) {
+      await workAnniversaryEmail(celebrant, years).catch((err) =>
+        logger.warn('[BirthdayAnniversary] Anniversary email failed', { employeeId: celebrant.id, error: err.message }));
+    }
+  }
+  return true;
 }
 
 /**
@@ -146,13 +185,14 @@ async function broadcastToCompany(celebrant, companyId) {
     // the 8 AM cron, a catch-up on every server start, and a 4-hourly
     // fallback sweep — so a single birthday was being announced to the whole
     // company six times a day, plus once more per restart.
-    const startOfDayIso = moment().tz(TIMEZONE).startOf('day').toISOString();
-    const { count: alreadySent } = await supabaseAdmin
+    // A failed lookup skips this run rather than risk announcing twice.
+    const { count: alreadySent, error: lookupError } = await supabaseAdmin
       .from('notifications')
       .select('id', { count: 'exact', head: true })
       .eq('type', celebrant.isBirthday ? TYPE_BIRTHDAY : TYPE_ANNIVERSARY)
       .eq('meta->>celebrant_id', celebrant.id)
-      .gte('created_at', startOfDayIso);
+      .gte('created_at', startOfTodayIso());
+    if (lookupError) throw new Error(`announcement lookup failed: ${lookupError.message}`);
     if (alreadySent > 0) {
       logger.info('[BirthdayAnniversary] Already announced today, skipping', {
         companyId, employeeId: celebrant.id,
@@ -196,11 +236,20 @@ async function broadcastToCompany(celebrant, companyId) {
   }
 }
 
-const runBirthdayAnniversaryCheck = withCronLock('birthday_anniversary', 5 * 60 * 1000, async (reason = 'cron') => {
-  logger.info(`Running birthday/anniversary check (${reason})`);
+// Wishes go out from 8 AM. The start-up and 4-hourly catch-up runs exist for
+// a missed 8 AM fire; before 8 they wait, so nobody is wished at 2:52 AM.
+const WISH_FROM_HOUR = 8;
 
-  const today = moment().tz(TIMEZONE).format('YYYY-MM-DD');
-  const summary = { reason, date: today, celebrants: 0, errors: 0 };
+const runBirthdayAnniversaryCheck = withCronLock('birthday_anniversary', 5 * 60 * 1000, async (reason = 'cron') => {
+  const now = moment().tz(TIMEZONE);
+  const today = now.format('YYYY-MM-DD');
+  const summary = { reason, date: today, celebrants: 0, wished: 0, errors: 0 };
+
+  if (reason !== 'cron' && now.hour() < WISH_FROM_HOUR) {
+    logger.info('Birthday/anniversary check: before 8 AM, waiting for the scheduled run', summary);
+    return summary;
+  }
+  logger.info(`Running birthday/anniversary check (${reason})`);
 
   try {
     const celebrants = await findCelebrants(today);
@@ -217,7 +266,7 @@ const runBirthdayAnniversaryCheck = withCronLock('birthday_anniversary', 5 * 60 
       const companyId = String(c.company_id || DEFAULT_COMPANY_ID);
       if (!activeCompanyIds.has(companyId)) continue;
       try {
-        await celebrate(c);
+        if (await celebrate(c)) summary.wished += 1;
         await broadcastToCompany(c, companyId);
         summary.celebrants += 1;
       } catch (err) {
