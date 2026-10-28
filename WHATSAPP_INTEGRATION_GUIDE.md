@@ -196,7 +196,7 @@ Either reply **STOP** on WhatsApp, or untick it on the Profile page. It stops im
 - [ ] **F1.** **Webhook:** App → WhatsApp → **Configuration**. Set the callback URL to our server address, which I'll give you (something like `https://spaxsync.com/api/webhooks/whatsapp`), and the verify token to the one I generate for you. Click **Verify and save**, then subscribe to **messages**.
 - [ ] **F2.** App settings: add the **privacy policy URL** (`https://spaxsync.com/privacy`), then switch the app to **Live**.
 - [ ] **F3.** Put the secrets into the **live server's** settings. I'll give you the list of names; you paste the values.
-- [ ] **F4.** Switch WhatsApp on **for testorg only** and test with your test users. Then turn it on for Spaxads, then for other companies.
+- [ ] **F4.** Switch WhatsApp on for **your own company (Spaxads)** first and test with your own accounts. Then turn it on for other companies.
 
 ---
 
@@ -208,9 +208,9 @@ Every step is built on a **separate git branch** (not `main`, not the mobile app
 |---|---|---|
 | **A. Foundations** | Database tables for each employee's WhatsApp connection (number, agreement date, on/off) and for every message sent and its status (sent, delivered, read, failed). The WhatsApp sending service has a **master switch** (off by default) and a **test allow-list**: on your PC, it can only send to your own numbers. | Send yourself a test message from the local server using Meta's test number. |
 | **B. Connect and switch off** | The "Connect WhatsApp" button and `JOIN` code, the **webhook** (with Meta's signature check, so fake calls are refused), **STOP/START** replies, and the confirmation message. | Connect your own number, reply STOP, then reply START. |
-| **C. Every email on WhatsApp** | WhatsApp is added to the one place **every email** already passes through, plus the in-app notifications that have no email of their own (work-from-home, expenses, helpdesk, documents). A rule list covers **all 56 kinds of email**, with an automatic check so new emails get a rule too. There's one WhatsApp per event. **Settings → Notifications** gets a WhatsApp switch per group, and the existing **"WhatsApp Business — Coming soon"** card under **Settings → Integrations** becomes a real on/off and status card. | In **testorg**: apply for leave as an employee and approve it as admin, publish a payslip, post an announcement. Each email you receive also arrives on WhatsApp, once. |
+| **C. Every email on WhatsApp** | WhatsApp is added to the one place **every email** already passes through, plus the in-app notifications that have no email of their own (work-from-home, expenses, helpdesk, documents). A rule list covers **all 56 kinds of email**, with an automatic check so new emails get a rule too. There's one WhatsApp per event. **Settings → Notifications** gets a WhatsApp switch per group, and the existing **"WhatsApp Business — Coming soon"** card under **Settings → Integrations** becomes a real on/off and status card. | With your own employee and admin accounts: apply for leave as an employee and approve it as admin, publish a payslip, post an announcement. Each email you receive also arrives on WhatsApp, once. |
 | **D. Super admin and plans** | A WhatsApp page for you as super admin: messages per company, failures, estimated cost. Also an option to make WhatsApp a **plan feature or add-on**. | Check that the numbers match what you sent. |
-| **E. Two-way (optional)** | Managers **approve or reject leave by tapping a button in WhatsApp**, using one-time secure buttons that check it's really that manager's connected WhatsApp. Employees can ask "leave balance" and get an answer. | Approve a testorg leave from WhatsApp. |
+| **E. Two-way (optional)** | Managers **approve or reject leave by tapping a button in WhatsApp**, using one-time secure buttons that check it's really that manager's connected WhatsApp. Employees can ask "leave balance" and get an answer. | Approve one of your own test leave requests from WhatsApp. |
 | **F. Phone app** | A "Connect WhatsApp" and on/off switch on the app's **My account** screen. | The same as B, from the app. |
 
 **If WhatsApp is down or a message fails**, nothing breaks: the in-app notification and the email still go, and the failure is logged so you can see it.
@@ -223,7 +223,7 @@ Your local server uses the **real database**, so testing has **four locks**:
 1. **Meta's test number** can only message the up-to-5 numbers you verified in Part A.
 2. **Our own allow-list:** on your PC, the server refuses to send to any number that isn't on your test list, even after we switch to the real number.
 3. **Master switch:** WhatsApp stays **off** on the live server until you decide.
-4. **Per-company switch:** we turn it on for **testorg** first, so real companies are untouched.
+4. **Per-company switch:** we turn it on for your own company first, and other companies are untouched. Only people who connect their own WhatsApp get messages, and during testing that's only you.
 
 ---
 

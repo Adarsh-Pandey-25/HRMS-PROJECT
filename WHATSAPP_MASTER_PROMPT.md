@@ -33,7 +33,7 @@ Prefer the codebase's existing patterns over inventing new ones. Match its style
    - Never start the backend with plain `npm start` or `npm run dev`. Use `DISABLE_CRONS=true` always (section 10).
    - Never run SQL, migrations or any script that writes to a database without the owner's explicit OK for **that** action.
    - Never edit `backend/.env`. The owner edits it.
-3. **No message may reach a real employee during development.** Outside production, WhatsApp may only send to numbers in `WHATSAPP_ALLOWED_RECIPIENTS`. If that list is empty, send nothing. Test only in the owner's test company **testorg** (or the separate test database, if the owner chooses it in section 5).
+3. **No message may reach a real employee during development.** Outside production, WhatsApp may only send to numbers in `WHATSAPP_ALLOWED_RECIPIENTS`. If that list is empty, send nothing. The owner tests with **their own accounts in their own company** (decided 28 Oct 2026: no separate test company); during testing only the owner connects WhatsApp.
 4. **Secrets:**
    - Access tokens, the App Secret and the verify token live **only** in env settings.
    - Never put them in code, git, logs, chat output, company settings (`GET /api/settings` returns every setting to HR/Admin browsers), or the frontend.
@@ -188,7 +188,7 @@ Prefer the codebase's existing patterns over inventing new ones. Match its style
 **Ask the owner in Phase 0:**
 1. The **legal company name** for Meta business verification.
 2. Included in plans, or a paid add-on? Which plans?
-3. **Where to test:** (a) a **separate Supabase test database** (safest; the live DB is untouched until go-live), or (b) run the new migration (it **only adds** tables) on the **live** DB after review, and test in **testorg**.
+3. **Where to test:** (a) a **separate Supabase test database** (safest; the live DB is untouched until go-live), or (b) run the new migration (it **only adds** tables) on the **live** DB after review, and test with the owner's own accounts. *(Decided 28 Oct 2026: (b), with no separate test company.)*
 4. The **App ID**. Has the owner added their own WhatsApp number as a test recipient and received "hello world"? Has the permanent system-user token been created (guide Part D)?
 
 ---
@@ -426,9 +426,9 @@ Show the owner the result of each phase before starting the next.
 | **0. Plan** | Read this file, `WHATSAPP_INTEGRATION_GUIDE.md` and the files in §3. Re-verify §4 facts in Meta's docs. Ask the §5 questions. Write a short plan. Create the branch. | Owner says "go" |
 | **A. Sending core** | Config, migration file (**not run**), outbox, worker, allow-list, pause switch, `whatsapp.service`, tests. | Tests green. With the owner's OK and token, one template (`hello_world` or our first approved one) reaches the owner's phone from the test number; a non-allow-listed number is refused. |
 | **B. Webhook and connect** | Webhook (GET and POST, signature), connect flow, consent, STOP/START/HELP, statuses, changed number, profile card, super admin connect. Local test through a temporary HTTPS tunnel (`cloudflared tunnel --url http://127.0.0.1:5000`). The owner sets that URL as the app's callback, or you set it with the API after asking. | Owner connects, gets "Connected", sends STOP and START, sees delivered/read statuses. |
-| **C. Every notification** | Templates (submitted with the owner's OK), catalogue for all types, both hooks, dedupe, company settings, Notifications and Integrations UI, feature key. | In testorg: leave apply/approve/reject, WFH, expense, ticket, payslip, announcement, holiday list, birthday. Each arrives **once**, with the right wording and no sensitive data. Emails and in-app notifications unchanged. |
+| **C. Every notification** | Templates (submitted with the owner's OK), catalogue for all types, both hooks, dedupe, company settings, Notifications and Integrations UI, feature key. | With the owner's own employee and admin accounts: leave apply/approve/reject, WFH, expense, ticket, payslip, announcement, holiday list, birthday. Each arrives **once**, with the right wording and no sensitive data. Emails and in-app notifications unchanged. |
 | **D. Super admin console** | Health, log, cost estimate, pause, templates status. | Owner sees the Phase C messages and the cost estimate. |
-| **E. Two-way (only when the owner says)** | Approve/reject buttons: signed, single-use, expiring payload; sender must be the approver's linked WhatsApp; goes through the existing approval services and permission checks; audit-logged. | Owner approves a testorg leave from WhatsApp; forged, expired or replayed taps are refused. |
+| **E. Two-way (only when the owner says)** | Approve/reject buttons: signed, single-use, expiring payload; sender must be the approver's linked WhatsApp; goes through the existing approval services and permission checks; audit-logged. | Owner approves one of their own test leave requests from WhatsApp; forged, expired or replayed taps are refused. |
 | **F. Go-live runbook** | Step-by-step for the owner (§9). | Owner completes it. |
 
 ---
@@ -451,8 +451,7 @@ Show the owner the result of each phase before starting the next.
 6. **Meta webhook:** callback `https://spaxsync.com/api/whatsapp/webhook`, plus the verify token; subscribe to `messages`.
 7. **Turn on in order:**
    - `WHATSAPP_ENABLED=true`;
-   - feature on for **testorg** only; test;
-   - then Spaxads;
+   - feature on for the owner's own company (Spaxads) first; test with the owner's accounts;
    - then other companies.
 
 ---
@@ -464,8 +463,8 @@ Show the owner the result of each phase before starting the next.
   DISABLE_CRONS=true FRONTEND_URL=http://localhost:5173 node src/server.js
   ```
   Never run without `DISABLE_CRONS=true`. In PowerShell, `$env:X=''` *deletes* a variable, so use Bash or a small Node launcher if you need empty values.
-- **Email:** emails are **on** locally by the owner's choice (for testorg testing). Never trigger actions in real companies.
-- **Website:** from `HRMS/`, run `npm run dev` (5173). The owner signs in at `http://localhost:5173` (testorg: `?tenant=testorg`).
+- **Email:** emails are **on** locally by the owner's choice. The owner tests with their own accounts in their own company, so test actions there are real: real records and real emails. Never act in other companies.
+- **Website:** from `HRMS/`, run `npm run dev` (5173). The owner signs in at `http://localhost:5173` (their company: `?tenant=spaxads`).
 - **Port 8081** belongs to another project of the owner. Don't touch it.
 
 ---

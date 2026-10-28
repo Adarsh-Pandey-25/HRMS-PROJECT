@@ -46,7 +46,7 @@ WHATSAPP_ALLOWED_RECIPIENTS=<your own WhatsApp number with country code, e.g. +9
 
 **4. Tell Claude "WhatsApp settings added".** Claude restarts the local server and then:
 - sends Meta's "hello world" test from **Super Admin → WhatsApp** to your phone;
-- switches the add-on on for **testorg** only;
+- switches the add-on on for **your own company (Spaxads)**. Only people who connect their own WhatsApp get anything, and on your PC only your number can;
 - submits the message templates to Meta for approval;
 - opens a temporary secure address so Meta can reach your PC (for **Connect WhatsApp**, STOP, and delivered/read ticks).
 
