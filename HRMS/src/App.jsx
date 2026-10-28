@@ -39,6 +39,7 @@ const SuperAdminSystemHealth = lazy(() => import('./pages/super-admin/SystemHeal
 const SuperAdminUsers = lazy(() => import('./pages/super-admin/AdminUsers'));
 const SuperAdminLeads = lazy(() => import('./pages/super-admin/Leads'));
 const SuperAdminEmailLog = lazy(() => import('./pages/super-admin/EmailLog'));
+const SuperAdminWhatsApp = lazy(() => import('./pages/super-admin/WhatsApp'));
 const Dashboard = lazy(loaders['/dashboard']);
 const EmployeeList = lazy(loaders['/employees']);
 const EmployeeProfile = lazy(() => import('./pages/employees/EmployeeProfile'));
@@ -195,6 +196,7 @@ export default function App() {
             <Route path="admin-users" element={<Suspense fallback={<PageLoader />}><SuperAdminUsers /></Suspense>} />
             <Route path="leads" element={<Suspense fallback={<PageLoader />}><SuperAdminLeads /></Suspense>} />
             <Route path="email-log" element={<Suspense fallback={<PageLoader />}><SuperAdminEmailLog /></Suspense>} />
+            <Route path="whatsapp" element={<Suspense fallback={<PageLoader />}><SuperAdminWhatsApp /></Suspense>} />
           </Route>
         </Route>
       </Route>

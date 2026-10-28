@@ -32,6 +32,8 @@ import { useCan } from '../../hooks/useCan';
 import { formatDate, formatCurrency, humanize } from '../../lib/utils';
 import { employeeEditPath, employeeProfilePath, isOwnEmployeeProfileSlug, isUuid, resolveEmployeeId } from '../../lib/employeeRoutes';
 import { mapWizardDocType } from '../../lib/documentTypeMap';
+import { WhatsAppUpdatesCard } from '../../components/whatsapp/WhatsAppUpdatesCard';
+import { MY_WHATSAPP_API } from '../../api/whatsapp.api';
 
 const TABS = [
   { id: 'overview', label: 'Overview', icon: User },
@@ -772,6 +774,8 @@ export default function EmployeeProfile() {
                 <InfoRow icon={CreditCard} label="IFSC" value={bank.ifsc} />
               </div>
             </Card>
+            {/* Shows nothing unless WhatsApp is available for the company. */}
+            {isOwnProfile && <WhatsAppUpdatesCard api={MY_WHATSAPP_API} queryKey={['whatsapp', 'me']} />}
           </div>
         </div>
       )}

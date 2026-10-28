@@ -1,7 +1,7 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import {
   Building2, Link2, LogOut, Shield, LayoutDashboard, CreditCard, Layers, Receipt,
-  Gauge, Tag, AlertOctagon, Activity, Users2, Inbox, Mail,
+  Gauge, Tag, AlertOctagon, Activity, Users2, Inbox, Mail, MessageCircle,
 } from 'lucide-react';
 import { useSuperAdminStore } from '../../store/superAdminStore';
 import { cn } from '../../lib/utils';
@@ -23,6 +23,8 @@ const NAV = [
   { to: '/super-admin/system-health', label: 'System Health', icon: Activity, roles: [] },
   // full_admin only — holds recipient addresses across every company.
   { to: '/super-admin/email-log', label: 'Email Log', icon: Mail, roles: [] },
+  // full_admin only — masked recipients across every company, pause switch.
+  { to: '/super-admin/whatsapp', label: 'WhatsApp', icon: MessageCircle, roles: [] },
   { to: '/super-admin/admin-users', label: 'Admin Users', icon: Users2, roles: null },
 ];
 

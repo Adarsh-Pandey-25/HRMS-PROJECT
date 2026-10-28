@@ -17,6 +17,7 @@ import { useAssetCategories, useAssetMutations } from '../../hooks/useModules';
 import { useCompanyFeatures } from '../../hooks/useCompanyFeatures';
 import { useAutosave } from '../../hooks/useAutosave';
 import { WebhooksSection } from './WebhooksSection';
+import { WhatsAppIntegrationCard } from './WhatsAppIntegrationCard';
 import { APPROVAL_FLOW_OPTIONS, normalizeFlow } from '../../lib/approvalFlow';
 
 /**
@@ -698,7 +699,6 @@ export function IntegrationsSection() {
       {[
         { key: 'slack', label: 'Slack', hint: 'Post announcements and approvals to a Slack channel' },
         { key: 'googleCalendar', label: 'Google Calendar', hint: 'Sync holidays, leave, and interviews' },
-        { key: 'whatsapp', label: 'WhatsApp Business', hint: 'Send attendance and approval alerts via WhatsApp' },
       ].map(({ key, label, hint }) => (
         <Card key={key} className="p-5">
           <div className="flex items-center justify-between">
@@ -712,6 +712,7 @@ export function IntegrationsSection() {
           </div>
         </Card>
       ))}
+      <WhatsAppIntegrationCard />
       <WebhooksSection />
       <ConfirmDialog
         open={Boolean(revokeTarget)}
