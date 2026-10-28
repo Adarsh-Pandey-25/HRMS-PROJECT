@@ -11,10 +11,14 @@
 | Company switch and groups, each person's groups, paid add-on | ✅ Built |
 | Website: profile card, Settings → Integrations card, Super Admin → WhatsApp | ✅ Built (lint and build pass) |
 | Automated tests | ✅ 206 passing (`cd backend && npx jest tests/whatsapp`) |
-| Database update (new tables) | ⏳ **You** run it (step 1 below) |
-| Real-phone test on your PC | ⏳ After steps 1–3 below |
-| Templates approved by Meta | ⏳ Submit from Super Admin → WhatsApp → Templates |
-| Go-live on the real server | ⏳ Later: real number, business verification, server settings |
+| Database update (new tables) | ✅ Run by you and verified (28 Oct) |
+| Settings on your PC (token, secret, 3 test numbers) | ✅ Done; token checked with Meta |
+| First real message ("hello world" to +91•••••59029) | ✅ Sent 28 Oct |
+| Templates approved by Meta (test account) | ✅ All 38 approved; Meta filed 4 as marketing (offer response, security alert, platform alert, general update) |
+| Webhook (Meta → your PC through the tunnel) | ✅ Verified by Meta; only the WhatsApp address is reachable |
+| Add-on switched on for Spaxads | ✅ For testing (the live server still has WhatsApp off) |
+| Connect your WhatsApp from your profile | ⏳ Your 2-minute test (WHATSAPP_GO_LIVE.md, 3A) |
+| Go-live on the real server | ⏳ See **WHATSAPP_GO_LIVE.md** |
 
 **Nothing changes for anyone yet.** WhatsApp stays off until `WHATSAPP_ENABLED=true`, and then only for companies where a super admin switches the add-on on. Emails and in-app notifications work exactly as before.
 
