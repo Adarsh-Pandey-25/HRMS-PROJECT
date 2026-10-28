@@ -130,6 +130,9 @@ const createNotification = async ({
     user_id, type, title, message, link, skipEmail,
   }]).catch(() => {});
 
+  // WhatsApp copy — returns at once unless WhatsApp is switched on.
+  try { require('./whatsappMirror').fromNotifications([data]); } catch { /* never block a notification */ }
+
   return data;
 };
 
@@ -152,6 +155,9 @@ const createNotifications = async (items = []) => {
   if (error) throw new BadRequestError(error.message);
 
   dispatchNotificationEmails(normalized).catch(() => {});
+
+  // WhatsApp copy — returns at once unless WhatsApp is switched on.
+  try { require('./whatsappMirror').fromNotifications(data || []); } catch { /* never block a notification */ }
 
   return data || [];
 };

@@ -98,6 +98,7 @@ function) and must go first on a fresh project; everything in
 25. `20261004_leave_balance_individual_allocation.sql` — `leave_balances.allocation_override`: an allocation HR/Admin set for one person is kept when the company policy is applied
 26. `20261007_wfh_date_range_requests.sql` — **adds `wfh_day_requests.batch_id`**, which groups the per-day rows of one multi-day WFH request. Until it runs, submitting any WFH request fails — the table still stays one row per day, so approved-WFH check-in is unaffected either way
 27. `20261008_assets_ownership.sql` — **adds `assets.ownership`** (`purchased` / `rented`), which bulk import and the Add Asset form now send. Until it runs, creating an asset fails; existing assets are backfilled to `purchased`
+28. `20261028_whatsapp_channel.sql` — WhatsApp notifications: new tables only (`whatsapp_links`, `whatsapp_link_codes`, `whatsapp_messages`, `whatsapp_inbound`, `company_whatsapp_settings`, `platform_whatsapp_state`) and the `whatsapp_claim_outbox()` function; changes nothing existing. Until it runs, WhatsApp stays unavailable even with `WHATSAPP_ENABLED=true`
 
 Migrations are idempotent (`IF NOT EXISTS` / `CREATE OR REPLACE`), so
 re-running one is safe.

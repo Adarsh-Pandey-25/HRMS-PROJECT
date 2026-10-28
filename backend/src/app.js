@@ -47,6 +47,9 @@ const onboardingRoutes = require('./routes/onboarding.routes');
 const webhookRoutes = require('./routes/webhook.routes');
 const auditLogRoutes = require('./routes/auditLog.routes');
 const publicRoutes = require('./routes/public.routes');
+const whatsappWebhookRoutes = require('./routes/whatsappWebhook.routes');
+const whatsappRoutes = require('./routes/whatsapp.routes');
+const superAdminWhatsappRoutes = require('./routes/superAdminWhatsapp.routes');
 
 const app = express();
 
@@ -96,6 +99,11 @@ app.use(morgan(config.env === 'production' ? 'combined' : 'dev'));
 // generalLimiter (below) never reaches this router since it fully handles and
 // returns before that point, so it gets its own dedicated per-device limiter here.
 app.use('/iclock', admsLimiter, admsRoutes);
+
+// WhatsApp Cloud API webhook: Meta signs the raw body, so — like /iclock —
+// it must sit before the JSON parser, and it is fully handled (with its own
+// limiter) before CSRF and the tenant/host checks below.
+app.use('/api/whatsapp/webhook', whatsappWebhookRoutes);
 
 app.use(express.json({ limit: '1mb', strict: true }));
 app.use(express.urlencoded({ extended: false, limit: '100kb' }));
@@ -179,6 +187,7 @@ app.use('/api/employees', employeeRoutes);
 app.use('/api/settings', settingsLimiter, settingsRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/assets', assetsRoutes);
 app.use('/api/performance', performanceRoutes);
@@ -187,6 +196,8 @@ app.use('/api/helpdesk', helpdeskRoutes);
 app.use('/api/companies', companyRoutes);
 app.use('/api/api-keys', apiKeyRoutes);
 app.use('/api/integration', integrationRoutes);
+// Before /api/super-admin so its own role check applies first.
+app.use('/api/super-admin/whatsapp', superAdminWhatsappRoutes);
 app.use('/api/super-admin', superAdminRoutes);
 app.use('/api/device-mapping', deviceMappingRoutes);
 app.use('/api/ip-whitelist', ipWhitelistRoutes);

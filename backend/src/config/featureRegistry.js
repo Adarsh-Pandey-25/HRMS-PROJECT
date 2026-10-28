@@ -37,6 +37,13 @@ const FEATURE_REGISTRY = {
     label: 'IP-based app check-in', category: 'checkin', selfServeUnlockable: false, comingSoon: true,
     requiresPlatformFlag: 'MOBILE_APP_AVAILABLE',
   },
+
+  // A paid add-on: a super admin switches it on per company. Inert
+  // everywhere until WHATSAPP_ENABLED=true on the server.
+  whatsapp_notifications: {
+    label: 'WhatsApp notifications', category: 'core', selfServeUnlockable: false, comingSoon: true,
+    requiresPlatformFlag: 'WHATSAPP_ENABLED',
+  },
 };
 
 /** True only once the named env var is explicitly set to 'true' — default false. */

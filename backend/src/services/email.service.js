@@ -1993,7 +1993,36 @@ const withRecipientLinks = (name, fn) => async (...args) => {
 const withEmailType = (name, fn) => (...args) =>
   linkContext.run({ emailType: templateTypeKey(name) }, () => fn(...args));
 
-module.exports = { sendEmail };
+/**
+ * WhatsApp copy of every email: whatsappMirror.js decides which emails become
+ * a WhatsApp message (never ones carrying passwords or codes) and does it in
+ * the background. With WhatsApp switched off it returns at once, and the
+ * email itself is never delayed, changed or failed by it.
+ */
+const whatsappMirror = () => {
+  try {
+    return require('./whatsappMirror');
+  } catch (err) {
+    logger.warn('[WhatsApp] copy unavailable', { error: err.message });
+    return null;
+  }
+};
+
+const withWhatsAppCopy = (name, fn) => (...args) => {
+  const result = fn(...args);
+  whatsappMirror()?.fromEmail(templateTypeKey(name), args);
+  return result;
+};
+
+/** Direct callers (platform alerts) get the same copy, decided by `type`. */
+const sendEmailWithWhatsAppCopy = (options) => {
+  const result = sendEmail(options);
+  whatsappMirror()?.fromDirectEmail(options);
+  return result;
+};
+
+module.exports = { sendEmail: sendEmailWithWhatsAppCopy };
 for (const [name, fn] of Object.entries(templates)) {
-  module.exports[name] = PLATFORM_TEMPLATES.has(name) ? withEmailType(name, fn) : withRecipientLinks(name, fn);
+  const wrapped = PLATFORM_TEMPLATES.has(name) ? withEmailType(name, fn) : withRecipientLinks(name, fn);
+  module.exports[name] = withWhatsAppCopy(name, wrapped);
 }

@@ -90,6 +90,13 @@ const server = app.listen(PORT, config.host, () => {
     startSalaryRevisionCron();
     startNationalHolidaysCron();
   }
+  // WhatsApp sender: runs only when WHATSAPP_ENABLED=true, independent of
+  // DISABLE_CRONS (it sends already-queued messages; it schedules nothing).
+  try {
+    require('./services/whatsappWorker').start();
+  } catch (err) {
+    logger.error('[WhatsApp] sender could not start', { error: err.message });
+  }
   // Tag legacy employees under the default company so new workspaces stay empty
   require('./services/tenant.service').ensureTenantBackfill()
     .then(() => require('./services/settings.service').migrateLegacySettingsToDefaultCompany())
