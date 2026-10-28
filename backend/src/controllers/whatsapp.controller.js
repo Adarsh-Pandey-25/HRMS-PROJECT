@@ -47,10 +47,9 @@ const availability = async (companyId) => {
 
 const describeMe = async (req) => {
   const companyId = companyIdOf(req);
-  const [state, link] = await Promise.all([
-    availability(companyId),
-    linkService.getLink('employee', req.user.id),
-  ]);
+  const state = await availability(companyId);
+  // Switched off here: nobody can be connected, and the tables may not exist yet.
+  const link = state.reason === 'not_set_up' ? null : await linkService.getLink('employee', req.user.id);
   const me = linkService.describeLink(link, req.user.role);
   // A group the company switched off for everyone is shown as off and locked.
   me.groups = me.groups.map((g) => ({ ...g, lockedByCompany: state.companyGroups?.[g.key] === false }));
@@ -102,6 +101,14 @@ const disconnect = async (req, res, next) => {
 const describeCompany = async (companyId) => {
   const cfg = getConfig();
   const state = await availability(companyId);
+  // WhatsApp not switched on here: answer without touching its tables, which
+  // may not exist yet on a server where the migration has not run.
+  if (state.reason === 'not_set_up') {
+    return {
+      platformReady: false, addOn: false, enabled: false, available: false, reason: state.reason,
+      message: REASONS.not_set_up, connectedCount: 0, businessNumber: null, groups: [], updatedAt: null,
+    };
+  }
   const companySettings = await settings.getCompanySettings(companyId);
   const { count } = await supabaseAdmin
     .from('whatsapp_links')
