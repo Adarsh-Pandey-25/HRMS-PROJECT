@@ -1,6 +1,6 @@
 # WhatsApp: who gets what, and how to go live
 
-*Written 28 Oct 2026 for the SpaxSync owner. Branch `whatsapp-integration`.*
+*Written 28 Oct 2026, updated 29 Oct, for the SpaxSync owner. Branch `whatsapp-integration`.*
 
 ---
 
@@ -60,25 +60,29 @@ Connect in **Super Admin → WhatsApp → My alerts** to get:
 
 ## 2. The most important thing before going live
 
-Right now WhatsApp uses Meta's **test number (+1 555 640 4486)**. Meta lets a test number message **only the up-to-5 numbers on its list** (your 3).
-
-**If you go live with the test number, only those 3 numbers can ever receive messages. Real employees won't.**
+Meta's **test number (+1 555 640 4486)** can message only the up-to-5 numbers on its list, so it can never reach real employees. Since 29 Oct your PC uses the **real SpaxSync number** instead.
 
 To reach **all employees** you need, from Meta:
-1. **Business verification** (Business Settings → Security Centre). Without it you're limited to 250 people a day; with it, 2,000 and more.
-2. **A real WhatsApp number for SpaxSync:** a new SIM that is not on any WhatsApp app. Add it in WhatsApp Manager with the display name **SpaxSync**, verify it by SMS, and set a PIN.
-3. **A payment method:** Billing & payments → WhatsApp, in INR.
-4. **A permanent token:** Business Settings → System users (guide, Part D). The "Generate access token" ones are short-lived: yours stopped working within a couple of hours.
-5. **App switched to Live:** App settings → Basic. Add your privacy policy URL `https://spaxsync.com/privacy`, then switch to Live.
+1. **Business verification** (Business Settings → Security Centre, or **Step 3** in the app's WhatsApp menu). Without it, your whole business account (SpaxSync **and** 1MissionVault together) can message only 250 different people a day; with it, 2,000 and more.
+2. ✅ **A real WhatsApp number for SpaxSync:** **+91 88266 92158**, in its own WhatsApp account **SpaxSync** (ID `1679366050470693`), separate from 1MissionVault. In WhatsApp Manager → Phone numbers, check that its display name shows **Approved**.
+3. ✅ **A payment method:** added (billed in INR).
+4. **A permanent token:** Business Settings → System users (guide, Part D). Give the system user the **SpaxSync** app and the **SpaxSync** WhatsApp account only, not 1MissionVault. The "Generate access token" ones are short-lived: yours stopped working within a couple of hours.
+5. **App switched to Live:** App settings → Basic. Add your privacy policy URL `https://spaxsync.com/privacy`, then switch to Live. Meta holds back some webhooks while an app is in Development mode, so do this before testing the real number.
 
-Steps 1–2 can take a few days, so **start them now**. You can still put the code on your server today: see 3B.
+Business verification can take a few days, so **start it now**. You can still put the code on your server today: see 3B.
 
 ---
 
 ## 3. Go-live steps
 
-### A. Test once on your PC first (2 minutes, recommended)
-Before you start, you need a working token in `backend/.env`: the permanent one from section 2, item 4. Claude then restarts the local server and gives you the current tunnel address to paste into Meta's **Callback URL**.
+### A. Test once on your PC first (recommended)
+Your PC now uses the real SpaxSync number, but it can still message only your 3 test numbers. Before you start:
+- the permanent token is in `backend/.env` (section 2, item 4);
+- in the app's **WhatsApp → Production setup**, **Subscribe webhooks** is **on for SpaxSync** and **off for 1MissionVault**;
+- the app is **Live** (section 2, item 5);
+- Meta's **Callback URL** is the current tunnel address Claude gives you (same verify token).
+
+Claude then restarts the local server, checks the number with Meta, and submits the 38 templates to the SpaxSync account. Meta approves them again, usually within minutes.
 1. Open `http://localhost:5173`, sign in with **your employee account**, and open **your profile**. You'll see the **WhatsApp updates** card.
 2. Click **Connect WhatsApp**, then **Open WhatsApp**, and press **Send** from one of your 3 phones.
 3. You should get "✅ Connected" on WhatsApp, and the card turns green.
@@ -104,9 +108,9 @@ Nothing changes for anyone until step C.
    ```
    WHATSAPP_ENABLED=true
    WHATSAPP_API_VERSION=v26.0
-   WHATSAPP_PHONE_NUMBER_ID=<real number's Phone number ID>
-   WHATSAPP_WABA_ID=<real WhatsApp Business Account ID>
-   WHATSAPP_BUSINESS_NUMBER=<real SpaxSync number, e.g. +91XXXXXXXXXX>
+   WHATSAPP_PHONE_NUMBER_ID=1477487558771807
+   WHATSAPP_WABA_ID=1679366050470693
+   WHATSAPP_BUSINESS_NUMBER=+918826692158
    WHATSAPP_ACCESS_TOKEN=<permanent system-user token>
    WHATSAPP_APP_SECRET=<App secret>
    WHATSAPP_VERIFY_TOKEN=<a NEW long random text>
@@ -117,7 +121,8 @@ Nothing changes for anyone until step C.
    - Callback URL: `https://spaxsync.com/api/whatsapp/webhook`
    - Verify token: the new one from step 1
    - Then **Verify and save**, and make sure **messages** is subscribed.
-4. **Templates:** in **Super Admin → WhatsApp → Templates**, click **Submit to Meta**. This sends all 38 to the **real** account. Wait until they show **approved**, usually minutes to a few hours.
+   - In **WhatsApp → Production setup**, **Subscribe webhooks** stays **on for SpaxSync** and **off for 1MissionVault**.
+4. **Templates:** open **Super Admin → WhatsApp → Templates**. If you did the PC test, they're already submitted to the SpaxSync account, so just check they show **approved**. Otherwise click **Submit to Meta** to send all 38, and wait until they show **approved**, usually minutes to a few hours.
 5. **Companies:** WhatsApp is already **on for Spaxads**; we switched it on for testing. For other companies, go to **Super Admin → Companies → (company) → Features → WhatsApp notifications**.
 6. **People connect** from their own profile (Connect WhatsApp). You connect in **Super Admin → WhatsApp → My alerts**.
 

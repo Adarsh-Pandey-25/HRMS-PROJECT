@@ -1,6 +1,6 @@
 # WhatsApp notifications: progress
 
-*Branch `whatsapp-integration` · updated 28 Oct 2026*
+*Branch `whatsapp-integration` · updated 29 Oct 2026*
 
 ## Status
 | Part | State |
@@ -12,50 +12,29 @@
 | Website: profile card, Settings → Integrations card, Super Admin → WhatsApp | ✅ Built (lint and build pass) |
 | Automated tests | ✅ 206 passing (`cd backend && npx jest tests/whatsapp`) |
 | Database update (new tables) | ✅ Run by you and verified (28 Oct) |
-| Settings on your PC (token, secret, 3 test numbers) | ⚠️ Done, but the quick-test token expired on 28 Oct (5:30 pm IST). Next: the permanent token (guide, Part D) |
-| First real message ("hello world" to +91•••••59029) | ✅ Sent 28 Oct |
-| Templates approved by Meta (test account) | ✅ All 38 approved; Meta filed 4 as marketing (offer response, security alert, platform alert, general update) |
-| Webhook (Meta → your PC through the tunnel) | ✅ Verified by Meta on 28 Oct; only the WhatsApp address is reachable. The temporary address changes every time the tunnel restarts (it did on 29 Oct), so Meta needs the new one |
+| First real message ("hello world" from Meta's test number to +91•••••59029) | ✅ Sent 28 Oct |
+| Templates on Meta's test account | ✅ All 38 approved; Meta filed 4 as marketing (offer response, security alert, platform alert, general update) |
 | Add-on switched on for Spaxads | ✅ For testing (the live server still has WhatsApp off) |
-| Connect your WhatsApp from your profile | ⏳ Your 2-minute test (WHATSAPP_GO_LIVE.md, 3A) |
+| Real SpaxSync number | ✅ +91 88266 92158 in its own WhatsApp account **SpaxSync** (ID 1679366050470693), separate from 1MissionVault. Your PC uses it since 29 Oct, still only for your 3 numbers |
+| Payment method | ✅ Added in Meta |
+| Permanent token | ⏳ You (guide, Part D). The quick-test token expired on 28 Oct |
+| Meta app: Live mode, webhooks on for SpaxSync only | ⏳ You (WHATSAPP_GO_LIVE.md, 3A) |
+| Templates on the SpaxSync account | ⏳ Claude submits them once the permanent token is in |
+| Webhook (Meta → your PC through the tunnel) | ✅ Works; only the WhatsApp address is reachable. The address changes whenever the tunnel restarts, so Meta needs the current one |
+| Connect your WhatsApp from your profile | ⏳ Your test (WHATSAPP_GO_LIVE.md, 3A) |
+| Business verification | ⏳ You; start now (WHATSAPP_GO_LIVE.md, section 2) |
 | Go-live on the real server | ⏳ See **WHATSAPP_GO_LIVE.md** |
 
 **Nothing changes for anyone yet.** WhatsApp stays off until `WHATSAPP_ENABLED=true`, and then only for companies where a super admin switches the add-on on. Emails and in-app notifications work exactly as before.
 
-## Your next steps (test on your PC with Meta's test number)
+## Your next steps
+Follow **WHATSAPP_GO_LIVE.md**: section 3A for the test on your PC, then 3B–3C for the server.
 
-**1. Run the database update** (it only adds new tables; nothing existing changes):
-1. In VS Code, open `backend/supabase/migrations/20261028_whatsapp_channel.sql` and copy everything.
-2. In Supabase, open your project, then **SQL Editor → New query**.
-3. Paste and click **Run**. You should see "Success".
-
-**2. Get two values from Meta.** Keep them secret, and never paste them in chat.
-- **Access token:** for a quick test, use the token from **WhatsApp → API Setup → Generate access token**. It's short-lived: yours stopped working within a couple of hours. For anything longer, make the permanent one (guide, Part D).
-- **App Secret:** **App settings → Basic → App secret → Show**.
-
-**3. Add these lines at the end of `backend/.env`** on your PC, replacing the `<…>` parts:
-```
-WHATSAPP_ENABLED=true
-WHATSAPP_API_VERSION=v26.0
-WHATSAPP_PHONE_NUMBER_ID=1190725527466222
-WHATSAPP_WABA_ID=2576101372811240
-WHATSAPP_BUSINESS_NUMBER=+15556404486
-WHATSAPP_ACCESS_TOKEN=<paste the access token>
-WHATSAPP_APP_SECRET=<paste the app secret>
-WHATSAPP_VERIFY_TOKEN=<any long random text you make up>
-WHATSAPP_ALLOWED_RECIPIENTS=<your own WhatsApp number with country code, e.g. +919876543210>
-```
-- This only affects the server **on your PC**. The live server has its own settings and is not touched.
-- `WHATSAPP_ALLOWED_RECIPIENTS` is the safety lock: your PC can only ever message the numbers listed there.
-
-**4. Tell Claude "WhatsApp settings added".** Claude restarts the local server and then:
-- sends Meta's "hello world" test from **Super Admin → WhatsApp** to your phone;
-- switches the add-on on for **your own company (Spaxads)**. Only people who connect their own WhatsApp get anything, and on your PC only your number can;
-- submits the message templates to Meta for approval;
-- opens a temporary secure address so Meta can reach your PC (for **Connect WhatsApp**, STOP, and delivered/read ticks).
+On your PC, `WHATSAPP_ALLOWED_RECIPIENTS` in `backend/.env` is the safety lock: your PC can only ever message the numbers listed there. You type the secrets (token, App Secret) into `.env` yourself; never paste them in chat.
 
 ## Where things are
 - **Plan and beginner guide:** `WHATSAPP_INTEGRATION_GUIDE.md`
+- **Who gets what, and going live:** `WHATSAPP_GO_LIVE.md`
 - **Builder's master prompt:** `WHATSAPP_MASTER_PROMPT.md`
 - **Server:**
   - `backend/src/services/whatsapp*.js`
