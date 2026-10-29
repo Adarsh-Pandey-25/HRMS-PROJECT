@@ -12,10 +12,10 @@
 | Website: profile card, Settings → Integrations card, Super Admin → WhatsApp | ✅ Built (lint and build pass) |
 | Automated tests | ✅ 206 passing (`cd backend && npx jest tests/whatsapp`) |
 | Database update (new tables) | ✅ Run by you and verified (28 Oct) |
-| Settings on your PC (token, secret, 3 test numbers) | ✅ Done; token checked with Meta |
+| Settings on your PC (token, secret, 3 test numbers) | ⚠️ Done, but the quick-test token expired on 28 Oct (5:30 pm IST). Next: the permanent token (guide, Part D) |
 | First real message ("hello world" to +91•••••59029) | ✅ Sent 28 Oct |
 | Templates approved by Meta (test account) | ✅ All 38 approved; Meta filed 4 as marketing (offer response, security alert, platform alert, general update) |
-| Webhook (Meta → your PC through the tunnel) | ✅ Verified by Meta; only the WhatsApp address is reachable |
+| Webhook (Meta → your PC through the tunnel) | ✅ Verified by Meta on 28 Oct; only the WhatsApp address is reachable. The temporary address changes every time the tunnel restarts (it did on 29 Oct), so Meta needs the new one |
 | Add-on switched on for Spaxads | ✅ For testing (the live server still has WhatsApp off) |
 | Connect your WhatsApp from your profile | ⏳ Your 2-minute test (WHATSAPP_GO_LIVE.md, 3A) |
 | Go-live on the real server | ⏳ See **WHATSAPP_GO_LIVE.md** |
@@ -30,7 +30,7 @@
 3. Paste and click **Run**. You should see "Success".
 
 **2. Get two values from Meta.** Keep them secret, and never paste them in chat.
-- **Access token:** for a quick test, use the token from **WhatsApp → API Setup → Generate access token** (it lasts about 24 hours). Later, make the permanent one (guide, Part D).
+- **Access token:** for a quick test, use the token from **WhatsApp → API Setup → Generate access token**. It's short-lived: yours stopped working within a couple of hours. For anything longer, make the permanent one (guide, Part D).
 - **App Secret:** **App settings → Basic → App secret → Show**.
 
 **3. Add these lines at the end of `backend/.env`** on your PC, replacing the `<…>` parts:

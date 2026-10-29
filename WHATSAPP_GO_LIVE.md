@@ -68,7 +68,7 @@ To reach **all employees** you need, from Meta:
 1. **Business verification** (Business Settings → Security Centre). Without it you're limited to 250 people a day; with it, 2,000 and more.
 2. **A real WhatsApp number for SpaxSync:** a new SIM that is not on any WhatsApp app. Add it in WhatsApp Manager with the display name **SpaxSync**, verify it by SMS, and set a PIN.
 3. **A payment method:** Billing & payments → WhatsApp, in INR.
-4. **A permanent token:** Business Settings → System users. The "Generate access token" ones stop working after about a day.
+4. **A permanent token:** Business Settings → System users (guide, Part D). The "Generate access token" ones are short-lived: yours stopped working within a couple of hours.
 5. **App switched to Live:** App settings → Basic. Add your privacy policy URL `https://spaxsync.com/privacy`, then switch to Live.
 
 Steps 1–2 can take a few days, so **start them now**. You can still put the code on your server today: see 3B.
@@ -78,6 +78,7 @@ Steps 1–2 can take a few days, so **start them now**. You can still put the co
 ## 3. Go-live steps
 
 ### A. Test once on your PC first (2 minutes, recommended)
+Before you start, you need a working token in `backend/.env`: the permanent one from section 2, item 4. Claude then restarts the local server and gives you the current tunnel address to paste into Meta's **Callback URL**.
 1. Open `http://localhost:5173`, sign in with **your employee account**, and open **your profile**. You'll see the **WhatsApp updates** card.
 2. Click **Connect WhatsApp**, then **Open WhatsApp**, and press **Send** from one of your 3 phones.
 3. You should get "✅ Connected" on WhatsApp, and the card turns green.
