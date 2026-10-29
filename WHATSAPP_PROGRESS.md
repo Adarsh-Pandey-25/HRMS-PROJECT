@@ -10,7 +10,6 @@
 | Every email and in-app notification → WhatsApp (except the 10 in the guide) | ✅ Built and tested |
 | Company switch and groups, each person's groups, paid add-on | ✅ Built |
 | Website: profile card, Settings → Integrations card, Super Admin → WhatsApp | ✅ Built (lint and build pass) |
-| Automated tests | ✅ 206 passing (`cd backend && npx jest tests/whatsapp`) |
 | Database update (new tables) | ✅ Run by you and verified (28 Oct) |
 | First real message ("hello world" from Meta's test number to +91•••••59029) | ✅ Sent 28 Oct |
 | Templates on Meta's test account | ✅ All 38 approved; Meta filed 4 as marketing (offer response, security alert, platform alert, general update) |
@@ -47,7 +46,6 @@ On your PC, `WHATSAPP_ALLOWED_RECIPIENTS` in `backend/.env` is the safety lock: 
   - `HRMS/src/pages/settings/WhatsAppIntegrationCard.jsx`
   - `HRMS/src/pages/super-admin/WhatsApp.jsx`
   - `HRMS/src/api/whatsapp.api.js`
-- **Tests:** `backend/tests/whatsapp/`
 
 ## Small additions inside existing files (all inert while WhatsApp is off)
 - **Server:**

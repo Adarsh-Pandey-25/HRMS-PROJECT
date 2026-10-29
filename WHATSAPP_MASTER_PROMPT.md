@@ -69,8 +69,8 @@ Prefer the codebase's existing patterns over inventing new ones. Match its style
   - Make them re-runnable (`IF NOT EXISTS`).
   - List each one in `README.md` (migration order, around lines 67–103), and end it by inserting itself into `schema_migrations` (see `20260915_schema_migrations_tracking.sql`).
   - Enable RLS with no policies, like `20260930_email_log_and_preferences.sql` (`ALTER TABLE … ENABLE ROW LEVEL SECURITY;`).
-- **Tests:** `jest` and `supertest` are already devDependencies, but there are **no tests** and `npm test` is a placeholder. Put new tests under `backend/tests/whatsapp/` and run them with `npx jest tests/whatsapp`. You may point the `test` script at jest; say so in your report.
-  - **Tests must never touch a real database:** mock `src/config/supabase` and set env in test setup; don't load `.env`.
+- **Tests:** the owner doesn't want a tests folder in the repo; `backend/tests/whatsapp/` was removed on 29 Oct 2026. Don't commit test files without the owner's OK.
+  - Any throwaway tests you run to check your work stay out of git and **never touch a real database:** mock `src/config/supabase` and set env in the test; don't load `.env`.
 
 ### Request pipeline: `backend/src/app.js`
 - `/iclock` is mounted at :98 **before** `express.json` (:100), with its own limiter. After the parsers come `generalLimiter` (:103), `resolveTenantSubdomain` (:104) and `hostScope` (:105).
