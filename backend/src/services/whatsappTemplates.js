@@ -11,9 +11,11 @@
  *  - the body may not start or end with a {{n}} blank, and every blank needs
  *    a sample value.
  *
- * No template carries a salary, an amount, a leave reason, a password, a
- * code or a sign-in link — the message says what happened and points to
- * SpaxSync for the rest.
+ * No template carries a salary, an amount, a password, a code or a sign-in
+ * link — the message says what happened and points to SpaxSync for the
+ * rest. One exception (owner's decision, 30 Oct 2026): approval_request
+ * shows the approver the requester's own reason, shortened, and is hidden
+ * from the message log once sent (privateParams).
  */
 
 const LANGUAGE = 'en';
@@ -22,6 +24,9 @@ const FOOTER = 'Reply STOP to turn off WhatsApp updates';
 // payload back to the webhook, which switches news and celebrations off.
 const STOP_BUTTON_TEXT = 'Stop these updates';
 const STOP_MARKETING_PAYLOAD = 'WA_STOP_MARKETING';
+// approval_request carries these quick replies; each tap sends a one-time
+// code back to the webhook (whatsappApprovals.service.js).
+const APPROVAL_BUTTONS = ['Approve', 'Reject'];
 
 const COMPANY = 'Spaxads Digital Media';
 
@@ -36,6 +41,19 @@ const TEMPLATES = [
   utility('approval_waiting',
     'Hi {{1}}, {{2}} at {{3}} is waiting for your approval: {{4}}. Please review it in SpaxSync.',
     ['Rahul', 'Priya Verma', COMPANY, 'Casual Leave for 3–4 Nov 2026']),
+  // Leave, work from home, expense claims and attendance corrections, with
+  // the reason and Approve / Reject buttons. Until Meta approves it — or when
+  // a message has no buttons to offer — approval_waiting goes instead, with
+  // the first four values (whatsappApprovals.service.js).
+  {
+    ...utility('approval_request',
+      'Hi {{1}}, {{2}} at {{3}} is waiting for your approval: {{4}}.\n\nReason: {{5}}\n\nTap Approve or Reject below, or open SpaxSync to review it.',
+      ['Rahul', 'Priya Verma', COMPANY, 'Casual Leave for 3–4 Nov 2026', 'Family function in Jaipur']),
+    buttons: APPROVAL_BUTTONS,
+    fallback: 'approval_waiting',
+    paramMax: { 5: 200 },
+    privateParams: [5],
+  },
   utility('leave_approved',
     'Hi {{1}}, your {{2}} for {{3}} has been approved by {{4}} at {{5}}. You can see the details in SpaxSync.',
     ['Priya', 'Casual Leave', '3–4 Nov 2026', 'Rahul Sharma', COMPANY]),
@@ -177,8 +195,9 @@ const toCreatePayload = (template) => {
     },
     { type: 'FOOTER', text: FOOTER },
   ];
-  if (isMarketing(template)) {
-    components.push({ type: 'BUTTONS', buttons: [{ type: 'QUICK_REPLY', text: STOP_BUTTON_TEXT }] });
+  const buttons = template.buttons || (isMarketing(template) ? [STOP_BUTTON_TEXT] : []);
+  if (buttons.length) {
+    components.push({ type: 'BUTTONS', buttons: buttons.map((text) => ({ type: 'QUICK_REPLY', text })) });
   }
   return {
     name: template.name,
@@ -203,7 +222,8 @@ const templateProblems = (template) => {
   if ((template.example || []).length !== distinct.length) problems.push('one sample value per blank');
   if (body.length > 1024) problems.push('body over 1024 characters');
   if (FOOTER.length > 60) problems.push('footer over 60 characters');
-  if (STOP_BUTTON_TEXT.length > 25) problems.push('button text over 25 characters');
+  if ([STOP_BUTTON_TEXT, ...(template.buttons || [])].some((text) => text.length > 25)) problems.push('button text over 25 characters');
+  if (template.fallback && !BY_NAME.has(template.fallback)) problems.push('fallback template does not exist');
   return problems;
 };
 
@@ -212,6 +232,7 @@ module.exports = {
   FOOTER,
   STOP_BUTTON_TEXT,
   STOP_MARKETING_PAYLOAD,
+  APPROVAL_BUTTONS,
   TEMPLATES,
   getTemplate,
   paramCount,

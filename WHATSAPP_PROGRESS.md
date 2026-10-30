@@ -1,6 +1,6 @@
 # WhatsApp notifications: progress
 
-*Branch `whatsapp-integration` · updated 29 Oct 2026*
+*Branch `whatsapp-integration` · updated 30 Oct 2026*
 
 ## Status
 | Part | State |
@@ -16,13 +16,14 @@
 | Add-on switched on for Spaxads | ✅ For testing (the live server still has WhatsApp off) |
 | Real SpaxSync number | ✅ +91 88266 92158 in its own WhatsApp account **SpaxSync** (ID 1679366050470693), separate from 1MissionVault. Your PC uses it since 29 Oct, still only for your 3 numbers |
 | Payment method | ✅ Added in Meta |
-| Permanent token | ⏳ You (guide, Part D). The quick-test token expired on 28 Oct |
-| Meta app: Live mode, webhooks on for SpaxSync only | ⏳ You (WHATSAPP_GO_LIVE.md, 3A) |
-| Templates on the SpaxSync account | ⏳ Claude submits them once the permanent token is in |
-| Webhook (Meta → your PC through the tunnel) | ✅ Works; only the WhatsApp address is reachable. The address changes whenever the tunnel restarts, so Meta needs the current one |
-| Connect your WhatsApp from your profile | ⏳ Your test (WHATSAPP_GO_LIVE.md, 3A) |
-| Business verification | ⏳ You; start now (WHATSAPP_GO_LIVE.md, section 2) |
-| Go-live on the real server | ⏳ See **WHATSAPP_GO_LIVE.md** |
+| Permanent token | ✅ On the live server (29 Oct); never expires |
+| Meta app: Live mode, webhooks on for SpaxSync only | ✅ Meta's messages reach spaxsync.com since 29 Oct |
+| Templates on the SpaxSync account | ✅ Submitted 29 Oct; 36 of 38 approved by 30 Oct morning |
+| Go-live on the real server | ✅ WhatsApp on since 29 Oct; only people who connect get messages |
+| Connect your WhatsApp from your profile | ✅ Tested in Spaxads and DEMO; first real approval message delivered 30 Oct |
+| Approve / Reject on WhatsApp, with the reason (leave, work from home, expenses, attendance corrections) | ✅ Built and tested (30 Oct). ⏳ To go live: database update `20261030_whatsapp_approval_buttons.sql`, deploy, then Templates → Submit to Meta for `approval_request` |
+| "Submit to Meta" page error (502) when sending many templates | ✅ Fixed: sends 10 at a time (goes live with the next deploy) |
+| Business verification | ⏳ You (WHATSAPP_GO_LIVE.md, section 2) |
 
 **Nothing changes for anyone yet.** WhatsApp stays off until `WHATSAPP_ENABLED=true`, and then only for companies where a super admin switches the add-on on. Emails and in-app notifications work exactly as before.
 
@@ -40,7 +41,8 @@ On your PC, `WHATSAPP_ALLOWED_RECIPIENTS` in `backend/.env` is the safety lock: 
   - `backend/src/config/whatsapp.js`
   - `backend/src/routes/*whatsapp*`
   - `backend/src/controllers/*whatsapp*`
-  - database update: `backend/supabase/migrations/20261028_whatsapp_channel.sql`
+  - database updates: `backend/supabase/migrations/20261028_whatsapp_channel.sql`, `20261030_whatsapp_approval_buttons.sql`
+  - approval buttons: `backend/src/services/whatsappApprovals.service.js` (runs the website's own approve / reject handlers; doesn't change them)
 - **Website:**
   - `HRMS/src/components/whatsapp/WhatsAppUpdatesCard.jsx`
   - `HRMS/src/pages/settings/WhatsAppIntegrationCard.jsx`

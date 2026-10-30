@@ -38,6 +38,7 @@ const queue = async (event, { template, group, source }) => {
     group: event.group || group,
     recipients,
     params: event.values,
+    action: event.action || null,
   });
 };
 

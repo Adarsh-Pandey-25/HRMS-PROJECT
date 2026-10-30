@@ -21,10 +21,10 @@ Only people who **connected their own WhatsApp** get anything. Each person can s
 | **Account** (always) | Your account was deactivated (the last message they get) |
 
 ### Managers, in addition
-- A team member's **leave**, **work-from-home** or **expense** request is waiting for their approval.
+- A team member's **leave**, **work-from-home** or **expense** request is waiting for their approval, with the employee's reason and **Approve / Reject** buttons (see "Approving on WhatsApp" below).
 
 ### HR, in addition
-- Requests waiting for HR: leave (no manager, or after the manager approved), work from home, expenses, attendance corrections.
+- Requests waiting for HR: leave (no manager, or after the manager approved), work from home, expenses, attendance corrections — with the reason and **Approve / Reject** buttons.
 - **New helpdesk tickets** and replies; **documents uploaded** for checking.
 - **Summaries:** daily attendance summary, daily pending-approvals count, weekly joiners & exits.
 - **Recruitment:** a candidate accepted or declined an offer.
@@ -53,8 +53,16 @@ Connect in **Super Admin → WhatsApp → My alerts** to get:
 
 ### Good to know
 - **Scheduled messages only come from the live server:** attendance alerts, daily and weekly summaries, birthdays, billing reminders and auto check-out. Your PC has scheduled jobs switched off.
-- **What's in a message:** it says what happened, plus the person's first name, dates and the company name, and ends with "open SpaxSync for details". It never contains salary or amounts, bank details, leave reasons, passwords or codes.
+- **What's in a message:** it says what happened, plus the person's first name, dates and the company name, and ends with "open SpaxSync for details". It never contains salary or amounts, bank details, passwords or codes. The one exception: approvers see the employee's **reason**, shortened to about 200 characters (your decision, 30 Oct 2026); it's hidden from the Message log once sent.
 - **One event, one WhatsApp:** each event sends one message per person, even where SpaxSync sends two emails for it.
+
+### Approving on WhatsApp (added 30 Oct 2026)
+Leave, work-from-home, expense and attendance-correction requests reach the approvers with **Approve** and **Reject** buttons.
+- **A tap does exactly what the button on the website does**, with the same rules: right role and team, the company's approval steps, nobody approves their own request, and the request must still be pending. The employee is told as usual.
+- **Reject is one tap.** The employee sees the reason "Rejected on WhatsApp. Please contact your approver for details."
+- **Attendance corrections:** Approve saves the times the employee asked for, then closes the request, like "Save attendance" on the website. To change the times, use the website.
+- **Safety:** the buttons only work from the approver's own connected WhatsApp number. Each set works once and stops working after 7 days. They don't work if the approver's account is switched off or the company is suspended. Every decision is recorded with who made it and when.
+- **Until Meta approves the new message** (`approval_request`), approval requests go out as before, without buttons.
 
 ---
 

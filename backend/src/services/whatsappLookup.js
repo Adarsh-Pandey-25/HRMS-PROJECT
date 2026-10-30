@@ -4,8 +4,9 @@ const { supabaseAdmin } = require('../config/supabase');
 /**
  * Small read-only lookups that turn ids into the short, non-sensitive words a
  * WhatsApp message needs — a leave type's name, who approved, a ticket's
- * subject. Selects only the columns used; nothing here reads salaries,
- * reasons or bank details.
+ * subject. Selects only the columns used; nothing here reads salaries or
+ * bank details. requestReason is the one reader of a reason, and only for
+ * the approvers' approval_request message.
  */
 
 const CACHE_MS = 5 * 60 * 1000;
@@ -150,6 +151,33 @@ const regularizationDate = (t) => {
   return parts.length > 1 ? parts.slice(1).join(' – ').trim() : null;
 };
 
+/**
+ * What the requester wrote as their reason, for the approver's message
+ * only. `kind` and `recordId` as in whatsapp_actions; null when there is none.
+ */
+const requestReason = async (kind, recordId) => {
+  if (!recordId) return null;
+  if (kind === 'leave') {
+    const { data } = await supabaseAdmin.from('leaves').select('reason').eq('id', recordId).maybeSingle();
+    return data?.reason || null;
+  }
+  if (kind === 'wfh') {
+    // Every day of one request carries the same reason.
+    const { data } = await supabaseAdmin.from('wfh_day_requests').select('reason').eq('batch_id', recordId).limit(1).maybeSingle();
+    return data?.reason || null;
+  }
+  if (kind === 'expense') {
+    const { data } = await supabaseAdmin.from('reimbursements').select('description').eq('id', recordId).maybeSingle();
+    return data?.description || null;
+  }
+  if (kind === 'regularization') {
+    // The website writes "Reason: …" as the last line (HRMS/src/lib/regularization.js).
+    const { data } = await supabaseAdmin.from('helpdesk_tickets').select('description').eq('id', recordId).maybeSingle();
+    return String(data?.description || '').match(/Reason:\s*([\s\S]+)/i)?.[1]?.trim() || null;
+  }
+  return null;
+};
+
 const documentInfo = async (id) => {
   if (!id) return null;
   const { data } = await supabaseAdmin
@@ -201,6 +229,7 @@ module.exports = {
   ticket,
   isRegularizationTicket,
   regularizationDate,
+  requestReason,
   documentInfo,
   reimbursement,
   holidayYears,

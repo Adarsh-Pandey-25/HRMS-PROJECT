@@ -6,6 +6,7 @@ const settings = require('./whatsappSettings.service');
 const { isGroupOn } = require('./whatsappGroups');
 const { getTemplate, paramCount, isMarketing } = require('./whatsappTemplates');
 const { clean } = require('./whatsappFormat');
+const approvals = require('./whatsappApprovals.service');
 
 /**
  * Turns "this happened, for these people" into queued WhatsApp messages.
@@ -94,6 +95,7 @@ const companyAllows = async (companyId, group) => {
  * @param {string} event.group     a key from whatsappGroups.js
  * @param {Array|string} event.recipients [{ subjectType: 'employee', subjectId }] or 'super_admins'
  * @param {Function} event.params  ({ person, company, link }) => values for {{1}}..{{n}}
+ * @param {object} [event.action]  approval requests: { kind, recordId } for the Approve / Reject buttons
  * @returns {Promise<number>} how many messages were queued
  */
 const queueEvent = async (event) => {
@@ -143,7 +145,7 @@ const queueEvent = async (event) => {
       continue;
     }
     // Rules already keep names and titles short; this is the backstop.
-    const params = (values || []).map((v) => clean(v, { max: 160 }));
+    const params = (values || []).map((v, i) => clean(v, { max: template.paramMax?.[i + 1] || 160 }));
     if (params.length !== expected) {
       logger.warn('[WhatsApp] wrong number of values for template', { template: template.name, expected, got: params.length });
       continue;
@@ -173,11 +175,14 @@ const queueEvent = async (event) => {
   const { data, error } = await supabaseAdmin
     .from('whatsapp_messages')
     .upsert(rows, { onConflict: 'dedupe_key', ignoreDuplicates: true })
-    .select('id');
+    .select('id, subject_type, subject_id, company_id');
   if (error) {
     logger.warn('[WhatsApp] could not queue messages', { eventKey: event.eventKey, error: error.message });
     return 0;
   }
+  // Only the rows just queued come back (duplicates are ignored), so each
+  // approval message gets exactly one set of buttons.
+  if (template.buttons) await approvals.createActions(data || [], event.action);
   return (data || []).length;
 };
 

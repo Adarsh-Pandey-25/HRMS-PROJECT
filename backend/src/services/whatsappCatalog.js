@@ -16,10 +16,13 @@ const L = require('./whatsappLookup');
  *   record   the record it is about (with key and person: the dedupe key)
  *   to       { employees: [ids] } | { email: { companyId, address } } | { superAdmins: true }
  *   values   ({ person, company }) => the template's blanks, in order
+ *   action   approval requests only: { kind, recordId } — the request the
+ *            Approve / Reject buttons decide (whatsappApprovals.service.js)
  *
- * Values are short and never sensitive: no amounts, reasons, passwords,
- * codes, IPs or contact details — the message says what happened and points
- * to SpaxSync for the rest.
+ * Values are short and never sensitive: no amounts, passwords, codes, IPs
+ * or contact details — the message says what happened and points to
+ * SpaxSync for the rest. The one exception is the requester's reason on an
+ * approval request, shown only to the approvers (owner's decision, 30 Oct 2026).
  */
 
 const NEVER_REASONS = {
@@ -61,6 +64,9 @@ const payslipRecord = (month, year) => `${year}-${String(month).padStart(2, '0')
 const leaveWhat = async (companyId, leave) => (leave
   ? `${await L.leaveTypeName(companyId, leave.leave_type)} for ${F.formatDateRange(leave.from_date, leave.to_date)}`
   : 'a leave request');
+
+/** {{5}} of approval_request: the requester's own reason, shortened by the outbox. */
+const reasonOf = async (kind, recordId) => (await L.requestReason(kind, recordId)) || 'Not given';
 
 /** A "general update" email for things that only need a one-line heads-up. */
 const general = (key, group, text) => ({
@@ -133,14 +139,16 @@ const EMAIL_RULES = {
     }),
   },
   leave_approval_request: {
-    template: 'approval_waiting',
+    template: 'approval_request',
     group: 'leave',
     event: ([manager, employee, leave]) => ({
       key: 'leave_approval_waiting',
       record: leave?.id,
       to: toEmployee(manager),
+      action: { kind: 'leave', recordId: leave?.id },
       values: async ({ person, company }) => [
         F.firstName(person), F.fullName(employee), await L.companyName(company), await leaveWhat(company.id, leave),
+        await reasonOf('leave', leave?.id),
       ],
     }),
   },
@@ -645,18 +653,22 @@ const notificationEvents = async (item) => {
       const requester = once(async () => L.employeeName((await leave())?.employee_id));
       if (/needs hr approval/i.test(title)) {
         return [event({
-          key: 'leave_hr_approval_waiting', record: meta.leave_id, template: 'approval_waiting', group: 'leave',
+          key: 'leave_hr_approval_waiting', record: meta.leave_id, template: 'approval_request', group: 'leave',
+          action: { kind: 'leave', recordId: meta.leave_id },
           values: async ({ person, company }) => [
             F.firstName(person), (await requester()) || 'A colleague', await L.companyName(company),
             `${await leaveWhat(company.id, await leave())} (approved by their manager)`,
+            await reasonOf('leave', meta.leave_id),
           ],
         })];
       }
       if (/pending approval|submitted/i.test(title)) {
         return [event({
-          key: 'leave_approval_waiting', record: meta.leave_id, template: 'approval_waiting', group: 'leave',
+          key: 'leave_approval_waiting', record: meta.leave_id, template: 'approval_request', group: 'leave',
+          action: { kind: 'leave', recordId: meta.leave_id },
           values: async ({ person, company }) => [
             F.firstName(person), (await requester()) || 'A colleague', await L.companyName(company), await leaveWhat(company.id, await leave()),
+            await reasonOf('leave', meta.leave_id),
           ],
         })];
       }
@@ -686,7 +698,8 @@ const notificationEvents = async (item) => {
       if (/wfh request pending/i.test(title)) {
         const daysOf = once(() => L.wfhDays({ batchId: meta.wfh_batch_id }));
         return [event({
-          key: 'wfh_approval_waiting', record: meta.wfh_batch_id || meta.work_date || rowRecord, template: 'approval_waiting', group: 'requests',
+          key: 'wfh_approval_waiting', record: meta.wfh_batch_id || meta.work_date || rowRecord, template: 'approval_request', group: 'requests',
+          action: { kind: 'wfh', recordId: meta.wfh_batch_id },
           values: async ({ person, company }) => {
             const rows = await daysOf();
             const dates = (Array.isArray(meta.work_dates) && meta.work_dates.length ? meta.work_dates : rows.map((r) => r.work_date))
@@ -696,6 +709,7 @@ const notificationEvents = async (item) => {
               (await L.employeeName(rows[0]?.employee_id)) || 'A colleague',
               await L.companyName(company),
               `work from home for ${F.formatDateRange(dates[0] || meta.work_date, dates[dates.length - 1] || meta.work_date)}`,
+              await reasonOf('wfh', meta.wfh_batch_id),
             ];
           },
         })];
@@ -791,10 +805,12 @@ const notificationEvents = async (item) => {
         const raiser = once(() => L.employeeName(ticket?.raised_by));
         if (regularization) {
           return [event({
-            key: 'regularization_waiting', record: meta.ticket_id, template: 'approval_waiting', group: 'attendance',
+            key: 'regularization_waiting', record: meta.ticket_id, template: 'approval_request', group: 'attendance',
+            action: { kind: 'regularization', recordId: meta.ticket_id },
             values: async ({ person, company }) => [
               F.firstName(person), (await raiser()) || 'A colleague', await L.companyName(company),
               `attendance correction for ${L.regularizationDate(ticket) || 'a past day'}`,
+              await reasonOf('regularization', meta.ticket_id),
             ],
           })];
         }
@@ -854,11 +870,13 @@ const notificationEvents = async (item) => {
         return [event({
           key: hr ? 'expense_hr_approval_waiting' : 'expense_approval_waiting',
           record: meta.reimbursement_id || rowRecord,
-          template: 'approval_waiting',
+          template: 'approval_request',
           group: 'requests',
+          action: { kind: 'expense', recordId: meta.reimbursement_id },
           values: async ({ person, company }) => [
             F.firstName(person), (await requester()) || 'A colleague', await L.companyName(company),
             `an expense claim for ${String((await claim())?.label || 'expenses').toLowerCase()}${hr ? ' (approved by their manager)' : ''}`,
+            await reasonOf('expense', meta.reimbursement_id),
           ],
         })];
       }

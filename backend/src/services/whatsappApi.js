@@ -89,10 +89,11 @@ const addressFor = ({ phone, bsuid }) => (phone ? { to: phone } : { recipient: b
 /**
  * Sends an approved template. `params` fill the body's {{1}}..{{n}};
  * `quickReplyPayload` (marketing templates) is returned to us when the
- * person taps the template's "stop" button.
+ * person taps the template's "stop" button. `buttonPayloads` does the same
+ * for a template with several quick replies (Approve / Reject), in order.
  */
 const sendTemplate = async ({
-  phone, bsuid, template, language = 'en', params = [], quickReplyPayload = null,
+  phone, bsuid, template, language = 'en', params = [], quickReplyPayload = null, buttonPayloads = null,
 }) => {
   const components = [];
   if (params.length) {
@@ -101,14 +102,15 @@ const sendTemplate = async ({
       parameters: params.map((text) => ({ type: 'text', text: String(text) })),
     });
   }
-  if (quickReplyPayload) {
+  const payloads = buttonPayloads || (quickReplyPayload ? [quickReplyPayload] : []);
+  payloads.forEach((payload, index) => {
     components.push({
       type: 'button',
       sub_type: 'quick_reply',
-      index: '0',
-      parameters: [{ type: 'payload', payload: quickReplyPayload }],
+      index: String(index),
+      parameters: [{ type: 'payload', payload }],
     });
-  }
+  });
   const json = await graphRequest('POST', `${getConfig().phoneNumberId}/messages`, {
     messaging_product: 'whatsapp',
     recipient_type: 'individual',

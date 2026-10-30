@@ -5,6 +5,7 @@ const { forEachWithLimit } = require('../utils/concurrency');
 const api = require('./whatsappApi');
 const settings = require('./whatsappSettings.service');
 const linkService = require('./whatsappLink.service');
+const approvals = require('./whatsappApprovals.service');
 const { getTemplate, isMarketing, LANGUAGE, STOP_MARKETING_PAYLOAD } = require('./whatsappTemplates');
 const { isGroupOn } = require('./whatsappGroups');
 
@@ -40,7 +41,14 @@ const update = (id, fields) => supabaseAdmin
   .update({ ...fields, updated_at: new Date().toISOString() })
   .eq('id', id);
 
-const markSkipped = (row, reason) => update(row.id, { status: 'skipped', skip_reason: reason });
+// A template's private values (an approval request's reason) leave the
+// message log as soon as the row is done with.
+const doneFields = (row) => {
+  const template = getTemplate(row.template);
+  return template?.privateParams ? { params: approvals.redactParams(template, row.params) } : {};
+};
+
+const markSkipped = (row, reason) => update(row.id, { status: 'skipped', skip_reason: reason, ...doneFields(row) });
 
 const failStuckRows = async (environment) => {
   if (Date.now() - lastStuckSweep < 60 * 1000) return;
@@ -91,7 +99,7 @@ const handleSendError = async (row, err, environment) => {
   if (code === '131050') {
     await linkService.stopMarketing(row.recipient_kind === 'phone' ? { phone: row.recipient } : { bsuid: row.recipient });
   }
-  await update(row.id, { status: 'failed', ...errorFields });
+  await update(row.id, { status: 'failed', ...errorFields, ...doneFields(row) });
 };
 
 const sendRow = async (row, cfg) => {
@@ -103,16 +111,27 @@ const sendRow = async (row, cfg) => {
   if (!isRecipientAllowed(phone, cfg)) return markSkipped(row, 'not_on_test_allow_list');
 
   try {
+    // Approval requests go with fresh Approve / Reject codes, or as the plain
+    // fallback until Meta approves them (whatsappApprovals.service.js).
+    const send = template.buttons
+      ? await approvals.prepareSend(row, template)
+      : { template: template.name, params: Array.isArray(row.params) ? row.params : [], buttonPayloads: null };
     const { waMessageId } = await api.sendTemplate({
       phone,
       bsuid: row.recipient_kind === 'bsuid' ? row.recipient : null,
-      template: template.name,
+      template: send.template,
       language: LANGUAGE,
-      params: Array.isArray(row.params) ? row.params : [],
+      params: send.params,
       quickReplyPayload: isMarketing(template) ? STOP_MARKETING_PAYLOAD : null,
+      buttonPayloads: send.buttonPayloads,
     });
+    const sentAs = getTemplate(send.template);
     await update(row.id, {
       status: 'sent', wa_message_id: waMessageId, sent_at: new Date().toISOString(), error_code: null, error_title: null,
+      // The log shows what actually went, private values hidden.
+      ...(sentAs !== template || template.privateParams
+        ? { template: sentAs.name, params: approvals.redactParams(sentAs, send.params) }
+        : {}),
     });
     // "Your account was deactivated" is the last message that person gets.
     if (row.event_key === 'account_deactivated') await linkService.closeLink(row.subject_type, row.subject_id);

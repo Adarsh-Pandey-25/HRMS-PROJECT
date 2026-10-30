@@ -5,6 +5,7 @@ const logger = require('../utils/logger');
 const api = require('./whatsappApi');
 const settings = require('./whatsappSettings.service');
 const linkService = require('./whatsappLink.service');
+const approvals = require('./whatsappApprovals.service');
 const { STOP_MARKETING_PAYLOAD, STOP_BUTTON_TEXT } = require('./whatsappTemplates');
 
 /**
@@ -12,8 +13,9 @@ const { STOP_MARKETING_PAYLOAD, STOP_BUTTON_TEXT } = require('./whatsappTemplate
  * has checked its signature):
  *   statuses  sent / delivered / read / failed, plus what Meta charged
  *   messages  JOIN <code>, STOP, START, HELP, the "stop these updates"
- *             button, Meta's "changed number" notice — anything else gets
- *             one polite reply a day
+ *             button, Approve / Reject on an approval request, Meta's
+ *             "changed number" notice — anything else gets one polite
+ *             reply a day
  * Message text is never stored or logged; whatsapp_inbound keeps only the
  * message id (Meta retries deliveries) and what we did with it.
  */
@@ -72,12 +74,14 @@ const repliedToday = async (identity) => {
   return (count || 0) > 1; // the message just recorded is one of them
 };
 
-/** What the person asked for: join (with code), stop, start, help, stop_marketing or other. */
+/** What the person asked for: join (with code), stop, start, help, stop_marketing, approve / reject (with code) or other. */
 const classify = (message) => {
   if (message.type === 'button') {
     const payload = String(message.button?.payload || '');
     const text = String(message.button?.text || '');
     if (payload === STOP_MARKETING_PAYLOAD || text === STOP_BUTTON_TEXT) return { action: 'stop_marketing' };
+    const tap = approvals.parsePayload(payload);
+    if (tap) return { action: tap.decision, code: tap.code };
     return { action: 'other' };
   }
   if (message.type === 'system') return { action: 'system' };
@@ -121,6 +125,9 @@ const handleMessage = async (message, contacts) => {
     case 'stop_marketing':
       await linkService.stopMarketing(identity);
       return reply(identity, REPLIES.stoppedMarketing);
+    case 'approve':
+    case 'reject':
+      return reply(identity, await approvals.handleTap({ decision: intent.action, code: intent.code, identity }));
     case 'system': {
       const system = message.system || {};
       if (system.type === 'user_changed_number' || system.type === 'user_changed_user_id') {
