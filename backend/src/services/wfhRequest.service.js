@@ -228,34 +228,35 @@ const notifyReviewers = async (employeeId, dates, batchId) => {
   const link = '/attendance/wfh-approvals';
   const meta = { wfh_batch_id: batchId, work_date: dates[0], work_dates: dates };
 
-  if (employee?.manager_id) {
+  // The manager (if any) and every HR / admin of the company hear about it at
+  // the same time (owner's decision, 30 Oct 2026); whoever decides first
+  // settles it — review() refuses a request that is no longer pending.
+  // Nobody is asked to review their own request.
+  const reviewerIds = new Set(employee?.manager_id ? [employee.manager_id] : []);
+  try {
+    const tenantService = require('./tenant.service');
+    const { getCompanyId } = require('../utils/tenant');
+    const { data: empFull } = await supabaseAdmin
+      .from('employees')
+      .select('address, company_id')
+      .eq('id', employeeId)
+      .maybeSingle();
+    for (const id of await tenantService.getCompanyHrAdminIds(empFull ? getCompanyId(empFull) : null)) reviewerIds.add(id);
+  } catch (err) {
+    // The request is saved either way, and shows on the WFH approvals page.
+    require('../utils/logger').warn('[WFH] could not load HR/admins to notify', { error: err.message });
+  }
+  reviewerIds.delete(employeeId);
+
+  for (const id of reviewerIds) {
     await notificationService.createNotification({
-      user_id: employee.manager_id,
+      user_id: id,
       type: 'ATTENDANCE',
       title: 'WFH request pending',
       message,
       link,
       meta,
     });
-  } else {
-    const tenantService = require('./tenant.service');
-    const { getCompanyId } = require('../utils/tenant');
-    const { data: empFull } = await supabaseAdmin
-      .from('employees')
-      .select('address')
-      .eq('id', employeeId)
-      .maybeSingle();
-    const hrIds = await tenantService.getCompanyHrAdminIds(empFull ? getCompanyId(empFull) : null);
-    for (const id of hrIds) {
-      await notificationService.createNotification({
-        user_id: id,
-        type: 'ATTENDANCE',
-        title: 'WFH request pending',
-        message,
-        link,
-        meta,
-      });
-    }
   }
 };
 

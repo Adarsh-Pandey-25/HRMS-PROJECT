@@ -24,7 +24,7 @@ Only people who **connected their own WhatsApp** get anything. Each person can s
 - A team member's **leave**, **work-from-home** or **expense** request is waiting for their approval, with the employee's reason and **Approve / Reject** buttons (see "Approving on WhatsApp" below).
 
 ### HR, in addition
-- Requests waiting for HR: leave (no manager, or after the manager approved), work from home, expenses, attendance corrections — with the reason and **Approve / Reject** buttons.
+- Requests waiting for HR: leave (no manager, or after the manager approved), expenses, attendance corrections, and **every** work-from-home request (at the same time as the manager; whoever decides first settles it) — with the reason and **Approve / Reject** buttons.
 - **New helpdesk tickets** and replies; **documents uploaded** for checking.
 - **Summaries:** daily attendance summary, daily pending-approvals count, weekly joiners & exits.
 - **Recruitment:** a candidate accepted or declined an offer.
