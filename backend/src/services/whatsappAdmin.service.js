@@ -184,6 +184,11 @@ const templatesStatus = async () => {
   };
 };
 
+// Templates submitted to Meta at the same time. One after another, a full
+// set of 38 takes longer than the 25 s a request may run (app.js), so the
+// page showed an error even though every template reached Meta.
+const SUBMIT_AT_ONCE = 10;
+
 /** Submits every template Meta does not have yet. Never resubmits existing ones. */
 const syncTemplates = async () => {
   const cfg = getConfig();
@@ -192,23 +197,29 @@ const syncTemplates = async () => {
   }
   const existing = new Set((await api.listTemplates()).filter((t) => t.language === LANGUAGE).map((t) => t.name));
   const results = [];
-  for (const template of TEMPLATES) {
+  const toSubmit = [];
+  TEMPLATES.forEach((template, index) => {
     if (existing.has(template.name)) {
-      results.push({ name: template.name, result: 'already_at_meta' });
-      continue;
+      results[index] = { name: template.name, result: 'already_at_meta' };
+      return;
     }
     const problems = templateProblems(template);
     if (problems.length) {
-      results.push({ name: template.name, result: 'not_sent', error: problems.join('; ') });
-      continue;
+      results[index] = { name: template.name, result: 'not_sent', error: problems.join('; ') };
+      return;
     }
-    try {
-      // eslint-disable-next-line no-await-in-loop
-      const created = await api.createTemplate(toCreatePayload(template));
-      results.push({ name: template.name, result: 'submitted', status: created?.status || null, category: created?.category || null });
-    } catch (err) {
-      results.push({ name: template.name, result: 'error', error: err.title || err.message });
-    }
+    toSubmit.push({ template, index });
+  });
+  for (let start = 0; start < toSubmit.length; start += SUBMIT_AT_ONCE) {
+    // eslint-disable-next-line no-await-in-loop
+    await Promise.all(toSubmit.slice(start, start + SUBMIT_AT_ONCE).map(async ({ template, index }) => {
+      try {
+        const created = await api.createTemplate(toCreatePayload(template));
+        results[index] = { name: template.name, result: 'submitted', status: created?.status || null, category: created?.category || null };
+      } catch (err) {
+        results[index] = { name: template.name, result: 'error', error: err.title || err.message };
+      }
+    }));
   }
   return results;
 };
