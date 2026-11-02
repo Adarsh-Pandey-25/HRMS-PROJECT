@@ -188,6 +188,12 @@ const DEFAULT_EXPENSE_CONFIG = {
   requireReceiptAbove: 500,
 };
 
+// Settings → Approval Flows. Leave and expenses keep theirs in leavePolicy
+// and expenseConfig; work from home starts with both asked at once.
+const DEFAULT_APPROVAL_FLOWS = {
+  wfh: 'manager-or-hr', // manager-only | manager-then-hr | hr-only | manager-or-hr
+};
+
 const DEFAULT_TRAINING_CONFIG = {
   newJoinerWindowDays: 90,
   newJoinerDeadlineDays: 30,
@@ -241,6 +247,7 @@ export const useSettingsStore = create(
       announcementConfig: DEFAULT_ANNOUNCEMENT_CONFIG,
       assetConfig: DEFAULT_ASSET_CONFIG,
       expenseConfig: DEFAULT_EXPENSE_CONFIG,
+      approvalFlows: DEFAULT_APPROVAL_FLOWS,
       trainingConfig: DEFAULT_TRAINING_CONFIG,
       helpdeskConfig: DEFAULT_HELPDESK_CONFIG,
       integrationsConfig: DEFAULT_INTEGRATIONS_CONFIG,
@@ -309,6 +316,7 @@ export const useSettingsStore = create(
       updateAnnouncementConfig: (patch) => set((s) => ({ announcementConfig: { ...s.announcementConfig, ...patch } })),
       updateAssetConfig: (patch) => set((s) => ({ assetConfig: { ...s.assetConfig, ...patch } })),
       updateExpenseConfig: (patch) => set((s) => ({ expenseConfig: { ...s.expenseConfig, ...patch } })),
+      updateApprovalFlows: (patch) => set((s) => ({ approvalFlows: { ...s.approvalFlows, ...patch } })),
       updateTrainingConfig: (patch) => set((s) => ({ trainingConfig: { ...s.trainingConfig, ...patch } })),
       updateHelpdeskConfig: (patch) => set((s) => ({ helpdeskConfig: { ...s.helpdeskConfig, ...patch } })),
       updateIntegrationsConfig: (patch) => set((s) => ({ integrationsConfig: { ...s.integrationsConfig, ...patch } })),

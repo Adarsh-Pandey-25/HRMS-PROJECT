@@ -11,6 +11,7 @@ const LEGACY_LINKS = {
   '/reimbursements?tab=mine': '/expenses/me',
   '/documents': '/employees',
   '/payroll': '/payroll/me',
+  '/leave/holidays': '/holidays',
 };
 
 /**

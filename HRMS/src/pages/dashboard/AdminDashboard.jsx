@@ -92,7 +92,10 @@ export default function AdminDashboard({ user }) {
     type: e.type,
     name: e.title || e.name,
     label: e.subtitle || e.label,
-    date: e.date || e.sortDate,
+    // sortDate is the full date; `date` comes pre-formatted ("05 Nov", no
+    // year), which formatDate can't read — the card showed "—".
+    date: e.sortDate || e.date,
+    profile: e.employeeId ? employeeProfilePath({ id: e.employeeId, employeeCode: e.employeeCode }) : null,
   }));
 
   const activityFeed = (api?.recentActivity || activity).map((a) => ({
@@ -139,7 +142,7 @@ export default function AdminDashboard({ user }) {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card className="lg:col-span-2">
-          <CardHeader title="Headcount Trend" subtitle="Last 12 months" />
+          <CardHeader title="Headcount Trend" subtitle="Last 12 months" action={<Link to="/reports" className="text-xs font-medium text-primary hover:underline">Reports</Link>} />
           <div className="px-4 pb-5 pt-2">
             <ErrorBoundary variant="inline" label="Chart unavailable">
               <HeadcountDrilldownChart />
@@ -148,7 +151,7 @@ export default function AdminDashboard({ user }) {
         </Card>
 
         <Card>
-          <CardHeader title="By Department" subtitle="Hover a slice for details" />
+          <CardHeader title="By Department" subtitle="Hover a slice for details" action={<Link to="/employees" className="text-xs font-medium text-primary hover:underline">View all</Link>} />
           <div className="px-4 pb-5 pt-3">
             <ErrorBoundary variant="inline" label="Chart unavailable">
               <Suspense fallback={<ChartSkeleton height={340} />}>
@@ -160,20 +163,22 @@ export default function AdminDashboard({ user }) {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <Card className="p-5">
-          <p className="text-xs font-medium text-fg-subtle">Payroll Cost This Month</p>
-          <p className="mt-2 text-kpi text-fg tabular-nums">{formatCompactINR(thisMonthCost.cost)}</p>
-          <div className="mt-3 flex items-center gap-1.5 text-xs">
-            <span className={cn('inline-flex items-center gap-0.5 font-medium', costDelta >= 0 ? 'text-danger' : 'text-success')}>
-              {costDelta >= 0 ? <TrendingUp className="h-3.5 w-3.5" /> : <TrendingDown className="h-3.5 w-3.5" />}
-              {Math.abs(Number(costDelta)).toFixed(1)}%
-            </span>
-            <span className="text-fg-subtle">vs {formatCompactINR(lastMonthCost.cost)} last month</span>
-          </div>
-        </Card>
+        <Link to="/payroll" className="block">
+          <Card hover className="p-5 h-full transition-colors hover:border-primary/35 cursor-pointer">
+            <p className="text-xs font-medium text-fg-subtle">Payroll Cost This Month</p>
+            <p className="mt-2 text-kpi text-fg tabular-nums">{formatCompactINR(thisMonthCost.cost)}</p>
+            <div className="mt-3 flex items-center gap-1.5 text-xs">
+              <span className={cn('inline-flex items-center gap-0.5 font-medium', costDelta >= 0 ? 'text-danger' : 'text-success')}>
+                {costDelta >= 0 ? <TrendingUp className="h-3.5 w-3.5" /> : <TrendingDown className="h-3.5 w-3.5" />}
+                {Math.abs(Number(costDelta)).toFixed(1)}%
+              </span>
+              <span className="text-fg-subtle">vs {formatCompactINR(lastMonthCost.cost)} last month</span>
+            </div>
+          </Card>
+        </Link>
 
         <Card className="lg:col-span-2">
-          <CardHeader title="New Hires This Month" subtitle={`${newHires.length} joined`} />
+          <CardHeader title="New Hires This Month" subtitle={`${newHires.length} joined`} action={<Link to="/employees?hired=this-month" className="text-xs font-medium text-primary hover:underline">View all</Link>} />
           <div className="p-5 pt-3 space-y-2">
             {newHires.length === 0 ? (
               <p className="text-sm text-fg-subtle">No new hires yet this month.</p>
@@ -195,16 +200,16 @@ export default function AdminDashboard({ user }) {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card>
-          <CardHeader title="Attendance Today" subtitle={`${attendance.teamSize ?? attendance.total ?? staffCount} team members`} />
+          <CardHeader title="Attendance Today" subtitle={`${attendance.teamSize ?? attendance.total ?? staffCount} team members`} action={<Link to="/attendance/team" className="text-xs font-medium text-primary hover:underline">View all</Link>} />
           <div className="p-5 pt-3 grid grid-cols-2 gap-3">
             {ATTENDANCE_STATS.map((s) => (
-              <div key={s.key} className="rounded-xl bg-muted/50 p-3">
+              <Link key={s.key} to={`/attendance/team?status=${s.key}`} className="rounded-xl bg-muted/50 p-3 transition-colors hover:bg-muted">
                 <div className={cn('h-8 w-8 rounded-lg flex items-center justify-center mb-2', s.tone)}>
                   <s.icon className="h-4 w-4" />
                 </div>
                 <p className="text-xl font-semibold text-fg tabular-nums">{attendance[s.key] ?? 0}</p>
                 <p className="text-xs text-fg-subtle">{s.label}</p>
-              </div>
+              </Link>
             ))}
           </div>
         </Card>
@@ -214,10 +219,12 @@ export default function AdminDashboard({ user }) {
         <Card>
           <CardHeader title="Upcoming" subtitle="Next few days" />
           <div className="p-5 pt-3 space-y-3">
+            {upcomingEvents.length === 0 && <p className="text-sm text-fg-subtle">No birthdays or anniversaries in the next 30 days.</p>}
             {upcomingEvents.slice(0, 5).map((e, i) => {
               const Icon = EVENT_ICON[e.type] || Video;
+              const Row = e.profile ? Link : 'div';
               return (
-                <div key={i} className="flex items-center gap-3">
+                <Row key={i} {...(e.profile ? { to: e.profile } : {})} className="flex items-center gap-3 rounded-xl -mx-2 px-2 py-1 transition-colors hover:bg-muted">
                   <div className="h-8 w-8 rounded-lg bg-primary/10 text-primary flex items-center justify-center shrink-0">
                     <Icon className="h-4 w-4" />
                   </div>
@@ -225,8 +232,8 @@ export default function AdminDashboard({ user }) {
                     <p className="text-sm font-medium text-fg truncate">{e.name}</p>
                     <p className="text-xs text-fg-subtle truncate">{e.label}</p>
                   </div>
-                  <span className="text-[11px] text-fg-subtle">{formatDate(e.date, 'dd MMM')}</span>
-                </div>
+                  <span className="text-[11px] text-fg-subtle whitespace-nowrap">{formatDate(e.date, 'dd MMM')}</span>
+                </Row>
               );
             })}
           </div>
@@ -234,7 +241,7 @@ export default function AdminDashboard({ user }) {
       </div>
 
       <Card>
-        <CardHeader title="Recent Activity" subtitle="Latest across the organisation" />
+        <CardHeader title="Recent Activity" subtitle="Latest across the organisation" action={<Link to="/audit-log" className="text-xs font-medium text-primary hover:underline">View all</Link>} />
         <div className="p-5 pt-3">
           <ol className="relative border-l border-border ml-2 space-y-5">
             {activityFeed.map((a) => (

@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import {
   PageHeader, Card, CardHeader, Avatar, StatusBadge, Badge, Button, EmptyState, Skeleton, Modal, Input,
 } from '../../components/ui';
+import { EmployeeLink } from '../../components/shared/EmployeeLink';
 import { useTeamReviews, useReviewCycles, usePerformanceMutations } from '../../hooks/useModules';
 import { humanize } from '../../lib/utils';
 
@@ -65,7 +66,7 @@ export default function TeamReviews() {
                 <div className="flex items-center gap-3 flex-1 min-w-0">
                   <Avatar name={name} size="md" />
                   <div>
-                    <p className="text-sm font-medium text-fg">{name}</p>
+                    <p className="text-sm font-medium text-fg"><EmployeeLink employeeId={r.employeeId || emp.id}>{name}</EmployeeLink></p>
                     <p className="text-xs text-fg-subtle">
                       Progress {r.progress ?? 0}% · {humanize(r.status || 'pending')}
                     </p>

@@ -80,8 +80,8 @@ const submit = async (req, res, next) => {
       throw new BadRequestError(error.message);
     }
 
-    // Notify whoever acts first under Settings → Expenses → Approval flow:
-    // the manager, or HR (HR only, or the employee has no manager).
+    // Notify whoever acts first under Settings → Approval Flows: the manager,
+    // HR (HR only, or the employee has no manager), or both (Manager or HR).
     const { data: employee } = await supabaseAdmin
       .from('employees')
       .select('id, first_name, last_name, manager_id')
@@ -90,7 +90,7 @@ const submit = async (req, res, next) => {
     const flow = await approvalFlow.getExpenseFlow(req.user.company_id);
     const firstStage = approvalFlow.awaitingStage(flow, { hasManager: Boolean(employee?.manager_id), managerApproved: false });
 
-    if (firstStage === 'manager') {
+    if (approvalFlow.isTurnOf(firstStage, 'manager')) {
       await notificationService.createNotification({
         user_id: employee.manager_id,
         type: 'REIMBURSEMENT',
@@ -99,7 +99,8 @@ const submit = async (req, res, next) => {
         link: '/expenses/approvals',
         meta: { reimbursement_id: data.id },
       });
-    } else {
+    }
+    if (approvalFlow.isTurnOf(firstStage, 'hr')) {
       const { data: hrs } = await supabaseAdmin
         .from('employees')
         .select('id, address')
@@ -221,6 +222,9 @@ const approve = async (req, res, next) => {
 
     if (error) throw new BadRequestError(error.message);
     if (!data) throw new BadRequestError('This claim has already been decided');
+    // "Please review" notifications nobody needs any more: the first step's
+    // after a Manager → HR manager approval, all of them once it is final.
+    await notificationService.markReviewNotificationsRead('expense', reimbursement.id, { firstStepOnly: !decision.final });
 
     if (!decision.final) {
       // Notify HR/Admin for final approval
@@ -283,6 +287,7 @@ const reject = async (req, res, next) => {
 
     if (error) throw new BadRequestError(error.message);
     if (!data) throw new BadRequestError('This claim has already been decided');
+    await notificationService.markReviewNotificationsRead('expense', reimbursement.id);
 
     await notificationService.createNotification({
       user_id: reimbursement.employee_id,
@@ -308,6 +313,8 @@ const remove = async (req, res, next) => {
     if (reimbursement.status !== 'pending') throw new BadRequestError('Only pending reimbursements can be deleted');
 
     await supabaseAdmin.from('reimbursements').delete().eq('id', req.params.id);
+    // A withdrawn claim needs nobody's review.
+    await notificationService.markReviewNotificationsRead('expense', reimbursement.id);
         auditFromRequest(req, {
       actionType: 'reimbursement.delete', targetType: 'reimbursement', targetId: req.params.id,
     });

@@ -38,10 +38,15 @@ export function useReimbursementMutations() {
     await invalidateAndRefetch(qc, ['reimbursements']);
     await invalidateAndRefetch(qc, ['dashboard']);
   };
+  // A decision marks the claim's "please review" notifications read on the server.
+  const afterDecision = async () => {
+    await invalidate();
+    await invalidateAndRefetch(qc, ['notifications']);
+  };
   return {
     submit: useMutation({ mutationFn: submitReimbursementApi, onSuccess: invalidate }),
-    approve: useMutation({ mutationFn: approveReimbursementApi, onSuccess: invalidate }),
-    reject: useMutation({ mutationFn: ({ id, reason }) => rejectReimbursementApi(id, reason), onSuccess: invalidate }),
+    approve: useMutation({ mutationFn: approveReimbursementApi, onSuccess: afterDecision }),
+    reject: useMutation({ mutationFn: ({ id, reason }) => rejectReimbursementApi(id, reason), onSuccess: afterDecision }),
     withdraw: useMutation({ mutationFn: deleteReimbursementApi, onSuccess: invalidate }),
   };
 }

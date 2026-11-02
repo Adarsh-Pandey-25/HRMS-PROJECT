@@ -41,7 +41,7 @@ const WEB_MODE_OPTIONS = [
 ];
 const WEB_MODE_HINT = {
   everyone: 'Anyone can check in from a browser, on desktop or phone.',
-  wfh_only: 'Office days use the biometric device. Web check-in is open only to WFH employees, and to anyone else on a day their WFH request was approved.',
+  wfh_only: 'Office days use the biometric device. Web check-in is open to WFH and hybrid employees, and to anyone else on a day their WFH request was approved.',
   off: 'Nobody can check in from a browser — the biometric device only.',
 };
 /** Configs saved before the three-way setting only have the boolean `web`. */

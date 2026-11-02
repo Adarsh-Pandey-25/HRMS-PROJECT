@@ -1,12 +1,12 @@
 # WhatsApp: who gets what, and how to go live
 
-*Written 28 Oct 2026, updated 29 Oct, for the SpaxSync owner. Branch `whatsapp-integration`.*
+*Written 28 Oct 2026, updated 2 Nov, for the SpaxSync owner. Branch `whatsapp-integration`.*
 
 ---
 
 ## 1. Who gets which WhatsApp message
 
-Only people who **connected their own WhatsApp** get anything. Each person can switch any group off, and a company admin can switch a group off for the whole company.
+Only people whose **WhatsApp is connected** get anything. Employees HR adds from 2 Nov 2026 are connected automatically to the mobile number HR enters (see "Automatic connection" below); everyone else connects from their own profile. Each person can switch any group off, and a company admin can switch a group off for the whole company.
 
 ### Every employee
 | Group | Messages |
@@ -21,10 +21,10 @@ Only people who **connected their own WhatsApp** get anything. Each person can s
 | **Account** (always) | Your account was deactivated (the last message they get) |
 
 ### Managers, in addition
-- A team member's **leave**, **work-from-home** or **expense** request is waiting for their approval, with the employee's reason and **Approve / Reject** buttons (see "Approving on WhatsApp" below).
+- A team member's **leave**, **work-from-home** or **expense** request is waiting for their approval, when the company's **Approval Flows** ask the manager. The message has the employee's reason and **Approve / Reject** buttons (see "Approving on WhatsApp" below).
 
 ### HR, in addition
-- Requests waiting for HR: leave (no manager, or after the manager approved), expenses, attendance corrections, and **every** work-from-home request (at the same time as the manager; whoever decides first settles it) — with the reason and **Approve / Reject** buttons.
+- Requests waiting for HR under the company's **Approval Flows** (leave, work from home, expenses), and every attendance correction. Requests from people without a manager always go to HR. The message has the reason and **Approve / Reject** buttons.
 - **New helpdesk tickets** and replies; **documents uploaded** for checking.
 - **Summaries:** daily attendance summary, daily pending-approvals count, weekly joiners & exits.
 - **Recruitment:** a candidate accepted or declined an offer.
@@ -62,7 +62,60 @@ Leave, work-from-home, expense and attendance-correction requests reach the appr
 - **Reject is one tap.** The employee sees the reason "Rejected on WhatsApp. Please contact your approver for details."
 - **Attendance corrections:** Approve saves the times the employee asked for, then closes the request, like "Save attendance" on the website. To change the times, use the website.
 - **Safety:** the buttons only work from the approver's own connected WhatsApp number. Each set works once and stops working after 7 days. They don't work if the approver's account is switched off or the company is suspended. Every decision is recorded with who made it and when.
-- **Until Meta approves the new message** (`approval_request`), approval requests go out as before, without buttons.
+- **Live since 30 Oct 2026:** Meta approved `approval_request`, and the first leave and work-from-home requests were approved from WhatsApp that afternoon.
+
+### Approval Flows (added 2 Nov 2026)
+**Settings → Approval Flows** chooses who approves each kind of request: one card each for **Leave**, **Work from home** and **Expense claims**, with four choices:
+- **Manager only:** the manager's approval is final.
+- **Manager → HR:** the manager approves first, then HR gives the final approval.
+- **HR only:** managers are not asked and can't approve or reject.
+- **Manager or HR:** both are asked at the same time; whoever decides first settles it.
+
+**Attendance corrections** stay **HR only**, because approving one changes the attendance record. Requests from people without a manager always go to HR.
+
+**WhatsApp follows the same choice.** The approval message with buttons goes only to whoever's turn it is. Under **Manager → HR**, a manager's Approve on WhatsApp replies "It now goes to HR for the final approval", and HR then gets its own message with buttons.
+
+**Starting choices:** leave and expense claims keep the choice the company already had. Work from home starts on **Manager or HR**, which is how it worked before.
+
+Managers only come into it when employees have **Reporting to** set and that person has the **Manager** role. Today, nobody in Spaxads has a manager, so every request goes to HR and admins.
+
+Database update: `20261102_wfh_approval_flow.sql`. It's needed for **Manager → HR** on work from home; the other choices work without it.
+
+### Automatic connection (added 2 Nov 2026)
+- **The mobile number is compulsory** in Add employee and in Bulk import: 10 digits. The numbers are Indian; SpaxSync adds +91.
+- **As soon as HR saves the employee** with Add employee, their WhatsApp is connected to that number, and they get the **welcome** (`welcome_new_employee`):
+  > **Welcome to Spaxads Digital Media, Priya!** 🎉
+  > We're glad to have you on the team.
+  >
+  > Your HR updates will come here:
+  > ✅ Leave approvals · 🕘 Attendance alerts · 💰 Payslips · 📢 Company news
+  >
+  > Your sign-in details are in your email.
+- **Existing employees** get the **announcement** instead (`hr_updates_on_whatsapp`). This covers people added by Bulk import (usually staff who already work there) and anyone whose number HR changes:
+  > **HR updates are now on WhatsApp** 📲
+  >
+  > Hi Priya, Spaxads Digital Media now sends your HR updates here:
+  > ✅ Leave approvals · 🕘 Attendance alerts · 💰 Payslips · 📢 Company news
+  >
+  > You'll still get them by email as before.
+- **Neither message has a "Reply STOP" line** (your decision). Replying STOP still works.
+- **Only for companies with WhatsApp switched on.** Nothing happens for other companies.
+- **If HR changes the number later** (or the employee uses their one-time profile edit), the connection moves to the new number. A connection the employee made themselves, or stopped, is never touched.
+- **Ask HR to double-check numbers:** with a wrong number, a stranger gets that person's updates.
+- **Until Meta approves the welcome**, it waits, for up to 3 days. The employee's other updates go out as usual.
+
+### Connect everyone (existing employees)
+Existing employees are **never** connected automatically. Go to **Super Admin → WhatsApp → Connect employees**. Each company is listed with:
+- how many employees it has;
+- how many are already connected;
+- how many will get the announcement;
+- how many have no usable mobile number;
+- how many are left alone, because they stopped or disconnected before.
+
+**Connect everyone** connects that company's employees and sends the announcement, after you confirm.
+- The button stays off until Meta has approved the announcement, so it always arrives before any other update.
+- At most 200 people per press, because of Meta's daily limit until business verification. Press again the next day for the rest.
+- People without a usable mobile number are left out: add their number in their employee profile first.
 
 ---
 

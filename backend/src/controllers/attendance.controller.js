@@ -164,9 +164,23 @@ const employeeReport = async (req, res, next) => {
         throw new (require('../utils/errors').ForbiddenError)('Not authorized to view this report');
       }
     }
-    const month = parseInt(req.query.month, 10) || moment().tz(TIMEZONE).month() + 1;
-    const year = parseInt(req.query.year, 10) || moment().tz(TIMEZONE).year();
-    const result = await attendanceService.getMonthlySummary(employeeId, month, year);
+    let result;
+    if (req.query.from || req.query.to) {
+      // A date range (the profile's attendance history), up to ~3 years.
+      const { from, to } = req.query;
+      const isDay = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) && moment(v, 'YYYY-MM-DD', true).isValid();
+      const { BadRequestError } = require('../utils/errors');
+      if (!isDay(from) || !isDay(to)) throw new BadRequestError('from and to must be dates (YYYY-MM-DD)');
+      if (from > to) throw new BadRequestError('The start date must be on or before the end date');
+      if (moment(to).diff(moment(from), 'days') > attendanceService.MAX_REPORT_DAYS) {
+        throw new BadRequestError(`Pick a range of at most ${attendanceService.MAX_REPORT_DAYS} days`);
+      }
+      result = await attendanceService.getRangeReport(employeeId, from, to);
+    } else {
+      const month = parseInt(req.query.month, 10) || moment().tz(TIMEZONE).month() + 1;
+      const year = parseInt(req.query.year, 10) || moment().tz(TIMEZONE).year();
+      result = await attendanceService.getMonthlySummary(employeeId, month, year);
+    }
     // Item 8: records (individual rows) get biometric rows stripped for
     // display; summary (present/absent/hours counts) is deliberately left
     // untouched — it's computed from the FULL data regardless of this
@@ -274,14 +288,21 @@ const checkContext = async (req, res, next) => {
     const wfhReq = await wfhRequestService.getRequestForDate(req.user.id, todayDate);
     const dailyWfhStatus = wfhReq?.status || null;
     const webMode = methods.webMode;
-    // Under 'wfh_only' a hybrid employee is WFH only on an approved day; in
-    // every other mode hybrid keeps counting as WFH every day, as before.
+    // Hybrid staff may check in on the web any day, in every mode — the
+    // device in the office, the web from home, no daily request (owner's
+    // decision, 2 Nov 2026).
     const dailyWfhApproved = attendanceMode === 'wfh'
-      || (attendanceMode === 'hybrid' && webMode !== 'wfh_only')
+      || attendanceMode === 'hybrid'
       || dailyWfhStatus === 'approved';
-    // The same rule checkIn enforces, so the button and the server agree.
+    // A request still waiting lets an office employee check in now,
+    // provisionally (attendance.service.js checkIn). The same rule checkIn
+    // enforces, so the button and the server agree.
+    // ...unless it comes from the office network where web check-in is open
+    // to everyone: that is an office day (attendance.service.js checkIn).
+    const fromOfficeNetwork = webMode !== 'wfh_only' && ipCheck.reason === 'matched';
+    const provisionalWfh = attendanceMode === 'office' && dailyWfhStatus === 'pending' && !fromOfficeNetwork;
     const webDecision = attendanceService.webCheckInDecision({
-      webMode, attendanceMode, approvedDailyWfh: dailyWfhStatus === 'approved',
+      webMode, attendanceMode, approvedDailyWfh: dailyWfhStatus === 'approved' || provisionalWfh,
     });
 
     // Source of truth for My Attendance clock UI (avoid relying only on month list)
@@ -307,13 +328,15 @@ const checkContext = async (req, res, next) => {
       canCheckInFromThisIp,
       ipBasedWebOn: ipWebOn,
       gpsGeofenceOn: gpsOn,
-      // Hybrid staff need an approved day under 'wfh_only', so they must be
-      // able to ask for one.
-      canEnableDailyWfh: attendanceMode === 'office' || (attendanceMode === 'hybrid' && webMode === 'wfh_only'),
+      // Only office staff need a daily WFH request; hybrid and WFH staff
+      // check in on the web without one.
+      canEnableDailyWfh: attendanceMode === 'office',
       dailyWfhStatus,
       dailyWfhApproved,
       dailyWfhRequestId: wfhReq?.id || null,
-      canCheckInAsWfh: dailyWfhApproved,
+      canCheckInAsWfh: dailyWfhApproved || provisionalWfh,
+      // Checking in now is allowed, and counts once the request is approved.
+      provisionalWfh,
       methods,
       selfieRequired: attendanceConfig.selfieRequired,
       appCheckInEnabled: methods.app !== false,
@@ -331,16 +354,12 @@ const checkContext = async (req, res, next) => {
       ipRequiredForApp: methods.ipApp === true,
       hint: attendanceMode === 'wfh'
         ? 'WFH employee — check-in allowed from any network'
-        : attendanceMode === 'hybrid' && webMode === 'wfh_only'
-          ? (dailyWfhStatus === 'approved'
-            ? 'WFH approved for today — web check-in allowed'
-            : 'Hybrid employee — use the biometric device on office days, or request WFH for today')
         : attendanceMode === 'hybrid'
-          ? 'Hybrid employee — check-in allowed from any network'
+          ? 'Hybrid employee — use the biometric device in the office, or check in here when working from home'
           : dailyWfhStatus === 'approved'
           ? 'WFH approved for today — office IP not required'
           : dailyWfhStatus === 'pending'
-            ? 'WFH request pending Manager/HR approval'
+            ? 'WFH request pending — you can check in now; it counts once Manager/HR approve it'
             : `Office IP required unless Manager/HR approve WFH for today (${cidr || 'whitelist'})`,
       today: session
         ? {

@@ -3,6 +3,7 @@
   Users,
   Clock,
   CalendarOff,
+  Palmtree,
   DollarSign,
   Briefcase,
   TrendingUp,
@@ -67,9 +68,10 @@ export const NAV_ITEMS = [
       { label: 'Apply Leave', path: '/leave/apply', permission: { module: 'leave', action: 'create' }, roles: ['employee', 'manager', 'hr'] },
       { label: 'Team Leaves', path: '/leave/team', permission: { module: 'leave', action: 'view' }, roles: ['admin', 'hr', 'manager'] },
       { label: 'Approvals', path: '/leave/approvals', permission: { module: 'leave', action: 'approve' } },
-      { label: 'Holiday Calendar', path: '/leave/holidays', permission: { module: 'leave', action: 'view' } },
     ],
   },
+  // Its own menu item since 2 Nov 2026 (was under Leave); who sees it is unchanged.
+  { icon: Palmtree, label: 'Holiday Calendar', path: '/holidays', permission: { module: 'leave', action: 'view' } },
   {
     icon: DollarSign,
     label: 'Payroll',

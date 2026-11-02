@@ -273,7 +273,8 @@ function validateRows(rows, existingEmails, managerDirectory) {
     else if (seen.has(email)) errors.push('Duplicate email in file');
     else seen.add(email);
     if (personalEmail && !personalEmail.includes('@')) errors.push('Personal email is invalid');
-    if (phone && !/^\d{10}$/.test(phone.replace(/\D/g, ''))) errors.push('Phone must be 10 digits');
+    if (!phone) errors.push('Phone missing');
+    else if (!/^\d{10}$/.test(phone.replace(/\D/g, ''))) errors.push('Phone must be 10 digits');
     if (dobRaw !== '' && dobRaw != null && !dobIso) errors.push('Date of birth must be DD-MM-YYYY');
     if (joinRaw !== '' && joinRaw != null && !joinIso) errors.push('Join date must be DD-MM-YYYY');
     if (!designation) errors.push('Designation missing');

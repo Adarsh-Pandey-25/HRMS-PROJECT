@@ -11,10 +11,9 @@ import {
   Card, CardHeader, Button, Avatar, StatusBadge, Badge, Tabs, EmptyState, Skeleton,
   Modal, Select, Input, Textarea, ConfirmDialog,
 } from '../../components/ui';
-import { AttendanceCalendar } from '../../components/shared/AttendanceCalendar';
+import { EmployeeAttendanceHistory } from '../../components/attendance/EmployeeAttendanceHistory';
 import { useEmployee, useEmployeeMap, useEmployeeMutations } from '../../hooks/useEmployees';
 import { useAccessibleCompanies } from '../../hooks/useCompanies';
-import { useEmployeeAttendanceReport } from '../../hooks/useAttendance';
 import { useAllLeaves, useMyLeaves, useTeamLeaves } from '../../hooks/useLeaves';
 import { useAssets, useMyAssets } from '../../hooks/useModules';
 import { useEmployeeDocuments, useDocumentMutations } from '../../hooks/useDocuments';
@@ -207,12 +206,6 @@ export default function EmployeeProfile() {
     if (!cid) return '';
     return accessible?.name || '';
   }, [emp, accessibleCompanies, brandedHomeId, brandedHomeName]);
-  const { data: attendanceReport, isLoading: attendanceLoading } = useEmployeeAttendanceReport(resolvedId, {
-    month: now.getMonth() + 1,
-    year: now.getFullYear(),
-  });
-  const attendanceRows = attendanceReport?.records ?? [];
-  const attendanceSummary = attendanceReport?.summary;
   // Leave/asset data is scoped to what the viewer is actually allowed to see:
   // HR/Admin can see the whole org, a manager can see their reports' data via the
   // team-scoped endpoint, and everyone else can only ever see their own record.
@@ -468,30 +461,6 @@ export default function EmployeeProfile() {
     const m = employeeMap[emp.reportingTo];
     return m?.name || '—';
   }, [emp?.reportingTo, employeeMap]);
-
-  const attendanceByDay = useMemo(() => {
-    const map = {};
-    for (const row of attendanceRows) {
-      const day = Number(String(row.date).slice(8, 10));
-      if (!day) continue;
-      const status = row.status === 'half_day' ? 'half-day' : row.status;
-      map[day] = ['present', 'wfh', 'late', 'absent', 'half-day', 'on-leave', 'leave'].includes(status)
-        ? status
-        : 'present';
-    }
-    return map;
-  }, [attendanceRows]);
-
-  const attendanceStats = useMemo(() => {
-    const empty = { present: 0, wfh: 0, late: 0, absent: 0 };
-    if (!attendanceRows.length) return empty;
-    return {
-      present: attendanceSummary?.present ?? 0,
-      wfh: attendanceSummary?.wfh ?? 0,
-      late: attendanceSummary?.late ?? 0,
-      absent: attendanceSummary?.absent ?? 0,
-    };
-  }, [attendanceRows.length, attendanceSummary]);
 
   const empLeaves = useMemo(() => {
     const source = isHrAdmin ? allLeavesAdmin : (isOwnProfile ? myLeavesData : teamLeavesData);
@@ -817,35 +786,14 @@ export default function EmployeeProfile() {
       )}
 
       {/* Attendance */}
-      {tab === 'attendance' && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <Card className="lg:col-span-2 p-5">
-            {attendanceLoading ? (
-              <Skeleton className="h-64 rounded-xl" />
-            ) : attendanceRows.length === 0 ? (
-              <EmptyState
-                icon={Clock}
-                title="No attendance yet"
-                message="Records appear here after this employee checks in from Attendance, or when HR adds a manual entry."
-              />
-            ) : (
-              <AttendanceCalendar year={now.getFullYear()} month={now.getMonth()} statusByDay={attendanceByDay} today={now.getDate()} />
-            )}
-          </Card>
-          <div className="space-y-4">
-            {[
-              ['Present', attendanceStats.present, 'text-success'],
-              ['WFH', attendanceStats.wfh, 'text-primary'],
-              ['Late', attendanceStats.late, 'text-warning'],
-              ['Absent', attendanceStats.absent, 'text-danger'],
-            ].map(([label, val, tone]) => (
-              <Card key={label} className="p-4 flex items-center justify-between">
-                <span className="text-sm text-fg-muted">{label} days</span>
-                <span className={`text-xl font-semibold ${tone}`}>{val}</span>
-              </Card>
-            ))}
-          </div>
-        </div>
+      {tab === 'attendance' && resolvedId && (
+        // Every day, any period: a link may open it on a range (?from=&to=).
+        <EmployeeAttendanceHistory
+          key={`${resolvedId}-${searchParams.get('from') || ''}-${searchParams.get('to') || ''}`}
+          employeeId={resolvedId}
+          initialFrom={searchParams.get('from')}
+          initialTo={searchParams.get('to')}
+        />
       )}
 
       {/* Leave */}

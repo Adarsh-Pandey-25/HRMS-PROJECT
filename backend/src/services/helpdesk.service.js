@@ -138,6 +138,12 @@ const updateTicketStatus = async (id, status, companyEmployeeIds = null, company
   const { data, error } = await upd.select('*, raised_by, subject').single();
   if (error) throw new BadRequestError(error.message);
   if (!data) throw new NotFoundError('Ticket not found');
+  // Done (an attendance correction approved or rejected, too): HR's "New
+  // helpdesk ticket" / "Ticket updated" notifications for it are marked read.
+  // The raiser's own updates share a title, so theirs are left alone.
+  if (['resolved', 'closed'].includes(status)) {
+    await notificationService.markReviewNotificationsRead('ticket', data.id, { exceptUserId: data.raised_by });
+  }
 
   if (data.raised_by) {
     try {

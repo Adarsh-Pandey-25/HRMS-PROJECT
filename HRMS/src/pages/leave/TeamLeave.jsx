@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { CalendarOff, Users } from 'lucide-react';
 import { PageHeader, Card, CardHeader, Avatar, StatusBadge, EmptyState, Badge } from '../../components/ui';
+import { EmployeeLink } from '../../components/shared/EmployeeLink';
 import { useAuthStore } from '../../store/authStore';
 import { useTeamLeaves, useAllLeaves } from '../../hooks/useLeaves';
 import { formatDate } from '../../lib/utils';
@@ -39,7 +40,7 @@ export default function TeamLeave() {
                   <div key={l.id} className="flex items-center gap-3 rounded-xl border border-border/60 p-3">
                     <Avatar name={l.employeeName || 'Employee'} size="sm" />
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-fg truncate">{l.employeeName}</p>
+                      <p className="text-sm font-medium text-fg truncate"><EmployeeLink employeeId={l.employeeId} tab="leave">{l.employeeName}</EmployeeLink></p>
                       <p className="text-xs text-fg-subtle capitalize">{l.type} leave · back {formatDate(l.to, 'dd MMM')}</p>
                     </div>
                     <Badge tone="info">{l.days}d</Badge>
@@ -61,7 +62,7 @@ export default function TeamLeave() {
                   <div key={l.id} className="flex items-center gap-3 rounded-xl border border-border/60 p-3">
                     <Avatar name={l.employeeName || 'Employee'} size="sm" />
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-fg truncate">{l.employeeName}</p>
+                      <p className="text-sm font-medium text-fg truncate"><EmployeeLink employeeId={l.employeeId} tab="leave">{l.employeeName}</EmployeeLink></p>
                       <p className="text-xs text-fg-subtle capitalize">{l.type} · {formatDate(l.from, 'dd MMM')}–{formatDate(l.to, 'dd MMM')}</p>
                     </div>
                     <StatusBadge status={l.status} />

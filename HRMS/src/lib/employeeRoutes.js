@@ -32,9 +32,15 @@ export function employeeSlug(employee, roster) {
   return code;
 }
 
-export function employeeProfilePath(employee, roster) {
+/**
+ * The profile URL — optionally opening a tab with extra values, e.g.
+ * employeeProfilePath(e, roster, { tab: 'attendance', from: '2026-11-01' }).
+ */
+export function employeeProfilePath(employee, roster, query) {
   const slug = employeeSlug(employee, roster);
-  return slug ? `/employees/${encodeURIComponent(slug)}` : '/employees';
+  if (!slug) return '/employees';
+  const qs = new URLSearchParams(Object.entries(query || {}).filter(([, v]) => v != null && v !== '')).toString();
+  return `/employees/${encodeURIComponent(slug)}${qs ? `?${qs}` : ''}`;
 }
 
 export function employeeEditPath(employee, roster) {

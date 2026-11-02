@@ -695,10 +695,15 @@ const notificationEvents = async (item) => {
     }
 
     case 'ATTENDANCE': {
-      if (/wfh request pending/i.test(title)) {
+      // "WFH needs HR approval": the manager approved under Manager → HR.
+      const hrStep = /wfh needs hr approval/i.test(title);
+      if (hrStep || /wfh request pending/i.test(title)) {
         const daysOf = once(() => L.wfhDays({ batchId: meta.wfh_batch_id }));
         return [event({
-          key: 'wfh_approval_waiting', record: meta.wfh_batch_id || meta.work_date || rowRecord, template: 'approval_request', group: 'requests',
+          key: hrStep ? 'wfh_hr_approval_waiting' : 'wfh_approval_waiting',
+          record: meta.wfh_batch_id || meta.work_date || rowRecord,
+          template: 'approval_request',
+          group: 'requests',
           action: { kind: 'wfh', recordId: meta.wfh_batch_id },
           values: async ({ person, company }) => {
             const rows = await daysOf();
@@ -708,7 +713,7 @@ const notificationEvents = async (item) => {
               F.firstName(person),
               (await L.employeeName(rows[0]?.employee_id)) || 'A colleague',
               await L.companyName(company),
-              `work from home for ${F.formatDateRange(dates[0] || meta.work_date, dates[dates.length - 1] || meta.work_date)}`,
+              `work from home for ${F.formatDateRange(dates[0] || meta.work_date, dates[dates.length - 1] || meta.work_date)}${hrStep ? ' (approved by their manager)' : ''}`,
               await reasonOf('wfh', meta.wfh_batch_id),
             ];
           },

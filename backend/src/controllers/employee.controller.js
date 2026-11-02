@@ -286,6 +286,12 @@ const create = async (req, res, next) => {
         ? emailService.bulkImportEmail(employee, tempPassword, { expiryHours })
         : emailService.welcomeEmail(employee, tempPassword)));
     }
+    // WhatsApp connects to the mobile number entered here, no JOIN needed
+    // (owner's decision, 2 Nov 2026); nothing happens if the company's
+    // WhatsApp is off. A bulk import gets the existing-employee message.
+    runInBackground('whatsapp connect', () => require('../services/whatsappLink.service').connectAddedEmployee({
+      employeeId: employee.id, phone: employee.phone, companyId, existingStaff: isBulkImport,
+    }));
     require('../services/webhook.service').dispatchWebhookEvent(companyId, 'employee.created', {
       employeeId: employee.id, employeeCode: employee.employee_code, firstName: employee.first_name,
       lastName: employee.last_name, email: employee.email, role: employee.role, department: employee.department,
@@ -577,6 +583,13 @@ const update = async (req, res, next) => {
     }
 
     if (error) throw new BadRequestError(error.message);
+
+    // A WhatsApp connection made from the old mobile number follows the new one.
+    if (allowedFields.phone !== undefined && data) {
+      runInBackground('whatsapp number change', () => require('../services/whatsappLink.service').followNumberChange({
+        employeeId: req.params.id, phone: data.phone,
+      }));
+    }
 
     // Personal details are optional for HR/Admin, on edit as on add. If they
     // filled everything in, the employee isn't asked; if anything is still

@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { CalendarOff } from 'lucide-react';
 import { Card, CardHeader, Select, Avatar, DataTable, SkeletonTable, EmptyState, SegmentedControl } from '../../components/ui';
 import { ExportButton } from '../../components/shared/ExportButton';
+import { EmployeeLink } from '../../components/shared/EmployeeLink';
 import { useLeaveSummaryReport } from '../../hooks/useReports';
 import { useAuthStore } from '../../store/authStore';
 import { DEPARTMENTS } from '../../lib/constants';
@@ -22,6 +23,7 @@ function flattenEmployeeRows(rows) {
     for (const b of r.balances || []) {
       out.push({
         id: `${r.employee?.id}-${b.leaveType}`,
+        employeeId: r.employee?.id,
         name,
         code,
         department,
@@ -76,7 +78,7 @@ export default function LeaveSummaryReport() {
         <div className="flex items-center gap-3 min-w-[170px]">
           <Avatar name={row.original.name} size="sm" />
           <div>
-            <p className="font-medium text-fg">{row.original.name}</p>
+            <p className="font-medium text-fg"><EmployeeLink employeeId={row.original.employeeId} tab="leave">{row.original.name}</EmployeeLink></p>
             <p className="text-xs text-fg-subtle">{[row.original.code, row.original.department].filter(Boolean).join(' · ') || '—'}</p>
           </div>
         </div>

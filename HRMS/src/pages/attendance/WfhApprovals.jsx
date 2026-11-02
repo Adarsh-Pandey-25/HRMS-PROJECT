@@ -1,5 +1,6 @@
 import { Check, X, Home } from 'lucide-react';
-import { PageHeader, Card, CardHeader, Button, Avatar, StatusBadge, EmptyState, Skeleton } from '../../components/ui';
+import { PageHeader, Card, CardHeader, Button, Avatar, StatusBadge, EmptyState, Skeleton, Badge } from '../../components/ui';
+import { EmployeeLink } from '../../components/shared/EmployeeLink';
 import { usePendingWfhRequests, useAttendanceMutations } from '../../hooks/useAttendance';
 import { formatDate } from '../../lib/utils';
 import toast from 'react-hot-toast';
@@ -54,11 +55,16 @@ export default function WfhApprovals() {
                   : emp.firstName
                     ? `${emp.firstName} ${emp.lastName || ''}`.trim()
                     : 'Employee';
+                // Manager → HR: the manager has approved, HR gives the final approval.
+                const managerApproved = Boolean(r.manager_approved_by || r.managerApprovedBy);
                 return (
                   <div key={r.id} className="flex flex-col sm:flex-row sm:items-center gap-3 rounded-xl border border-border/60 p-4">
                     <Avatar name={name} size="sm" />
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-fg">{name}</p>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-sm font-medium text-fg"><EmployeeLink employeeId={r.employeeId || r.employee_id || emp.id} tab="attendance">{name}</EmployeeLink></p>
+                        {managerApproved && <Badge tone="info">Manager approved</Badge>}
+                      </div>
                       <p className="text-xs text-fg-subtle">
                         {dateRange(r)} · {emp.department || emp.designation || '—'}
                       </p>

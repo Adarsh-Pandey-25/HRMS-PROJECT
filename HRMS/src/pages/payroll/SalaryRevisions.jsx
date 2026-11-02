@@ -6,6 +6,7 @@ import {
   PageHeader, Card, CardHeader, Button, Avatar, Badge, Modal, Select, Input, Textarea,
   SegmentedControl, ConfirmDialog, EmptyState, Skeleton,
 } from '../../components/ui';
+import { EmployeeLink } from '../../components/shared/EmployeeLink';
 import { useEmployees } from '../../hooks/useEmployees';
 import { fetchEmployeeByIdApi } from '../../api/employees.api';
 import {
@@ -289,7 +290,7 @@ export default function SalaryRevisions() {
                   <Avatar employee={employeeById.get(r.employee_id)} name={name} size="md" />
                   <div className="min-w-0 space-y-0.5">
                     <p className="text-sm font-medium text-fg">
-                      {name}
+                      <EmployeeLink employeeId={r.employee_id} tab="payroll">{name}</EmployeeLink>
                       {r.employee?.designation && <span className="text-fg-subtle font-normal"> · {r.employee.designation}</span>}
                     </p>
                     <p className="text-xs text-fg-muted">

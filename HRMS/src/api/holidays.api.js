@@ -25,6 +25,21 @@ export async function createHolidayApi({ name, date, type }) {
   return mapHolidayFromApi(data);
 }
 
+/** Same fields and mapping as createHolidayApi. */
+export async function updateHolidayApi(id, { name, date, type }) {
+  const data = await apiRequest({
+    method: 'PUT',
+    url: `/holidays/${id}/update`,
+    data: {
+      title: name,
+      date,
+      type: type === 'national' ? 'public' : type,
+      is_mandatory: type !== 'optional',
+    },
+  });
+  return mapHolidayFromApi(data);
+}
+
 export async function deleteHolidayApi(id) {
   return apiRequest({ method: 'DELETE', url: `/holidays/${id}` });
 }

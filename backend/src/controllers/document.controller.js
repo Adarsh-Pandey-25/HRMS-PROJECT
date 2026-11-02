@@ -226,6 +226,8 @@ const remove = async (req, res, next) => {
 
     await deleteFile(STORAGE_BUCKETS.documents, doc.document_url);
     await supabaseAdmin.from('documents').delete().eq('id', req.params.id);
+    // A deleted document needs nobody's verification.
+    await notificationService.markReviewNotificationsRead('document', doc.id);
         auditFromRequest(req, {
       actionType: 'document.delete', targetType: 'document', targetId: req.params.id,
     });
@@ -266,6 +268,8 @@ const verify = async (req, res, next) => {
       .single();
 
     if (error) throw new BadRequestError(error.message);
+    // Verified: every HR's "Document pending verification" for it is marked read.
+    await notificationService.markReviewNotificationsRead('document', doc.id);
 
     // Notify employee
     await notificationService.createNotification({

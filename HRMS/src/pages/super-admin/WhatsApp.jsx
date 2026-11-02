@@ -2,13 +2,13 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
-import { Activity, FileText, MessageCircle, Send, BellRing } from 'lucide-react';
+import { Activity, FileText, MessageCircle, Send, BellRing, Users } from 'lucide-react';
 import {
   Card, CardHeader, Button, Badge, Input, Select, Skeleton, Tabs, EmptyState, Toggle, ConfirmDialog, PageHeader,
 } from '../../components/ui';
 import {
   getWhatsAppOverviewApi, listWhatsAppMessagesApi, setWhatsAppPausedApi, getWhatsAppTemplatesApi,
-  syncWhatsAppTemplatesApi, sendWhatsAppTestApi, SUPER_ADMIN_WHATSAPP_API,
+  syncWhatsAppTemplatesApi, sendWhatsAppTestApi, getWhatsAppConnectApi, connectEveryoneApi, SUPER_ADMIN_WHATSAPP_API,
 } from '../../api/whatsapp.api';
 import { WhatsAppUpdatesCard } from '../../components/whatsapp/WhatsAppUpdatesCard';
 import { formatDateTime } from '../../lib/utils';
@@ -19,6 +19,7 @@ const TABS = [
   { id: 'overview', label: 'Overview', icon: Activity },
   { id: 'log', label: 'Message log', icon: MessageCircle },
   { id: 'templates', label: 'Templates', icon: FileText },
+  { id: 'connect', label: 'Connect employees', icon: Users },
   { id: 'me', label: 'My alerts', icon: BellRing },
 ];
 
@@ -64,6 +65,7 @@ export default function SuperAdminWhatsApp() {
       {tab === 'overview' && <Overview />}
       {tab === 'log' && <MessageLog />}
       {tab === 'templates' && <Templates />}
+      {tab === 'connect' && <ConnectEmployees />}
       {tab === 'me' && (
         <div className="max-w-xl">
           <WhatsAppUpdatesCard
@@ -424,5 +426,124 @@ function Templates() {
         loading={syncing}
       />
     </Card>
+  );
+}
+
+/** WhatsApp's *bold*, shown the way WhatsApp shows it. */
+function WhatsAppText({ text }) {
+  return text.split(/(\*[^*\n]+\*)/g).map((part, i) => (part.length > 2 && part.startsWith('*') && part.endsWith('*')
+    // eslint-disable-next-line react/no-array-index-key
+    ? <strong key={i}>{part.slice(1, -1)}</strong>
+    // eslint-disable-next-line react/no-array-index-key
+    : <span key={i}>{part}</span>));
+}
+
+/**
+ * "Connect everyone": per company, who would get the existing-employee
+ * message, and the button that connects them. Nothing reaches existing
+ * employees until a super admin presses it (owner's decision, 2 Nov 2026),
+ * and the button waits for Meta's approval of that message.
+ */
+function ConnectEmployees() {
+  const qc = useQueryClient();
+  const queryKey = ['super-admin', 'whatsapp', 'connect'];
+  const { data, isLoading, error } = useQuery({ queryKey, queryFn: getWhatsAppConnectApi, staleTime: 15_000 });
+  const [target, setTarget] = useState(null);
+  const [sending, setSending] = useState(false);
+
+  const connectEveryone = async () => {
+    setSending(true);
+    try {
+      const result = await connectEveryoneApi(target.id);
+      toast.success(result.connected
+        ? `${result.connected} employees of ${target.name} connected — their first message is on its way`
+        : 'Nobody new to connect');
+      if (result.remaining) toast(`${result.remaining} more can be connected tomorrow: Meta limits how many people you can message in a day.`);
+      setTarget(null);
+      await qc.invalidateQueries({ queryKey });
+    } catch (err) {
+      toast.error(err.message || 'Could not connect employees');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  if (isLoading) return <Skeleton className="h-72 w-full rounded-xl" />;
+  if (error) return <EmptyState icon={Users} title="Could not load companies" message={error.message} />;
+
+  const blocked = !data.sendingOn
+    ? 'WhatsApp is switched off on this server.'
+    : !data.messageApproved
+      ? `Waiting for Meta to approve the message (${data.message.name}). Submit it in the Templates tab, then come back once it shows approved.`
+      : null;
+  const preview = data.message.body.replace('{{1}}', 'Priya').replace('{{2}}', 'your company');
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader
+          title="Connect existing employees"
+          subtitle="Connects everyone who has a mobile number but no WhatsApp yet. Nothing is sent until you press Connect everyone."
+        />
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-5 px-5 pb-5">
+          <div className="space-y-2 text-sm text-fg-muted">
+            <p>Each person gets the message on the right once, then their usual HR updates on WhatsApp.</p>
+            <p>Left out: people already connected, people who stopped or disconnected before, and people without a valid mobile number — add missing numbers in their employee profile first.</p>
+            <p>At most {data.connectAtOnce} people per press: Meta limits how many people you can message in a day until your business is verified.</p>
+            {blocked && <p className="rounded-xl border border-warning/40 bg-warning/10 px-3.5 py-2.5 text-fg">{blocked}</p>}
+          </div>
+          <div className="rounded-xl bg-muted p-3">
+            <p className="mb-1.5 text-xs font-medium text-fg-subtle">The message ({data.message.name})</p>
+            <p className="whitespace-pre-line rounded-lg bg-card px-3 py-2.5 text-sm text-fg shadow-sm"><WhatsAppText text={preview} /></p>
+          </div>
+        </div>
+      </Card>
+
+      <Card>
+        <div className="overflow-x-auto p-5">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border text-left">
+                {['Company', 'Employees', 'Connected', 'Will get it', 'No mobile', 'Left alone', ''].map((h) => (
+                  <th key={h} className="py-2.5 pr-3 font-semibold text-fg-subtle text-xs uppercase tracking-wide">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {data.companies.map((c) => (
+                <tr key={c.id} className="border-b border-border/50">
+                  <td className="py-3 pr-3 font-medium text-fg">{c.name}</td>
+                  {c.switchedOn ? (
+                    <>
+                      <td className="py-3 pr-3">{c.employees}</td>
+                      <td className="py-3 pr-3">{c.connected}</td>
+                      <td className="py-3 pr-3 font-medium text-fg">{c.ready}</td>
+                      <td className="py-3 pr-3">{c.noMobile}</td>
+                      <td className="py-3 pr-3">{c.leftAlone}</td>
+                      <td className="py-3 text-right">
+                        <Button size="sm" icon={Send} disabled={Boolean(blocked) || !c.ready} onClick={() => setTarget(c)}>Connect everyone</Button>
+                      </td>
+                    </>
+                  ) : (
+                    <td colSpan={6} className="py-3 text-xs text-fg-subtle">{c.addOn ? 'The company switched WhatsApp off.' : 'No WhatsApp add-on.'}</td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      <ConfirmDialog
+        open={Boolean(target)}
+        onClose={() => setTarget(null)}
+        onConfirm={connectEveryone}
+        title={`Connect ${target?.ready || 0} employees of ${target?.name || ''}?`}
+        message="Each of them gets the message shown on this page now, and their HR updates on WhatsApp from then on. Make sure they know it is coming — for example with an announcement."
+        confirmLabel="Connect everyone"
+        tone="default"
+        loading={sending}
+      />
+    </div>
   );
 }

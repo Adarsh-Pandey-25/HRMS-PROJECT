@@ -31,6 +31,10 @@ const RETRY_DELAYS_MS = [60 * 1000, 5 * 60 * 1000, 15 * 60 * 1000, 60 * 60 * 100
 // worker. It is marked failed, never resent: Meta may have delivered it.
 const STUCK_AFTER_MS = 15 * 60 * 1000;
 const PAUSED_RECHECK_MS = 5 * 60 * 1000;
+// A holdUntilApproved template Meta hasn't approved yet waits this long
+// between checks, and is dropped after HOLD_MAX_MS.
+const HOLD_RECHECK_MS = 10 * 60 * 1000;
+const HOLD_MAX_MS = 3 * 24 * 60 * 60 * 1000;
 
 let timer = null;
 let busy = false;
@@ -109,6 +113,14 @@ const sendRow = async (row, cfg) => {
   if (!wanted.ok) return markSkipped(row, wanted.reason);
   const phone = row.recipient_kind === 'phone' ? row.recipient : null;
   if (!isRecipientAllowed(phone, cfg)) return markSkipped(row, 'not_on_test_allow_list');
+  if (template.holdUntilApproved && !(await approvals.isApprovedAtMeta(template.name))) {
+    if (Date.now() - new Date(row.created_at).getTime() > HOLD_MAX_MS) return markSkipped(row, 'template_not_approved');
+    // Waiting is not a failed try: give back the attempt the claim counted,
+    // so the retries are still there once Meta approves.
+    return update(row.id, {
+      status: 'queued', attempts: Math.max(0, Number(row.attempts || 1) - 1), next_attempt_at: new Date(Date.now() + HOLD_RECHECK_MS).toISOString(),
+    });
+  }
 
   try {
     // Approval requests go with fresh Approve / Reject codes, or as the plain

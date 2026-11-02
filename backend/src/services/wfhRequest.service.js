@@ -3,8 +3,9 @@ const moment = require('moment-timezone');
 const { supabaseAdmin } = require('../config/supabase');
 const { TIMEZONE } = require('../utils/constants');
 const { BadRequestError, NotFoundError, ForbiddenError, ConflictError } = require('../utils/errors');
-const { paginate, buildMeta, nowIST } = require('../utils/helpers');
+const { paginate, buildMeta, nowIST, isMissingColumnError } = require('../utils/helpers');
 const notificationService = require('./notification.service');
+const approvalFlow = require('./approvalFlow.service');
 
 /** A single request may not span more than this many calendar days. */
 const MAX_RANGE_DAYS = 90;
@@ -40,6 +41,92 @@ const getRequestForDate = async (employeeId, workDate) => {
 const isApprovedForDate = async (employeeId, workDate = todayIST()) => {
   const row = await getRequestForDate(employeeId, workDate);
   return Boolean(row && row.status === 'approved');
+};
+
+/** A WFH request for the day still waiting for a decision (a check-in now is provisional). */
+const isPendingForDate = async (employeeId, workDate = todayIST()) => {
+  const row = await getRequestForDate(employeeId, workDate);
+  return Boolean(row && row.status === 'pending');
+};
+
+const fmtTime = (iso) => moment(iso).tz(TIMEZONE).format('h:mm A');
+
+/**
+ * Check-ins made while the request was still waiting (attendance.service.js
+ * checkIn marks them location.wfh_pending; owner's decision, 2 Nov 2026 — no
+ * one loses hours to a late approval).
+ *  - approved: they count, from their own check-in time;
+ *  - rejected or cancelled: they are taken out of attendance, so no summary,
+ *    payslip or report counts the day, and their times stay on the request,
+ *    where the profile shows them as not counted. The audit log keeps the
+ *    full record either way.
+ * Returns the check-in times it settled, for the notice to the employee.
+ */
+const settleProvisionalCheckIns = async (employeeId, dayRows, outcome, actor) => {
+  const dates = [...new Set((dayRows || []).map((r) => r.work_date))].sort();
+  if (!dates.length) return [];
+  const { data: rows, error } = await supabaseAdmin
+    .from('attendance')
+    .select('id, company_id, check_in_time, check_out_time, check_in_method, total_hours, status, location')
+    .eq('employee_id', employeeId)
+    .gte('check_in_time', moment.tz(dates[0], TIMEZONE).startOf('day').toISOString())
+    .lte('check_in_time', moment.tz(dates[dates.length - 1], TIMEZONE).endOf('day').toISOString());
+  if (error) throw new BadRequestError(error.message);
+
+  const provisional = (rows || []).filter((r) => r.location?.wfh_pending === true
+    && dates.includes(moment(r.check_in_time).tz(TIMEZONE).format('YYYY-MM-DD')));
+  const now = new Date().toISOString();
+  const auditLog = require('./auditLog.service');
+  for (const row of provisional) {
+    /* eslint-disable no-await-in-loop */
+    if (outcome === 'approved') {
+      const { wfh_pending: _pending, ...location } = row.location;
+      const { error: confirmError } = await supabaseAdmin
+        .from('attendance')
+        .update({ location: { ...location, wfh_confirmed_at: now }, updated_at: now })
+        .eq('id', row.id);
+      if (confirmError) throw new BadRequestError(confirmError.message);
+    } else {
+      const workDate = moment(row.check_in_time).tz(TIMEZONE).format('YYYY-MM-DD');
+      const dayRow = dayRows.find((d) => d.work_date === workDate);
+      if (dayRow) {
+        const { error: keepError } = await supabaseAdmin
+          .from('wfh_day_requests')
+          .update({ voided_check_in_at: row.check_in_time, voided_check_out_at: row.check_out_time })
+          .eq('id', dayRow.id);
+        // Before 20261102_wfh_approval_flow.sql the columns are missing; the
+        // audit log below still keeps the check-in.
+        if (keepError) require('../utils/logger').warn('[WFH] could not keep a voided check-in on the request', { error: keepError.message });
+      }
+      await auditLog.logAudit({
+        companyId: row.company_id,
+        actorId: actor?.id || null,
+        actorRole: actor?.role || 'system',
+        actionType: 'attendance.void_provisional_wfh',
+        targetType: 'attendance',
+        targetId: row.id,
+        beforeState: row,
+        afterState: { reason: `WFH request ${outcome}` },
+      });
+      const { error: voidError } = await supabaseAdmin.from('attendance').delete().eq('id', row.id);
+      if (voidError) throw new BadRequestError(voidError.message);
+    }
+    /* eslint-enable no-await-in-loop */
+  }
+  return provisional.map((r) => fmtTime(r.check_in_time));
+};
+
+// The decision itself is already saved: a failure here is logged loudly for
+// a fix by hand, not turned into a failed approval.
+const settleSafely = async (employeeId, dayRows, outcome, actor) => {
+  try {
+    return await settleProvisionalCheckIns(employeeId, dayRows, outcome, actor);
+  } catch (err) {
+    require('../utils/logger').error('[WFH] could not settle a provisional check-in — fix by hand', {
+      employeeId, outcome, dates: (dayRows || []).map((r) => r.work_date), error: err.message,
+    });
+    return [];
+  }
 };
 
 /**
@@ -143,10 +230,11 @@ const requestWfh = async (employeeId, body = {}) => {
    * instead of leaving half the range applied. Conflicts resolve on the
    * table's UNIQUE (employee_id, work_date) — and since pending/approved
    * days were rejected above, the only rows this can overwrite are the
-   * employee's own rejected or cancelled ones, whose stale review is
-   * cleared here.
+   * employee's own rejected or cancelled ones, whose stale review (and
+   * manager approval, and a voided check-in) is cleared here: the day starts
+   * over. (The audit log keeps any voided check-in.)
    */
-  const { data: created, error: upsertErr } = await supabaseAdmin
+  const upsertDays = (withNewColumns) => supabaseAdmin
     .from('wfh_day_requests')
     .upsert(
       dates.map((work_date) => ({
@@ -158,12 +246,21 @@ const requestWfh = async (employeeId, body = {}) => {
         reviewed_by: null,
         reviewed_at: null,
         review_note: null,
+        ...(withNewColumns ? {
+          manager_approved_by: null, manager_approved_at: null, voided_check_in_at: null, voided_check_out_at: null,
+        } : {}),
         updated_at: nowIso,
       })),
       { onConflict: 'employee_id,work_date' },
     )
     .select()
     .order('work_date', { ascending: true });
+  let { data: created, error: upsertErr } = await upsertDays(true);
+  // Before 20261102_wfh_approval_flow.sql has run, those columns don't exist.
+  if (upsertErr && ['manager_approved_by', 'manager_approved_at', 'voided_check_in_at', 'voided_check_out_at']
+    .some((column) => isMissingColumnError(upsertErr.message, column))) {
+    ({ data: created, error: upsertErr } = await upsertDays(false));
+  }
   if (upsertErr) throw new BadRequestError(upsertErr.message);
 
   // One notification for the whole range, not one per day.
@@ -228,11 +325,11 @@ const notifyReviewers = async (employeeId, dates, batchId) => {
   const link = '/attendance/wfh-approvals';
   const meta = { wfh_batch_id: batchId, work_date: dates[0], work_dates: dates };
 
-  // The manager (if any) and every HR / admin of the company hear about it at
-  // the same time (owner's decision, 30 Oct 2026); whoever decides first
-  // settles it — review() refuses a request that is no longer pending.
-  // Nobody is asked to review their own request.
-  const reviewerIds = new Set(employee?.manager_id ? [employee.manager_id] : []);
+  // Whoever acts first under Settings → Approval Flows: the manager, HR (HR
+  // only, or no manager), or both at once (Manager or HR, the default) —
+  // whoever decides first settles it, as review() refuses a request that is
+  // no longer pending. Nobody is asked to review their own request.
+  const reviewerIds = new Set();
   try {
     const tenantService = require('./tenant.service');
     const { getCompanyId } = require('../utils/tenant');
@@ -241,10 +338,17 @@ const notifyReviewers = async (employeeId, dates, batchId) => {
       .select('address, company_id')
       .eq('id', employeeId)
       .maybeSingle();
-    for (const id of await tenantService.getCompanyHrAdminIds(empFull ? getCompanyId(empFull) : null)) reviewerIds.add(id);
+    const companyId = empFull ? getCompanyId(empFull) : null;
+    const flow = await approvalFlow.getWfhFlow(companyId);
+    const firstStage = approvalFlow.awaitingStage(flow, { hasManager: Boolean(employee?.manager_id), managerApproved: false });
+    if (approvalFlow.isTurnOf(firstStage, 'manager')) reviewerIds.add(employee.manager_id);
+    if (approvalFlow.isTurnOf(firstStage, 'hr')) {
+      for (const id of await tenantService.getCompanyHrAdminIds(companyId)) reviewerIds.add(id);
+    }
   } catch (err) {
     // The request is saved either way, and shows on the WFH approvals page.
-    require('../utils/logger').warn('[WFH] could not load HR/admins to notify', { error: err.message });
+    require('../utils/logger').warn('[WFH] could not work out who to notify', { error: err.message });
+    if (employee?.manager_id) reviewerIds.add(employee.manager_id);
   }
   reviewerIds.delete(employeeId);
 
@@ -296,6 +400,10 @@ const cancelRequest = async (employeeId, requestId) => {
     .eq('status', 'pending')
     .select();
   if (error) throw new BadRequestError(error.message);
+  // A cancelled request needs nobody's review.
+  await notificationService.markReviewNotificationsRead('wfh', anchor.batch_id);
+  // A check-in made while it waited no longer has a request behind it.
+  await settleSafely(employeeId, data || [], 'cancelled', { id: employeeId, role: 'employee' });
   return toRequestGroup(data || []);
 };
 
@@ -325,35 +433,88 @@ const listMine = async (employeeId, query = {}) => {
 const listPendingForReviewer = async (reviewer, query = {}) => {
   const { page, limit, offset } = paginate(query);
   const role = reviewer.role;
+  const { getCompanyId } = require('../utils/tenant');
+  const companyId = reviewer.company_id || getCompanyId(reviewer);
   let employeeIds = null;
 
   if (role === 'manager') {
-    const { getCompanyId } = require('../utils/tenant');
-    employeeIds = await getTeamEmployeeIds(reviewer.id, reviewer.company_id || getCompanyId(reviewer));
+    employeeIds = await getTeamEmployeeIds(reviewer.id, companyId);
     if (!employeeIds.length) return { data: [], meta: buildMeta(page, limit, 0) };
   } else {
     const tenantService = require('./tenant.service');
-    const { getCompanyId } = require('../utils/tenant');
-    employeeIds = await tenantService.getCompanyEmployeeIds(reviewer.company_id || getCompanyId(reviewer));
+    employeeIds = await tenantService.getCompanyEmployeeIds(companyId);
     if (!employeeIds.length) return { data: [], meta: buildMeta(page, limit, 0) };
   }
 
+  const status = query.status || 'pending';
   const { data, error } = await supabaseAdmin
     .from('wfh_day_requests')
     .select('*, employee:employee_id(id, first_name, last_name, employee_code, department, designation, manager_id)')
-    .eq('status', query.status || 'pending')
+    .eq('status', status)
     .in('employee_id', employeeIds)
     .order('created_at', { ascending: true })
     .limit(MAX_GROUPING_ROWS);
   if (error) throw new BadRequestError(error.message);
 
-  const groups = groupRows(data || [])
-    .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+  let groups = groupRows(data || []);
+  // A pending request sits in the queue of whoever's turn it is under
+  // Settings → Approval Flows ('awaiting' tells the page which step it is at).
+  if (status === 'pending') {
+    const flow = await approvalFlow.getWfhFlow(companyId);
+    const mine = role === 'manager' ? 'manager' : 'hr';
+    groups = groups
+      .map((g) => ({
+        ...g,
+        awaiting: approvalFlow.awaitingStage(flow, { hasManager: Boolean(g.employee?.manager_id), managerApproved: Boolean(g.manager_approved_by) }),
+      }))
+      // An HR or admin who is the employee's own manager decides that step too.
+      .filter((g) => approvalFlow.isTurnOf(g.awaiting, mine)
+        || (mine === 'hr' && String(g.employee?.manager_id || '') === String(reviewer.id)));
+  }
+  groups.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
 
   return {
     data: groups.slice(offset, offset + limit),
     meta: buildMeta(page, limit, groups.length),
   };
+};
+
+/** Manager → HR, first step: the manager approved; every HR / admin is asked for the final approval. */
+const recordManagerApproval = async (reviewer, anchor, pending, companyId) => {
+  const now = new Date().toISOString();
+  const { data, error } = await supabaseAdmin
+    .from('wfh_day_requests')
+    .update({ manager_approved_by: reviewer.id, manager_approved_at: now, updated_at: now })
+    .in('id', pending.map((r) => r.id))
+    .eq('status', 'pending')
+    .is('manager_approved_by', null)
+    .select();
+  if (error && isMissingColumnError(error.message, 'manager_approved_by')) {
+    throw new BadRequestError('Manager → HR for work from home needs the database update 20261102_wfh_approval_flow.sql');
+  }
+  if (error) throw new BadRequestError(error.message);
+  if (!(data || []).length) throw new ConflictError('This request was already reviewed');
+  // The manager's part is done; HR's notifications follow.
+  await notificationService.markReviewNotificationsRead('wfh', anchor.batch_id, { firstStepOnly: true });
+
+  const approved = toRequestGroup(data);
+  const name = anchor.employee ? `${anchor.employee.first_name} ${anchor.employee.last_name}` : 'An employee';
+  const span = approved.total_days > 1
+    ? `${approved.from_date} to ${approved.to_date} (${approved.total_days} days)`
+    : approved.from_date;
+  const tenantService = require('./tenant.service');
+  for (const id of await tenantService.getCompanyHrAdminIds(companyId)) {
+    if (id === anchor.employee_id) continue;
+    await notificationService.createNotification({
+      user_id: id,
+      type: 'ATTENDANCE',
+      title: 'WFH needs HR approval',
+      message: `${name}'s manager approved WFH for ${span}. Please approve or reject it.`,
+      link: '/attendance/wfh-approvals',
+      meta: { wfh_batch_id: anchor.batch_id, work_date: approved.from_date, work_dates: approved.work_dates },
+    });
+  }
+  return approved;
 };
 
 const review = async (reviewer, requestId, { status, review_note } = {}) => {
@@ -374,21 +535,44 @@ const review = async (reviewer, requestId, { status, review_note } = {}) => {
   }
 
   const role = reviewer.role;
+  const { getCompanyId } = require('../utils/tenant');
+  const reviewerCompany = reviewer.company_id || getCompanyId(reviewer);
+  let managesEmployee = false;
   if (role === 'manager') {
-    const { getCompanyId } = require('../utils/tenant');
-    const teamIds = await getTeamEmployeeIds(reviewer.id, reviewer.company_id || getCompanyId(reviewer));
+    const teamIds = await getTeamEmployeeIds(reviewer.id, reviewerCompany);
     if (!teamIds.includes(anchor.employee_id)) {
       throw new ForbiddenError('You can only review your team members');
     }
+    managesEmployee = true;
   } else if (['hr', 'admin'].includes(role)) {
-    const { getCompanyId } = require('../utils/tenant');
-    const reviewerCompany = reviewer.company_id || getCompanyId(reviewer);
     if (!anchor.employee || getCompanyId(anchor.employee) !== reviewerCompany) {
       throw new ForbiddenError('Not authorized to review WFH for another company');
     }
   } else {
     throw new ForbiddenError('Only manager, HR or Admin can review WFH requests');
   }
+
+  // Settings → Approval Flows → Work from home (approvalFlow.service.js).
+  const flow = await approvalFlow.getWfhFlow(reviewerCompany);
+  const context = {
+    actorId: reviewer.id,
+    employeeId: anchor.employee_id,
+    actorRole: role,
+    managesEmployee,
+    hasManager: Boolean(anchor.employee?.manager_id),
+    // An HR or admin who is also the employee's own manager covers both steps.
+    managerApproved: pending.every((r) => r.manager_approved_by)
+      || (approvalFlow.isHrRole(role) && String(anchor.employee?.manager_id || '') === String(reviewer.id)),
+    what: 'WFH request',
+  };
+  const verdict = status === 'approved'
+    ? approvalFlow.decideApproval(flow, context)
+    : approvalFlow.decideRejection(flow, context);
+  if (!verdict.ok) {
+    throw verdict.status === 403 ? new ForbiddenError(verdict.message) : new BadRequestError(verdict.message);
+  }
+  // Manager → HR: the manager's approval is recorded; HR gives the final one.
+  if (status === 'approved' && !verdict.final) return recordManagerApproval(reviewer, anchor, pending, reviewerCompany);
 
   const { data, error } = await supabaseAdmin
     .from('wfh_day_requests')
@@ -404,19 +588,28 @@ const review = async (reviewer, requestId, { status, review_note } = {}) => {
     .select();
   if (!error && !(data || []).length) throw new ConflictError('This request was already reviewed');
   if (error) throw new BadRequestError(error.message);
+  // Decided: every reviewer's "please review" notification is marked read.
+  await notificationService.markReviewNotificationsRead('wfh', anchor.batch_id);
 
   const reviewed = toRequestGroup(data || []);
   const span = reviewed && reviewed.total_days > 1
     ? `${reviewed.from_date} to ${reviewed.to_date} (${reviewed.total_days} days)`
     : anchor.work_date;
+  // A check-in made while it waited now counts, or is taken out.
+  const settled = await settleSafely(anchor.employee_id, data || [], status, reviewer);
+  const checkInNote = settled.length
+    ? (status === 'approved'
+      ? ` Your check-in at ${settled.join(', ')} counts.`
+      : ` Your check-in at ${settled.join(', ')} was not counted.`)
+    : '';
 
   await notificationService.createNotification({
     user_id: anchor.employee_id,
     type: 'ATTENDANCE',
     title: status === 'approved' ? 'WFH approved' : 'WFH rejected',
     message: status === 'approved'
-      ? `Your WFH request for ${span} was approved. You can clock in from any network.`
-      : `Your WFH request for ${span} was rejected.${review_note ? ` ${review_note}` : ''}`,
+      ? `Your WFH request for ${span} was approved. You can clock in from any network.${checkInNote}`
+      : `Your WFH request for ${span} was rejected.${review_note ? ` ${review_note}` : ''}${checkInNote}`,
     link: '/attendance/me',
     meta: { wfh_request_id: requestId, work_date: anchor.work_date, status },
   });
@@ -428,6 +621,7 @@ module.exports = {
   todayIST,
   getRequestForDate,
   isApprovedForDate,
+  isPendingForDate,
   requestWfh,
   cancelRequest,
   listMine,

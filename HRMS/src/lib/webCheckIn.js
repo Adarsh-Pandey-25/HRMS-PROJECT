@@ -40,9 +40,11 @@ const OFF_MESSAGE = 'Web check-in is turned off for your company. Please use the
  * @param privileged admin/HR — exempt from the office geofence, as on the server
  */
 export function planWebCheckIn(ctx, { privileged = false } = {}) {
-  // Permanent WFH, or WFH approved for today (check-context already applies
-  // the "hybrid only on an approved day" rule of the WFH-days-only mode).
-  const isWfh = Boolean(ctx?.dailyWfhApproved || ctx?.attendanceMode === 'wfh');
+  // Permanent WFH, hybrid (web from home on any day, no request), WFH
+  // approved for today — or a request still waiting, which makes the
+  // check-in provisional until it is decided. Check-context works this out.
+  const provisional = Boolean(ctx?.provisionalWfh);
+  const isWfh = Boolean(ctx?.dailyWfhApproved || ctx?.attendanceMode === 'wfh' || provisional);
   // webCheckInAllowedToday is per employee; an older backend only sent the
   // company-wide webCheckInEnabled.
   const allowed = ctx?.webCheckInAllowedToday ?? (ctx?.webCheckInEnabled !== false);
@@ -54,6 +56,7 @@ export function planWebCheckIn(ctx, { privileged = false } = {}) {
     blockedReason: allowed ? null : (ctx?.webBlockedReason || OFF_MESSAGE),
     webMode: ctx?.webMode || (ctx?.webCheckInEnabled === false ? 'off' : 'everyone'),
     isWfh,
+    provisional,
     needsSelfie: Boolean(ctx?.selfieRequired || (isWfh && ctx?.wfhProof?.requireSelfie)),
     // Check-in: the office geofence on office days, or the company's
     // "record location" rule on WFH days.

@@ -5,6 +5,7 @@ import {
   DataTable, Skeleton, Avatar, Select, SearchInput, EmptyState,
 } from '../../components/ui';
 import { ExportButton } from '../../components/shared/ExportButton';
+import { EmployeeLink } from '../../components/shared/EmployeeLink';
 import { useAllTickets, useHelpdeskMutations } from '../../hooks/useModules';
 import { useEmployeeMap } from '../../hooks/useEmployees';
 import { useSettingsStore } from '../../store/settingsStore';
@@ -94,7 +95,7 @@ export default function AllTickets() {
         return (
           <div>
             <p className="font-medium text-fg">{row.original.subject}</p>
-            <p className="text-xs text-fg-subtle">by {raiser?.name || 'Employee'}</p>
+            <p className="text-xs text-fg-subtle">by <EmployeeLink employeeId={row.original.raisedBy}>{raiser?.name || 'Employee'}</EmployeeLink></p>
           </div>
         );
       },
@@ -286,7 +287,7 @@ export default function AllTickets() {
               <div className="flex items-center gap-2 mb-2">
                 <Avatar name={employeeMap[selectedTicket.raisedBy]?.name || 'Employee'} size="xs" />
                 <p className="text-sm font-medium text-fg">
-                  {employeeMap[selectedTicket.raisedBy]?.name || 'Employee'}
+                  <EmployeeLink employeeId={selectedTicket.raisedBy}>{employeeMap[selectedTicket.raisedBy]?.name || 'Employee'}</EmployeeLink>
                 </p>
                 <span className="text-xs text-fg-subtle ml-auto">{formatDateTime(selectedTicket.createdAt)}</span>
               </div>

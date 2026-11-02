@@ -69,10 +69,15 @@ export function useLeaveMutations() {
     await invalidateAndRefetch(qc, ['leaves']);
     await invalidateAndRefetch(qc, ['dashboard']);
   };
+  // A decision marks the request's "please review" notifications read on the server.
+  const afterDecision = async () => {
+    await invalidate();
+    await invalidateAndRefetch(qc, ['notifications']);
+  };
   return {
     apply: useMutation({ mutationFn: applyLeaveApi, onSuccess: invalidate }),
-    approve: useMutation({ mutationFn: approveLeaveApi, onSuccess: invalidate }),
-    reject: useMutation({ mutationFn: ({ id, reason }) => rejectLeaveApi(id, reason), onSuccess: invalidate }),
+    approve: useMutation({ mutationFn: approveLeaveApi, onSuccess: afterDecision }),
+    reject: useMutation({ mutationFn: ({ id, reason }) => rejectLeaveApi(id, reason), onSuccess: afterDecision }),
     cancel: useMutation({ mutationFn: cancelLeaveApi, onSuccess: invalidate }),
   };
 }

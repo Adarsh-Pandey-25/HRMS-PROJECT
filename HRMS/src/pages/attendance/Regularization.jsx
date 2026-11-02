@@ -4,6 +4,7 @@ import {
   PageHeader, Card, CardHeader, Button, StatusBadge, Modal, Input, Textarea,
   EmptyState, Skeleton, Avatar, Select, Badge,
 } from '../../components/ui';
+import { EmployeeLink } from '../../components/shared/EmployeeLink';
 import { useMyTickets, useAllTickets, useHelpdeskMutations } from '../../hooks/useModules';
 import { useAttendanceMutations } from '../../hooks/useAttendance';
 import { useEmployees, useEmployeeMap } from '../../hooks/useEmployees';
@@ -346,7 +347,7 @@ function HrRegularization() {
                 <div key={row.ticketId} className="flex flex-col sm:flex-row sm:items-center gap-3 rounded-xl border border-border/60 p-4">
                   <Avatar name={emp?.name || 'Employee'} size="sm" />
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-fg">{emp?.name || 'Employee'}</p>
+                    <p className="text-sm font-medium text-fg"><EmployeeLink employeeId={row.employeeId} tab="attendance">{emp?.name || 'Employee'}</EmployeeLink></p>
                     <p className="text-xs text-fg-subtle">
                       {formatDate(row.date)} · {row.requestedCheckIn}{row.requestedCheckOut ? `–${row.requestedCheckOut}` : ''}
                     </p>

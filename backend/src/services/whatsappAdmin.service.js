@@ -5,6 +5,7 @@ const api = require('./whatsappApi');
 const settings = require('./whatsappSettings.service');
 const { TEMPLATES, LANGUAGE, toCreatePayload, templateProblems } = require('./whatsappTemplates');
 const { maskPhone } = require('./whatsappFormat');
+const linkService = require('./whatsappLink.service');
 
 /**
  * The super-admin WhatsApp console: setup status, account health, the
@@ -253,6 +254,47 @@ const sendTestMessage = async ({ to, superAdminId }) => {
   }
 };
 
+/**
+ * Super Admin → WhatsApp → Connect employees: for each active company, who
+ * "Connect everyone" would reach (whatsappLink.service.js), and whether it
+ * can run now — WhatsApp on here, Meta's approval of the existing-employee
+ * message, and the company's add-on and own switch.
+ */
+const connectOverview = async () => {
+  const cfg = getConfig();
+  const sendingOn = canSend(cfg);
+  const messageName = linkService.FIRST_MESSAGE.existing;
+  // Meta is asked again only while the message isn't approved yet; once it
+  // is, the 10-minute cache answers.
+  const approvalsService = require('./whatsappApprovals.service');
+  const messageApproved = sendingOn && Boolean(cfg.wabaId)
+    && ((await approvalsService.isApprovedAtMeta(messageName)) || (await approvalsService.isApprovedAtMeta(messageName, { fresh: true })));
+  const { data: companies, error } = await supabaseAdmin.from('companies').select('id, name, is_active').order('name');
+  if (error) throw new BadRequestError(error.message);
+
+  const rows = await Promise.all((companies || []).filter((c) => c.is_active !== false).map(async (company) => {
+    const addOn = await settings.isAddOnEnabled(company.id);
+    const switchedOn = addOn && (await settings.getCompanySettings(company.id)).enabled;
+    const counts = switchedOn ? await linkService.connectCandidates(company.id) : null;
+    return {
+      id: company.id,
+      name: company.name,
+      addOn,
+      switchedOn,
+      ...(counts ? {
+        employees: counts.employees, connected: counts.connected, leftAlone: counts.leftAlone, noMobile: counts.noMobile, ready: counts.ready.length,
+      } : {}),
+    };
+  }));
+  return {
+    sendingOn,
+    messageApproved,
+    message: { name: messageName, body: TEMPLATES.find((t) => t.name === messageName)?.body || '' },
+    connectAtOnce: linkService.CONNECT_AT_ONCE,
+    companies: rows,
+  };
+};
+
 module.exports = {
   RATES_INR,
   configSummary,
@@ -261,4 +303,5 @@ module.exports = {
   templatesStatus,
   syncTemplates,
   sendTestMessage,
+  connectOverview,
 };

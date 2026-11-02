@@ -4,6 +4,7 @@ import {
   PageHeader, Card, CardHeader, Button, Select, Input, Modal,
   ProgressBar, DataTable, Skeleton, StatCard, Avatar, StatusBadge,
 } from '../../components/ui';
+import { EmployeeLink } from '../../components/shared/EmployeeLink';
 import { useEnrollments, useArchivedEnrollmentCount, useManageCourses, useTrainingMutations } from '../../hooks/useTraining';
 import { useEmployees } from '../../hooks/useEmployees';
 import { DEPARTMENTS } from '../../lib/constants';
@@ -142,7 +143,7 @@ export default function Enrollments() {
         <div className="flex items-center gap-3">
           <Avatar name={row.original.employeeName} size="sm" />
           <div>
-            <p className="font-medium text-fg">{row.original.employeeName}</p>
+            <p className="font-medium text-fg"><EmployeeLink employeeId={row.original.employeeId}>{row.original.employeeName}</EmployeeLink></p>
             <p className="text-xs text-fg-subtle">{row.original.department}</p>
           </div>
         </div>

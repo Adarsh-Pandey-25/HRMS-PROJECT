@@ -58,7 +58,8 @@ const MyLeave = lazy(loaders['/leave/me']);
 const ApplyLeave = lazy(loaders['/leave/apply']);
 const TeamLeave = lazy(loaders['/leave/team']);
 const LeaveApprovals = lazy(loaders['/leave/approvals']);
-const HolidayCalendar = lazy(loaders['/leave/holidays']);
+
+const HolidayCalendar = lazy(loaders['/holidays']);
 
 const MyPayslips = lazy(loaders['/payroll/me']);
 const RunPayroll = lazy(loaders['/payroll/run']);
@@ -237,7 +238,11 @@ export default function App() {
             <Route path="/leave/apply" element={page(ApplyLeave, SELF_SERVICE_ROLES)} />
             <Route path="/leave/team" element={page(TeamLeave, ['admin', 'hr', 'manager'])} />
             <Route path="/leave/approvals" element={page(LeaveApprovals, { module: 'leave', action: 'approve' })} />
-            <Route path="/leave/holidays" element={page(HolidayCalendar, { module: 'leave', action: 'view' })} />
+            {/* The old address — holiday emails and notifications already sent link here. */}
+            <Route path="/leave/holidays" element={<Navigate to="/holidays" replace />} />
+
+            {/* Holiday Calendar */}
+            <Route path="/holidays" element={page(HolidayCalendar, { module: 'leave', action: 'view' })} />
 
             {/* Payroll */}
             <Route path="/payroll" element={<Navigate to={isAdmin ? '/payroll/run' : '/payroll/me'} replace />} />

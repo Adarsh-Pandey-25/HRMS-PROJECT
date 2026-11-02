@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { CalendarClock } from 'lucide-react';
 import { Card, CardHeader, Select, Avatar, DataTable, SkeletonTable, EmptyState, DateRangePicker } from '../../components/ui';
 import { ExportButton } from '../../components/shared/ExportButton';
+import { EmployeeLink } from '../../components/shared/EmployeeLink';
 import { useAttendanceSummaryReport } from '../../hooks/useReports';
 import { useAuthStore } from '../../store/authStore';
 import { DEPARTMENTS } from '../../lib/constants';
@@ -42,7 +43,7 @@ export default function AttendanceSummaryReport() {
         <div className="flex items-center gap-3 min-w-[170px]">
           <Avatar name={row.original.name} size="sm" />
           <div>
-            <p className="font-medium text-fg">{row.original.name}</p>
+            <p className="font-medium text-fg"><EmployeeLink employeeId={row.original.id} tab="attendance" query={{ from, to }}>{row.original.name}</EmployeeLink></p>
             <p className="text-xs text-fg-subtle">{[row.original.code, row.original.department].filter(Boolean).join(' · ') || '—'}</p>
           </div>
         </div>
@@ -56,7 +57,7 @@ export default function AttendanceSummaryReport() {
     { accessorKey: 'leaveDays', header: 'Leave Days', cell: ({ getValue }) => <span className="tabular-nums">{getValue()}</span> },
     { accessorKey: 'totalHours', header: 'Total hours', cell: ({ getValue }) => <span className="tabular-nums font-medium">{formatHours(getValue(), { empty: '—' })}</span> },
     { accessorKey: 'overtimeHours', header: 'Overtime', cell: ({ getValue }) => <span className="tabular-nums">{formatHours(getValue(), { empty: '—' })}</span> },
-  ], []);
+  ], [from, to]);
 
   const exportRows = useMemo(() => tableRows.map((r) => ({
     employee: r.name,

@@ -232,6 +232,8 @@ const eligibleOvertimeHours = (records, otRule) => {
   for (const r of records || []) {
     const final = !r.checkout_status || r.checkout_status === 'finalized';
     if (!final || r.is_auto_checkout || !r.check_out_time) continue;
+    // A WFH check-in still waiting for its approval doesn't count yet.
+    if (r.location?.wfh_pending === true) continue;
     const ot = Number(r.overtime_hours || 0);
     if (ot <= 0 || ot * 60 < Number(otRule.minMinutes || 0)) continue;
     hours += ot;

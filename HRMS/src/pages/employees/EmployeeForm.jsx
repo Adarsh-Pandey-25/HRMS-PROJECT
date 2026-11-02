@@ -269,6 +269,8 @@ const addEmployeeSchema = z.object({
   role: z.string().min(1, 'Required'),
   ...contactFields,
   ...optionalPersonalFields,
+  // The mobile number is compulsory when adding: WhatsApp updates go to it.
+  phone: phoneField,
 });
 
 const employeeSchema = z.object({
@@ -514,7 +516,7 @@ function PersonalStep({ register, errors, photoFile, setPhotoFile, watch, setVal
           <UserCheck className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
           <p className="text-sm text-fg-muted">
             {isAdd
-              ? <>Only the <span className="font-medium text-fg">name</span> is needed here. {personName} will be asked for their date of birth, contact, address, emergency contact and bank details the first time they sign in. Anything you fill in now is pre-filled for them.</>
+              ? <>Only the <span className="font-medium text-fg">name</span> and <span className="font-medium text-fg">mobile number</span> are needed here. {personName} will be asked for their date of birth, personal email, address, emergency contact and bank details the first time they sign in. Anything you fill in now is pre-filled for them.</>
               : detailsPending
                 ? <>{personName} hasn&apos;t filled in their personal details yet — they&apos;ll be asked on their next sign-in. Whatever you fill in here is used instead.</>
                 : <>Personal details are optional here. Whatever is still missing when you save, {personName} is asked to fill in on their next sign-in.</>}
@@ -560,7 +562,7 @@ function PersonalStep({ register, errors, photoFile, setPhotoFile, watch, setVal
         />
         <Input
           label="Phone"
-          required={required}
+          required={required || isAdd}
           placeholder="e.g. 9876543210"
           inputMode="numeric"
           pattern="[0-9]*"

@@ -7,6 +7,7 @@ import { useEmployeeMap } from '../../hooks/useEmployees';
 import { useCompanyStore } from '../../store/companyStore';
 import { formatCurrency, formatCompactINR, formatDate } from '../../lib/utils';
 import { ExportButton } from '../../components/shared/ExportButton';
+import { EmployeeLink } from '../../components/shared/EmployeeLink';
 import toast from 'react-hot-toast';
 
 export default function RunPayroll() {
@@ -114,7 +115,7 @@ export default function RunPayroll() {
             <div className="flex items-center gap-3">
               <Avatar name={e?.name || 'Employee'} size="sm" />
               <div>
-                <p className="font-medium text-fg">{e?.name || 'Employee'}</p>
+                <p className="font-medium text-fg"><EmployeeLink employeeId={getValue()} tab="payroll">{e?.name || 'Employee'}</EmployeeLink></p>
                 <p className="text-xs text-fg-subtle">{e?.department || '—'}</p>
               </div>
             </div>

@@ -277,6 +277,11 @@ const completeProfile = async (req, res, next) => {
     if (req.impersonation) throw new ForbiddenError('Personal details must be filled in by the employee themselves.');
     const profileCompletion = require('../services/profileCompletion.service');
     const changes = await profileCompletion.completeOwnProfile(req.user.id, req.body || {});
+    // A corrected mobile number takes a WhatsApp connection SpaxSync made with it.
+    if (changes && changes.phone !== undefined) {
+      require('../utils/background').runInBackground('whatsapp number change', () => require('../services/whatsappLink.service')
+        .followNumberChange({ employeeId: req.user.id, phone: changes.phone }));
+    }
     require('../services/auditLog.service').logAudit({
       companyId: req.user.company_id,
       actorId: req.user.id,

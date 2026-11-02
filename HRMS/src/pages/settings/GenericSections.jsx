@@ -282,25 +282,14 @@ export function ExpenseSettingsSection() {
     approvalFlow: f.approvalFlow || 'manager-then-hr',
     requireReceiptAbove: Number(f.requireReceiptAbove ?? 500),
   }), []);
-  const { form, setForm, patch, saveNow, status, retry } = usePersistedSettingsForm(cfg, update, 'expense_config', shape);
+  const { form, setForm, saveNow, status, retry } = usePersistedSettingsForm(cfg, update, 'expense_config', shape);
 
   return (
     <div className="space-y-5">
       <div className="flex justify-end"><SaveStatusIndicator status={status} onRetry={retry} /></div>
-      <Card>
-        <CardHeader title="Approval Flow" subtitle="Who approves expense claims." />
-        <div className="p-5 pt-3 space-y-2.5">
-          {APPROVAL_FLOW_OPTIONS.map((opt) => (
-            <label key={opt.value} className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-border px-3.5 py-3 text-sm text-fg has-[:checked]:border-primary has-[:checked]:bg-primary/5">
-              <input type="radio" name="expenseApprovalFlow" className="mt-0.5 h-4 w-4 accent-primary" checked={normalizeFlow(form.approvalFlow) === opt.value} onChange={() => patch({ approvalFlow: opt.value })} />
-              <span>
-                <span className="font-medium">{opt.label}</span>
-                <span className="mt-0.5 block text-xs text-fg-subtle">{opt.hint}</span>
-              </span>
-            </label>
-          ))}
-          <p className="pt-1 text-xs text-fg-subtle">Requests from people without a manager always go to HR.</p>
-        </div>
+      <Card className="p-5">
+        <p className="text-sm font-medium text-fg">Approval Flow: {APPROVAL_FLOW_OPTIONS.find((o) => o.value === normalizeFlow(form.approvalFlow))?.label}</p>
+        <p className="mt-0.5 text-xs text-fg-subtle">Who approves expense claims is now chosen in Settings → Approval Flows, together with leave and work from home.</p>
       </Card>
       <Card className="p-5">
         <Input

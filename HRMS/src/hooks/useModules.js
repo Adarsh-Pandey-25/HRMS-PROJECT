@@ -111,7 +111,14 @@ export function useHelpdeskMutations() {
   };
   return {
     createTicket: useMutation({ mutationFn: createTicketApi, onSuccess: invalidate }),
-    updateStatus: useMutation({ mutationFn: ({ id, status, rejectionReason }) => updateTicketStatusApi(id, status, rejectionReason), onSuccess: invalidate }),
+    updateStatus: useMutation({
+      mutationFn: ({ id, status, rejectionReason }) => updateTicketStatusApi(id, status, rejectionReason),
+      // Resolving or closing marks HR's notifications for the ticket read on the server.
+      onSuccess: async () => {
+        await invalidate();
+        await invalidateAndRefetch(qc, ['notifications']);
+      },
+    }),
     addComment: useMutation({ mutationFn: ({ id, text }) => addTicketCommentApi(id, text), onSuccess: invalidate }),
   };
 }

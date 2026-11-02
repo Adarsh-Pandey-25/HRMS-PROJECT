@@ -105,6 +105,13 @@ const isWfhLocation = (location) => {
   return Boolean(loc.is_wfh || loc.wfh);
 };
 
+/**
+ * A check-in made while its WFH request still waits (checkIn below). It
+ * counts only once the request is approved — until then summaries, reports
+ * and payroll treat the day as not worked; a rejection removes it.
+ */
+const isProvisionalWfh = (row) => row?.location?.wfh_pending === true;
+
 const DEFAULT_ATTENDANCE_METHODS = {
   web: true,
   app: true,
@@ -135,11 +142,13 @@ const WEB_BLOCK_MESSAGE = {
  * (which enforces it) and check-context (which the screens read) use, so
  * the UI and the server cannot disagree.
  *
- * 'wfh_only' admits permanent-WFH employees, and anyone else only on a day
- * with an APPROVED WFH request. Hybrid employees count as anyone else here:
- * the device on office days, the web on approved WFH days. No role is
- * exempt — admin and HR included, like 'off' — they request WFH the same
- * way, and cannot approve their own (wfhRequest.service.js review()).
+ * 'wfh_only' admits permanent-WFH and hybrid employees, and anyone else only
+ * on a day with an APPROVED WFH request. Hybrid employees choose each day —
+ * the biometric device in the office, the web when working from home — with
+ * no request needed (owner's decision, 2 Nov 2026; they used to wait for an
+ * approval every day). No role is exempt — admin and HR included, like
+ * 'off' — they request WFH the same way, and cannot approve their own
+ * (wfhRequest.service.js review()).
  *
  * `approvedDailyWfh` must be an actual approved request for today, not the
  * looser "WFH-ish" flag check-context also computes.
@@ -147,7 +156,7 @@ const WEB_BLOCK_MESSAGE = {
 const webCheckInDecision = ({ webMode, attendanceMode, approvedDailyWfh }) => {
   if (webMode === 'off') return { allowed: false, reason: 'off', message: WEB_BLOCK_MESSAGE.off };
   if (webMode === 'wfh_only') {
-    if (attendanceMode === 'wfh' || approvedDailyWfh) return { allowed: true, isWfhDay: true };
+    if (attendanceMode === 'wfh' || attendanceMode === 'hybrid' || approvedDailyWfh) return { allowed: true, isWfhDay: true };
     return { allowed: false, reason: 'wfh_only', message: WEB_BLOCK_MESSAGE.wfh_only };
   }
   return { allowed: true, isWfhDay: false };
@@ -325,6 +334,24 @@ const checkIn = async (employeeId, { method, device_id, location, clientIp, clie
   const isPrivilegedRole = ['admin', 'hr'].includes(emp?.role);
   const wfhRequestService = require('./wfhRequest.service');
   const approvedDailyWfh = await wfhRequestService.isApprovedForDate(employeeId);
+  // An office employee whose WFH request for today still waits may check in
+  // now rather than lose the hours (owner's decision, 2 Nov 2026). The
+  // check-in is provisional — location.wfh_pending — until the request is
+  // decided: approval makes it count from this time, rejection or
+  // cancellation takes it out (wfhRequest.service.js settleProvisionalCheckIns).
+  let provisionalWfh = !approvedDailyWfh && !isBiometric && attendanceMode === 'office'
+    && await wfhRequestService.isPendingForDate(employeeId);
+  // Where web check-in is open to everyone, a check-in from the office
+  // network is an office day — never a provisional WFH one a rejection could
+  // wipe out. (Under 'wfh_only' a web check-in is always a WFH day.)
+  let fromOfficeNetwork = false;
+  if (provisionalWfh && attendanceConfig.methods.webMode !== 'wfh_only') {
+    const officeIp = await isOfficeIpAllowed(clientIp, companyId, clientIps);
+    fromOfficeNetwork = officeIp.reason === 'matched';
+    if (fromOfficeNetwork) provisionalWfh = false;
+  }
+  const wfhAllowedToday = approvedDailyWfh || provisionalWfh;
+  const claimsWfh = Boolean(is_wfh) && !fromOfficeNetwork;
 
   // The web rule needs WFH status, so it runs here rather than up front —
   // deciding it before the approved-WFH lookup is what used to lock remote
@@ -332,7 +359,7 @@ const checkIn = async (employeeId, { method, device_id, location, clientIp, clie
   let wfhWebDay = false;
   if (!isBiometric) {
     const decision = webCheckInDecision({
-      webMode: attendanceConfig.methods.webMode, attendanceMode, approvedDailyWfh,
+      webMode: attendanceConfig.methods.webMode, attendanceMode, approvedDailyWfh: wfhAllowedToday,
     });
     if (!decision.allowed) throw new ForbiddenError(decision.message);
     // Under 'wfh_only' every web check-in that gets this far IS a WFH day,
@@ -342,9 +369,9 @@ const checkIn = async (employeeId, { method, device_id, location, clientIp, clie
   const wantsWfh = wfhWebDay
     || attendanceMode === 'wfh'
     || attendanceMode === 'hybrid'
-    || (Boolean(is_wfh) && approvedDailyWfh);
+    || (claimsWfh && wfhAllowedToday);
 
-  if (Boolean(is_wfh) && attendanceMode === 'office' && !approvedDailyWfh && !isPrivilegedRole) {
+  if (claimsWfh && attendanceMode === 'office' && !wfhAllowedToday && !isPrivilegedRole) {
     throw new ForbiddenError(
       'WFH for today needs Manager/HR approval first. Request it from My Attendance.'
     );
@@ -422,7 +449,7 @@ const checkIn = async (employeeId, { method, device_id, location, clientIp, clie
   if (active) throw new ConflictError('Already checked in. Please check out first.');
 
   const savedLocation = wantsWfh
-    ? { ...baseLocation, is_wfh: true }
+    ? { ...baseLocation, is_wfh: true, ...(provisionalWfh ? { wfh_pending: true } : {}) }
     : baseLocation;
 
   let insertPayload = {
@@ -783,8 +810,11 @@ const getEmployeeAttendanceContext = async (employeeId) => {
  *    missed anyone who was late and also left early.)
  *  - A biometric day that has not closed yet is never treated as final.
  */
-const summarizeAttendance = async (employeeId, start, end, rows) => {
+const summarizeAttendance = async (employeeId, start, end, recordedRows) => {
   const ctx = await getEmployeeAttendanceContext(employeeId);
+  // Every count below uses the rows that count; a provisional WFH check-in
+  // waits for its approval (isProvisionalWfh).
+  const rows = recordedRows.filter((a) => !isProvisionalWfh(a));
   const { isWeeklyOff } = require('../utils/workWeek');
   const { rules, workWeek, joinedOn } = ctx;
 
@@ -810,7 +840,7 @@ const summarizeAttendance = async (employeeId, start, end, rows) => {
   // arrival — the same answers the counts above use, so a list of "late"
   // days always matches the Late number.
   const lateSet = new Set(lateRows);
-  for (const a of rows) {
+  for (const a of recordedRows) {
     a.work_date = workDateOf(a);
     a.is_late = lateSet.has(a);
   }
@@ -903,6 +933,11 @@ const summarizeAttendance = async (employeeId, start, end, rows) => {
     absentDates,
     halfDayDates: halfDayRows.map(workDateOf).sort(),
     lateDates: lateRows.map(workDateOf).sort(),
+    // Provisional WFH check-ins not counted yet (they wait for approval).
+    awaitingApproval: recordedRows.length - rows.length,
+    // For a day-by-day history (the profile's Attendance tab).
+    holidayDates: [...holidayDates].sort(),
+    leaveDates: [...approvedLeaveDays].sort(),
     expectedHours: rules.expectedHours,
     joinedOn,
   };
@@ -921,16 +956,28 @@ const formatRecordTimes = (a) => {
   return { ...a, check_in_display: checkInFormatted, check_out_display: checkOutFormatted, duration };
 };
 
+// The database hands back at most this many rows per request.
+const ROWS_PER_PAGE = 1000;
+
 const fetchRowsBetween = async (employeeId, start, end) => {
-  const { data, error } = await supabaseAdmin
-    .from('attendance')
-    .select('*')
-    .eq('employee_id', employeeId)
-    .gte('check_in_time', start.toISOString())
-    .lte('check_in_time', end.toISOString())
-    .order('check_in_time', { ascending: true });
-  if (error) throw new BadRequestError(error.message);
-  return data || [];
+  // Paged: a long range (the profile's "All time") can hold more rows than one
+  // request returns, and a missing row would read as an absent day.
+  const all = [];
+  for (let offset = 0; ; offset += ROWS_PER_PAGE) {
+    // eslint-disable-next-line no-await-in-loop
+    const { data, error } = await supabaseAdmin
+      .from('attendance')
+      .select('*')
+      .eq('employee_id', employeeId)
+      .gte('check_in_time', start.toISOString())
+      .lte('check_in_time', end.toISOString())
+      .order('check_in_time', { ascending: true })
+      .order('id', { ascending: true })
+      .range(offset, offset + ROWS_PER_PAGE - 1);
+    if (error) throw new BadRequestError(error.message);
+    all.push(...(data || []));
+    if (!data || data.length < ROWS_PER_PAGE) return all;
+  }
 };
 
 const getMonthlySummary = async (employeeId, month, year) => {
@@ -951,6 +998,66 @@ const getRangeSummary = async (employeeId, fromDate, toDate) => {
   const end = moment.tz(toDate, TIMEZONE).endOf('day');
   const rows = await fetchRowsBetween(employeeId, start, end);
   return summarizeAttendance(employeeId, start, end, rows);
+};
+
+// Longest range the profile's attendance history asks for at once (~3 years).
+const MAX_REPORT_DAYS = 1100;
+
+/**
+ * The profile's Attendance tab: day rows plus the same summary as
+ * getMonthlySummary, over any range up to MAX_REPORT_DAYS. It starts no
+ * earlier than the joining date nor the day the employee was added to
+ * SpaxSync, whichever is later: before either there is no attendance to
+ * show, and those days must not read as absent (someone who joined in 2025
+ * but was added when the company started using SpaxSync would otherwise
+ * show hundreds of absences). Returns the range it actually covered.
+ */
+const getRangeReport = async (employeeId, fromDate, toDate) => {
+  const { data: employee, error } = await supabaseAdmin
+    .from('employees')
+    .select('date_of_joining, created_at')
+    .eq('id', employeeId)
+    .maybeSingle();
+  if (error) throw new BadRequestError(error.message);
+  const joined = employee?.date_of_joining ? String(employee.date_of_joining).slice(0, 10) : null;
+  const added = employee?.created_at ? moment(employee.created_at).tz(TIMEZONE).format('YYYY-MM-DD') : null;
+  let firstDay = [joined, added].filter(Boolean).sort().pop() || null;
+  // ...but never hide a real record: one from before that day moves it back.
+  const { data: earliest } = await supabaseAdmin
+    .from('attendance')
+    .select('check_in_time')
+    .eq('employee_id', employeeId)
+    .order('check_in_time', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  const firstRecord = earliest?.check_in_time ? moment(earliest.check_in_time).tz(TIMEZONE).format('YYYY-MM-DD') : null;
+  if (firstDay && firstRecord && firstRecord < firstDay) firstDay = firstRecord;
+  const from = firstDay && fromDate < firstDay ? firstDay : fromDate;
+  if (from > toDate) return { records: [], summary: null, from, to: toDate };
+
+  const start = moment.tz(from, TIMEZONE).startOf('day');
+  const end = moment.tz(toDate, TIMEZONE).endOf('day');
+  const rows = await fetchRowsBetween(employeeId, start, end);
+  const summary = await summarizeAttendance(employeeId, start, end, rows);
+
+  // Check-ins made while a WFH request waited, then taken out of attendance
+  // because it was rejected or cancelled (wfhRequest.service.js): shown,
+  // never counted. Before 20261102_wfh_approval_flow.sql there are none.
+  const { data: voided, error: voidedError } = await supabaseAdmin
+    .from('wfh_day_requests')
+    .select('work_date, status, voided_check_in_at, voided_check_out_at')
+    .eq('employee_id', employeeId)
+    .gte('work_date', from)
+    .lte('work_date', toDate)
+    .not('voided_check_in_at', 'is', null);
+  const voidedCheckIns = voidedError ? [] : (voided || []).map((v) => ({
+    date: String(v.work_date).slice(0, 10),
+    requestStatus: v.status,
+    checkInAt: v.voided_check_in_at,
+    checkOutAt: v.voided_check_out_at,
+  }));
+
+  return { records: rows.map(formatRecordTimes), summary, from, to: toDate, voidedCheckIns };
 };
 
 /** Next 4:00 AM IST boundary after check-in (daily auto-checkout cutoff). */
@@ -1345,6 +1452,10 @@ module.exports = {
   getAttendance,
   getMonthlySummary,
   getRangeSummary,
+  getRangeReport,
+  MAX_REPORT_DAYS,
+  isWfhLocation,
+  isProvisionalWfh,
   processAutoCheckout,
   getTeamEmployeeIds,
   getActiveCheckIn,

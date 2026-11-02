@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { Check, X, Plus } from 'lucide-react';
 import { PageHeader, Card, CardHeader, Button, Avatar, StatusBadge, Badge, Modal, Select, Textarea, EmptyState, Skeleton } from '../../components/ui';
+import { EmployeeLink } from '../../components/shared/EmployeeLink';
 import { useAssetRequests, useAssetCategories, useAssetMutations } from '../../hooks/useModules';
 import { useAuthStore } from '../../store/authStore';
 import { useEmployeeMap } from '../../hooks/useEmployees';
@@ -76,7 +77,7 @@ export default function AssetRequests() {
                     <div className="flex items-center gap-3 flex-1 min-w-0">
                       <Avatar name={name} size="md" />
                       <div>
-                        <p className="text-sm font-medium text-fg">{name} · {r.assetType}</p>
+                        <p className="text-sm font-medium text-fg"><EmployeeLink employeeId={isApprover ? r.employeeId : undefined} tab="assets">{name}</EmployeeLink> · {r.assetType}</p>
                         <p className="text-xs text-fg-subtle">{r.reason}</p>
                       </div>
                     </div>

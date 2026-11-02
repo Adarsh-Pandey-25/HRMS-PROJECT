@@ -131,6 +131,8 @@ export function mapAttendanceFromApi(row) {
     date,
     status,
     isWfh: status === 'wfh' || Boolean(loc.is_wfh || loc.isWfh || loc.wfh),
+    // Checked in while the WFH request still waited: counts once it is approved.
+    wfhPending: Boolean(loc.wfh_pending || loc.wfhPending),
     checkIn: checkIn ? new Intl.DateTimeFormat('en-GB', tzOpts).format(checkIn) : null,
     checkOut: checkOut ? new Intl.DateTimeFormat('en-GB', tzOpts).format(checkOut) : null,
     checkInAt: c.checkInTime || null,

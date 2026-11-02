@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Users } from 'lucide-react';
 import { Card, CardHeader, Select, Avatar, DataTable, SkeletonTable, EmptyState, Badge } from '../../components/ui';
 import { ExportButton } from '../../components/shared/ExportButton';
+import { EmployeeLink } from '../../components/shared/EmployeeLink';
 import { useTeamPerformanceReport } from '../../hooks/useReports';
 import { useAuthStore } from '../../store/authStore';
 import { DEPARTMENTS } from '../../lib/constants';
@@ -49,7 +50,7 @@ export default function TeamPerformanceReport() {
         <div className="flex items-center gap-3 min-w-[170px]">
           <Avatar name={row.original.name} size="sm" />
           <div>
-            <p className="font-medium text-fg">{row.original.name}</p>
+            <p className="font-medium text-fg"><EmployeeLink employeeId={row.original.id}>{row.original.name}</EmployeeLink></p>
             <p className="text-xs text-fg-subtle">{[row.original.code, row.original.department].filter(Boolean).join(' · ') || '—'}</p>
           </div>
         </div>

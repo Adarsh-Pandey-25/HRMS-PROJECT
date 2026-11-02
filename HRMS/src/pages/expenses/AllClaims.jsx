@@ -4,6 +4,7 @@ import { useAllReimbursements } from '../../hooks/useReimbursements';
 import { useEmployeeMap } from '../../hooks/useEmployees';
 import { formatCurrency, formatDate, humanize } from '../../lib/utils';
 import { ExportButton } from '../../components/shared/ExportButton';
+import { EmployeeLink } from '../../components/shared/EmployeeLink';
 
 export default function AllClaims() {
   const { data: expenses = [], isLoading } = useAllReimbursements();
@@ -33,7 +34,7 @@ export default function AllClaims() {
         return (
           <div className="flex items-center gap-2.5">
             <Avatar name={name} size="sm" />
-            <span className="font-medium text-fg">{name}</span>
+            <span className="font-medium text-fg"><EmployeeLink employeeId={row.original.employeeId}>{name}</EmployeeLink></span>
           </div>
         );
       },

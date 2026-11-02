@@ -16,6 +16,10 @@
  * rest. One exception (owner's decision, 30 Oct 2026): approval_request
  * shows the approver the requester's own reason, shortened, and is hidden
  * from the message log once sent (privateParams).
+ *
+ * Every template ends with the "Reply STOP" footer except the two first
+ * messages, welcome_new_employee and hr_updates_on_whatsapp (footer: false,
+ * owner's decision, 2 Nov 2026).
  */
 
 const LANGUAGE = 'en';
@@ -114,6 +118,26 @@ const TEMPLATES = [
   utility('account_deactivated',
     'Hi {{1}}, your SpaxSync account at {{2}} has been deactivated. Please contact your HR team if you think this is a mistake.',
     ['Priya', COMPANY]),
+  // The first message on a number SpaxSync connected (whatsappLink.service.js),
+  // wording chosen by the owner on 2 Nov 2026: one for someone HR has just
+  // added, one for people who already work there ("Connect everyone", bulk
+  // import, a changed number). No footer, on the owner's instruction;
+  // replying STOP still works. Each waits in the queue until Meta approves it
+  // instead of failing.
+  {
+    ...utility('welcome_new_employee',
+      '*Welcome to {{2}}, {{1}}!* 🎉\nWe\'re glad to have you on the team.\n\nYour HR updates will come here:\n✅ Leave approvals\n🕘 Attendance alerts\n💰 Payslips\n📢 Company news\n\nYour sign-in details are in your email.',
+      ['Priya', COMPANY]),
+    footer: false,
+    holdUntilApproved: true,
+  },
+  {
+    ...utility('hr_updates_on_whatsapp',
+      '*HR updates are now on WhatsApp* 📲\n\nHi {{1}}, {{2}} now sends your HR updates here:\n✅ Leave approvals\n🕘 Attendance alerts\n💰 Payslips\n📢 Company news\n\nYou\'ll still get them by email as before.',
+      ['Priya', COMPANY]),
+    footer: false,
+    holdUntilApproved: true,
+  },
 
   // ── Security, billing, platform ──────────────────────────────────────────
   utility('security_alert',
@@ -193,7 +217,7 @@ const toCreatePayload = (template) => {
       text: template.body,
       ...(paramCount(template) ? { example: { body_text: [template.example] } } : {}),
     },
-    { type: 'FOOTER', text: FOOTER },
+    ...(template.footer === false ? [] : [{ type: 'FOOTER', text: FOOTER }]),
   ];
   const buttons = template.buttons || (isMarketing(template) ? [STOP_BUTTON_TEXT] : []);
   if (buttons.length) {

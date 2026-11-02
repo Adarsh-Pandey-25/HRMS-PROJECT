@@ -210,6 +210,69 @@ const markAllRead = async (userId) => {
   return true;
 };
 
+/**
+ * The notifications that ask someone to act on a request: the titles they are
+ * sent with (leave.service, wfhRequest.service, reimbursement.controller,
+ * helpdesk.service, document.controller — keep in step) and the meta key that
+ * names the request. `first` goes out before anyone has approved; `second` is
+ * HR's turn once the manager has approved (Manager → HR).
+ */
+const REVIEW_NOTIFICATIONS = {
+  leave: {
+    type: 'LEAVE',
+    key: 'leave_id',
+    first: ['Leave request pending approval', 'Leave request submitted'],
+    second: ['Leave needs HR approval'],
+  },
+  wfh: {
+    type: 'ATTENDANCE',
+    key: 'wfh_batch_id',
+    first: ['WFH request pending'],
+    second: ['WFH needs HR approval'],
+  },
+  expense: {
+    type: 'REIMBURSEMENT',
+    key: 'reimbursement_id',
+    first: ['Reimbursement pending approval', 'Reimbursement submitted'],
+    second: ['Reimbursement needs HR approval'],
+  },
+  ticket: { type: 'TICKET', key: 'ticket_id', first: ['New helpdesk ticket', 'Ticket updated'], second: [] },
+  document: { type: 'DOCUMENT', key: 'document_id', first: ['Document pending verification'], second: [] },
+};
+
+/**
+ * Marks those notifications read, for everyone who got them, once nobody needs
+ * to act on the request any more — approved, rejected, cancelled or resolved,
+ * on the website or from WhatsApp. They used to stay unread until each one was
+ * tapped, though the work was already done (owner, 2 Nov 2026).
+ *
+ * firstStepOnly: the manager approved under Manager → HR, so the first step's
+ * notifications are done and HR's are still to come. exceptUserId: leaves that
+ * person's notifications alone (a ticket's raiser gets "Ticket updated" news
+ * under the same title). Never throws: a decision must not fail over this.
+ */
+const markReviewNotificationsRead = async (kind, requestId, { firstStepOnly = false, exceptUserId = null } = {}) => {
+  const spec = REVIEW_NOTIFICATIONS[kind];
+  // Without an id, the meta filter below would match every notification of the kind.
+  if (!spec || !requestId || typeof requestId === 'object') return;
+  const titles = firstStepOnly ? spec.first : [...spec.first, ...spec.second];
+  // Every kind's id is a UUID, which the meta holds as Postgres writes it: lower case.
+  try {
+    let query = supabaseAdmin
+      .from('notifications')
+      .update({ is_read: true })
+      .eq('type', spec.type)
+      .in('title', titles)
+      .contains('meta', { [spec.key]: String(requestId).trim().toLowerCase() })
+      .eq('is_read', false);
+    if (exceptUserId) query = query.neq('user_id', exceptUserId);
+    const { error } = await query;
+    if (error) logger.warn('Could not mark review notifications read', { kind, error: error.message });
+  } catch (err) {
+    logger.warn('Could not mark review notifications read', { kind, error: err.message });
+  }
+};
+
 module.exports = {
   createNotification,
   createNotifications,
@@ -217,5 +280,7 @@ module.exports = {
   getUnreadCount,
   markRead,
   markAllRead,
+  markReviewNotificationsRead,
+  REVIEW_NOTIFICATIONS,
 };
 

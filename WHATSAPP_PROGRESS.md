@@ -1,6 +1,6 @@
 # WhatsApp notifications: progress
 
-*Branch `whatsapp-integration` · updated 30 Oct 2026*
+*Branch `whatsapp-integration` · updated 2 Nov 2026*
 
 ## Status
 | Part | State |
@@ -18,11 +18,14 @@
 | Payment method | ✅ Added in Meta |
 | Permanent token | ✅ On the live server (29 Oct); never expires |
 | Meta app: Live mode, webhooks on for SpaxSync only | ✅ Meta's messages reach spaxsync.com since 29 Oct |
-| Templates on the SpaxSync account | ✅ Submitted 29 Oct; 36 of 38 approved by 30 Oct morning |
+| Templates on the SpaxSync account | ✅ All 39 approved by 2 Nov, including `approval_request` |
 | Go-live on the real server | ✅ WhatsApp on since 29 Oct; only people who connect get messages |
 | Connect your WhatsApp from your profile | ✅ Tested in Spaxads and DEMO; first real approval message delivered 30 Oct |
-| Approve / Reject on WhatsApp, with the reason (leave, work from home, expenses, attendance corrections) | ✅ Built and tested (30 Oct). ⏳ To go live: database update `20261030_whatsapp_approval_buttons.sql`, deploy, then Templates → Submit to Meta for `approval_request` |
-| "Submit to Meta" page error (502) when sending many templates | ✅ Fixed: sends 10 at a time (goes live with the next deploy) |
+| Approve / Reject on WhatsApp, with the reason (leave, work from home, expenses, attendance corrections) | ✅ Live since 30 Oct; first leave and work-from-home requests approved from WhatsApp that day |
+| "Submit to Meta" page error (502) when sending many templates | ✅ Fixed and live: sends 10 at a time |
+| Automatic connection: the mobile number is compulsory in Add employee and Bulk import, and WhatsApp connects to it on save, with your welcome message | ✅ Built and tested (2 Nov), wording chosen by you. ⏳ To go live: your OK to push, deploy (server and website), then Templates → Submit to Meta for `welcome_new_employee` and `hr_updates_on_whatsapp` |
+| Existing employees: Super Admin → WhatsApp → Connect employees ("Connect everyone") | ✅ Built and tested (2 Nov). ⏸ Nothing is sent until you press it, after the deploy and Meta's approval |
+| Settings → Approval Flows: leave, work from home and expenses, 4 choices each (corrections stay HR only); WhatsApp follows them | ✅ Built and tested (2 Nov). ⏳ To go live: run `20261102_wfh_approval_flow.sql`, your OK to push, deploy (server and website) |
 | Business verification | ⏳ You (WHATSAPP_GO_LIVE.md, section 2) |
 
 **Nothing changes for anyone yet.** WhatsApp stays off until `WHATSAPP_ENABLED=true`, and then only for companies where a super admin switches the add-on on. Emails and in-app notifications work exactly as before.
@@ -41,7 +44,7 @@ On your PC, `WHATSAPP_ALLOWED_RECIPIENTS` in `backend/.env` is the safety lock: 
   - `backend/src/config/whatsapp.js`
   - `backend/src/routes/*whatsapp*`
   - `backend/src/controllers/*whatsapp*`
-  - database updates: `backend/supabase/migrations/20261028_whatsapp_channel.sql`, `20261030_whatsapp_approval_buttons.sql`
+  - database updates: `backend/supabase/migrations/20261028_whatsapp_channel.sql`, `20261030_whatsapp_approval_buttons.sql`, `20261102_wfh_approval_flow.sql`
   - approval buttons: `backend/src/services/whatsappApprovals.service.js` (runs the website's own approve / reject handlers; doesn't change them)
 - **Website:**
   - `HRMS/src/components/whatsapp/WhatsAppUpdatesCard.jsx`
@@ -60,3 +63,10 @@ On your PC, `WHATSAPP_ALLOWED_RECIPIENTS` in `backend/.env` is the safety lock: 
   - `GenericSections.jsx`: the WhatsApp card
   - `EmployeeProfile.jsx`: the card on your own profile
   - `App.jsx` and `SuperAdminLayout.jsx`: the super admin page and menu item
+- **Automatic connection (2 Nov):**
+  - `employee.controller.js`: connects WhatsApp after Add employee, and moves it when the number changes (does nothing while WhatsApp is off)
+  - **Always on, with or without WhatsApp:** the mobile number is compulsory when adding someone (`validators.js`, `EmployeeForm.jsx`, `BulkImportPanel.jsx`)
+- **Approval Flows (2 Nov, always on, with or without WhatsApp):**
+  - Server: `approvalFlow.service.js` (the 4th choice, work-from-home flow), `wfhRequest.service.js` (who is asked, the manager step, each queue), `leave.service.js` and `reimbursement.controller.js` (who is asked first), `dashboard.service.js` (HR's queue)
+  - Website: `ApprovalFlowsSection.jsx` (new page), `Settings.jsx`, `lib/approvalFlow.js`, `LeaveApprovals.jsx`, `ExpenseApprovals.jsx`, `WfhApprovals.jsx`, `settingsStore.js`, `useSettings.js`; `LeavePolicySection.jsx` and `GenericSections.jsx` now point to the new page
+  - WhatsApp: `whatsappCatalog.js` (HR's step on work from home), `whatsappApprovals.service.js` (the reply after a manager's first step)

@@ -124,12 +124,17 @@ export default function MyAttendance() {
   const biometricCheckoutLocked = isBiometricToday && clockedIn;
 
   const permanentWfh = checkContext?.attendanceMode === 'wfh';
+  // Hybrid staff check in on the web without a daily request.
+  const hybrid = checkContext?.attendanceMode === 'hybrid';
   const dailyWfhStatus = checkContext?.dailyWfhStatus || null;
   const wfhApproved = Boolean(checkContext?.dailyWfhApproved || permanentWfh);
   const wfhPending = dailyWfhStatus === 'pending';
+  // Request still waiting: clocking in is allowed now and counts once it is
+  // approved; a rejection takes the check-in out (provisional).
+  const provisionalWfh = Boolean(checkContext?.provisionalWfh);
   const wfhRejected = dailyWfhStatus === 'rejected';
   const todayIsWfh = Boolean(todayRecord?.status === 'wfh' || todayRecord?.isWfh || wfhApproved);
-  const showWfhControls = canRequestDailyWfh && !clockedIn && !todayRecord?.checkOut && !permanentWfh;
+  const showWfhControls = canRequestDailyWfh && !clockedIn && !todayRecord?.checkOut && !permanentWfh && !hybrid;
 
   // The day's goal is the employee's own shift length (from the server).
   const GOAL_HOURS = monthly?.summary?.expectedHours || DEFAULT_GOAL_HOURS;
@@ -222,7 +227,7 @@ export default function MyAttendance() {
   const plan = planWebCheckIn(checkContext, { privileged: privilegedAttendance });
   const webCheckInEnabled = plan.allowed;
   const canClockIn = webCheckInEnabled
-    && (privilegedAttendance || !ipEnforced || ipAllowed || wfhApproved || Boolean(checkContext?.gpsGeofenceOn));
+    && (privilegedAttendance || !ipEnforced || ipAllowed || wfhApproved || provisionalWfh || Boolean(checkContext?.gpsGeofenceOn));
 
   const handleRequestWfh = async () => {
     try {
@@ -290,11 +295,13 @@ export default function MyAttendance() {
           selfieToken = await selfie.capture();
           if (!selfieToken) return;
         }
-        await checkIn.mutateAsync({ method: 'web', is_wfh: Boolean(wfhApproved), location, selfie_token: selfieToken });
+        await checkIn.mutateAsync({ method: 'web', is_wfh: Boolean(wfhApproved || provisionalWfh), location, selfie_token: selfieToken });
         toast.success(
           wfhApproved
             ? 'Clocked in as WFH — 9h goal timer started'
-            : 'Clocked in — 9h goal timer started'
+            : provisionalWfh
+              ? 'Clocked in as WFH — it counts once your request is approved'
+              : 'Clocked in — 9h goal timer started'
         );
       }
       await Promise.all([refetchContext(), refetchMy()]);
@@ -368,7 +375,7 @@ export default function MyAttendance() {
                     {wfhApproved
                       ? 'Approved by Manager/HR'
                       : wfhPending
-                        ? 'Waiting for Manager/HR approval'
+                        ? 'Waiting for approval — you can clock in now; it counts once approved'
                         : wfhRejected
                           ? 'Rejected — you can request again'
                           : 'Requires Manager or HR approval'}
@@ -404,7 +411,11 @@ export default function MyAttendance() {
           {(permanentWfh || (todayRecord && todayIsWfh) || wfhApproved) && !showWfhControls && (
             <p className="flex items-center gap-1.5 text-[11px] text-info mb-3">
               <Home className="h-3 w-3 shrink-0" />
-              {permanentWfh ? 'WFH employee' : 'Checked in as WFH today'}
+              {permanentWfh
+                ? 'WFH employee'
+                : todayRecord?.wfhPending
+                  ? 'Checked in as WFH — counts once your request is approved'
+                  : 'Checked in as WFH today'}
             </p>
           )}
 
@@ -429,7 +440,7 @@ export default function MyAttendance() {
               }
               loading={checkIn.isPending || checkOut.isPending}
             >
-              {clockedIn ? 'Clock Out' : wfhApproved ? 'Clock In (WFH)' : 'Clock In'}
+              {clockedIn ? 'Clock Out' : wfhApproved || provisionalWfh ? 'Clock In (WFH)' : 'Clock In'}
             </Button>
           )}
 
@@ -460,7 +471,9 @@ export default function MyAttendance() {
                 : wfhApproved
                   ? 'WFH approved — office IP not required today'
                   : wfhPending
-                    ? 'WFH pending approval — office IP still required'
+                    ? (provisionalWfh
+                      ? 'WFH pending — clock in now; it counts once Manager/HR approve it'
+                      : 'WFH pending — on the office network, this is a normal office check-in')
                     : `${checkContext.clientIp || 'IP unknown'}${(checkContext.clientIps || []).length > 1 ? ` (${checkContext.clientIps.filter((ip) => ip !== checkContext.clientIp).join(', ')})` : ''} · ${ipAllowed ? 'office IP OK' : `office IP required (${checkContext.officeCidr || 'whitelist'})`}`}
             </p>
           )}

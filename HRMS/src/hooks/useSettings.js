@@ -26,6 +26,7 @@ export function useSettingsBootstrap() {
   const updateAttendanceConfig = useSettingsStore((s) => s.updateAttendanceConfig);
   const updateTrainingConfig = useSettingsStore((s) => s.updateTrainingConfig);
   const updateExpenseConfig = useSettingsStore((s) => s.updateExpenseConfig);
+  const updateApprovalFlows = useSettingsStore((s) => s.updateApprovalFlows);
   const updateAssetConfig = useSettingsStore((s) => s.updateAssetConfig);
   const updateHelpdeskConfig = useSettingsStore((s) => s.updateHelpdeskConfig);
   const updateSecurityConfig = useSettingsStore((s) => s.updateSecurityConfig);
@@ -225,6 +226,10 @@ export function useSettingsBootstrap() {
       });
     }
 
+    if (map.approval_flows && typeof map.approval_flows === 'object') {
+      updateApprovalFlows(map.approval_flows);
+    }
+
     if (map.asset_config && typeof map.asset_config === 'object') {
       updateAssetConfig(map.asset_config);
     }
@@ -279,6 +284,7 @@ export function useSettingsBootstrap() {
     updateAttendanceConfig,
     updateTrainingConfig,
     updateExpenseConfig,
+    updateApprovalFlows,
     updateAssetConfig,
     updateHelpdeskConfig,
     updateSecurityConfig,

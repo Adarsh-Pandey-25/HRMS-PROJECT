@@ -15,6 +15,9 @@ router.put('/pause', superAdminWhatsappController.setPaused);
 router.get('/templates', superAdminWhatsappController.templates);
 router.post('/templates/sync', superAdminWhatsappController.syncTemplates);
 router.post('/test-message', superAdminWhatsappController.testMessage);
+// "Connect everyone": a company's existing employees, only when pressed.
+router.get('/connect', superAdminWhatsappController.connectOverview);
+router.post('/connect/:companyId', superAdminWhatsappController.connectEveryone);
 
 router.get('/me', superAdminWhatsappController.getMine);
 router.post('/me/link', superAdminWhatsappController.startLink);

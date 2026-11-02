@@ -38,23 +38,23 @@ export default function ManagerDashboard({ user }) {
       <Greeting user={user} dateLabel={api?.greeting?.date} />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard label="My Team Size" value={kpis.teamSize} icon={Users} tone="primary" footer="Direct reports" />
-        <StatCard label="Present Today" value={kpis.presentToday} icon={UserCheck} tone="success" footer={`of ${kpis.teamSize} team members`} />
-        <StatCard label="On Leave" value={kpis.onLeaveToday} icon={CalendarOff} tone="warning" footer="Today" />
-        <StatCard label="Pending Approvals" value={kpis.pendingApprovals} icon={FileClock} tone="info" footer="Leave + expenses" />
+        <StatCard label="My Team Size" value={kpis.teamSize} icon={Users} tone="primary" footer="Direct reports" to="/attendance/team" />
+        <StatCard label="Present Today" value={kpis.presentToday} icon={UserCheck} tone="success" footer={`of ${kpis.teamSize} team members`} to="/attendance/team?status=present" />
+        <StatCard label="On Leave" value={kpis.onLeaveToday} icon={CalendarOff} tone="warning" footer="Today" to="/leave/team" />
+        <StatCard label="Pending Approvals" value={kpis.pendingApprovals} icon={FileClock} tone="info" footer="Leave + expenses" to="/leave/approvals" />
       </div>
 
       <Card>
-        <CardHeader title="Team Attendance" subtitle="Today" />
+        <CardHeader title="Team Attendance" subtitle="Today" action={<Link to="/attendance/team" className="text-xs font-medium text-primary hover:underline">View all</Link>} />
         <div className="p-5 pt-3 grid grid-cols-2 sm:grid-cols-4 gap-3">
           {ATTENDANCE_STATS.map((s) => (
-            <div key={s.key} className="rounded-xl bg-muted/50 p-3">
+            <Link key={s.key} to={`/attendance/team?status=${s.key}`} className="rounded-xl bg-muted/50 p-3 transition-colors hover:bg-muted">
               <div className={cn('h-8 w-8 rounded-lg flex items-center justify-center mb-2', s.tone)}>
                 <s.icon className="h-4 w-4" />
               </div>
               <p className="text-xl font-semibold text-fg tabular-nums">{teamAttendance[s.key] ?? 0}</p>
               <p className="text-xs text-fg-subtle">{s.label}</p>
-            </div>
+            </Link>
           ))}
         </div>
       </Card>
@@ -66,14 +66,14 @@ export default function ManagerDashboard({ user }) {
             {teamLeave.length === 0 ? (
               <p className="text-sm text-fg-subtle">Nothing pending.</p>
             ) : teamLeave.map((l) => (
-              <div key={l.id} className="flex items-center gap-3 rounded-xl p-2 hover:bg-muted transition-colors">
+              <Link key={l.id} to="/leave/approvals" className="flex items-center gap-3 rounded-xl p-2 hover:bg-muted transition-colors">
                 <Avatar name={`${l.firstName} ${l.lastName}`} size="sm" />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium text-fg truncate">{l.firstName} {l.lastName}</p>
                   <p className="text-xs text-fg-subtle">{l.leaveType} · {l.totalDays}d · {l.fromDate}</p>
                 </div>
                 <StatusBadge status="pending" />
-              </div>
+              </Link>
             ))}
           </div>
         </Card>
@@ -84,14 +84,14 @@ export default function ManagerDashboard({ user }) {
             {teamExpenses.length === 0 ? (
               <p className="text-sm text-fg-subtle">Nothing pending.</p>
             ) : teamExpenses.map((e) => (
-              <div key={e.id} className="flex items-center gap-3 rounded-xl p-2 hover:bg-muted transition-colors">
+              <Link key={e.id} to="/expenses/approvals" className="flex items-center gap-3 rounded-xl p-2 hover:bg-muted transition-colors">
                 <Avatar name={`${e.firstName} ${e.lastName}`} size="sm" />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium text-fg truncate">{e.firstName} {e.lastName}</p>
                   <p className="text-xs text-fg-subtle truncate">{e.label || e.description}</p>
                 </div>
                 <StatusBadge status="pending" />
-              </div>
+              </Link>
             ))}
           </div>
         </Card>
@@ -104,7 +104,7 @@ export default function ManagerDashboard({ user }) {
             {teamPerf.length === 0 ? (
               <p className="text-sm text-fg-subtle">No review data for your team yet.</p>
             ) : teamPerf.map((r) => (
-              <div key={r.id} className="flex items-center gap-3">
+              <Link key={r.id} to="/performance/team" className="flex items-center gap-3 rounded-xl -mx-2 px-2 py-1 transition-colors hover:bg-muted">
                 <Avatar name={`${r.firstName} ${r.lastName}`} size="sm" />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
@@ -116,7 +116,7 @@ export default function ManagerDashboard({ user }) {
                 <span className="flex items-center gap-1 text-xs font-medium text-fg-subtle shrink-0">
                   <TrendingUp className="h-3 w-3" /> {r.score}
                 </span>
-              </div>
+              </Link>
             ))}
           </div>
         </Card>

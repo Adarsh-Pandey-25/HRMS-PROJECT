@@ -58,6 +58,33 @@ const testMessage = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+// "Connect everyone": a company's existing employees get connected and the
+// existing-employee message — only when a super admin presses it.
+const connectOverview = async (req, res, next) => {
+  try {
+    successResponse(res, 'Connect employees', await admin.connectOverview());
+  } catch (err) { next(err); }
+};
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const connectEveryone = async (req, res, next) => {
+  try {
+    const { companyId } = req.params;
+    if (!UUID.test(String(companyId || ''))) throw new BadRequestError('A valid company id is required');
+    const result = await linkService.connectExistingEmployees(companyId);
+    await require('../services/auditLog.service').logSuperAdminAudit({
+      companyId,
+      superAdminId: req.superAdmin.id,
+      actionType: 'whatsapp_connect_everyone',
+      targetType: 'company',
+      targetId: companyId,
+      afterState: result,
+    });
+    successResponse(res, `${result.connected} employees connected`, result);
+  } catch (err) { next(err); }
+};
+
 // The super admin's own WhatsApp, for platform alerts.
 const getMine = async (req, res, next) => {
   try {
@@ -92,5 +119,6 @@ const disconnect = async (req, res, next) => {
 };
 
 module.exports = {
-  overview, messages, setPaused, templates, syncTemplates, testMessage, getMine, startLink, updateMyGroups, disconnect,
+  overview, messages, setPaused, templates, syncTemplates, testMessage, connectOverview, connectEveryone,
+  getMine, startLink, updateMyGroups, disconnect,
 };

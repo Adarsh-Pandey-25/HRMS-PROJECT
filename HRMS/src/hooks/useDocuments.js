@@ -39,9 +39,14 @@ export function useDocumentMutations() {
     await invalidateAndRefetch(qc, ['documents']);
     await invalidateAndRefetch(qc, ['employees']);
   };
+  // Verifying or deleting marks HR's "pending verification" notifications read on the server.
+  const afterDecision = async () => {
+    await invalidate();
+    await invalidateAndRefetch(qc, ['notifications']);
+  };
   return {
     upload: useMutation({ mutationFn: uploadDocumentApi, onSuccess: invalidate }),
-    verify: useMutation({ mutationFn: verifyDocumentApi, onSuccess: invalidate }),
-    remove: useMutation({ mutationFn: deleteDocumentApi, onSuccess: invalidate }),
+    verify: useMutation({ mutationFn: verifyDocumentApi, onSuccess: afterDecision }),
+    remove: useMutation({ mutationFn: deleteDocumentApi, onSuccess: afterDecision }),
   };
 }

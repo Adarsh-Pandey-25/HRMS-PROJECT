@@ -129,7 +129,7 @@ export default function MyLeave() {
         </Card>
 
         <Card>
-          <CardHeader title="Upcoming Holidays" action={<Link to="/leave/holidays" className="text-xs font-medium text-primary hover:underline">View all</Link>} />
+          <CardHeader title="Upcoming Holidays" action={<Link to="/holidays" className="text-xs font-medium text-primary hover:underline">View all</Link>} />
           <div className="p-5 pt-3 space-y-3">
             {holidays.slice(0, 6).map((h) => (
               <div key={h.id || h.name} className="flex items-center gap-3">

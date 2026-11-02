@@ -48,6 +48,8 @@ const REPLIES = {
   failed: 'Something went wrong and nothing was changed. Please try again, or use SpaxSync.',
   refused: (message) => `Nothing was changed: ${message}`,
   done: (decision, subject) => `${decision === 'approve' ? '✅ Approved' : '❌ Rejected'}${subject ? ` — ${subject}` : ''}. They will be told as usual.`,
+  // A manager's approval under Manager → HR: the employee hears once HR decides.
+  sentToHr: (subject) => `✅ Approved${subject ? ` — ${subject}` : ''}. It now goes to HR for the final approval.`,
 };
 
 const hashCode = (code) => crypto.createHash('sha256').update(String(code)).digest('hex');
@@ -88,9 +90,9 @@ const createActions = async (rows, action) => {
 
 let approvedAtMeta = { at: 0, names: new Set() };
 
-/** Has Meta approved this template? Asked at most every 10 minutes. */
-const isApprovedAtMeta = async (name) => {
-  if (Date.now() - approvedAtMeta.at > APPROVED_CHECK_MS) {
+/** Has Meta approved this template? Asked at most every 10 minutes, or now with `fresh`. */
+const isApprovedAtMeta = async (name, { fresh = false } = {}) => {
+  if (fresh || Date.now() - approvedAtMeta.at > APPROVED_CHECK_MS) {
     try {
       const templates = await api.listTemplates();
       approvedAtMeta = {
@@ -348,6 +350,7 @@ const handleTap = async ({ decision, code, identity }) => {
     if (!claimed) return REPLIES.used;
 
     const rule = DECIDE[action.kind];
+    let result;
     try {
       if (!rule.roles.includes(approver.role)) {
         throw new ForbiddenError(rule.roles.includes('manager')
@@ -357,7 +360,7 @@ const handleTap = async ({ decision, code, identity }) => {
       if (rule.feature && !(await require('./featureOverride.service').hasFeature(approver.company_id, rule.feature))) {
         throw new ForbiddenError('this feature isn\'t included in your company\'s current plan');
       }
-      await rule.run(decision, approver, action.record_id);
+      result = await rule.run(decision, approver, action.record_id);
     } catch (err) {
       if (isRuleError(err)) {
         await finish(action.id, 'refused', err.message);
@@ -369,7 +372,9 @@ const handleTap = async ({ decision, code, identity }) => {
       return REPLIES.failed;
     }
 
-    await finish(action.id, decision === 'approve' ? 'approved' : 'rejected');
+    // Still pending after an approval: that was the manager's step of Manager → HR.
+    const sentToHr = decision === 'approve' && result?.data?.status === 'pending';
+    await finish(action.id, sentToHr ? 'manager_approved' : (decision === 'approve' ? 'approved' : 'rejected'));
     require('./auditLog.service').logAudit({
       companyId: approver.company_id,
       actorId: approver.id,
@@ -379,7 +384,8 @@ const handleTap = async ({ decision, code, identity }) => {
       targetId: action.record_id,
       afterState: { via: 'whatsapp' },
     }).catch((err) => logger.warn('[WhatsApp] audit log failed', { error: err.message }));
-    return REPLIES.done(decision, await subjectOf(action));
+    const subject = await subjectOf(action);
+    return sentToHr ? REPLIES.sentToHr(subject) : REPLIES.done(decision, subject);
   } catch (err) {
     logger.error('[WhatsApp] could not handle an approval button', { error: err.message });
     return REPLIES.failed;
@@ -394,6 +400,7 @@ module.exports = {
   createActions,
   prepareSend,
   handleTap,
+  isApprovedAtMeta,
   // for tests
   runHandler,
   correctionTimes,

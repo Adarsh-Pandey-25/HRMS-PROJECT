@@ -1,4 +1,5 @@
 import { useMemo, useState, useEffect } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { UserCheck, Home, Clock, UserX, X, Loader2, Columns3, ChevronDown, Building2 } from 'lucide-react';
 import { PageHeader, Card, CardHeader, Button, Avatar, StatusBadge, DataTable, Skeleton, Input, Badge, StatCard } from '../../components/ui';
 import { useTeamAttendance, useTeamMembers } from '../../hooks/useAttendance';
@@ -6,6 +7,7 @@ import { useEmployees } from '../../hooks/useEmployees';
 import { useAuthStore } from '../../store/authStore';
 import { ExportButton } from '../../components/shared/ExportButton';
 import { formatDate, cn, formatHours as formatHoursMinutes } from '../../lib/utils';
+import { employeeProfilePath } from '../../lib/employeeRoutes';
 
 /**
  * Present is the total who turned up, and WFO + WFH split it — so
@@ -48,8 +50,26 @@ export default function TeamAttendance() {
  const role = useAuthStore((s) => s.role);
  const isHrAdmin = role === 'admin' || role === 'hr';
  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
- const [statusFilter, setStatusFilter] = useState(null);
+ // The dashboard's attendance tiles open this page filtered (?status=absent).
+ const [searchParams] = useSearchParams();
+ const [statusFilter, setStatusFilter] = useState(() => {
+ const status = searchParams.get('status');
+ return ['present', 'wfo', 'wfh', 'late', 'absent'].includes(status) ? status : null;
+ });
  const [search, setSearch] = useState('');
+ const navigate = useNavigate();
+
+ // Clicking someone opens their attendance history for the month being viewed.
+ const openHistory = (r) => {
+ if (!r?.employeeId) return;
+ const month = date.slice(0, 7);
+ const lastDay = new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0).getDate();
+ const monthEnd = `${month}-${String(lastDay).padStart(2, '0')}`;
+ const today = new Date().toISOString().slice(0, 10);
+ // Up to today in the current month; a past or future month in full.
+ const to = monthEnd < today || `${month}-01` > today ? monthEnd : today;
+ navigate(employeeProfilePath({ id: r.employeeId }, undefined, { tab: 'attendance', from: `${month}-01`, to }));
+ };
  const [showColumnFilter, setShowColumnFilter] = useState(false);
  const [visibleColumns, setVisibleColumns] = useState(() => {
  try {
@@ -268,6 +288,8 @@ export default function TeamAttendance() {
  header: 'WFH',
  cell: ({ row }) => {
  const yes = Boolean(row.original.isWfh || row.original.status === 'wfh');
+ // Checked in while the WFH request waited: counts once it is approved.
+ if (yes && row.original.wfhPending) return <Badge tone="warning">Awaiting approval</Badge>;
  return yes ? <Badge tone="primary">Yes</Badge> : <Badge tone="neutral">No</Badge>;
  },
  });
@@ -318,8 +340,8 @@ export default function TeamAttendance() {
  <PageHeader
  title="Team Attendance"
  subtitle={isHrAdmin
- ? 'Every employee — check-in/out time, IP, hours, and WFH'
- : 'Presence across your direct reports'}
+ ? 'Every employee — check-in/out time, IP, hours, and WFH. Click anyone for their full history.'
+ : 'Presence across your direct reports. Click anyone for their full history.'}
  actions={(
  <Input
  type="date"
@@ -408,7 +430,7 @@ export default function TeamAttendance() {
  <Skeleton className="h-48 m-5 rounded-xl" />
  ) : (
  <div className="overflow-x-auto">
- <DataTable columns={teamColumns} data={filteredTeam} pageSize={12} />
+ <DataTable columns={teamColumns} data={filteredTeam} pageSize={12} onRowClick={openHistory} />
  </div>
  )}
  </Card>

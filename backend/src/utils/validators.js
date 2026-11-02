@@ -73,7 +73,8 @@ const employeeCreateRules = [
   body('first_name').trim().notEmpty(),
   body('last_name').trim().notEmpty(),
   body('role').isIn(Object.values(ROLES)),
-  body('phone').optional().trim(),
+  // Compulsory when adding someone: WhatsApp updates go to this number.
+  body('phone').trim().matches(/^\d{10}$/).withMessage('Mobile number is required (10 digits)'),
   body('date_of_birth').optional().isISO8601(),
   body('gender').optional().isIn(GENDERS),
   body('department').optional().trim(),

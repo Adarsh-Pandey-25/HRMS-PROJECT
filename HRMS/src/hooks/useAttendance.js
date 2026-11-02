@@ -172,7 +172,11 @@ export function useAttendanceMutations() {
     cancelWfh: useMutation({ mutationFn: cancelWfhDayApi, onSuccess: invalidate }),
     reviewWfh: useMutation({
       mutationFn: ({ id, ...body }) => reviewWfhRequestApi(id, body),
-      onSuccess: invalidate,
+      // A review marks the request's "please review" notifications read on the server.
+      onSuccess: async () => {
+        await invalidate();
+        await invalidateAndRefetch(qc, ['notifications']);
+      },
     }),
     manualEntry: useMutation({ mutationFn: manualAttendanceEntryApi, onSuccess: invalidateAll }),
   };

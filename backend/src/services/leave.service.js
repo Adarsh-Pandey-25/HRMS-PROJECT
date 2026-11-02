@@ -214,11 +214,11 @@ const applyLeave = async (employeeId, data) => {
   emailService.leaveAppliedEmail(employee, leave, { balanceAfterApproval }).catch((e) =>
     logger.warn('leaveAppliedEmail failed', { error: e.message }));
 
-  // Whoever acts first under the company's approval flow: the manager, or
-  // HR (HR only, or the employee has no manager).
+  // Whoever acts first under the company's approval flow: the manager, HR
+  // (HR only, or the employee has no manager), or both (Manager or HR).
   const flow = await approvalFlow.getLeaveFlow(companyId);
   const firstStage = approvalFlow.awaitingStage(flow, { hasManager: Boolean(employee?.manager_id), managerApproved: false });
-  if (firstStage === 'manager') {
+  if (approvalFlow.isTurnOf(firstStage, 'manager')) {
     await notificationService.createNotification({
       user_id: employee.manager_id,
       type: 'LEAVE',
@@ -249,7 +249,8 @@ const applyLeave = async (employeeId, data) => {
       emailService.leaveApprovalRequestEmail(manager, employee, leave, { othersOnLeave: othersOnLeave || 0 }).catch((e) =>
         logger.warn('leaveApprovalRequestEmail failed', { error: e.message }));
     }
-  } else {
+  }
+  if (approvalFlow.isTurnOf(firstStage, 'hr')) {
     const tenantService = require('./tenant.service');
     const hrIds = await tenantService.getCompanyHrAdminIds(companyId);
     for (const id of hrIds) {
@@ -320,17 +321,9 @@ const notifyLeaveApproved = async (leave, approver) => {
     meta: { leave_id: leave.id },
   });
 
-  // Clear any leftover "needs HR approval" alerts for this leave (e.g. after switching to single-level)
-  try {
-    await supabaseAdmin
-      .from('notifications')
-      .update({ is_read: true })
-      .eq('type', 'LEAVE')
-      .ilike('title', '%HR approval%')
-      .contains('meta', { leave_id: leave.id });
-  } catch {
-    /* non-fatal */
-  }
+  // Nobody needs to act on it any more: the manager's and HR's "please review"
+  // notifications for this leave are marked read for everyone.
+  await notificationService.markReviewNotificationsRead('leave', leave.id);
 
   if (leave.employee?.email) {
     const year = moment(leave.from_date).year();
@@ -446,6 +439,8 @@ const approveLeave = async (approver, leaveId, isManagerApproval = false) => {
       .select()
       .maybeSingle();
     if (!updated) throw new ConflictError('This leave has already been processed');
+    // The manager's part is done; HR's notifications follow.
+    await notificationService.markReviewNotificationsRead('leave', leave.id, { firstStepOnly: true });
 
     const tenantService = require('./tenant.service');
     const hrIds = await tenantService.getCompanyHrAdminIds(approverCompanyId);
@@ -526,6 +521,7 @@ const rejectLeave = async (approver, leaveId, rejection_reason) => {
     .single();
 
   if (error) throw new BadRequestError(error.message);
+  await notificationService.markReviewNotificationsRead('leave', leave.id);
 
   await notificationService.createNotification({
     user_id: leave.employee_id,
@@ -565,6 +561,8 @@ const cancelLeave = async (employeeId, leaveId) => {
     .single();
 
   if (error) throw new BadRequestError(error.message);
+  // A cancelled request needs nobody's review.
+  await notificationService.markReviewNotificationsRead('leave', leave.id);
 
   // Only an approved leave ever had its balance deducted — restore it on cancellation.
   if (leave.status === 'approved') {

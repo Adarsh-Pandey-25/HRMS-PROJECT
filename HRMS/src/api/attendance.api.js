@@ -137,6 +137,12 @@ function mapAttendanceSummaryFromApi(data) {
     totalDays,
     // The employee's shift length — the day's goal on My Attendance.
     expectedHours: Number(summary.expectedHours) > 0 ? Number(summary.expectedHours) : null,
+    // WFH check-ins made while the request waited: not counted until approved.
+    awaitingApproval: Number(summary.awaitingApproval || 0),
+    // The days with no record, for a day-by-day history.
+    absentDates: Array.isArray(summary.absentDates) ? summary.absentDates : [],
+    leaveDates: Array.isArray(summary.leaveDates) ? summary.leaveDates : [],
+    holidayDates: Array.isArray(summary.holidayDates) ? summary.holidayDates : [],
   };
 }
 
@@ -146,6 +152,12 @@ export async function fetchEmployeeAttendanceReportApi(employeeId, params = {}) 
   return {
     records: list.map(mapAttendanceFromApi),
     summary: mapAttendanceSummaryFromApi(Array.isArray(data) ? {} : data),
+    // With from/to: the range the server actually covered (it starts no
+    // earlier than the first day the person was tracked).
+    from: data?.from || null,
+    to: data?.to || null,
+    // Check-ins taken out because their WFH request was rejected or cancelled.
+    voidedCheckIns: Array.isArray(data?.voidedCheckIns) ? data.voidedCheckIns : [],
   };
 }
 

@@ -10,7 +10,7 @@ import { formatDate } from '../../lib/utils';
 import { invalidateAndRefetch } from '../../lib/queryCache';
 import { useAutosave } from '../../hooks/useAutosave';
 import { HolidayImportModal } from '../../components/shared/HolidayImportModal';
-import { APPROVAL_FLOW_OPTIONS, LEAVE_LEVEL_FOR_FLOW, normalizeFlow } from '../../lib/approvalFlow';
+import { APPROVAL_FLOW_OPTIONS, normalizeFlow } from '../../lib/approvalFlow';
 
 const HOLIDAY_TYPE_OPTIONS = [
   { value: 'public', label: 'Public / National' },
@@ -401,23 +401,9 @@ export function LeavePolicySection() {
         </div>
       </Card>
 
-      <Card>
-        <CardHeader
-          title="Approval Flow"
-          subtitle="Who approves leave requests."
-        />
-        <div className="p-5 pt-3 space-y-2.5">
-          {APPROVAL_FLOW_OPTIONS.map((opt) => (
-            <label key={opt.value} className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-border px-3.5 py-3 text-sm text-fg has-[:checked]:border-primary has-[:checked]:bg-primary/5">
-              <input type="radio" name="approvalLevel" className="mt-0.5 h-4 w-4 accent-primary" checked={normalizeFlow(form.approvalLevel, 'manager-only') === opt.value} onChange={() => patchMeta({ approvalLevel: LEAVE_LEVEL_FOR_FLOW[opt.value] })} />
-              <span>
-                <span className="font-medium">{opt.label}</span>
-                <span className="mt-0.5 block text-xs text-fg-subtle">{opt.hint}</span>
-              </span>
-            </label>
-          ))}
-          <p className="pt-1 text-xs text-fg-subtle">Requests from people without a manager always go to HR.</p>
-        </div>
+      <Card className="p-5">
+        <p className="text-sm font-medium text-fg">Approval Flow: {APPROVAL_FLOW_OPTIONS.find((o) => o.value === normalizeFlow(form.approvalLevel, 'manager-only'))?.label}</p>
+        <p className="mt-0.5 text-xs text-fg-subtle">Who approves leave requests is now chosen in Settings → Approval Flows, together with work from home and expense claims.</p>
       </Card>
 
       <Card>

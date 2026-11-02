@@ -2,11 +2,12 @@ import { useMemo } from 'react';
 import { Check, X } from 'lucide-react';
 import { PageHeader, Card, CardHeader, Button, Avatar, EmptyState, Skeleton, Badge } from '../../components/ui';
 import { ExportButton } from '../../components/shared/ExportButton';
+import { EmployeeLink } from '../../components/shared/EmployeeLink';
 import { useTeamLeaves, useAllLeaves, useLeaveMutations } from '../../hooks/useLeaves';
 import { useAuthStore } from '../../store/authStore';
 import { useSettingsStore } from '../../store/settingsStore';
 import { formatDate } from '../../lib/utils';
-import { awaitingStage, normalizeFlow } from '../../lib/approvalFlow';
+import { awaitingStage, isTurnOf, normalizeFlow } from '../../lib/approvalFlow';
 import toast from 'react-hot-toast';
 
 export default function LeaveApprovals() {
@@ -25,11 +26,11 @@ export default function LeaveApprovals() {
   const { approve, reject } = useLeaveMutations();
 
   // Each request sits in the queue of whoever's turn it is under the
-  // company's approval flow (Settings → Leave Policy).
+  // company's approval flow (Settings → Approval Flows).
   const pending = useMemo(() => {
     const mine = isHrOrAdmin ? 'hr' : 'manager';
     return requests.filter((r) => r.status === 'pending'
-      && awaitingStage(flow, { hasManager: Boolean(r.managerId), managerApproved: Boolean(r.managerApprovedBy) }) === mine);
+      && isTurnOf(awaitingStage(flow, { hasManager: Boolean(r.managerId), managerApproved: Boolean(r.managerApprovedBy) }), mine));
   }, [requests, isHrOrAdmin, flow]);
 
   const exportRows = useMemo(
@@ -60,6 +61,7 @@ export default function LeaveApprovals() {
       'hr-only': 'Every leave request — HR approves all leave',
       'manager-then-hr': 'Leaves waiting for HR final approval (after manager)',
       'manager-only': 'Leave requests from employees without a manager — managers approve the rest',
+      'manager-or-hr': 'Every leave request — managers can decide their team’s too; whoever decides first settles it',
     }[flow]
     : (managerExcluded ? 'HR approves leave requests in your company' : 'Team leave requests awaiting your approval');
 
@@ -97,7 +99,7 @@ export default function LeaveApprovals() {
                     <Avatar name={l.employeeName || 'Employee'} size="md" />
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <p className="text-sm font-medium text-fg">{l.employeeName || 'Employee'}</p>
+                        <p className="text-sm font-medium text-fg"><EmployeeLink employeeId={l.employeeId} tab="leave">{l.employeeName || 'Employee'}</EmployeeLink></p>
                         {isHrOrAdmin && l.managerApprovedBy ? (
                           <Badge tone="info">Manager approved</Badge>
                         ) : null}

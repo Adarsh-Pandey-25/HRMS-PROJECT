@@ -70,7 +70,9 @@ export default function EmployeeDashboard({ user }) {
  if (!selfieToken) return;
  }
  await checkIn.mutateAsync({ method: 'web', is_wfh: plan.isWfh, location, selfie_token: selfieToken });
- toast.success(plan.isWfh ? 'Checked in as WFH — have a great day!' : 'Checked in — have a great day!');
+ toast.success(plan.provisional
+ ? 'Checked in as WFH — it counts once your request is approved'
+ : plan.isWfh ? 'Checked in as WFH — have a great day!' : 'Checked in — have a great day!');
  }
  } catch (err) {
  toast.error(err.message || 'Attendance action failed');
@@ -94,10 +96,10 @@ export default function EmployeeDashboard({ user }) {
  <Greeting user={user} dateLabel={api?.greeting?.date} />
 
  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
- <StatCard label="Attendance This Month" value={kpis.attendanceThisMonth ?? 0} icon={CalendarCheck} tone="success" footer="Days present" />
- <StatCard label="Leave Balance" value={totalRemaining} icon={CalendarOff} tone="warning" footer="Days remaining" />
- <StatCard label="Pending Expenses" value={kpis.pendingExpenses ?? 0} icon={Receipt} tone="info" footer="Claims in progress" />
- <StatCard label="Open Tickets" value={kpis.openTickets ?? 0} icon={LifeBuoy} tone="primary" footer="Awaiting resolution" />
+ <StatCard label="Attendance This Month" value={kpis.attendanceThisMonth ?? 0} icon={CalendarCheck} tone="success" footer="Days present" to="/attendance/me" />
+ <StatCard label="Leave Balance" value={totalRemaining} icon={CalendarOff} tone="warning" footer="Days remaining" to="/leave/me" />
+ <StatCard label="Pending Expenses" value={kpis.pendingExpenses ?? 0} icon={Receipt} tone="info" footer="Claims in progress" to="/expenses/me" />
+ <StatCard label="Open Tickets" value={kpis.openTickets ?? 0} icon={LifeBuoy} tone="primary" footer="Awaiting resolution" to="/helpdesk/me" />
  </div>
 
  <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -165,10 +167,10 @@ export default function EmployeeDashboard({ user }) {
  none: 'bg-muted text-fg-subtle',
  }[a.state] || 'bg-muted text-fg-subtle';
  return (
- <div key={a.date} title={a.holidayName || undefined} className={`rounded-lg py-2.5 text-center ${tone} ${a.isToday ? 'ring-2 ring-primary' : ''}`}>
+ <Link key={a.date} to="/attendance/me" title={a.holidayName || undefined} className={`rounded-lg py-2.5 text-center transition-opacity hover:opacity-80 ${tone} ${a.isToday ? 'ring-2 ring-primary' : ''}`}>
  <p className="text-[10px] font-medium">{a.dayLabel}</p>
  <p className="text-xs font-semibold mt-1">{a.dateLabel}</p>
- </div>
+ </Link>
  );
  })}
  </div>
@@ -181,11 +183,11 @@ export default function EmployeeDashboard({ user }) {
  {leaveItems.length === 0 ? (
  <p className="text-sm text-fg-subtle col-span-full">No leave balance data.</p>
  ) : leaveItems.map((b) => (
- <div key={b.code} className="rounded-xl bg-muted/50 p-4">
+ <Link key={b.code} to="/leave/me" className="rounded-xl bg-muted/50 p-4 transition-colors hover:bg-muted">
  <p className="text-sm font-medium text-fg">{leaveTypeLabel(b.code, b.label || b.name)}</p>
  <p className="mt-1 text-xl font-semibold text-fg tabular-nums">{b.available}<span className="text-xs font-normal text-fg-subtle"> / {b.total} days</span></p>
  <ProgressBar value={b.total ? (b.used / b.total) * 100 : 0} className="mt-2" size="sm" />
- </div>
+ </Link>
  ))}
  </div>
  </Card>
@@ -193,7 +195,7 @@ export default function EmployeeDashboard({ user }) {
  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
  <Card>
  <CardHeader title="Latest Payslip" subtitle={latestPayslip?.period || ''} action={<Link to="/payroll/me" className="text-xs font-medium text-primary hover:underline">View all</Link>} />
- <div className="p-5 pt-3 flex items-center gap-4">
+ <Link to="/payroll/me" className="mx-2 mb-2 flex items-center gap-4 rounded-xl p-3 transition-colors hover:bg-muted">
  <div className="h-11 w-11 rounded-xl bg-success/10 text-success flex items-center justify-center shrink-0">
  <DollarSign className="h-5 w-5" />
  </div>
@@ -201,7 +203,7 @@ export default function EmployeeDashboard({ user }) {
  <p className="text-lg font-semibold text-fg">{latestPayslip ? formatCurrency(latestPayslip.netPay) : '—'}</p>
  <p className="text-xs text-fg-subtle">{latestPayslip?.subtitle || 'No published payslip yet'}</p>
  </div>
- </div>
+ </Link>
  </Card>
 
  <Card>
@@ -210,7 +212,7 @@ export default function EmployeeDashboard({ user }) {
  {openExpenses.length === 0 ? (
  <p className="text-sm text-fg-subtle">No open claims.</p>
  ) : openExpenses.map((e) => (
- <div key={e.id} className="flex items-center gap-3 rounded-xl p-2 hover:bg-muted transition-colors">
+ <Link key={e.id} to="/expenses/me" className="flex items-center gap-3 rounded-xl p-2 hover:bg-muted transition-colors">
  <div className="h-9 w-9 rounded-lg bg-warning/10 text-warning flex items-center justify-center shrink-0">
  <Receipt className="h-4 w-4" />
  </div>
@@ -219,7 +221,7 @@ export default function EmployeeDashboard({ user }) {
  <p className="text-xs text-fg-subtle">{e.category} · {formatCurrency(e.amount)}</p>
  </div>
  <StatusBadge status={e.status?.toLowerCase()} />
- </div>
+ </Link>
  ))}
  </div>
  </Card>

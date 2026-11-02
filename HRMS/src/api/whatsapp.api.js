@@ -36,6 +36,10 @@ export const getWhatsAppTemplatesApi = () => apiRequest({ method: 'GET', url: '/
 export const syncWhatsAppTemplatesApi = () => apiRequest({ method: 'POST', url: '/super-admin/whatsapp/templates/sync' });
 export const sendWhatsAppTestApi = (to) => apiRequest({ method: 'POST', url: '/super-admin/whatsapp/test-message', data: { to } });
 
+/** "Connect everyone": a company's existing employees, only when pressed. */
+export const getWhatsAppConnectApi = () => apiRequest({ method: 'GET', url: '/super-admin/whatsapp/connect' });
+export const connectEveryoneApi = (companyId) => apiRequest({ method: 'POST', url: `/super-admin/whatsapp/connect/${companyId}` });
+
 /** The super admin's own WhatsApp, for platform alerts. */
 export const SUPER_ADMIN_WHATSAPP_API = {
   get: () => apiRequest({ method: 'GET', url: '/super-admin/whatsapp/me' }),

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Check, X, MoreHorizontal, Eye } from 'lucide-react';
 import { PageHeader, Card, CardHeader, Button, Avatar, StatusBadge, EmptyState, Skeleton, Modal } from '../../components/ui';
+import { EmployeeLink } from '../../components/shared/EmployeeLink';
 import { useTeamReimbursements, useAllReimbursements } from '../../hooks/useReimbursements';
 import { useReimbursementMutations } from '../../hooks/useReimbursements';
 import { useCan } from '../../hooks/useCan';
@@ -8,7 +9,7 @@ import { useAuthStore } from '../../store/authStore';
 import { formatCurrency, formatDate } from '../../lib/utils';
 import { CAT_ICON } from './catIcons';
 import { useSettingsStore } from '../../store/settingsStore';
-import { awaitingStage, normalizeFlow } from '../../lib/approvalFlow';
+import { awaitingStage, isTurnOf, normalizeFlow } from '../../lib/approvalFlow';
 import toast from 'react-hot-toast';
 
 export default function ExpenseApprovals() {
@@ -24,13 +25,13 @@ export default function ExpenseApprovals() {
 
  const { approve, reject } = useReimbursementMutations();
  // Each claim sits in the queue of whoever's turn it is under the company's
- // approval flow (Settings → Expenses). HR used to see claims still waiting
+ // approval flow (Settings → Approval Flows). HR used to see claims still waiting
  // on the manager, and approving one only produced an error.
  const flow = normalizeFlow(useSettingsStore((s) => s.expenseConfig?.approvalFlow));
  const managerExcluded = !isHrOrAdmin && flow === 'hr-only';
  const mine = isHrOrAdmin ? 'hr' : 'manager';
  const pending = expenses.filter((e) => e.status === 'pending'
- && awaitingStage(flow, { hasManager: Boolean(e.managerId), managerApproved: Boolean(e.managerApprovedBy) }) === mine);
+ && isTurnOf(awaitingStage(flow, { hasManager: Boolean(e.managerId), managerApproved: Boolean(e.managerApprovedBy) }), mine));
 
  const openReceipt = async (id) => {
  try {
@@ -72,7 +73,7 @@ export default function ExpenseApprovals() {
  <div className="flex items-center gap-3 flex-1 min-w-0">
  <Avatar name={e.employeeName || 'Employee'} size="md" />
  <div className="min-w-0">
- <p className="text-sm font-medium text-fg">{e.employeeName || 'Employee'}</p>
+ <p className="text-sm font-medium text-fg"><EmployeeLink employeeId={e.employeeId}>{e.employeeName || 'Employee'}</EmployeeLink></p>
  <p className="text-xs text-fg-subtle flex items-center gap-1.5 capitalize"><Icon className="h-3 w-3" /> {e.category} &middot; {formatDate(e.date, 'dd MMM')}</p>
  <p className="text-xs text-fg-muted truncate">{e.description}</p>
  </div>

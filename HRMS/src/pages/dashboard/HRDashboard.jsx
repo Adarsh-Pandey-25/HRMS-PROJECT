@@ -58,22 +58,22 @@ export default function HRDashboard({ user }) {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card>
-          <CardHeader title="Attendance Summary" subtitle={attendance.subtitle || `${attendance.teamSize || 0} team members`} />
+          <CardHeader title="Attendance Summary" subtitle={attendance.subtitle || `${attendance.teamSize || 0} team members`} action={<Link to="/attendance/team" className="text-xs font-medium text-primary hover:underline">View all</Link>} />
           <div className="p-5 pt-3 grid grid-cols-2 gap-3">
             {ATTENDANCE_STATS.map((s) => (
-              <div key={s.key} className="rounded-xl bg-muted/50 p-3">
+              <Link key={s.key} to={`/attendance/team?status=${s.key}`} className="rounded-xl bg-muted/50 p-3 transition-colors hover:bg-muted">
                 <div className={cn('h-8 w-8 rounded-lg flex items-center justify-center mb-2', s.tone)}>
                   <s.icon className="h-4 w-4" />
                 </div>
                 <p className="text-xl font-semibold text-fg tabular-nums">{attendance[s.key] ?? 0}</p>
                 <p className="text-xs text-fg-subtle">{s.label}</p>
-              </div>
+              </Link>
             ))}
           </div>
         </Card>
 
         <Card>
-          <CardHeader title="Upcoming Interviews" subtitle="From Recruitment" />
+          <CardHeader title="Upcoming Interviews" subtitle="From Recruitment" action={<Link to="/recruitment/interviews" className="text-xs font-medium text-primary hover:underline">View all</Link>} />
           <div className="p-5 pt-3 space-y-2.5">
             {interviews.length === 0 ? (
               <p className="text-sm text-fg-subtle">No interviews scheduled.</p>
@@ -100,14 +100,14 @@ export default function HRDashboard({ user }) {
             {pendingLeaves.length === 0 ? (
               <p className="text-sm text-fg-subtle">Nothing pending.</p>
             ) : pendingLeaves.slice(0, 5).map((l) => (
-              <div key={l.id} className="flex items-center gap-3 rounded-xl p-2 hover:bg-muted transition-colors">
+              <Link key={l.id} to="/leave/approvals" className="flex items-center gap-3 rounded-xl p-2 hover:bg-muted transition-colors">
                 <Avatar name={`${l.firstName} ${l.lastName}`} size="sm" />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium text-fg truncate">{l.firstName} {l.lastName}</p>
                   <p className="text-xs text-fg-subtle">{l.leaveType} · {l.totalDays}d · {l.fromDate}</p>
                 </div>
                 <StatusBadge status="pending" />
-              </div>
+              </Link>
             ))}
           </div>
         </Card>
@@ -118,21 +118,21 @@ export default function HRDashboard({ user }) {
             {pendingExpenses.length === 0 ? (
               <p className="text-sm text-fg-subtle">Nothing pending.</p>
             ) : pendingExpenses.slice(0, 5).map((e) => (
-              <div key={e.id} className="flex items-center gap-3 rounded-xl p-2 hover:bg-muted transition-colors">
+              <Link key={e.id} to="/expenses/approvals" className="flex items-center gap-3 rounded-xl p-2 hover:bg-muted transition-colors">
                 <Avatar name={`${e.firstName} ${e.lastName}`} size="sm" />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium text-fg truncate">{e.firstName} {e.lastName}</p>
                   <p className="text-xs text-fg-subtle truncate">{e.category} · {e.description}</p>
                 </div>
                 <StatusBadge status="pending" />
-              </div>
+              </Link>
             ))}
           </div>
         </Card>
       </div>
 
       <Card>
-        <CardHeader title="Recent Hires" subtitle="Joined in the last month" />
+        <CardHeader title="Recent Hires" subtitle="Joined in the last month" action={<Link to="/employees?hired=this-month" className="text-xs font-medium text-primary hover:underline">View all</Link>} />
         <div className="p-5 pt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
           {recentHires.length === 0 ? (
             <p className="text-sm text-fg-subtle">No new hires in the last month.</p>

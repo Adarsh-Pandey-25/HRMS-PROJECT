@@ -2,7 +2,7 @@ const moment = require('moment-timezone');
 const { supabaseAdmin } = require('../config/supabase');
 const { BadRequestError } = require('../utils/errors');
 const { nowIST } = require('../utils/helpers');
-const { getTeamEmployeeIds } = require('./attendance.service');
+const { getTeamEmployeeIds, isWfhLocation } = require('./attendance.service');
 const leaveService = require('./leave.service');
 const { TIMEZONE } = require('../utils/constants');
 
@@ -63,7 +63,7 @@ const initials = (first, last) =>
 const getActiveEmployees = async (companyId = null) => {
   let query = supabaseAdmin
     .from('employees')
-    .select('id, first_name, last_name, email, department, designation, role, date_of_joining, date_of_birth, created_at, address, company_id')
+    .select('id, employee_code, first_name, last_name, email, department, designation, role, date_of_joining, date_of_birth, created_at, address, company_id')
     .eq('is_active', true)
     .order('first_name')
     // Capped, not a bare count — this feeds headcount trend, department
@@ -154,7 +154,7 @@ const getTodayAttendanceSummary = async (employeeIds) => {
   const emptyId = '00000000-0000-0000-0000-000000000000';
   const { data: attendance, error } = await supabaseAdmin
     .from('attendance')
-    .select('employee_id, status')
+    .select('employee_id, status, location')
     .in('employee_id', employeeIds.length ? employeeIds : [emptyId])
     .gte('check_in_time', start)
     .lte('check_in_time', end);
@@ -174,21 +174,31 @@ const getTodayAttendanceSummary = async (employeeIds) => {
   const wfhIds = new Set((leaves || []).filter((l) => l.leave_type === 'WFH').map((l) => l.employee_id));
   const onLeaveIds = new Set((leaves || []).filter((l) => l.leave_type !== 'WFH').map((l) => l.employee_id));
 
+  // The same buckets as Team Attendance, where these tiles lead: Present is
+  // everyone who turned up, at the office or from home, and WFH is the part
+  // of it working from home (a check-in saved as 'wfh' or flagged in its
+  // location — attendance.service.js isWfhLocation); Late and Absent are
+  // their own buckets. (WFH used to count only WFH-type leave, so it read 0
+  // and a WFH check-in counted as absent.)
   const presentIds = new Set();
-  let late = 0;
-
+  const lateIds = new Set();
   for (const row of attendance || []) {
-    if (row.status === 'late') late += 1;
-    if (['present', 'late', 'early_departure', 'half_day'].includes(row.status)) {
+    if (['present', 'early_departure', 'half_day', 'wfh'].includes(row.status)) {
       presentIds.add(row.employee_id);
+      if (row.status === 'wfh' || isWfhLocation(row.location)) wfhIds.add(row.employee_id);
+    } else if (row.status === 'late') {
+      lateIds.add(row.employee_id);
     }
   }
 
+  const present = presentIds.size;
   const wfh = wfhIds.size;
-  const present = [...presentIds].filter((id) => !wfhIds.has(id)).length;
+  const late = [...lateIds].filter((id) => !presentIds.has(id)).length;
   const onLeave = onLeaveIds.size;
   const teamSize = employeeIds.length;
-  const absent = Math.max(0, teamSize - present - wfh - onLeave);
+  // WFH-type leave with no check-in yet is neither present nor absent.
+  const wfhLeaveOnly = [...wfhIds].filter((id) => !presentIds.has(id)).length;
+  const absent = Math.max(0, teamSize - present - late - onLeave - wfhLeaveOnly);
 
   return { present, wfh, late, absent, onLeave, teamSize };
 };
@@ -321,6 +331,9 @@ const getUpcomingEvents = (employees) => {
       if (next.isBetween(today, horizon, 'day', '[]')) {
         events.push({
           id: `bday-${e.id}`,
+          // The dashboard links each event to the person's profile.
+          employeeId: e.id,
+          employeeCode: e.employee_code || null,
           type: 'birthday',
           title: `${e.first_name} ${e.last_name}`,
           subtitle: 'Birthday',
@@ -339,6 +352,8 @@ const getUpcomingEvents = (employees) => {
         if (anniversary.isBetween(today, horizon, 'day', '[]')) {
           events.push({
             id: `anniv-${e.id}`,
+            employeeId: e.id,
+            employeeCode: e.employee_code || null,
             type: 'anniversary',
             title: `${e.first_name} ${e.last_name}`,
             subtitle: `${years} yrs anniversary`,
@@ -579,10 +594,10 @@ const getPendingLeaveList = async (limit = 5, employeeIds = [], companyId = null
   if (error) throw new BadRequestError(error.message);
 
   // HR's queue: the requests that are HR's turn under the approval flow.
-  const rows = (data || []).filter((row) => approvalFlow.awaitingStage(flow, {
+  const rows = (data || []).filter((row) => approvalFlow.isTurnOf(approvalFlow.awaitingStage(flow, {
     hasManager: Boolean(row.employee?.manager_id),
     managerApproved: Boolean(row.manager_approved_by),
-  }) === 'hr').slice(0, limit);
+  }), 'hr')).slice(0, limit);
 
   return rows.map((row) => {
     const emp = row.employee || {};
@@ -617,10 +632,10 @@ const getPendingExpenseList = async (limit = 5, employeeIds = [], companyId = nu
   if (error) throw new BadRequestError(error.message);
 
   // HR's queue: the claims that are HR's turn under the approval flow.
-  const hrTurn = (data || []).filter((row) => approvalFlow.awaitingStage(flow, {
+  const hrTurn = (data || []).filter((row) => approvalFlow.isTurnOf(approvalFlow.awaitingStage(flow, {
     hasManager: Boolean(row.employee?.manager_id),
     managerApproved: Boolean(row.manager_approved_by),
-  }) === 'hr').slice(0, limit);
+  }), 'hr')).slice(0, limit);
 
   return hrTurn.map((row) => {
     const emp = row.employee || {};

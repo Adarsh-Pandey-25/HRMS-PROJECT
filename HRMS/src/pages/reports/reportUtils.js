@@ -28,7 +28,9 @@ export function buildYearOptions(span = 4) {
 }
 
 function toIsoDate(d) {
-  return d.toISOString().slice(0, 10);
+  // Local date parts: toISOString() is UTC, which in India is still the
+  // previous day at local midnight (the month read 31 Oct – 29 Nov).
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 /** Default filter range: the current calendar month, as YYYY-MM-DD strings. */

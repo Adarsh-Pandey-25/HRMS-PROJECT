@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import {
   Building2, Users, FileText, Clock, CalendarOff, DollarSign, Bell, Briefcase, Megaphone,
   Monitor, Receipt, GraduationCap, LifeBuoy, Plug, ShieldCheck, Database, Lock, Save, ChevronsLeft,
-  ListChecks,
+  ListChecks, GitBranch,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { PageHeader, Card, CardHeader, Button, Input, Select, Badge, StatusBadge, Avatar, DataTable, FileUpload, SaveStatusIndicator } from '../components/ui';
@@ -24,6 +24,7 @@ import { DocumentConfigSection } from './settings/DocumentConfigSection';
 import { OnboardingChecklistSection } from './settings/OnboardingChecklistSection';
 import { AttendanceConfigSection } from './settings/AttendanceConfigSection';
 import { LeavePolicySection } from './settings/LeavePolicySection';
+import { ApprovalFlowsSection } from './settings/ApprovalFlowsSection';
 import { PayrollSettingsSection } from './settings/PayrollSettingsSection';
 import { NotificationsSection } from './settings/NotificationsSection';
 import {
@@ -35,6 +36,7 @@ import {
 const SECTIONS = [
   { id: 'company', label: 'Company Profile', icon: Building2 },
   { id: 'users', label: 'User & Role Management', icon: Users },
+  { id: 'approvals', label: 'Approval Flows', icon: GitBranch },
   { id: 'documents', label: 'Employee Document Config', icon: FileText },
   { id: 'onboarding-checklist', label: 'Onboarding Checklist', icon: ListChecks },
   { id: 'attendance', label: 'Attendance Config', icon: Clock },
@@ -465,6 +467,7 @@ const SECTION_BODY = {
   'onboarding-checklist': OnboardingChecklistSection,
   attendance: AttendanceConfigSection,
   leave: LeavePolicySection,
+  approvals: ApprovalFlowsSection,
   payroll: PayrollSettingsSection,
   notifications: NotificationsSection,
   recruitment: RecruitmentSettingsSection,
