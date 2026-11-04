@@ -21,9 +21,10 @@ const { companyName } = require('./whatsappLookup');
  * Since 2 Nov 2026 (owner's decision) an employee HR adds is also connected
  * straight away to the mobile number HR entered, without a JOIN, and gets a
  * first message saying so (connectAddedEmployee). If that number is changed
- * later, the connection follows it (followNumberChange). A super admin can
- * connect a company's existing employees the same way, in one go, when the
- * owner decides (connectExistingEmployees).
+ * later, the connection follows it (followNumberChange). Existing employees
+ * are connected the same way (connectExistingEmployees): by themselves once
+ * Meta approves their first message (whatsappAutoStart.js, owner's decision
+ * 4 Nov 2026), or at once when a super admin presses Connect everyone.
  */
 
 const CONSENT_VERSION = '2026-10-28';
@@ -434,13 +435,14 @@ const connectCandidates = async (companyId) => {
 };
 
 /**
- * Super Admin → WhatsApp → Connect employees: connects a company's existing
- * employees to the mobile numbers HR has on file, and queues the
- * existing-employee message. Nothing reaches them until a super admin
- * presses it (owner's decision, 2 Nov 2026), and only once Meta has approved
- * that message, so it always arrives before any other update.
+ * Connects a company's existing employees to the mobile numbers HR has on
+ * file, and queues the existing-employee message: by itself on the live
+ * server (whatsappAutoStart.js, owner's decision 4 Nov 2026), or when a
+ * super admin presses Super Admin → WhatsApp → Connect everyone. Only once
+ * Meta has approved that message, so it always arrives before any other
+ * update. At most `limit` people (CONNECT_AT_ONCE) at a time.
  */
-const connectExistingEmployees = async (companyId) => {
+const connectExistingEmployees = async (companyId, { limit = CONNECT_AT_ONCE, source = 'super_admin:connect_everyone' } = {}) => {
   const cfg = getConfig();
   if (!canSend(cfg)) throw new BadRequestError('WhatsApp is switched off on this server.');
   if (!(await companyWhatsappOn(companyId))) {
@@ -454,7 +456,7 @@ const connectExistingEmployees = async (companyId) => {
 
   const { ready } = await connectCandidates(companyId);
   const reachable = ready.filter((c) => isRecipientAllowed(c.phone, cfg));
-  const batch = reachable.slice(0, CONNECT_AT_ONCE);
+  const batch = reachable.slice(0, Math.max(0, Math.min(CONNECT_AT_ONCE, Number(limit) || 0)));
   if (!batch.length) return { connected: 0, remaining: 0 };
 
   const now = new Date().toISOString();
@@ -465,7 +467,7 @@ const connectExistingEmployees = async (companyId) => {
   if (error) throw new BadRequestError(error.message);
   const linked = (data || []).map((l) => l.subject_id);
   if (linked.length) {
-    await queueFirstMessage({ employeeIds: linked, kind: 'existing', source: 'super_admin:connect_everyone', recordKey: 'connect_everyone' });
+    await queueFirstMessage({ employeeIds: linked, kind: 'existing', source, recordKey: 'connect_everyone' });
   }
   return { connected: linked.length, remaining: reachable.length - batch.length };
 };
@@ -497,4 +499,5 @@ module.exports = {
   followNumberChange,
   connectCandidates,
   connectExistingEmployees,
+  companyWhatsappOn,
 };

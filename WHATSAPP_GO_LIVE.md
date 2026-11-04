@@ -105,7 +105,13 @@ Database update: `20261102_wfh_approval_flow.sql`. It's needed for **Manager →
 - **Until Meta approves the welcome**, it waits, for up to 3 days. The employee's other updates go out as usual.
 
 ### Connect everyone (existing employees)
-Existing employees are **never** connected automatically. Go to **Super Admin → WhatsApp → Connect employees**. Each company is listed with:
+**Since 4 Nov 2026 (your decision) WhatsApp starts by itself after the deploy.** Nobody has to press anything. Every 10 minutes the live server:
+- submits any message Meta doesn't have yet (the same as **Submit to Meta**);
+- once Meta approves the announcement, connects the existing employees of every company with WhatsApp on and sends them the announcement first. Companies where HR/admin switched WhatsApp off are skipped.
+
+At most 200 people a day (Meta's limit until business verification); the rest follow the next day. Someone whose mobile number is added later is connected at the next check.
+
+You can still do it straight away from **Super Admin → WhatsApp → Connect employees**. Each company is listed with:
 - how many employees it has;
 - how many are already connected;
 - how many will get the announcement;
@@ -183,7 +189,7 @@ Nothing changes for anyone until step C.
    - Verify token: the new one from step 1
    - Then **Verify and save**, and make sure **messages** is subscribed.
    - In **WhatsApp → Production setup**, **Subscribe webhooks** stays **on for SpaxSync** and **off for 1MissionVault**.
-4. **Templates:** open **Super Admin → WhatsApp → Templates**. If you did the PC test, they're already submitted to the SpaxSync account, so just check they show **approved**. Otherwise click **Submit to Meta** to send all 38, and wait until they show **approved**, usually minutes to a few hours.
+4. **Templates:** open **Super Admin → WhatsApp → Templates**. If you did the PC test, they're already submitted to the SpaxSync account, so just check they show **approved**. Otherwise click **Submit to Meta** to send all 38, and wait until they show **approved**, usually minutes to a few hours. (Since 4 Nov 2026 the live server also submits any missing template by itself, every 10 minutes.)
 5. **Companies:** WhatsApp is already **on for Spaxads**; we switched it on for testing. For other companies, go to **Super Admin → Companies → (company) → Features → WhatsApp notifications**.
 6. **People connect** from their own profile (Connect WhatsApp). You connect in **Super Admin → WhatsApp → My alerts**.
 

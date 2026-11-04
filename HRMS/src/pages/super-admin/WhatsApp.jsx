@@ -36,6 +36,7 @@ const STATUS_META = {
 const SKIP_REASON = {
   not_connected: 'Disconnected or replied STOP before sending',
   group_off: 'They switched this group off',
+  company_off: 'Their company switched WhatsApp, or this group, off',
   not_on_test_allow_list: 'Not on the test number list (development)',
   unknown_template: 'Unknown template',
   duplicate: 'Already sent for this event',
@@ -474,7 +475,7 @@ function ConnectEmployees() {
   const blocked = !data.sendingOn
     ? 'WhatsApp is switched off on this server.'
     : !data.messageApproved
-      ? `Waiting for Meta to approve the message (${data.message.name}). Submit it in the Templates tab, then come back once it shows approved.`
+      ? `Waiting for Meta to approve the message (${data.message.name}). SpaxSync submits it by itself and connects everyone as soon as it's approved.`
       : null;
   const preview = data.message.body.replace('{{1}}', 'Priya').replace('{{2}}', 'your company');
 
@@ -483,13 +484,13 @@ function ConnectEmployees() {
       <Card>
         <CardHeader
           title="Connect existing employees"
-          subtitle="Connects everyone who has a mobile number but no WhatsApp yet. Nothing is sent until you press Connect everyone."
+          subtitle="SpaxSync connects everyone who has a mobile number but no WhatsApp yet by itself, as soon as Meta approves the message. Connect everyone does it straight away."
         />
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-5 px-5 pb-5">
           <div className="space-y-2 text-sm text-fg-muted">
             <p>Each person gets the message on the right once, then their usual HR updates on WhatsApp.</p>
             <p>Left out: people already connected, people who stopped or disconnected before, and people without a valid mobile number — add missing numbers in their employee profile first.</p>
-            <p>At most {data.connectAtOnce} people per press: Meta limits how many people you can message in a day until your business is verified.</p>
+            <p>At most {data.connectAtOnce} people a day by itself, or per press: Meta limits how many people you can message in a day until your business is verified.</p>
             {blocked && <p className="rounded-xl border border-warning/40 bg-warning/10 px-3.5 py-2.5 text-fg">{blocked}</p>}
           </div>
           <div className="rounded-xl bg-muted p-3">

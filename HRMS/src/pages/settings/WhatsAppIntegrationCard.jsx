@@ -29,8 +29,8 @@ function ComingSoonCard() {
  * Settings → Integrations → WhatsApp. Until SpaxSync switches WhatsApp on
  * it is the same "Coming soon" card as before; without the add-on it says
  * so; with it, HR and admins turn WhatsApp on or off for the company and
- * choose which groups of updates go out. Each employee still connects their
- * own WhatsApp from their profile — nobody can do it for them.
+ * choose which groups of updates go out. Employees HR adds are connected to
+ * their mobile number; anyone can also connect from their profile.
  */
 export function WhatsAppIntegrationCard() {
   const qc = useQueryClient();
@@ -94,7 +94,7 @@ export function WhatsAppIntegrationCard() {
         <p className="text-sm text-fg-muted">
           <span className="font-medium text-fg">{data.connectedCount}</span>{' '}
           {data.connectedCount === 1 ? 'employee has' : 'employees have'} connected their WhatsApp.
-          Each person connects their own from their profile and can reply STOP at any time.
+          New employees are connected when HR adds them with a mobile number; anyone can also connect from their profile, and reply STOP at any time.
           {data.businessNumber ? ` Messages come from SpaxSync (${data.businessNumber}).` : ''}
         </p>
         {!data.enabled && (

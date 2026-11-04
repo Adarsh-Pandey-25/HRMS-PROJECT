@@ -18,7 +18,8 @@ const { isGroupOn } = require('./whatsappGroups');
  * (whatsapp_claim_outbox): production and a developer's machine share the
  * database but never send each other's messages, and two workers never send
  * one row twice. Before sending, the person's link is checked again — a
- * STOP that arrived after queueing still wins.
+ * STOP that arrived after queueing still wins — and so is the company's
+ * own switch, so switching WhatsApp off stops what is already waiting.
  */
 
 const POLL_MS = 3000;
@@ -65,7 +66,23 @@ const failStuckRows = async (environment) => {
     .lt('claimed_at', new Date(Date.now() - STUCK_AFTER_MS).toISOString());
 };
 
-/** Is the person still connected, with this message's group on? */
+/**
+ * Does the company still want it: its own switch and groups (Settings →
+ * Integrations → WhatsApp, HR and admins), as when the message was queued?
+ * If the setting can't be read, that check at queueing stands.
+ */
+const companyStillWants = async (row) => {
+  if (row.subject_type !== 'employee' || !row.company_id) return true;
+  try {
+    const company = await settings.getCompanySettings(row.company_id);
+    if (!company.enabled) return false;
+    return row.message_group === 'account' || isGroupOn(company.groups, row.message_group);
+  } catch {
+    return true;
+  }
+};
+
+/** Is the person still connected, with this message's group on, and does their company still want it? */
 const stillWanted = async (row) => {
   const { data: link } = await supabaseAdmin
     .from('whatsapp_links')
@@ -77,6 +94,7 @@ const stillWanted = async (row) => {
   if (row.message_group !== 'account' && !isGroupOn(link.groups, row.message_group)) {
     return { ok: false, reason: 'group_off' };
   }
+  if (!(await companyStillWants(row))) return { ok: false, reason: 'company_off' };
   return { ok: true, link };
 };
 
@@ -192,11 +210,15 @@ const start = () => {
   timer = setInterval(() => { tick().catch(() => {}); }, POLL_MS);
   if (typeof timer.unref === 'function') timer.unref();
   logger.info(`[WhatsApp] sender started (${cfg.environment}${cfg.production ? '' : `, test numbers only: ${cfg.allowedRecipients.size}`})`);
+  // On the live server WhatsApp also starts by itself: new templates go to
+  // Meta, and existing employees are connected once their message is approved.
+  require('./whatsappAutoStart').start();
 };
 
 const stop = () => {
   if (timer) clearInterval(timer);
   timer = null;
+  require('./whatsappAutoStart').stop();
 };
 
 module.exports = { start, stop, tick, sendRow, handleSendError, MAX_ATTEMPTS, RETRY_DELAYS_MS };

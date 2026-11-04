@@ -23,9 +23,10 @@
 | Connect your WhatsApp from your profile | ✅ Tested in Spaxads and DEMO; first real approval message delivered 30 Oct |
 | Approve / Reject on WhatsApp, with the reason (leave, work from home, expenses, attendance corrections) | ✅ Live since 30 Oct; first leave and work-from-home requests approved from WhatsApp that day |
 | "Submit to Meta" page error (502) when sending many templates | ✅ Fixed and live: sends 10 at a time |
-| Automatic connection: the mobile number is compulsory in Add employee and Bulk import, and WhatsApp connects to it on save, with your welcome message | ✅ Built and tested (2 Nov), wording chosen by you. ⏳ To go live: your OK to push, deploy (server and website), then Templates → Submit to Meta for `welcome_new_employee` and `hr_updates_on_whatsapp` |
-| Existing employees: Super Admin → WhatsApp → Connect employees ("Connect everyone") | ✅ Built and tested (2 Nov). ⏸ Nothing is sent until you press it, after the deploy and Meta's approval |
-| Settings → Approval Flows: leave, work from home and expenses, 4 choices each (corrections stay HR only); WhatsApp follows them | ✅ Built and tested (2 Nov). ⏳ To go live: run `20261102_wfh_approval_flow.sql`, your OK to push, deploy (server and website) |
+| Automatic connection: the mobile number is compulsory in Add employee and Bulk import, and WhatsApp connects to it on save, with your welcome message | ✅ Built and tested (2 Nov), wording chosen by you, pushed 2 Nov. ⏳ To go live: deploy (server and website); `welcome_new_employee` and `hr_updates_on_whatsapp` then go to Meta by themselves |
+| Existing employees: connected by themselves after the deploy (4 Nov, your decision): new templates go to Meta by themselves, and once the announcement is approved every company with WhatsApp on is connected (200 a day at most). "Connect everyone" still does it at once | ✅ Built and tested (4 Nov). ⏳ To go live: your OK to push, then deploy |
+| Settings → Integrations → WhatsApp (HR/admin): switching WhatsApp off now also stops messages already waiting to be sent | ✅ Built and tested (4 Nov). ⏳ Same push and deploy |
+| Settings → Approval Flows: leave, work from home and expenses, 4 choices each (corrections stay HR only); WhatsApp follows them | ✅ Built and tested (2 Nov), pushed 2 Nov; SQL `20261102_wfh_approval_flow.sql` run 3 Nov. ⏳ To go live: deploy (server and website) |
 | Business verification | ⏳ You (WHATSAPP_GO_LIVE.md, section 2) |
 
 **Nothing changes for anyone yet.** WhatsApp stays off until `WHATSAPP_ENABLED=true`, and then only for companies where a super admin switches the add-on on. Emails and in-app notifications work exactly as before.
