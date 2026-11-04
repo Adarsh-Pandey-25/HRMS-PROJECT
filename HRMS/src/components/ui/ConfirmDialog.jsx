@@ -13,6 +13,8 @@ export function ConfirmDialog({
   cancelLabel = 'Cancel',
   tone = 'danger',
   loading = false,
+  confirmDisabled = false,
+  children = null, // optional extra fields, shown under the message
 }) {
   const confirmRef = useRef(null);
   const isDanger = tone === 'danger';
@@ -40,6 +42,7 @@ export function ConfirmDialog({
             variant={isDanger ? 'danger' : 'primary'}
             onClick={onConfirm}
             loading={loading}
+            disabled={confirmDisabled}
             className="flex-1"
           >
             {confirmLabel}
@@ -66,6 +69,7 @@ export function ConfirmDialog({
         <p className="mt-2 text-sm text-fg-muted leading-relaxed max-w-xs mx-auto">
           {message}
         </p>
+        {children && <div className="mt-4 w-full text-left">{children}</div>}
       </div>
     </Modal>
   );

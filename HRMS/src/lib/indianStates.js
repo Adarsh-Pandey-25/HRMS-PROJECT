@@ -2,11 +2,10 @@
  * All 28 Indian states + 8 union territories, with Professional Tax (PT)
  * applicability. PT is state-legislated (each state/UT runs its own
  * Professions Tax Act), so this is metadata about which jurisdictions
- * actually levy it — not a slab/rate table. Real per-state PT slab
- * calculation (where it exists) lives in payroll.service.js's
- * getProfessionalTaxForState — this list only needs to cover which states
- * are worth offering there next; a state below with no slab entry there
- * already falls back to the company's flat configured PT amount.
+ * actually levy it — not a slab/rate table. The slabs live in
+ * backend/src/payroll/statutory.js (PT_SLAB_STATES below); for any other
+ * state that levies PT the company enters its monthly amount in
+ * Settings → Payroll — payroll never guesses one.
  *
  * `ptApplicable`:
  *   true    - confident PT is levied here (established, commonly-referenced
@@ -63,3 +62,22 @@ export const INDIAN_STATES = [
 ];
 
 export const PT_APPLICABLE_LABEL = { true: '', false: ' — PT not applicable', verify: ' — PT applicability unverified, confirm with a tax consultant' };
+
+/** States whose PT slab SpaxSync works out itself (backend/src/payroll/statutory.js). */
+export const PT_SLAB_STATES = ['Karnataka', 'Maharashtra', 'Tamil Nadu', 'Telangana'];
+
+/**
+ * What payroll does about PT in a state — mirrors the server:
+ *   slab    SpaxSync applies the state's slab
+ *   none    no PT is levied (₹0)
+ *   manual  PT is levied; the company enters the monthly amount
+ *   verify  unclear; the company enters an amount or chooses "No PT"
+ *   unknown no state chosen
+ */
+export function ptKindOf(stateName) {
+  const s = INDIAN_STATES.find((st) => st.name === stateName);
+  if (!s) return 'unknown';
+  if (PT_SLAB_STATES.includes(s.name)) return 'slab';
+  if (s.ptApplicable === false) return 'none';
+  return s.ptApplicable === 'verify' ? 'verify' : 'manual';
+}

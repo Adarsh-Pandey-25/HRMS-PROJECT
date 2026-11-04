@@ -256,6 +256,11 @@ export function mapPayslipFromApi(row) {
     payslipUrl: c.payslipUrl,
     employeeId: c.employeeId || c.userId,
     paidOn: c.paidOn || c.updatedAt,
+    // Set when HR marks the payslip paid (Run Payroll → Payments): the bank's reference.
+    paymentReference: c.paymentReference || null,
+    // Approval before publishing: approved, and still the figures approved.
+    approvedAt: c.approvedAt || null,
+    approvalCurrent: Boolean(c.approvalCurrent),
     breakdown,
   };
 }

@@ -97,7 +97,7 @@ export function useEmployeeMutations() {
     // directory (marked offboarded) rather than being evicted from cache
     // like a real delete. See `erase` below for the genuine hard delete.
     offboard: useMutation({
-      mutationFn: ({ id, reason }) => offboardEmployeeApi(id, reason),
+      mutationFn: ({ id, reason, lastWorkingDay }) => offboardEmployeeApi(id, reason, lastWorkingDay),
       onSuccess: async (updated, { id }) => {
         patchQueriesData(qc, ['employees'], (old) => {
           if (!Array.isArray(old)) return old;

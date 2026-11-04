@@ -47,7 +47,227 @@ export async function publishPayslipApi(id) {
   return apiRequest({ method: 'PUT', url: `/payroll/payslips/${id}/publish` });
 }
 
-/** Re-apply current payroll settings to existing month payslips (draft + published). */
+/** Approve a draft payslip (approval before publishing). */
+export async function approvePayslipApi(id) {
+  return apiRequest({ method: 'PUT', url: `/payroll/payslips/${id}/approve` });
+}
+
+/** Approve every draft of a month that can be approved: { approved, skipped: [{ employeeId, reason }] }. */
+export async function approveMonthApi(month, year) {
+  return apiRequest({ method: 'POST', url: '/payroll/payslips/approve-month', data: { month, year } });
+}
+
+/** What to sort out before generating a month's payslips (read-only). */
+export async function fetchPayrollChecksApi(month, year) {
+  return apiRequest({ method: 'GET', url: '/payroll/checks', params: { month, year } });
+}
+
+/**
+ * Downloads the month's bank upload file (published payslips, net payable).
+ * Returns how many rows it has, their total, and how many were left out.
+ */
+export async function downloadBankFileApi(month, year) {
+  const base = import.meta.env.VITE_API_URL || '/api';
+  const params = new URLSearchParams({ month: String(month), year: String(year) });
+  const res = await fetch(`${base}/payroll/bank-file?${params}`, {
+    method: 'GET',
+    credentials: 'include',
+    headers: { 'ngrok-skip-browser-warning': 'true' },
+  });
+  if (!res.ok) {
+    let message = `Download failed (${res.status})`;
+    try {
+      const body = await res.json();
+      message = body?.error?.message || body?.message || message;
+    } catch {
+      /* not JSON */
+    }
+    throw new Error(message);
+  }
+  const blob = await res.blob();
+  const disposition = res.headers.get('content-disposition') || '';
+  const match = disposition.match(/filename="?([^"]+)"?/i);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = match?.[1] || `bank-file-${year}-${String(month).padStart(2, '0')}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  return {
+    rows: Number(res.headers.get('x-bank-file-rows') || 0),
+    total: Number(res.headers.get('x-bank-file-total') || 0),
+    skipped: Number(res.headers.get('x-bank-file-skipped') || 0),
+  };
+}
+
+/**
+ * Downloads a month's file: 'ecr' (EPF, text), 'esi' (CSV), 'register'
+ * (salary register, CSV) or 'journal' (accounting entry, CSV).
+ * Returns how many members it has and how many were left out (no UAN / ESIC number).
+ */
+export async function downloadStatutoryFileApi(kind, month, year) {
+  const base = import.meta.env.VITE_API_URL || '/api';
+  const params = new URLSearchParams({ month: String(month), year: String(year) });
+  const path = {
+    ecr: 'statutory/ecr', esi: 'statutory/esi', register: 'reports/register', journal: 'reports/journal', pt: 'reports/pt-register', lwf: 'reports/lwf-register',
+  }[kind];
+  const res = await fetch(`${base}/payroll/${path}?${params}`, {
+    method: 'GET',
+    credentials: 'include',
+    headers: { 'ngrok-skip-browser-warning': 'true' },
+  });
+  if (!res.ok) {
+    let message = `Download failed (${res.status})`;
+    try {
+      const body = await res.json();
+      message = body?.error?.message || body?.message || message;
+    } catch {
+      /* not JSON */
+    }
+    throw new Error(message);
+  }
+  const blob = await res.blob();
+  const disposition = res.headers.get('content-disposition') || '';
+  const match = disposition.match(/filename="?([^"]+)"?/i);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = match?.[1] || `${kind}-${year}-${String(month).padStart(2, '0')}.${kind === 'ecr' ? 'txt' : 'csv'}`;
+  a.click();
+  URL.revokeObjectURL(url);
+  return { rows: Number(res.headers.get('x-file-rows') || 0), skipped: Number(res.headers.get('x-file-skipped') || 0) };
+}
+
+/** Records that the bank paid these published payslips: { payslipIds, paidOn, reference }. */
+export async function markPayslipsPaidApi(body) {
+  return apiRequest({ method: 'POST', url: '/payroll/payments/mark-paid', data: body });
+}
+
+/** The signed-in employee's tax declaration for a tax year (Form 124). */
+export async function fetchMyTaxDeclarationApi(taxYear) {
+  return apiRequest({ method: 'GET', url: '/payroll/tax-declaration/me', params: { taxYear } });
+}
+
+/** Saves it, or sends it to HR: { taxYear, regime, declared, note, submit }. */
+export async function saveMyTaxDeclarationApi(body) {
+  return apiRequest({ method: 'PUT', url: '/payroll/tax-declaration/me', data: body });
+}
+
+/** HR: the company's declarations for a tax year ({ taxYear, status }). */
+export async function fetchTaxDeclarationsApi(params) {
+  const rows = await apiRequest({ method: 'GET', url: '/payroll/tax-declarations', params });
+  return Array.isArray(rows) ? rows : [];
+}
+
+/** HR accepts a declaration with the amounts allowed: { allowed, regime, note }. */
+export async function verifyTaxDeclarationApi(id, body) {
+  return apiRequest({ method: 'POST', url: `/payroll/tax-declarations/${id}/verify`, data: body });
+}
+
+/** HR sends a declaration back with a note. */
+export async function returnTaxDeclarationApi(id, note) {
+  return apiRequest({ method: 'POST', url: `/payroll/tax-declarations/${id}/return`, data: { note } });
+}
+
+/** An employee's annual salary and tax statement ('me' for your own). */
+export async function fetchAnnualTaxStatementApi(employeeId, taxYear) {
+  const who = employeeId === 'me' ? 'me' : employeeId;
+  return apiRequest({ method: 'GET', url: `/payroll/tds/statement/${who}`, params: { taxYear } });
+}
+
+/** Last month's published payslips whose pay comes out different today: { from, items }. */
+export async function fetchAdjustmentsApi(month, year) {
+  return apiRequest({ method: 'GET', url: '/payroll/adjustments', params: { month, year } });
+}
+
+/** Add the chosen differences to this month's payslips. */
+export async function applyAdjustmentsApi(month, year, employeeIds) {
+  return apiRequest({ method: 'POST', url: '/payroll/adjustments/apply', data: { month, year, employeeIds } });
+}
+
+/** A leaver's full and final settlement, for HR to review: { leaveDays, notice, fixedTerm, includeBonus }. */
+export async function previewFullAndFinalApi(employeeId, inputs) {
+  return apiRequest({ method: 'POST', url: `/payroll/fnf/${employeeId}/preview`, data: inputs });
+}
+
+/** Add it to the final payslip as one-time pay. */
+export async function applyFullAndFinalApi(employeeId, inputs) {
+  return apiRequest({ method: 'POST', url: `/payroll/fnf/${employeeId}/apply`, data: inputs });
+}
+
+/** Make the final payslip's draft (once the last working day is over). */
+export async function generateFinalPayslipApi(employeeId) {
+  return apiRequest({ method: 'POST', url: `/payroll/fnf/${employeeId}/generate` });
+}
+
+/** An employee's one-time pay and recoveries (arrears, bonus, notice pay, …). */
+export async function fetchOneTimePayApi(employeeId) {
+  const rows = await apiRequest({ method: 'GET', url: `/payroll/one-time/${employeeId}` });
+  return Array.isArray(rows) ? rows : [];
+}
+
+/** HR adds one: { kind, name, amount, month, year, taxable, pfWage, esiWage, note }. */
+export async function createOneTimePayApi(employeeId, body) {
+  return apiRequest({ method: 'POST', url: `/payroll/one-time/${employeeId}`, data: body });
+}
+
+/** HR removes one, while its month's payslip isn't published. */
+export async function cancelOneTimePayApi(employeeId, itemId) {
+  return apiRequest({ method: 'POST', url: `/payroll/one-time/${employeeId}/${itemId}/cancel` });
+}
+
+/** An employee's loans and salary advances ('me' for your own). */
+export async function fetchLoansApi(employeeId) {
+  const rows = await apiRequest({ method: 'GET', url: `/payroll/loans/${employeeId === 'me' ? 'me' : employeeId}` });
+  return Array.isArray(rows) ? rows : [];
+}
+
+/** HR records a loan or advance: { kind, principal, instalment, startMonth, startYear, note }. */
+export async function createLoanApi(employeeId, body) {
+  return apiRequest({ method: 'POST', url: `/payroll/loans/${employeeId}`, data: body });
+}
+
+/** HR cancels a loan entered by mistake (nothing recovered yet). */
+export async function cancelLoanApi(employeeId, loanId) {
+  return apiRequest({ method: 'POST', url: `/payroll/loans/${employeeId}/${loanId}/cancel` });
+}
+
+/** Salary TDS register for a tax year such as '2026-27' (published payslips only). */
+export async function fetchTdsRegisterApi(taxYear) {
+  return apiRequest({ method: 'GET', url: '/payroll/tds/register', params: { taxYear } });
+}
+
+/** Downloads a quarter's deductee rows for the TDS statement (Form 138) as CSV. */
+export async function downloadForm138Api(taxYear, quarter) {
+  const base = import.meta.env.VITE_API_URL || '/api';
+  const params = new URLSearchParams({ taxYear, quarter });
+  const res = await fetch(`${base}/payroll/tds/form138?${params}`, {
+    method: 'GET',
+    credentials: 'include',
+    headers: { 'ngrok-skip-browser-warning': 'true' },
+  });
+  if (!res.ok) {
+    let message = `Download failed (${res.status})`;
+    try {
+      const body = await res.json();
+      message = body?.error?.message || body?.message || message;
+    } catch {
+      /* not JSON */
+    }
+    throw new Error(message);
+  }
+  const blob = await res.blob();
+  const disposition = res.headers.get('content-disposition') || '';
+  const match = disposition.match(/filename="?([^"]+)"?/i);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = match?.[1] || `form138-data-${taxYear}-${quarter}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/** Re-apply current payroll settings to the month's draft payslips (a published one never changes). */
 /** With { background: true } the server answers at once and recalculates
  *  in the background (Payroll Settings autosave); otherwise it waits. */
 export async function recalculatePayslipsFromSettingsApi(month, year, employeeId, { background = false } = {}) {
@@ -158,6 +378,21 @@ export async function savePayrollRulesApi(rules, { leaveFirst } = {}) {
 }
 
 /** What a month's pay would be under the settings on screen — nothing is saved. */
+/** Do the month's payslips, salary register, bank file and journal agree? */
+export async function fetchReconciliationApi(month, year) {
+  return apiRequest({ method: 'GET', url: '/payroll/reports/reconciliation', params: { month, year } });
+}
+
+/** A yearly CTC split into a monthly salary by the company's template: { monthly: { basic, hra, da, special }, monthlyCtc, leftOver }. */
+export async function splitCtcApi(annualCtc) {
+  return apiRequest({ method: 'POST', url: '/payroll/ctc-split', data: { annualCtc } });
+}
+
+/** The legal values in force today and the standard (Settings → Payroll → Calculation). */
+export async function fetchCalcDefaultsApi() {
+  return apiRequest({ method: 'GET', url: '/payroll/calc-defaults' });
+}
+
 export async function simulatePayApi(body) {
   return apiRequest({ method: 'POST', url: '/payroll/simulate', data: body });
 }

@@ -86,15 +86,23 @@ const DEFAULT_PAYROLL_CONFIG = {
   components: { hra: true, da: true, special: true, transport: false, medical: false },
   hraPercent: 40,
   daPercent: 10,
+  // The company's own payroll choices (Settings → Payroll). null = not chosen
+  // yet (payroll then uses the default the server reports). Statutory rates
+  // are not company settings — the server keeps them (backend/src/payroll).
+  pfPolicy: null, // 'not_applicable' | 'statutory_ceiling' | 'full_wages'
+  esiApplicable: null, // true | false
+  tdsPolicy: 'fixed_per_employee', // | 'projected' (from the tax slabs) | 'none'
+  ptState: '',
+  ptStateSet: false, // the state was picked on the current screen (not the old Karnataka default)
+  ptManualAmount: null, // ₹ a month, for a PT state without a built-in slab; 0 = no PT
+  ptManualSlabs: null, // [{ from, amount, february_amount }] for a PT state without a built-in slab
+  // Older fields, kept so screens that still read them don't break.
   pfEmployeePercent: 12,
   pfEmployerPercent: 12,
   esiEmployeePercent: 0.75,
   esiEmployerPercent: 3.25,
   esiThreshold: 21000,
-  // PF is computed on full basic by default (pfWageCeiling: null). Set a number
-  // (e.g. 15000, the EPF statutory ceiling) to cap the PF-eligible wage.
   pfWageCeiling: null,
-  ptState: 'Karnataka',
   professionalTaxAmount: 200,
   ptSlabs: [
     { min: 0, max: 24999, amount: 0 },
@@ -107,7 +115,8 @@ const DEFAULT_PAYROLL_CONFIG = {
   workingDaysPerMonth: 26,
   /** Extra payroll lines (deductions/allowances) configurable in Settings → Payroll */
   customPayrollOptions: [],
-  runDate: 25,
+  // Auto-run makes last month's drafts on this day of the next month (1–10).
+  runDate: 1,
   autoLockDays: 20,
   autoProcess: false,
   bankFileFormat: 'NEFT',
@@ -431,7 +440,7 @@ export const useSettingsStore = create(
     }),
     {
       name: 'zenith-settings',
-      version: 6,
+      version: 7,
       migrate: (persisted, fromVersion) => {
         let next = persisted && typeof persisted === 'object' ? { ...persisted } : {};
         // v1 stored experimental matrix toggles that hid most Employee modules.
@@ -489,6 +498,23 @@ export const useSettingsStore = create(
         // this feature existed.
         if (fromVersion < 6 && !Array.isArray(next.departments)) {
           next = { ...next, departments: DEFAULT_DEPARTMENTS };
+        }
+        // v7: the company's payroll choices (PF method, ESI, TDS, PT state)
+        // come from the server only. An older copy here could still hold the
+        // old default 'Karnataka' PT state that the company never chose.
+        if (fromVersion < 7 && next.payrollConfig && typeof next.payrollConfig === 'object') {
+          next = {
+            ...next,
+            payrollConfig: {
+              ...next.payrollConfig,
+              pfPolicy: null,
+              esiApplicable: null,
+              tdsPolicy: 'fixed_per_employee',
+              ptState: '',
+              ptManualAmount: null,
+              runDate: 1,
+            },
+          };
         }
         return next;
       },

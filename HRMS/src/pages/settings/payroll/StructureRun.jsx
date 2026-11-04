@@ -1,6 +1,6 @@
-import { Banknote, CalendarClock, Layers, Lock, Rocket } from 'lucide-react';
+import { CalendarClock, Layers, Rocket } from 'lucide-react';
 import { cn } from '../../../lib/utils';
-import { NumberChip, PillGroup, RuleCard, Sentence, Switch } from './bits';
+import { NumberChip, RuleCard, Sentence, Switch } from './bits';
 
 const COMPONENTS = [
   { key: 'hra', label: 'HRA', pct: 'hraPercent' },
@@ -58,7 +58,12 @@ export function StructureCard({ form, patch }) {
   );
 }
 
-/** When payroll runs and what happens automatically. */
+/**
+ * When payroll runs and what happens automatically. A month's payroll runs
+ * once the month is over (attendance counts every day of it), so auto-run
+ * makes last month's drafts early in the next month — wages are due before
+ * the 7th.
+ */
 export function RunCards({ form, patch }) {
   return (
     <div className="grid grid-cols-1 gap-4 2xl:grid-cols-2">
@@ -66,32 +71,15 @@ export function RunCards({ form, patch }) {
         icon={Rocket}
         tone="violet"
         title="Auto-run payroll"
-        summary={form.autoProcess ? `Drafts are made on day ${form.runDate} every month` : 'Off — you generate drafts yourself'}
+        summary={form.autoProcess ? `Last month's drafts are made on day ${form.runDate} of each month` : 'Off — you generate drafts yourself'}
         right={<Switch checked={Boolean(form.autoProcess)} onChange={(v) => patch({ autoProcess: v })} ariaLabel="Auto-run payroll" />}
       >
         <Sentence>
-          Run on day
-          <NumberChip value={Number(form.runDate) || 25} min={1} max={31} onCommit={(v) => patch({ runDate: v })} ariaLabel="payroll run day" />
-          of the month.
+          On day
+          <NumberChip value={Number(form.runDate) || 1} min={1} max={10} onCommit={(v) => patch({ runDate: v })} ariaLabel="payroll run day" />
+          of each month, make the draft payslips for the month just ended.
         </Sentence>
-        <p className="text-[11px] text-fg-subtle">In a shorter month (say 30 or 31 in February) it runs on the month&apos;s last day.</p>
-      </RuleCard>
-
-      <RuleCard icon={Lock} tone="amber" title="Lock attendance" summary={`${form.autoLockDays} days after the month ends`}>
-        <Sentence>
-          Attendance locks
-          <NumberChip value={Number(form.autoLockDays) || 20} min={1} max={60} onCommit={(v) => patch({ autoLockDays: v })} ariaLabel="auto lock days" />
-          days after the month ends.
-        </Sentence>
-      </RuleCard>
-
-      <RuleCard icon={Banknote} tone="teal" title="Bank file" summary={`${form.bankFileFormat} format`}>
-        <PillGroup
-          ariaLabel="Bank file format"
-          value={form.bankFileFormat}
-          onChange={(v) => patch({ bankFileFormat: v })}
-          options={['NEFT', 'RTGS', 'Bank-specific'].map((v) => ({ value: v, label: v }))}
-        />
+        <p className="text-[11px] text-fg-subtle">Drafts only — HR still reviews and publishes them. Wages are due before the 7th.</p>
       </RuleCard>
 
       <RuleCard icon={CalendarClock} tone="sky" title="Fixed days (when used)" summary={`${form.workingDaysPerMonth} days — only for the "Fixed days" day rate`}>

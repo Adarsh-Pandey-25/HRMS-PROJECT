@@ -9,8 +9,10 @@ const DEFAULT_COMPANY = process.env.COMPANY_NAME || 'HRMS Company Pvt Ltd';
 const INK = '#111111';
 const RULE = '#111111';
 
+// "Rs." rather than ₹: the PDF's built-in Helvetica has no rupee sign and
+// printed a stray "¹" in its place.
 const fmt = (n) =>
-  `₹${Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  `Rs. ${Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 const fmtInt = (n) =>
   Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 });
@@ -227,13 +229,20 @@ async function buildPayslipPdfBuffer(employee, payslip, payrollMonth, { companyI
     || emp.bank_details?.account
     || '—';
 
+  // What the company chose to show (Settings → Payroll → Calculation); all of it by default.
+  const display = breakdown.config?.payslip_display || {};
+  const showRates = display.show_rates !== false;
   const earningRows = earnings.map((e) => {
     const name = String(e.name || 'Component');
     const amt = Number(e.amount || 0);
-    const isBasic = name.toLowerCase().includes('basic');
+    const isBasic = name.trim().toLowerCase() === 'basic';
     const isHra = name.toLowerCase() === 'hra';
-    const label = isBasic ? `Basic Salary ( ${padDays(paidDays)} Days )` : name;
-    return { label, amount: isHra && amt === 0 ? 'NA' : fmt(amt) };
+    const label = isBasic ? 'Basic Salary' : name;
+    return {
+      label,
+      rate: showRates && e.rate != null && Number(e.rate) > 0 ? fmt(e.rate) : '',
+      amount: isHra && amt === 0 ? 'NA' : fmt(amt),
+    };
   });
   if (!earningRows.length) earningRows.push({ label: `Basic Salary ( ${padDays(paidDays)} Days )`, amount: fmt(gross) });
 
@@ -241,6 +250,21 @@ async function buildPayslipPdfBuffer(employee, payslip, payrollMonth, { companyI
     label: d.name || 'Deduction',
     amount: Number(d.amount) > 0 ? fmt(d.amount) : '',
   }));
+  // The numbers saved when the payslip was published; a draft shows today's.
+  const ids = meta.ids || emp.salary_details?.statutory_ids || {};
+  const statutoryLines = [
+    ids.pan ? ['PAN', String(ids.pan).toUpperCase()] : null,
+    ids.uan ? ['UAN', String(ids.uan)] : null,
+    ids.esic_ip ? ['ESIC No.', String(ids.esic_ip)] : null,
+  ].filter(Boolean);
+  // What the company pays on top of the salary (not deducted from it).
+  const employerList = (display.show_employer !== false && Array.isArray(breakdown.employer_contributions) ? breakdown.employer_contributions : [])
+    .filter((c) => Number(c.amount) > 0);
+  const employerRows = employerList.map((c) => [String(c.name || 'Contribution'), fmt(c.amount)]);
+  if (employerRows.length) {
+    const totalPaise = employerList.reduce((sum, c) => sum + Math.round(Number(c.amount) * 100), 0);
+    employerRows.push(['Total', fmt(totalPaise / 100)]);
+  }
   const tdsMode = String(breakdown.config?.tds_mode || '').toLowerCase();
   const tdsApplies = tdsMode !== 'none' && tdsMode !== 'exempt';
   if (tdsApplies && !deductionRows.some((d) => String(d.label).toLowerCase() === 'tds')) {
@@ -250,6 +274,26 @@ async function buildPayslipPdfBuffer(employee, payslip, payrollMonth, { companyI
 
   const split = padPair(earningRows, deductionRows, 3);
 
+  // The tax working behind this month's TDS, when payroll worked it out from the slabs.
+  const taxCfg = breakdown.config?.tax;
+  const tax = display.show_tax_working !== false && taxCfg && taxCfg.applied !== false ? {
+    heading: `INCOME TAX (TDS) — ${taxCfg.regime === 'old' ? 'old' : 'new'} regime, tax year ${taxCfg.tax_year || ''}`,
+    rows: [
+      ['Taxable income for the year (projected)', fmt(taxCfg.taxable_income)],
+      ['Tax for the year, with cess', fmt(taxCfg.annual_tax)],
+      ['TDS deducted before this month', fmt(taxCfg.tds_before)],
+      ['TDS this month', fmt(taxCfg.tds)],
+    ],
+  } : null;
+
+  // Year to date (the tax year so far), saved when the payslip was published.
+  const ytd = meta.ytd || null;
+  const ytdRows = ytd ? [
+    ['Gross earnings', fmt(ytd.gross)], ['TDS', fmt(ytd.tds)],
+    ['PF', fmt(ytd.pf)], ['Professional Tax', fmt(ytd.pt)],
+    ['ESI', fmt(ytd.esi)], ['Net pay', fmt(ytd.net)],
+  ] : [];
+
   if (!reimbursements.length) {
     reimbursements = [
       { name: 'Reimbursement 1', amount: 0 },
@@ -258,13 +302,11 @@ async function buildPayslipPdfBuffer(employee, payslip, payrollMonth, { companyI
   }
 
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: 'A4', margin: 0 });
-    const chunks = [];
-    doc.on('data', (chunk) => chunks.push(chunk));
-    doc.on('end', () => resolve(Buffer.concat(chunks)));
-    doc.on('error', reject);
-
-    const pageW = doc.page.width;
+    // A4 wide, and as long as the payslip needs: with every block (IDs, tax
+    // working, employer contributions, year to date) it can pass A4's height,
+    // and nothing may be cut off. A short payslip stays exactly A4.
+    const A4 = [595.28, 841.89];
+    const pageW = A4[0];
     const x = 36;
     const top = 36;
     const w = pageW - 72;
@@ -272,14 +314,23 @@ async function buildPayslipPdfBuffer(employee, payslip, payrollMonth, { companyI
     const rowH = 20;
     const headerH = 56;
     const titleH = 22;
-    const summaryH = 118;
+    const summaryH = 118 + statutoryLines.length * 18;
     const colHeadH = 20;
     const earnRows = split.left.length;
     const earnH = colHeadH + earnRows * rowH + rowH; // + gross footer
     const reimbH = colHeadH + reimbursements.length * rowH + rowH;
     const netH = colHeadH + 4 * rowH;
     const footerH = 48;
-    const totalH = headerH + titleH + summaryH + earnH + reimbH + netH + footerH;
+    const taxH = tax ? colHeadH + 2 * rowH : 0;
+    const employerH = employerRows.length ? colHeadH + Math.ceil(employerRows.length / 2) * rowH : 0;
+    const ytdH = ytdRows.length ? colHeadH + Math.ceil(ytdRows.length / 2) * rowH : 0;
+    const totalH = headerH + titleH + summaryH + earnH + reimbH + netH + footerH + taxH + employerH + ytdH;
+
+    const doc = new PDFDocument({ size: [pageW, Math.max(A4[1], Math.ceil(top + totalH + 36))], margin: 0 });
+    const chunks = [];
+    doc.on('data', (chunk) => chunks.push(chunk));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
 
     stroke(doc, x, top, w, totalH);
 
@@ -318,6 +369,7 @@ async function buildPayslipPdfBuffer(employee, payslip, payrollMonth, { companyI
       ['Date of Joining', joining],
       ['Pay Method', payMethod],
       ['A/c No.', accountNo],
+      ...statutoryLines,
     ];
     summaryLines.forEach((pair, i) => {
       const ly = sumY + 24 + i * 18;
@@ -328,24 +380,31 @@ async function buildPayslipPdfBuffer(employee, payslip, payrollMonth, { companyI
     cellText(doc, `Paid Days: ${padDays(paidDays)}  |  LOP Days: ${padDays(lopDays)}`, mid, sumY + 72, w / 2, 20, {
       size: 9, align: 'center',
     });
+    // The leave balance after this payslip, saved when it was published.
+    const leaveLine = (Array.isArray(meta.leave) ? meta.leave : []).map((l) => `${l.code} ${l.available}`).join('  ·  ');
+    if (leaveLine) cellText(doc, `Leave balance: ${leaveLine}`, mid, sumY + 92, w / 2, 18, { size: 8, align: 'center' });
     hline(doc, x, sumY + summaryH, w);
 
     // Earnings / Deductions
     const edY = sumY + summaryH;
     const amtW = 90;
+    const rateW = 78;
     vline(doc, mid, edY, earnH);
     vline(doc, mid - amtW, edY, earnH);
+    vline(doc, mid - amtW - rateW, edY, earnH - rowH);
     vline(doc, x + w - amtW, edY, earnH);
 
-    cellText(doc, 'EARNINGS', x, edY, w / 2 - amtW, colHeadH, { bold: true, size: 9, valign: 'center' });
-    cellText(doc, 'AMOUNT', mid - amtW, edY, amtW, colHeadH, { bold: true, size: 9, align: 'right', valign: 'center' });
+    cellText(doc, 'EARNINGS', x, edY, w / 2 - amtW - rateW, colHeadH, { bold: true, size: 9, valign: 'center' });
+    cellText(doc, showRates ? 'RATE' : '', mid - amtW - rateW, edY, rateW, colHeadH, { bold: true, size: 9, align: 'right', valign: 'center' });
+    cellText(doc, 'EARNED', mid - amtW, edY, amtW, colHeadH, { bold: true, size: 9, align: 'right', valign: 'center' });
     cellText(doc, 'DEDUCTIONS', mid, edY, w / 2 - amtW, colHeadH, { bold: true, size: 9, valign: 'center' });
     cellText(doc, 'AMOUNT', x + w - amtW, edY, amtW, colHeadH, { bold: true, size: 9, align: 'right', valign: 'center' });
     hline(doc, x, edY + colHeadH, w);
 
     for (let i = 0; i < earnRows; i += 1) {
       const ry = edY + colHeadH + i * rowH;
-      cellText(doc, split.left[i].label, x, ry, w / 2 - amtW, rowH, { size: 9, valign: 'center' });
+      cellText(doc, split.left[i].label, x, ry, w / 2 - amtW - rateW, rowH, { size: 9, valign: 'center' });
+      cellText(doc, split.left[i].rate || '', mid - amtW - rateW, ry, rateW, rowH, { size: 8, align: 'right', valign: 'center' });
       cellText(doc, split.left[i].amount, mid - amtW, ry, amtW, rowH, { size: 9, align: 'right', valign: 'center' });
       cellText(doc, split.right[i].label, mid, ry, w / 2 - amtW, rowH, { size: 9, valign: 'center' });
       cellText(doc, split.right[i].amount, x + w - amtW, ry, amtW, rowH, { size: 9, align: 'right', valign: 'center' });
@@ -419,6 +478,60 @@ async function buildPayslipPdfBuffer(employee, payslip, payrollMonth, { companyI
       16,
       { bold: true, size: 8, align: 'center' },
     );
+
+    if (tax) {
+      const tY = fY + footerH;
+      hline(doc, x, tY, w);
+      cellText(doc, tax.heading, x, tY, w, colHeadH, { bold: true, size: 9, align: 'center', valign: 'center' });
+      hline(doc, x, tY + colHeadH, w);
+      vline(doc, mid, tY + colHeadH, 2 * rowH);
+      vline(doc, mid - amtW, tY + colHeadH, 2 * rowH);
+      vline(doc, x + w - amtW, tY + colHeadH, 2 * rowH);
+      tax.rows.forEach(([label, amount], i) => {
+        const ry = tY + colHeadH + Math.floor(i / 2) * rowH;
+        const left = i % 2 === 0;
+        cellText(doc, label, left ? x : mid, ry, w / 2 - amtW, rowH, { size: 9, valign: 'center' });
+        cellText(doc, amount, left ? mid - amtW : x + w - amtW, ry, amtW, rowH, { size: 9, align: 'right', valign: 'center' });
+        if (!left) hline(doc, x, ry + rowH, w);
+      });
+    }
+
+    if (employerRows.length) {
+      const eY = fY + footerH + taxH;
+      hline(doc, x, eY, w);
+      cellText(doc, 'EMPLOYER CONTRIBUTIONS (paid by the company, not deducted from pay)', x, eY, w, colHeadH, { bold: true, size: 9, align: 'center', valign: 'center' });
+      hline(doc, x, eY + colHeadH, w);
+      const rows = Math.ceil(employerRows.length / 2);
+      vline(doc, mid, eY + colHeadH, rows * rowH);
+      vline(doc, mid - amtW, eY + colHeadH, rows * rowH);
+      vline(doc, x + w - amtW, eY + colHeadH, rows * rowH);
+      employerRows.forEach(([label, amount], i) => {
+        const ry = eY + colHeadH + Math.floor(i / 2) * rowH;
+        const left = i % 2 === 0;
+        const bold = label === 'Total';
+        cellText(doc, label, left ? x : mid, ry, w / 2 - amtW, rowH, { size: 9, bold, valign: 'center' });
+        cellText(doc, amount, left ? mid - amtW : x + w - amtW, ry, amtW, rowH, { size: 9, bold, align: 'right', valign: 'center' });
+        if (!left || i === employerRows.length - 1) hline(doc, x, ry + rowH, w);
+      });
+    }
+
+    if (ytdRows.length) {
+      const yY = fY + footerH + taxH + employerH;
+      hline(doc, x, yY, w);
+      cellText(doc, `YEAR TO DATE — tax year ${ytd.tax_year || ''} (${ytd.months} month${ytd.months === 1 ? '' : 's'})`, x, yY, w, colHeadH, { bold: true, size: 9, align: 'center', valign: 'center' });
+      hline(doc, x, yY + colHeadH, w);
+      const rows = Math.ceil(ytdRows.length / 2);
+      vline(doc, mid, yY + colHeadH, rows * rowH);
+      vline(doc, mid - amtW, yY + colHeadH, rows * rowH);
+      vline(doc, x + w - amtW, yY + colHeadH, rows * rowH);
+      ytdRows.forEach(([label, amount], i) => {
+        const ry = yY + colHeadH + Math.floor(i / 2) * rowH;
+        const left = i % 2 === 0;
+        cellText(doc, label, left ? x : mid, ry, w / 2 - amtW, rowH, { size: 9, valign: 'center' });
+        cellText(doc, amount, left ? mid - amtW : x + w - amtW, ry, amtW, rowH, { size: 9, align: 'right', valign: 'center' });
+        if (!left) hline(doc, x, ry + rowH, w);
+      });
+    }
 
     doc.end();
   });

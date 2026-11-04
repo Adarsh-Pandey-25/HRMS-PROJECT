@@ -126,6 +126,57 @@ export function useSettingsBootstrap() {
     if (map.payroll_esi_employee_percent != null) patch.esiEmployeePercent = Number(map.payroll_esi_employee_percent);
     if (map.payroll_esi_threshold != null) patch.esiThreshold = Number(map.payroll_esi_threshold);
 
+    // The company's payroll choices, always from the server (never a stale
+    // copy in the browser). Mirrors the server's resolvePayrollPolicy:
+    // not saved → null ("not chosen yet"); an old PF or ESI rate saved as 0
+    // meant "not applicable".
+    {
+      const pc = map.payroll_config && typeof map.payroll_config === 'object' ? map.payroll_config : {};
+      // Every key arrives camelCased (lib/case.js turns the whole response so);
+      // older copies may still be snake_case — read both, or a later save would
+      // overwrite the company's choices with defaults.
+      const v = (camel, snake) => pick(pc, camel, snake);
+      const savedZero = (x) => x !== null && x !== undefined && x !== '' && Number(x) === 0;
+      const slabRows = (list) => list.map((r) => {
+        const feb = pick(r, 'februaryAmount', 'february_amount');
+        return {
+          from: Number(r?.from) || 0,
+          amount: Number(r?.amount) || 0,
+          february_amount: feb == null || feb === '' ? null : Number(feb),
+        };
+      });
+      const pfPolicy = v('pfPolicy', 'pf_policy');
+      patch.pfPolicy = ['not_applicable', 'statutory_ceiling', 'full_wages'].includes(pfPolicy)
+        ? pfPolicy
+        : (savedZero(map.payroll_pf_rate) ? 'not_applicable' : null);
+      const esiApplicable = v('esiApplicable', 'esi_applicable');
+      patch.esiApplicable = typeof esiApplicable === 'boolean'
+        ? esiApplicable
+        : (savedZero(map.payroll_esi_employee_percent) ? false : null);
+      const tdsPolicy = v('tdsPolicy', 'tds_policy');
+      patch.tdsPolicy = ['fixed_per_employee', 'projected', 'none'].includes(tdsPolicy) ? tdsPolicy : 'fixed_per_employee';
+      patch.ptState = String(v('ptState', 'pt_state') ?? '').trim();
+      patch.ptStateSet = v('ptStateSet', 'pt_state_set') === true;
+      const manualSlabs = v('ptManualSlabs', 'pt_manual_slabs');
+      patch.ptManualSlabs = Array.isArray(manualSlabs) && manualSlabs.length ? slabRows(manualSlabs) : null;
+      const otherStates = v('ptOtherStates', 'pt_other_states');
+      patch.ptOtherStates = Array.isArray(otherStates)
+        ? otherStates.filter((o) => o && o.state).map((o) => ({ state: String(o.state), slabs: Array.isArray(o.slabs) ? slabRows(o.slabs) : [] }))
+        : [];
+      const lwfStates = v('lwfStates', 'lwf_states');
+      patch.lwfStates = Array.isArray(lwfStates)
+        ? lwfStates.filter((o) => o && o.state).map((o) => ({
+          state: String(o.state), employee: Number(o.employee) || 0, employer: Number(o.employer) || 0, months: Array.isArray(o.months) ? o.months.map(Number) : [],
+        }))
+        : [];
+      // The company's own calculation values; none saved → the law (never another company's left in this browser).
+      patch.calc = map.payroll_calc && typeof map.payroll_calc === 'object' && !Array.isArray(map.payroll_calc) ? map.payroll_calc : {};
+      const manual = v('ptManualAmount', 'pt_manual_amount');
+      patch.ptManualAmount = manual === null || manual === undefined || manual === '' || !Number.isFinite(Number(manual)) || Number(manual) < 0
+        ? null
+        : Number(manual);
+    }
+
     if (map.payroll_config && typeof map.payroll_config === 'object') {
       const pc = map.payroll_config;
       const pfEmp = pick(pc, 'pfEmployeePercent', 'pf_employee_percent');
@@ -152,7 +203,7 @@ export function useSettingsBootstrap() {
       if (ptAmt != null) patch.professionalTaxAmount = Number(ptAmt);
       if (tdsPct != null) patch.tdsPercent = Number(tdsPct);
       if (tdsMode) patch.tdsMode = tdsMode;
-      if (ptState) patch.ptState = ptState;
+      if (ptState) patch.ptState = String(ptState).trim();
       if (esiEmp != null) patch.esiEmployeePercent = Number(esiEmp);
       if (esiEr != null) patch.esiEmployerPercent = Number(esiEr);
       if (esiThr != null) patch.esiThreshold = Number(esiThr);
@@ -160,14 +211,15 @@ export function useSettingsBootstrap() {
       if (components && typeof components === 'object') patch.components = components;
       if (hraPct != null) patch.hraPercent = Number(hraPct);
       if (daPct != null) patch.daPercent = Number(daPct);
-      // 1–31; the server runs on the month's last day when it is shorter.
-      if (runDate != null) patch.runDate = Math.min(31, Math.max(1, Number(runDate) || 25));
+      // Day 1–10 of the next month (the server clamps the same way).
+      if (runDate != null) patch.runDate = Math.min(10, Math.max(1, Math.round(Number(runDate)) || 1));
       if (autoProcess != null) patch.autoProcess = Boolean(autoProcess);
       if (autoLockDays != null) patch.autoLockDays = Number(autoLockDays) || 20;
       if (bankFileFormat) patch.bankFileFormat = String(bankFileFormat);
       if (Array.isArray(custom)) {
         patch.customPayrollOptions = custom.map((o, i) => ({
-          id: o.id || `PO-${i}`,
+          // The server keys an option by its id, else its lower-cased name: the same here.
+          id: o.id || String(o.name || '').trim().toLowerCase() || `PO-${i}`,
           name: o.name || '',
           kind: o.kind || 'deduction',
           valueType: o.valueType || o.value_type || 'fixed',
@@ -180,6 +232,7 @@ export function useSettingsBootstrap() {
 
     // Pay rules, weekly offs and the early-leave rule (Settings → Payroll).
     if (map.payroll_rules && typeof map.payroll_rules === 'object') patch.rules = normalizePayRules(map.payroll_rules);
+
     if (map.work_week && typeof map.work_week === 'object') patch.workWeek = normalizeWorkWeek(map.work_week);
     if (map.payroll_halfday_before_goal_enabled != null) {
       const v = map.payroll_halfday_before_goal_enabled;

@@ -78,9 +78,13 @@ export const NAV_ITEMS = [
     featureKey: 'payroll',
     children: [
       { label: 'My Payslips', path: '/payroll/me', permission: { module: 'payroll', action: 'view' }, ...SELF_SERVICE },
+      { label: 'My Tax Declaration', path: '/payroll/my-tax', permission: { module: 'payroll', action: 'view' }, ...SELF_SERVICE },
       { label: 'Run Payroll', path: '/payroll/run', permission: { module: 'payroll', action: 'manage' } },
       { label: 'Salary Sheet', path: '/payroll/sheet', permission: { module: 'payroll', action: 'manage' } },
       { label: 'Salary Revisions', path: '/payroll/revisions', permission: { module: 'payroll', action: 'manage' } },
+      { label: 'TDS Register', path: '/payroll/tds', permission: { module: 'payroll', action: 'manage' } },
+      { label: 'Tax Declarations', path: '/payroll/declarations', permission: { module: 'payroll', action: 'manage' } },
+      { label: 'Compliance Calendar', path: '/payroll/compliance', permission: { module: 'payroll', action: 'manage' } },
     ],
   },
   {

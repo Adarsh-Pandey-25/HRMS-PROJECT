@@ -300,6 +300,16 @@ export default function EmployeeList() {
   const [addingLocation, setAddingLocation] = useState(false);
   const [newLocation, setNewLocation] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(null);
+  // Offboarding asks for the last working day: payroll pays the month up to it.
+  const todayLocal = () => {
+    const d = new Date();
+    return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  };
+  const [lastWorkingDay, setLastWorkingDay] = useState('');
+  const joinedOn = confirmDelete?.joinDate ? String(confirmDelete.joinDate).slice(0, 10) : '';
+  const lastWorkingDayError = !/^\d{4}-\d{2}-\d{2}$/.test(lastWorkingDay)
+    ? 'Choose the last working day'
+    : (joinedOn && lastWorkingDay < joinedOn ? 'It can\'t be before they joined' : '');
   const [eraseTarget, setEraseTarget] = useState(null);
   const [eraseConfirmCode, setEraseConfirmCode] = useState('');
   const [erasing, setErasing] = useState(false);
@@ -442,7 +452,7 @@ export default function EmployeeList() {
   const doOffboard = async () => {
     const emp = confirmDelete;
     try {
-      await offboard.mutateAsync({ id: emp.id });
+      await offboard.mutateAsync({ id: emp.id, lastWorkingDay });
       toast.success(`${emp.name} offboarded — their records are retained`);
       setConfirmDelete(null);
     } catch (err) {
@@ -664,7 +674,7 @@ export default function EmployeeList() {
                     canChangeCompany={canChangeCompany}
                     onDetails={() => navigate(employeeProfilePath(e, roster))}
                     onEdit={() => navigate(employeeEditPath(e, roster))}
-                    onDelete={() => setConfirmDelete(e)}
+                    onDelete={() => { setConfirmDelete(e); setLastWorkingDay(todayLocal()); }}
                     onErase={() => setEraseTarget(e)}
                     onChangeCompany={() => setChangeCompanyEmp(e)}
                   />
@@ -695,7 +705,18 @@ export default function EmployeeList() {
         title={`Offboard ${confirmDelete?.name}?`}
         message="Their attendance, leave, payroll, and document records are retained — nothing is deleted. Login access is revoked immediately. A separate, explicit action is needed to permanently erase their data later."
         confirmLabel="Offboard"
-      />
+        confirmDisabled={Boolean(lastWorkingDayError)}
+      >
+        <Input
+          label="Last working day"
+          type="date"
+          value={lastWorkingDay}
+          min={joinedOn || undefined}
+          onChange={(ev) => setLastWorkingDay(ev.target.value)}
+          error={lastWorkingDayError || undefined}
+          hint="Payroll pays them for their last month up to this day."
+        />
+      </ConfirmDialog>
 
       <Modal
         open={!!eraseTarget}

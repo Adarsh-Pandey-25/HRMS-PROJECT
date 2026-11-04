@@ -194,11 +194,12 @@ const seedCompanySettings = async (companyId, companyProfile, updatedBy = null, 
     allow_remote_login: false,
   };
 
+  // The old per-company PF/ESI/PT/TDS rates are not copied: payroll reads them
+  // as a company's own choice (a 0 means "not applicable"), so a new company
+  // starts at the law until it chooses.
   const copyKeys = [
     'role_permissions', 'leave_policy', 'leave_policy_meta', 'leave_allocations',
-    'payroll_config', 'payroll_working_days', 'payroll_pf_rate',
-    'payroll_professional_tax', 'payroll_tds_percent',
-    'payroll_esi_employee_percent', 'payroll_esi_threshold',
+    'payroll_config', 'payroll_working_days',
     'payroll_halfday_before_goal_enabled', 'payroll_rules', 'work_week',
     'expense_config', 'security_config',
     'asset_config', 'helpdesk_config', 'training_config',
@@ -206,9 +207,20 @@ const seedCompanySettings = async (companyId, companyProfile, updatedBy = null, 
     'notification_config', 'document_types', 'integrations_config',
     'backup_config', 'attendance_config',
   ];
+  // A company's own state, PT, LWF and statutory choices are never copied to
+  // another: a new company chooses them itself (until then payroll asks).
+  const PAYROLL_OWN_KEYS = [
+    'pt_state', 'ptState', 'pt_state_set', 'pt_manual_amount', 'pt_manual_slabs', 'pt_other_states', 'lwf_states',
+    'pf_policy', 'esi_applicable', 'tds_policy',
+  ];
   for (const key of copyKeys) {
     const v = await getSetting(key, null, sourceId);
-    if (v != null) defaults[key] = v;
+    if (v == null) continue;
+    if (key === 'payroll_config' && typeof v === 'object' && !Array.isArray(v)) {
+      defaults[key] = Object.fromEntries(Object.entries(v).filter(([k]) => !PAYROLL_OWN_KEYS.includes(k)));
+    } else {
+      defaults[key] = v;
+    }
   }
 
   for (const [key, value] of Object.entries(defaults)) {

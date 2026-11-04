@@ -8,7 +8,10 @@
 export const DEFAULT_PAY_RULES = Object.freeze({
   dayRateBasis: 'working',
   late: Object.freeze({ enabled: false, freeLates: 2, every: 3, penalty: 'half' }),
-  overtime: Object.freeze({ mode: 'off', multiplier: 1.5, minMinutes: 30, monthlyCapHours: 0, compOffHours: 8 }),
+  // 2× is the Code on Wages minimum where it applies; base: 'gross' or 'basic_da'.
+  overtime: Object.freeze({
+    mode: 'off', multiplier: 2, base: 'gross', minMinutes: 30, monthlyCapHours: 0, compOffHours: 8,
+  }),
   missedCheckout: 'full',
 });
 
@@ -35,7 +38,8 @@ export function normalizePayRules(raw) {
     },
     overtime: {
       mode: oneOf(ot.mode, ['off', 'pay', 'comp_off'], d.overtime.mode),
-      multiplier: num(ot.multiplier, d.overtime.multiplier, 0.5, 5),
+      multiplier: Math.round(num(ot.multiplier, d.overtime.multiplier, 0.5, 5) * 100) / 100,
+      base: oneOf(ot.base, ['gross', 'basic_da'], d.overtime.base),
       minMinutes: num(ot.minMinutes ?? ot.min_minutes, d.overtime.minMinutes, 0, 600, true),
       monthlyCapHours: num(ot.monthlyCapHours ?? ot.monthly_cap_hours, d.overtime.monthlyCapHours, 0, 744),
       compOffHours: num(ot.compOffHours ?? ot.comp_off_hours, d.overtime.compOffHours, 1, 24),

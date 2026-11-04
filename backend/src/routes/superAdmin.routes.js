@@ -8,6 +8,7 @@ const companyDetailController = require('../controllers/companyDetail.controller
 const featureOverrideController = require('../controllers/featureOverride.controller');
 const couponController = require('../controllers/coupon.controller');
 const systemHealthController = require('../controllers/systemHealth.controller');
+const statutoryRulesController = require('../controllers/statutoryRules.controller');
 const emailPreferencesController = require('../controllers/emailPreferences.controller');
 const emailLogController = require('../controllers/emailLog.controller');
 const marketingController = require('../controllers/marketing.controller');
@@ -293,6 +294,9 @@ router.post(
   couponController.createCoupon,
 );
 router.post('/coupons/:id/deactivate', authenticateSuperAdmin, requireSuperAdminRole('billing_admin'), param('id').isUUID(), validate, couponController.deactivateCoupon);
+
+// Payroll's statutory values with sources and effective dates (read-only; any super admin).
+router.get('/statutory-rules', authenticateSuperAdmin, statutoryRulesController.list);
 
 // ── Module 7: System health (full_admin only) ───────────────────────────────
 router.get('/system/health', authenticateSuperAdmin, requireSuperAdminRole(), systemHealthController.getHealth);

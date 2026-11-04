@@ -4,9 +4,12 @@ function money(n) {
   return `₹${Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-function Cell({ children, className = '', align = 'left', bold = false }) {
+function Cell({
+  children, className = '', align = 'left', bold = false, colSpan,
+}) {
   return (
     <td
+      colSpan={colSpan}
       className={[
         'border border-black px-2 py-1.5 text-[12px] leading-snug text-black',
         align === 'right' ? 'text-right tabular-nums' : align === 'center' ? 'text-center' : 'text-left',
@@ -19,7 +22,37 @@ function Cell({ children, className = '', align = 'left', bold = false }) {
   );
 }
 
-/** Classic bordered Indian payslip sheet (matches downloaded PDF). */
+/** A heading row across the whole sheet. */
+const Band = ({ children }) => (
+  <tr>
+    <td colSpan={5} className="border border-black py-1.5 text-center text-[12px] font-semibold">{children}</td>
+  </tr>
+);
+
+/** Label/amount pairs two to a row (tax working, employer contributions). */
+function PairRows({ rows, keyPrefix }) {
+  const out = [];
+  for (let i = 0; i < rows.length; i += 2) {
+    const a = rows[i];
+    const b = rows[i + 1];
+    out.push(
+      <tr key={`${keyPrefix}-${i}`}>
+        <Cell colSpan={2} bold={a.total}>{a.label}</Cell>
+        <Cell align="right" bold={a.total}>{a.amount}</Cell>
+        <Cell bold={b?.total}>{b?.label}</Cell>
+        <Cell align="right" bold={b?.total}>{b?.amount}</Cell>
+      </tr>,
+    );
+  }
+  return out;
+}
+
+/**
+ * Classic bordered Indian payslip sheet (matches the downloaded PDF):
+ * earnings with their monthly rate and the amount earned, deductions,
+ * reimbursements, net pay, and — when they apply — the income-tax working
+ * and what the employer pays on top (report D15).
+ */
 export function PayslipDocument({ payslip, company, employee }) {
   if (!payslip) return null;
   const v = buildPayslipView(payslip, { company, employee });
@@ -27,10 +60,10 @@ export function PayslipDocument({ payslip, company, employee }) {
 
   return (
     <div className="overflow-x-auto bg-white text-black">
-      <table className="w-full min-w-[640px] border-collapse border border-black">
+      <table className="w-full min-w-[680px] border-collapse border border-black">
         <tbody>
           <tr>
-            <td colSpan={2} className="border border-black px-3 py-3 align-middle">
+            <td colSpan={3} className="border border-black px-3 py-3 align-middle">
               <div className="flex items-center gap-3">
                 {v.logoUrl ? (
                   <img src={v.logoUrl} alt="" className="h-10 w-10 object-contain" />
@@ -48,12 +81,12 @@ export function PayslipDocument({ payslip, company, employee }) {
             </td>
           </tr>
           <tr>
-            <td colSpan={4} className="border border-black py-2 text-center text-sm font-semibold">
+            <td colSpan={5} className="border border-black py-2 text-center text-sm font-semibold">
               Payslip for the Month of {v.period}
             </td>
           </tr>
           <tr>
-            <td colSpan={2} className="border border-black px-3 py-3 align-top">
+            <td colSpan={3} className="border border-black px-3 py-3 align-top">
               <p className="mb-2 text-sm font-semibold">Employee Pay Summary</p>
               <dl className="space-y-1 text-[12px]">
                 <div><span>Employee Name : </span><span>{v.employeeName}</span></div>
@@ -71,79 +104,71 @@ export function PayslipDocument({ payslip, company, employee }) {
               <p className="mt-2 text-[12px]">
                 Paid Days: {v.paidDays} | LOP Days: {v.lopDays}
               </p>
+              {v.leave && <p className="mt-1 text-[11px]">Leave balance: {v.leave}</p>}
             </td>
           </tr>
           <tr>
             <Cell bold>EARNINGS</Cell>
-            <Cell bold align="right">AMOUNT</Cell>
+            <Cell bold align="right">{v.showRates === false ? '' : 'RATE'}</Cell>
+            <Cell bold align="right">EARNED</Cell>
             <Cell bold>DEDUCTIONS</Cell>
             <Cell bold align="right">AMOUNT</Cell>
           </tr>
           {v.split.left.map((row, i) => (
+            // eslint-disable-next-line react/no-array-index-key
             <tr key={`ed-${i}`}>
               <Cell>{row.label}</Cell>
+              <Cell align="right" className="text-[11px]">{row.rate}</Cell>
               <Cell align="right">{row.amount}</Cell>
               <Cell>{v.split.right[i]?.label}</Cell>
               <Cell align="right">{v.split.right[i]?.amount}</Cell>
             </tr>
           ))}
           <tr>
-            <Cell bold>Gross Earnings</Cell>
+            <Cell bold colSpan={2}>Gross Earnings</Cell>
             <Cell bold align="right">{money(v.gross)}</Cell>
             <Cell bold>Total Deductions</Cell>
             <Cell bold align="right">{money(v.totalDed)}</Cell>
           </tr>
-          <tr>
-            <td colSpan={4} className="border border-black py-1.5 text-center text-[12px] font-semibold">
-              REIMBURSEMENTS
-            </td>
-          </tr>
+          <Band>REIMBURSEMENTS</Band>
           {v.reimbursements.map((r, i) => (
+            // eslint-disable-next-line react/no-array-index-key
             <tr key={`reimb-${i}`}>
-              <Cell>{r.name || `Reimbursement ${i + 1}`}</Cell>
-              <Cell align="right">{money(r.amount || 0)}</Cell>
+              <Cell colSpan={3}>{r.name || `Reimbursement ${i + 1}`}</Cell>
               <Cell align="right">{money(r.amount || 0)}</Cell>
               <Cell align="right">{money(r.amount || 0)}</Cell>
             </tr>
           ))}
           <tr>
-            <Cell bold className="text-center" align="center">Total Reimbursements</Cell>
-            <Cell />
-            <Cell />
+            <Cell bold colSpan={4}>Total Reimbursements</Cell>
             <Cell bold align="right">{money(v.totalReimb)}</Cell>
           </tr>
           <tr>
-            <td colSpan={3} className="border border-black py-1.5 text-center text-[12px] font-semibold">
+            <td colSpan={4} className="border border-black py-1.5 text-center text-[12px] font-semibold">
               NETPAY
             </td>
             <Cell bold align="right">AMOUNT</Cell>
           </tr>
           <tr>
-            <Cell>Gross Earnings</Cell>
-            <Cell />
-            <Cell />
+            <Cell colSpan={4}>Gross Earnings</Cell>
             <Cell align="right">{money(v.gross)}</Cell>
           </tr>
           <tr>
-            <Cell>Total Deductions</Cell>
-            <Cell />
-            <Cell />
+            <Cell colSpan={4}>Total Deductions</Cell>
             <Cell align="right">{v.totalDed ? money(v.totalDed) : ''}</Cell>
           </tr>
           <tr>
-            <Cell>Total Reimbursements</Cell>
-            <Cell />
-            <Cell />
+            <Cell colSpan={4}>Total Reimbursements</Cell>
             <Cell align="right">{money(v.totalReimb)}</Cell>
           </tr>
           <tr>
-            <td colSpan={3} className="border border-black py-1.5 text-center text-[12px] font-semibold">
+            <td colSpan={4} className="border border-black py-1.5 text-center text-[12px] font-semibold">
               Total Net Payable
             </td>
             <Cell bold align="right">{money(v.netPay)}</Cell>
           </tr>
           <tr>
-            <td colSpan={4} className="border border-black px-3 py-3 text-center">
+            <td colSpan={5} className="border border-black px-3 py-3 text-center">
               <p className="text-[12px] font-semibold">
                 Total Net Payable {v.netPayLabel} ({v.netPayWords})
               </p>
@@ -152,6 +177,18 @@ export function PayslipDocument({ payslip, company, employee }) {
               </p>
             </td>
           </tr>
+          {v.tax && (
+            <>
+              <Band>{v.tax.heading}</Band>
+              <PairRows rows={v.tax.rows} keyPrefix="tax" />
+            </>
+          )}
+          {v.employer && (
+            <>
+              <Band>EMPLOYER CONTRIBUTIONS (paid by the company, not deducted from pay)</Band>
+              <PairRows rows={v.employer.rows} keyPrefix="employer" />
+            </>
+          )}
         </tbody>
       </table>
     </div>

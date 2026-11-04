@@ -13,20 +13,27 @@
  * overtime       off | pay (hourly rate × multiplier) | comp_off (a Comp Off
  *                leave day per `compOffHours` overtime hours). Only days with
  *                at least `minMinutes` overtime count; `monthlyCapHours` caps
- *                the month (0 = no cap). Off by default.
+ *                the month (0 = no cap). Off by default. The multiplier
+ *                defaults to 2 — the Code on Wages minimum where it applies
+ *                (a lower one stays possible, with a warning). `base`: the
+ *                hourly rate comes from the whole monthly pay ('gross') or
+ *                from Basic + DA ('basic_da').
  * missedCheckout what a day the employee forgot to check out of counts as —
  *                the system closes it at 4 AM: a full shift (no overtime) or
  *                a half day.
  */
 const DAY_RATE_BASES = ['working', 'calendar', 'fixed'];
 const OVERTIME_MODES = ['off', 'pay', 'comp_off'];
+const OVERTIME_BASES = ['gross', 'basic_da'];
 const LATE_PENALTIES = ['half', 'full'];
 const MISSED_CHECKOUT = ['full', 'half'];
 
 const DEFAULT_PAYROLL_RULES = Object.freeze({
   dayRateBasis: 'working',
   late: Object.freeze({ enabled: false, freeLates: 2, every: 3, penalty: 'half' }),
-  overtime: Object.freeze({ mode: 'off', multiplier: 1.5, minMinutes: 30, monthlyCapHours: 0, compOffHours: 8 }),
+  overtime: Object.freeze({
+    mode: 'off', multiplier: 2, base: 'gross', minMinutes: 30, monthlyCapHours: 0, compOffHours: 8,
+  }),
   missedCheckout: 'full',
 });
 
@@ -53,7 +60,9 @@ const normalizePayrollRules = (raw) => {
     },
     overtime: {
       mode: oneOf(ot.mode, OVERTIME_MODES, d.overtime.mode),
-      multiplier: num(ot.multiplier, d.overtime.multiplier, { min: 0.5, max: 5 }),
+      // Two decimals at most, so the engine can use it as an exact fraction.
+      multiplier: Math.round(num(ot.multiplier, d.overtime.multiplier, { min: 0.5, max: 5 }) * 100) / 100,
+      base: oneOf(ot.base, OVERTIME_BASES, d.overtime.base),
       minMinutes: num(ot.minMinutes ?? ot.min_minutes, d.overtime.minMinutes, { min: 0, max: 600, integer: true }),
       monthlyCapHours: num(ot.monthlyCapHours ?? ot.monthly_cap_hours, d.overtime.monthlyCapHours, { min: 0, max: 744 }),
       compOffHours: num(ot.compOffHours ?? ot.comp_off_hours, d.overtime.compOffHours, { min: 1, max: 24 }),
@@ -79,6 +88,7 @@ module.exports = {
   DEFAULT_PAYROLL_RULES,
   DAY_RATE_BASES,
   OVERTIME_MODES,
+  OVERTIME_BASES,
   normalizePayrollRules,
   getPayrollRules,
   latePenaltyDays,

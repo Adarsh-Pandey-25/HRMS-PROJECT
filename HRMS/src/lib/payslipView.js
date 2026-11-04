@@ -67,6 +67,11 @@ export function buildPayslipView(payslip, { company = {}, employee = {} } = {}) 
   const paidDays = payslip.paidDays || 0;
   const lopDays = payslip.unpaidLeaveDays || 0;
 
+  // What the company chose to show (the breakdown arrives camelCased; older copies snake_case).
+  const display = payslip.breakdown?.config?.payslipDisplay || payslip.breakdown?.config?.payslip_display || {};
+  const showRates = (display.showRates ?? display.show_rates) !== false;
+  const showEmployer = (display.showEmployer ?? display.show_employer) !== false;
+  const showTax = (display.showTaxWorking ?? display.show_tax_working) !== false;
   const earningLines = (Array.isArray(payslip.earnings?.lines) && payslip.earnings.lines.length
     ? payslip.earnings.lines
     : [
@@ -76,10 +81,13 @@ export function buildPayslipView(payslip, { company = {}, employee = {} } = {}) 
   ).map((e) => {
     const name = String(e.name || 'Component');
     const amt = Number(e.amount || 0);
-    const isBasic = name.toLowerCase().includes('basic');
+    // Only the Basic component itself (not, say, "Basic arrears").
+    const isBasic = name.trim().toLowerCase() === 'basic';
     const isHra = name.toLowerCase() === 'hra';
     return {
-      label: isBasic ? `Basic Salary ( ${padDays(paidDays)} Days )` : name,
+      // The paid days are in the summary; the rate column needs the room.
+      label: isBasic ? 'Basic Salary' : name,
+      rate: showRates && e.rate != null && Number(e.rate) > 0 ? fmt(e.rate) : '',
       amount: isHra && amt === 0 ? 'NA' : fmt(amt),
     };
   });
@@ -89,7 +97,8 @@ export function buildPayslipView(payslip, { company = {}, employee = {} } = {}) 
       label: d.name || 'Deduction',
       amount: Number(d.amount) > 0 ? fmt(d.amount) : '',
     }));
-  const tdsMode = String(payslip.breakdown?.config?.tds_mode || '').toLowerCase();
+  // The breakdown arrives camelCased (lib/mappers.js); older copies may be snake_case.
+  const tdsMode = String(payslip.breakdown?.config?.tdsMode ?? payslip.breakdown?.config?.tds_mode ?? '').toLowerCase();
   const tdsApplies = tdsMode !== 'none' && tdsMode !== 'exempt';
   if (tdsApplies && !deductionLines.some((d) => String(d.label).toLowerCase() === 'tds')) {
     deductionLines = [{ label: 'TDS', amount: '' }, ...deductionLines];
@@ -145,5 +154,34 @@ export function buildPayslipView(payslip, { company = {}, employee = {} } = {}) 
     netPay,
     netPayLabel: Number(netPay).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
     netPayWords: amountInWords(netPay),
+    showRates,
+    // The leave balance after this payslip, saved when it was published.
+    leave: (Array.isArray(payslip.breakdown?.meta?.leave) ? payslip.breakdown.meta.leave : []).map((l) => `${l.code} ${l.available}`).join(' · ') || null,
+    tax: showTax ? taxSummary(payslip.breakdown?.config?.tax) : null,
+    employer: showEmployer ? employerSummary(payslip.breakdown?.employerContributions) : null,
+  };
+}
+
+/** What the company pays on top of the salary (not deducted from it). */
+function employerSummary(list) {
+  const rows = (Array.isArray(list) ? list : []).filter((c) => Number(c.amount) > 0);
+  if (!rows.length) return null;
+  const totalPaise = rows.reduce((s, c) => s + Math.round(Number(c.amount) * 100), 0);
+  return {
+    rows: [...rows.map((c) => ({ label: String(c.name || 'Contribution'), amount: fmt(c.amount) })), { label: 'Total', amount: fmt(totalPaise / 100), total: true }],
+  };
+}
+
+/** The tax working behind this month's TDS, when payroll worked it out from the slabs. */
+function taxSummary(t) {
+  if (!t || t.applied === false) return null;
+  return {
+    heading: `INCOME TAX (TDS) — ${t.regime === 'old' ? 'old' : 'new'} regime, tax year ${t.taxYear || t.tax_year || ''}`,
+    rows: [
+      { label: 'Taxable income for the year (projected)', amount: fmt(t.taxableIncome ?? t.taxable_income) },
+      { label: 'Tax for the year, with cess', amount: fmt(t.annualTax ?? t.annual_tax) },
+      { label: 'TDS deducted before this month', amount: fmt(t.tdsBefore ?? t.tds_before) },
+      { label: 'TDS this month', amount: fmt(t.tds) },
+    ],
   };
 }

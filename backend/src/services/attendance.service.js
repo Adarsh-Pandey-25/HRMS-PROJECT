@@ -810,7 +810,7 @@ const getEmployeeAttendanceContext = async (employeeId) => {
  *    missed anyone who was late and also left early.)
  *  - A biometric day that has not closed yet is never treated as final.
  */
-const summarizeAttendance = async (employeeId, start, end, recordedRows) => {
+const summarizeAttendance = async (employeeId, start, end, recordedRows, { lastWorkingDay = null } = {}) => {
   const ctx = await getEmployeeAttendanceContext(employeeId);
   // Every count below uses the rows that count; a provisional WFH check-in
   // waits for its approval (isProvisionalWfh).
@@ -847,11 +847,17 @@ const summarizeAttendance = async (employeeId, start, end, recordedRows) => {
 
   // Days covered by HR-approved leave must not be counted as absent (they
   // already feed loss-of-pay through the LOP calc, not the AWOL "absent" bucket).
-  // UNPAID leave is excluded from this carve-out: by definition it should still
+  // Unpaid leave is excluded from this carve-out: by definition it should still
   // dock pay, so those days stay counted as absent for the LOP calc downstream.
+  // Unpaid means UNPAID, or any leave type the Leave Policy marks "Paid: No".
+  const unpaidTypes = new Set(['UNPAID']);
+  {
+    const policy = await require('./settings.service').getSetting('leave_policy', null, ctx.companyId);
+    for (const t of Array.isArray(policy) ? policy : []) if (t?.code && t.paid === false) unpaidTypes.add(String(t.code));
+  }
   const { data: approvedLeaves, error: leavesError } = await supabaseAdmin
     .from('leaves')
-    .select('from_date, to_date, leave_type')
+    .select('from_date, to_date, leave_type, is_half_day')
     .eq('employee_id', employeeId)
     .eq('status', 'approved')
     .lte('from_date', end.format('YYYY-MM-DD'))
@@ -859,15 +865,28 @@ const summarizeAttendance = async (employeeId, start, end, recordedRows) => {
   if (leavesError) throw new BadRequestError(leavesError.message);
 
   const approvedLeaveDays = new Set();
+  // For pay: days of approved unpaid leave (casual leave must never be spent
+  // on them), and paid leave that covers only half a day.
+  const unpaidLeaveDays = new Set();
+  const unpaidHalfLeaveDays = new Set();
+  const halfLeaveDays = new Set();
+  const fullLeaveDays = new Set();
   for (const lv of approvedLeaves || []) {
-    if (lv.leave_type === 'UNPAID') continue;
+    const unpaid = unpaidTypes.has(lv.leave_type);
     const leaveFrom = moment.tz(lv.from_date, TIMEZONE).startOf('day');
     const leaveTo = moment.tz(lv.to_date, TIMEZONE).startOf('day');
     const rangeStart = moment.max(leaveFrom, start.clone().startOf('day'));
     const rangeEnd = moment.min(leaveTo, end.clone().startOf('day'));
     const leaveCursor = rangeStart.clone();
     while (leaveCursor.isSameOrBefore(rangeEnd, 'day')) {
-      approvedLeaveDays.add(leaveCursor.format('YYYY-MM-DD'));
+      const day = leaveCursor.format('YYYY-MM-DD');
+      if (unpaid) {
+        unpaidLeaveDays.add(day);
+        if (lv.is_half_day) unpaidHalfLeaveDays.add(day);
+      } else {
+        approvedLeaveDays.add(day);
+        (lv.is_half_day ? halfLeaveDays : fullLeaveDays).add(day);
+      }
       leaveCursor.add(1, 'day');
     }
   }
@@ -901,9 +920,21 @@ const summarizeAttendance = async (employeeId, start, end, recordedRows) => {
     }
   }
   const beforeJoining = new Set(notJoinedDates);
+  // Payroll passes a leaver's last working day: the working days after it
+  // are unpaid as "not employed", never absences.
+  const leftOn = lastWorkingDay ? moment.tz(lastWorkingDay, TIMEZONE).startOf('day') : null;
+  const afterLeavingDates = [];
+  if (leftOn) {
+    const c = moment.max(leftOn.clone().add(1, 'day'), start.clone().startOf('day'));
+    while (c.isSameOrBefore(end, 'day')) {
+      if (!isWeeklyOff(c, workWeek)) afterLeavingDates.push(c.format('YYYY-MM-DD'));
+      c.add(1, 'day');
+    }
+  }
+  const absenceCutoff = leftOn && leftOn.isBefore(cutoff, 'day') ? leftOn : cutoff;
   const absentDates = [];
   const absCursor = start.clone().startOf('day');
-  while (absCursor.isSameOrBefore(cutoff, 'day')) {
+  while (absCursor.isSameOrBefore(absenceCutoff, 'day')) {
     const key = absCursor.format('YYYY-MM-DD');
     if (!beforeJoining.has(key) && !isWeeklyOff(absCursor, workWeek) && !attendedDays.has(key)
       && !approvedLeaveDays.has(key) && !holidayDates.has(key)) {
@@ -911,6 +942,35 @@ const summarizeAttendance = async (employeeId, start, end, recordedRows) => {
     }
     absCursor.add(1, 'day');
   }
+
+  // For pay only: a half day or a late arrival on a day of approved paid
+  // leave (half-day leave for the other half, say) costs nothing more — the
+  // leave already covers that part of the day and is charged to the balance.
+  // The counts above stay as they are for the attendance screens.
+  // Half-day paid leave and no work at all that day: the other half is unpaid
+  // (it used to pay the whole day).
+  const halfLeaveNotWorked = [...halfLeaveDays].filter((d) => {
+    const day = moment.tz(d, TIMEZONE);
+    return !fullLeaveDays.has(d) && !attendedDays.has(d) && !holidayDates.has(d) && !beforeJoining.has(d)
+      && !isWeeklyOff(day, workWeek) && day.isSameOrBefore(absenceCutoff, 'day');
+  });
+  // A half day or a late arrival on a day that is no working day to be paid
+  // for anyway — a holiday (paid in full), a weekly off, before joining or
+  // after leaving (already unpaid) — costs nothing more.
+  const afterLeaving = new Set(afterLeavingDates);
+  const payableWorkday = (d) => !holidayDates.has(d) && !beforeJoining.has(d) && !afterLeaving.has(d)
+    && !isWeeklyOff(moment.tz(d, TIMEZONE), workWeek);
+  // Approved unpaid half-day leave on a day worked: that half is unpaid even
+  // when the attendance shows a full day (it used to be paid).
+  const unpaidHalfWorked = [...unpaidHalfLeaveDays].filter((d) => attendedDays.has(d) && !fullLeaveDays.has(d) && payableWorkday(d));
+  const payHalfDayDates = [...new Set([
+    ...halfDayRows.map(workDateOf).filter((d) => !approvedLeaveDays.has(d) && payableWorkday(d)),
+    ...halfLeaveNotWorked,
+    ...unpaidHalfWorked,
+  ])].sort();
+  // A late check-in on a day of leave (paid or unpaid) is the leave, not lateness.
+  const payLateDates = lateRows.map(workDateOf)
+    .filter((d) => !approvedLeaveDays.has(d) && !unpaidLeaveDays.has(d) && payableWorkday(d)).sort();
 
   return {
     workingDays,
@@ -940,6 +1000,14 @@ const summarizeAttendance = async (employeeId, start, end, recordedRows) => {
     leaveDates: [...approvedLeaveDays].sort(),
     expectedHours: rules.expectedHours,
     joinedOn,
+    afterLeaving: afterLeavingDates.length,
+    afterLeavingDates,
+    leftOn: leftOn ? leftOn.format('YYYY-MM-DD') : null,
+    payHalfDay: payHalfDayDates.length,
+    payHalfDayDates,
+    payLate: payLateDates.length,
+    // Approved unpaid leave (UNPAID or a "Paid: No" type): unpaid, and never covered by casual leave.
+    unpaidLeaveDates: [...unpaidLeaveDays].sort(),
   };
 };
 
@@ -980,11 +1048,11 @@ const fetchRowsBetween = async (employeeId, start, end) => {
   }
 };
 
-const getMonthlySummary = async (employeeId, month, year) => {
+const getMonthlySummary = async (employeeId, month, year, options = {}) => {
   const start = moment.tz({ year, month: month - 1, day: 1 }, TIMEZONE).startOf('month');
   const end = start.clone().endOf('month');
   const rows = await fetchRowsBetween(employeeId, start, end);
-  const summary = await summarizeAttendance(employeeId, start, end, rows);
+  const summary = await summarizeAttendance(employeeId, start, end, rows, options);
   return { records: rows.map(formatRecordTimes), summary };
 };
 

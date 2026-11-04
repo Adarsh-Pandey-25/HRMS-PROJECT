@@ -8,6 +8,7 @@ const SEGMENTS = [
   { key: 'net', label: 'Take-home', color: 'bg-teal' },
   { key: 'LOP', label: 'Loss of pay', color: 'bg-danger' },
   { key: 'PF', label: 'PF', color: 'bg-violet-500' },
+  { key: 'VPF', label: 'VPF', color: 'bg-violet-300' },
   { key: 'ESI', label: 'ESI', color: 'bg-pink-500' },
   { key: 'Professional Tax', label: 'PT', color: 'bg-sky-500' },
   { key: 'TDS', label: 'TDS', color: 'bg-warning' },
@@ -24,12 +25,25 @@ const PRESETS = [
   { label: '+10h OT', s: { ...EMPTY_SCENARIO, overtimeHours: 10 } },
 ];
 
+/** How a sample salary is split, from the salary structure on screen (as the server splits it). */
+const splitLine = (o = {}) => {
+  const comps = o.components && typeof o.components === 'object' ? o.components : {};
+  const on = (key) => comps[key] !== false;
+  const pct = (v, d) => (v === undefined || v === null || v === '' ? d : Number(v));
+  const parts = [];
+  if (on('special')) parts.push(`Basic ${pct(o.calc?.ctcTemplate?.basicPercent, 50)}%`);
+  if (on('hra')) parts.push(`HRA ${pct(o.hraPercent, 40)}% of Basic`);
+  if (on('da')) parts.push(`DA ${pct(o.daPercent, 10)}% of Basic`);
+  parts.push(on('special') ? 'Special Allowance the rest' : 'Basic the rest');
+  return parts.join(' · ');
+};
+
 /**
  * "What would this month's pay be?" — for a sample salary or a real
  * employee, under the settings on screen (saved or not). The server runs the
  * same calculation real payslips use; nothing is stored.
  */
-export function PaySimulator({ overrides, employees = [] }) {
+export function PaySimulator({ overrides, employees = [], onEditStructure }) {
   const [who, setWho] = useState('sample');
   const [gross, setGross] = useState(30000);
   const [employeeId, setEmployeeId] = useState('');
@@ -68,10 +82,14 @@ export function PaySimulator({ overrides, employees = [] }) {
     const deductions = result.breakdownJson?.deductions || [];
     const cfg = result.breakdownJson?.config || {};
     const grossPay = Number(totals.grossSalary || 0);
+    // Pay lost to unpaid days is already out of each earned part; the bar
+    // shows it next to the deductions, against the full month's pay.
+    const lop = Number(cfg.lopAmount || 0);
+    const barTotal = grossPay + lop;
     const by = Object.fromEntries(deductions.map((d) => [d.name, Number(d.amount || 0)]));
-    const known = ['LOP', 'PF', 'ESI', 'Professional Tax', 'TDS'];
+    const known = ['PF', 'VPF', 'ESI', 'Professional Tax', 'TDS'];
     const other = deductions.filter((d) => !known.includes(d.name)).reduce((s, d) => s + Number(d.amount || 0), 0);
-    const parts = { net: Number(totals.netPay || 0), ...by, other };
+    const parts = { net: Number(totals.netPay || 0), LOP: lop, ...by, other };
     const segs = SEGMENTS.map((s) => ({ ...s, amount: parts[s.key] || 0 })).filter((s) => s.amount > 0);
     const hits = [];
     if (cfg.latePenaltyDays > 0) hits.push({ tone: 'bad', text: `${cfg.lateCount} lates → ${cfg.latePenaltyDays} day${cfg.latePenaltyDays === 1 ? '' : 's'} cut` });
@@ -80,7 +98,23 @@ export function PaySimulator({ overrides, employees = [] }) {
     if (cfg.overtime?.pay > 0) hits.push({ tone: 'good', text: `${formatHours(cfg.overtime.hours)} overtime → +${formatCurrency(cfg.overtime.pay)}` });
     if (cfg.overtime?.compOffDays > 0) hits.push({ tone: 'good', text: `${formatHours(cfg.overtime.hours)} overtime → ${cfg.overtime.compOffDays} Comp Off day${cfg.overtime.compOffDays === 1 ? '' : 's'}` });
     if (cfg.overtime?.mode === 'off' && scenario.overtimeHours > 0) hits.push({ tone: 'neutral', text: 'Overtime is off — not paid' });
-    return { grossPay, net: Number(totals.netPay || 0), segs, deductions, cfg, earnings: result.breakdownJson?.earnings || [], hits };
+    if (lop > 0) hits.push({ tone: 'bad', text: `${cfg.unpaidLeaveDays} unpaid day${cfg.unpaidLeaveDays === 1 ? '' : 's'} → −${formatCurrency(lop)}` });
+    return {
+      grossPay,
+      barTotal,
+      net: Number(totals.netPay || 0),
+      segs,
+      deductions,
+      cfg,
+      earnings: result.breakdownJson?.earnings || [],
+      employer: result.breakdownJson?.employerContributions || [],
+      employerTotal: Number(totals.employerContributions || 0),
+      blockers: result.blockers || [],
+      warnings: result.warnings || [],
+      // TDS worked out from the tax slabs (company policy "projected"), when it is.
+      tax: cfg.tax || null,
+      hits,
+    };
   }, [result, scenario.overtimeHours]);
 
   const setS = (k) => (v) => setScenario((s) => ({ ...s, [k]: v }));
@@ -105,10 +139,10 @@ export function PaySimulator({ overrides, employees = [] }) {
             of {formatCurrency(view.grossPay)} gross · {view.cfg.workingDays} {view.cfg.dayRateBasis === 'calendar' ? 'calendar' : view.cfg.dayRateBasis === 'fixed' ? 'fixed' : 'working'} days · {formatCurrency(view.cfg.perDayRate)}/day
           </p>
         )}
-        {view && view.grossPay > 0 && (
+        {view && view.barTotal > 0 && (
           <div className="relative mt-3 flex h-2.5 overflow-hidden rounded-full bg-white/10" aria-hidden>
             {view.segs.map((s) => (
-              <div key={s.key} className={cn('h-full transition-all duration-500', s.color)} style={{ width: `${(s.amount / view.grossPay) * 100}%` }} />
+              <div key={s.key} className={cn('h-full transition-all duration-500', s.color)} style={{ width: `${(s.amount / view.barTotal) * 100}%` }} />
             ))}
           </div>
         )}
@@ -137,6 +171,12 @@ export function PaySimulator({ overrides, employees = [] }) {
               onChange={(e) => setGross(Number(e.target.value))}
               className="mt-2 w-full accent-[rgb(var(--color-primary))]"
             />
+            <p className="mt-1 text-[11px] text-fg-subtle">
+              Split like your salary structure: {splitLine(overrides)}.
+              {onEditStructure && (
+                <button type="button" onClick={onEditStructure} className="ml-1 font-semibold text-primary hover:underline">Change</button>
+              )}
+            </p>
           </div>
         ) : (
           <select
@@ -192,6 +232,12 @@ export function PaySimulator({ overrides, employees = [] }) {
 
         {view && (
           <>
+            {view.blockers.map((b) => (
+              <p key={b.code} className="rounded-2xl bg-danger/10 px-3 py-2 text-xs font-semibold text-danger">{b.message}</p>
+            ))}
+            {view.warnings.map((w) => (
+              <p key={w.code} className="rounded-2xl bg-warning/10 px-3 py-2 text-xs text-warning">{w.message}</p>
+            ))}
             {view.hits.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
                 {view.hits.map((h) => (
@@ -204,7 +250,13 @@ export function PaySimulator({ overrides, employees = [] }) {
             <div className="space-y-1 rounded-2xl bg-muted/30 p-3 text-xs">
               {view.earnings.map((e) => (
                 <div key={`e-${e.name}`} className="flex justify-between text-fg-muted">
-                  <span>{e.name}</span><span className="tabular-nums text-fg">{formatCurrency(e.amount)}</span>
+                  <span>{e.name}</span>
+                  <span className="tabular-nums text-fg">
+                    {formatCurrency(e.amount)}
+                    {e.rate != null && Number(e.rate) !== Number(e.amount) && (
+                      <span className="ml-1 text-[10px] text-fg-subtle">of {formatCurrency(e.rate)}</span>
+                    )}
+                  </span>
                 </div>
               ))}
               <div className="my-1 border-t border-dashed border-border" />
@@ -222,6 +274,31 @@ export function PaySimulator({ overrides, employees = [] }) {
                 <span>Net pay</span><span className="tabular-nums">{formatCurrency(view.net)}</span>
               </div>
             </div>
+            {view.tax && (
+              <div className="rounded-2xl bg-amber-500/5 p-3 text-[11px] text-fg-muted ring-1 ring-inset ring-amber-500/20">
+                <p className="font-semibold text-fg">TDS from the tax slabs ({view.tax.regime === 'old' ? 'old' : 'new'} regime, {view.tax.taxYear})</p>
+                <p className="mt-0.5">
+                  Year&apos;s salary {formatCurrency(view.tax.projectedSalary)} → taxable {formatCurrency(view.tax.taxableIncome)} → tax {formatCurrency(view.tax.annualTax)};
+                  {' '}{formatCurrency(view.tax.tdsBefore)} already deducted, the rest over {view.tax.monthsLeft} month{view.tax.monthsLeft === 1 ? '' : 's'} = {formatCurrency(view.tax.tds)} this month.
+                </p>
+                {view.tax.assumedFullYear && <p className="mt-0.5 text-fg-subtle">A sample: the same pay every month since April.</p>}
+                {view.tax.applied === false && <p className="mt-0.5 text-fg-subtle">For information — this person has their own TDS setting.</p>}
+              </div>
+            )}
+            {view.employer.length > 0 && (
+              <div className="space-y-1 rounded-2xl border border-dashed border-border p-3 text-xs">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-fg-subtle">The employer also pays (not deducted)</p>
+                {view.employer.map((e) => (
+                  <div key={`er-${e.name}`} className="flex justify-between text-fg-muted">
+                    <span>{e.name}</span><span className="tabular-nums text-fg">{formatCurrency(e.amount)}</span>
+                  </div>
+                ))}
+                <div className="flex justify-between border-t border-border pt-1 font-semibold text-fg">
+                  <span>Cost to the company this month</span>
+                  <span className="tabular-nums">{formatCurrency(view.grossPay + view.employerTotal)}</span>
+                </div>
+              </div>
+            )}
           </>
         )}
       </div>

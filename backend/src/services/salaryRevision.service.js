@@ -21,8 +21,15 @@ const round2 = (n) => Math.round(Number(n || 0) * 100) / 100;
 const todayIst = () => moment().tz(TIMEZONE).format('YYYY-MM-DD');
 const fullName = (e) => `${e?.first_name || ''} ${e?.last_name || ''}`.trim();
 
+/** A salary amount as stored: 22000, or text such as "22,000" or "₹ 22000"; none → 0; not an amount → null (never NaN). */
+const amountOf = (v) => {
+  if (v === undefined || v === null || v === '') return 0;
+  const n = typeof v === 'string' ? Number(v.replace(/[,\s₹]/g, '')) : Number(v);
+  return Number.isFinite(n) && n >= 0 ? round2(n) : null;
+};
+
 const pickComponents = (salary = {}) =>
-  SALARY_COMPONENTS.reduce((acc, k) => ({ ...acc, [k]: round2(salary?.[k]) }), {});
+  SALARY_COMPONENTS.reduce((acc, k) => ({ ...acc, [k]: amountOf(salary?.[k]) }), {});
 
 const monthlyGross = (components) =>
   round2(SALARY_COMPONENTS.reduce((sum, k) => sum + Number(components?.[k] || 0), 0));
@@ -156,6 +163,11 @@ const applyRevision = async (revisionId, { actorId = null, actorRole = 'system',
     ipAddress,
   }).catch((e) => logger.warn('Audit log failed', { error: e.message }));
 
+  // Their open draft payslips are worked out again: a back-dated revision
+  // changes the months it reaches (a published payslip never changes).
+  require('../utils/background').runInBackground('drafts after a salary revision', () => require('./payroll.service')
+    .recalculatePayslipsFromSettings({ employeeId: employee.id, companyId: employee.company_id }));
+
   if (employee.email) {
     let revisedBy = null;
     if (rev.created_by) {
@@ -285,6 +297,7 @@ const applyDueRevisions = async () => {
 
 module.exports = {
   SALARY_COMPONENTS,
+  pickComponents,
   listRevisions,
   createRevision,
   cancelRevision,

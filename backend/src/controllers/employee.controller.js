@@ -755,11 +755,23 @@ const offboard = async (req, res, next) => {
     }
 
     const reason = req.body?.reason ? String(req.body.reason).trim() : null;
+    // The last day they worked — payroll pays the month up to it (defect D7:
+    // leavers used to get no payslip at all). Defaults to today.
+    const todayIst = require('moment-timezone').tz('Asia/Kolkata').format('YYYY-MM-DD');
+    const lastWorkingDay = req.body?.last_working_day ? String(req.body.last_working_day).slice(0, 10) : todayIst;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(lastWorkingDay) || Number.isNaN(Date.parse(`${lastWorkingDay}T00:00:00Z`))) {
+      throw new BadRequestError('Last working day must be a date (YYYY-MM-DD)');
+    }
+    const { data: joinRow } = await supabaseAdmin.from('employees').select('date_of_joining').eq('id', req.params.id).maybeSingle();
+    if (joinRow?.date_of_joining && lastWorkingDay < String(joinRow.date_of_joining).slice(0, 10)) {
+      throw new BadRequestError('Last working day can\'t be before the joining date');
+    }
     const fullUpdate = {
       is_active: false,
       employment_status: 'offboarded',
       offboarded_at: new Date().toISOString(),
       offboarded_by: req.user.id,
+      last_working_day: lastWorkingDay,
     };
 
     let { data, error } = await supabaseAdmin
@@ -768,6 +780,18 @@ const offboard = async (req, res, next) => {
       .eq('id', req.params.id)
       .select()
       .single();
+
+    // Before 20261102_payroll_last_working_day.sql runs there is no
+    // last_working_day column; payroll then uses the offboarding date.
+    if (error && isMissingColumnError(error.message, 'last_working_day')) {
+      const { last_working_day: _lwd, ...withoutLwd } = fullUpdate;
+      ({ data, error } = await supabaseAdmin
+        .from('employees')
+        .update(withoutLwd)
+        .eq('id', req.params.id)
+        .select()
+        .single());
+    }
 
     if (error && isMissingOffboardColumn(error.message)) {
       ({ data, error } = await supabaseAdmin

@@ -144,6 +144,18 @@ const updateKey = async (req, res, next) => {
     // the server can read back (normalized), never a hand-edited shape.
     if (key === 'work_week') value = require('../utils/workWeek').normalizeWorkWeek(value);
     if (key === 'payroll_rules') value = require('../utils/payrollRules').normalizePayrollRules(value);
+    // A company's own calculation values (PF/ESI rates, wages, CTC, …): only
+    // what payroll can use is stored, and the audit keeps what they were before.
+    let calcBefore;
+    if (key === 'payroll_calc') {
+      const { normalizeCompanyCalc } = require('../payroll/companyRules');
+      calcBefore = await settingsService.getSetting('payroll_calc', null, req.user.company_id);
+      value = normalizeCompanyCalc(value);
+      // Approval before publishing checks HR's work, so HR can't switch it on or off.
+      if (normalizeCompanyCalc(calcBefore).approval.required !== value.approval.required && req.user.role !== 'admin') {
+        throw new (require('../utils/errors').ForbiddenError)('Only an admin can switch approval before publishing on or off.');
+      }
+    }
     if (key === 'asset_config' && value && typeof value === 'object') {
       const names = Array.isArray(value.categories) ? value.categories : [];
       const assetsService = require('../services/assets.service');
@@ -160,13 +172,14 @@ const updateKey = async (req, res, next) => {
     );
     if (error) throw new BadRequestError(error.message);
 
-    let responseValue = req.body.value;
+    let responseValue = key === 'payroll_calc' ? value : req.body.value;
     if (key === 'company_profile') {
       responseValue = await enrichCompanyProfileValue(value);
     }
 
         auditFromRequest(req, {
       actionType: 'settings.update', targetType: 'setting',
+      ...(key === 'payroll_calc' ? { beforeState: { key, value: calcBefore ?? null } } : {}),
       afterState: { key, value: responseValue },
     });
     successResponse(res, 'Setting updated', data ? { ...data, key, value: responseValue } : { key, value: responseValue });

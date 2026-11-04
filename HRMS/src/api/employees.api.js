@@ -40,9 +40,13 @@ export async function updateEmployeeApi(id, payload) {
   return mapEmployeeFromApi(data);
 }
 
-/** Soft offboard — data retained, not deleted. See N-10 resolution. */
-export async function offboardEmployeeApi(id, reason) {
-  return apiRequest({ method: 'DELETE', url: `/employees/${id}`, data: { reason } });
+/** Soft offboard — data retained, not deleted. See N-10 resolution. lastWorkingDay (YYYY-MM-DD): payroll pays up to it. */
+export async function offboardEmployeeApi(id, reason, lastWorkingDay) {
+  return apiRequest({
+    method: 'DELETE',
+    url: `/employees/${id}`,
+    data: { reason, ...(lastWorkingDay ? { last_working_day: lastWorkingDay } : {}) },
+  });
 }
 
 /** Genuine hard delete — only usable on an already-offboarded employee, requires typed confirmation. */

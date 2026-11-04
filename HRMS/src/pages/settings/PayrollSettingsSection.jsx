@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Coins, Gauge, Layers, ReceiptText, Rocket } from 'lucide-react';
+import { Calculator, Coins, Gauge, Layers, ReceiptText, Rocket } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useQueryClient } from '@tanstack/react-query';
 import { SaveStatusIndicator } from '../../components/ui';
@@ -18,12 +18,14 @@ import {
   DayRateCard, EarlyLeaveCard, LateRuleCard, LeaveFirstCard, MissedCheckoutCard, OvertimeCard, WeeklyOffsCard,
 } from './payroll/PayRules';
 import { CustomOptions, StatutoryCards } from './payroll/Deductions';
+import { CalculationCards } from './payroll/Calculation';
 import { RunCards, StructureCard } from './payroll/StructureRun';
 import { PaySimulator } from './payroll/PaySimulator';
 
 const TABS = [
   { id: 'rules', label: 'Pay rules', icon: Gauge },
   { id: 'deductions', label: 'Deductions', icon: ReceiptText },
+  { id: 'calculation', label: 'Calculation', icon: Calculator },
   { id: 'structure', label: 'Salary structure', icon: Layers },
   { id: 'run', label: 'Run & automation', icon: Rocket },
 ];
@@ -31,17 +33,24 @@ const TABS = [
 /** The form, from what's stored — every field normalized so nothing renders undefined. */
 const formFrom = (cfg, leaveFirst) => ({
   ...cfg,
-  pfEmployeePercent: Number(cfg.pfEmployeePercent ?? 12),
-  professionalTaxAmount: Number(cfg.professionalTaxAmount ?? 200),
-  tdsPercent: Number(cfg.tdsPercent ?? 8),
-  tdsMode: cfg.tdsMode || 'auto',
-  esiEmployeePercent: Number(cfg.esiEmployeePercent ?? 0.75),
-  esiThreshold: Number(cfg.esiThreshold ?? 21000),
-  pfWageCeiling: cfg.pfWageCeiling == null || cfg.pfWageCeiling === '' ? null : Number(cfg.pfWageCeiling),
+  // The company's own choices; null = not chosen yet. Its own values for what
+  // the law sets (rates, limits, wages, CTC) are in `calc` (null = the law).
+  calc: cfg.calc && typeof cfg.calc === 'object' ? cfg.calc : {},
+  pfPolicy: ['not_applicable', 'statutory_ceiling', 'full_wages'].includes(cfg.pfPolicy) ? cfg.pfPolicy : null,
+  esiApplicable: typeof cfg.esiApplicable === 'boolean' ? cfg.esiApplicable : null,
+  tdsPolicy: ['fixed_per_employee', 'projected', 'none'].includes(cfg.tdsPolicy) ? cfg.tdsPolicy : 'fixed_per_employee',
+  ptState: cfg.ptState || '',
+  // A state is a real choice once picked on this screen; the earlier screen
+  // saved Karnataka by itself, so that one waits to be confirmed.
+  ptStateSet: Boolean(cfg.ptStateSet) || Boolean(cfg.ptState && cfg.ptState !== 'Karnataka'),
+  ptManualAmount: cfg.ptManualAmount == null || cfg.ptManualAmount === '' ? null : Number(cfg.ptManualAmount),
+  ptManualSlabs: Array.isArray(cfg.ptManualSlabs) && cfg.ptManualSlabs.length ? cfg.ptManualSlabs : null,
+  // Slabs for other states staff work in, where SpaxSync has no table: [{ state, slabs }].
+  ptOtherStates: Array.isArray(cfg.ptOtherStates) ? cfg.ptOtherStates : [],
+  // Labour Welfare Fund per state, as the company entered it: [{ state, employee, employer, months }].
+  lwfStates: Array.isArray(cfg.lwfStates) ? cfg.lwfStates : [],
   workingDaysPerMonth: Number(cfg.workingDaysPerMonth ?? 26),
-  runDate: Number(cfg.runDate ?? 25),
-  autoLockDays: Number(cfg.autoLockDays ?? 20),
-  bankFileFormat: cfg.bankFileFormat || 'NEFT',
+  runDate: Math.min(10, Math.max(1, Number(cfg.runDate) || 1)),
   components: cfg.components || DEFAULT_SALARY_COMPONENTS,
   customPayrollOptions: cfg.customPayrollOptions || [],
   rules: normalizePayRules(cfg.rules),
@@ -54,33 +63,46 @@ const formFrom = (cfg, leaveFirst) => ({
 const GROUPS = {
   base: (f) => ({
     workingDays: f.workingDaysPerMonth,
-    pf: f.pfEmployeePercent,
-    pt: f.professionalTaxAmount,
-    tds: f.tdsPercent,
-    esi: f.esiEmployeePercent,
-    esiThreshold: f.esiThreshold,
     config: {
-      pf_employee_percent: f.pfEmployeePercent,
-      professional_tax_amount: f.professionalTaxAmount,
-      tds_percent: f.tdsPercent,
-      tds_mode: f.tdsMode,
-      pt_state: f.ptState ?? 'Karnataka',
-      pf_wage_ceiling: f.pfWageCeiling ?? null,
-      esi_employee_percent: f.esiEmployeePercent,
-      esi_threshold: f.esiThreshold,
+      // Only what the company chooses. A choice not made yet is left out, so
+      // payroll keeps using the default the server reports for it.
+      ...(f.pfPolicy ? { pf_policy: f.pfPolicy } : {}),
+      ...(typeof f.esiApplicable === 'boolean' ? { esi_applicable: f.esiApplicable } : {}),
+      tds_policy: f.tdsPolicy,
+      pt_state: f.ptState || '',
+      pt_state_set: Boolean(f.ptState) && Boolean(f.ptStateSet),
+      pt_manual_amount: f.ptManualAmount == null ? null : Number(f.ptManualAmount),
+      pt_manual_slabs: f.ptManualSlabs ? f.ptManualSlabs.map((r) => ({
+        from: Number(r.from) || 0,
+        amount: Number(r.amount) || 0,
+        february_amount: r.february_amount == null ? null : Number(r.february_amount),
+      })) : null,
+      lwf_states: (f.lwfStates || []).map((o) => ({
+        state: o.state,
+        employee: Number(o.employee) || 0,
+        employer: Number(o.employer) || 0,
+        months: (o.months || []).map(Number),
+      })),
+      pt_other_states: (f.ptOtherStates || []).map((o) => ({
+        state: o.state,
+        slabs: (o.slabs || []).map((r) => ({
+          from: Number(r.from) || 0,
+          amount: Number(r.amount) || 0,
+          february_amount: r.february_amount == null ? null : Number(r.february_amount),
+        })),
+      })),
       components: f.components || DEFAULT_SALARY_COMPONENTS,
       hra_percent: f.hraPercent ?? 40,
       da_percent: f.daPercent ?? 10,
-      run_date: Number(f.runDate) || 25,
+      run_date: Math.min(10, Math.max(1, Number(f.runDate) || 1)),
       auto_process: Boolean(f.autoProcess),
-      auto_lock_days: Number(f.autoLockDays) || 20,
-      bank_file_format: f.bankFileFormat || 'NEFT',
       custom_payroll_options: (f.customPayrollOptions || []).map((o) => ({
         id: o.id, name: o.name, kind: o.kind, value_type: o.valueType, value: o.value, base: o.base, active: o.active !== false,
       })),
     },
   }),
   rules: (f) => ({ rules: f.rules, leaveFirst: f.leaveFirst }),
+  calc: (f) => f.calc,
   workWeek: (f) => f.workWeek,
   early: (f) => f.halfDayBeforeGoal,
 };
@@ -91,15 +113,21 @@ const simulatorOverrides = (f) => ({
   rules: f.rules,
   workWeek: f.workWeek,
   leaveFirst: f.leaveFirst,
-  pfPercent: f.pfEmployeePercent,
-  tdsPercent: f.tdsMode === 'manual' ? 0 : f.tdsPercent,
-  esiPercent: f.esiEmployeePercent,
-  esiThreshold: f.esiThreshold,
-  ptAmount: f.professionalTaxAmount,
+  ...(f.pfPolicy ? { pfPolicy: f.pfPolicy } : {}),
+  ...(typeof f.esiApplicable === 'boolean' ? { esiApplicable: f.esiApplicable } : {}),
+  tdsPolicy: f.tdsPolicy,
   ptState: f.ptState || '',
-  pfWageCeiling: f.pfWageCeiling,
+  ptManualAmount: f.ptManualAmount == null ? null : f.ptManualAmount,
+  ptManualSlabs: f.ptManualSlabs || null,
+  ptOtherStates: f.ptOtherStates || [],
+  lwfStates: f.lwfStates || [],
   workingDaysSetting: f.workingDaysPerMonth,
   customOptions: f.customPayrollOptions,
+  calc: f.calc,
+  // The salary structure: how a sample salary is split.
+  components: f.components,
+  hraPercent: f.hraPercent,
+  daPercent: f.daPercent,
 });
 
 /**
@@ -137,11 +165,6 @@ export function PayrollSettingsSection() {
     if (changed.includes('base')) {
       calls.push(
         updateSettingApi('payroll_working_days', g.base.workingDays),
-        updateSettingApi('payroll_pf_rate', g.base.pf / 100),
-        updateSettingApi('payroll_professional_tax', g.base.pt),
-        updateSettingApi('payroll_tds_percent', g.base.tds),
-        updateSettingApi('payroll_esi_employee_percent', g.base.esi),
-        updateSettingApi('payroll_esi_threshold', g.base.esiThreshold),
         updateSettingApi('payroll_config', g.base.config),
       );
     }
@@ -150,13 +173,20 @@ export function PayrollSettingsSection() {
         if (res?.compOffEnabled) toast.success('Comp Off leave type switched on in Leave Policy');
       }));
     }
+    // The server keeps only values payroll can use: show what it kept.
+    let savedCalc = null;
+    if (changed.includes('calc')) {
+      calls.push(updateSettingApi('payroll_calc', g.calc).then((row) => {
+        if (row?.value && typeof row.value === 'object') savedCalc = row.value;
+      }));
+    }
     if (changed.includes('workWeek')) calls.push(updateSettingApi('work_week', g.workWeek));
     if (changed.includes('early')) calls.push(updateSettingApi('payroll_halfday_before_goal_enabled', g.early));
     await Promise.all(calls);
     savedRef.current = { ...savedRef.current, ...Object.fromEntries(changed.map((k) => [k, snap[k]])) };
 
     const { leaveFirst, ...payrollPart } = next;
-    update(payrollPart);
+    update(savedCalc ? { ...payrollPart, calc: savedCalc } : payrollPart);
     if (changed.includes('rules')) updateLeavePolicy({ autoDeduct: leaveFirst });
     // Open payslips follow the new settings — the server does it in the background.
     recalculatePayslipsFromSettingsApi(undefined, undefined, undefined, { background: true })
@@ -182,11 +212,13 @@ export function PayrollSettingsSection() {
     : form.rules.dayRateBasis === 'fixed' ? form.workingDaysPerMonth : working;
   const perDay = 30000 / Math.max(1, divisor);
   const chips = useMemo(() => [
+    { not_applicable: 'No PF', statutory_ceiling: 'PF up to the legal limit', full_wages: 'PF on full Basic + DA' }[form.pfPolicy] || 'PF: choose a method',
+    form.ptState ? `PT: ${form.ptState}` : 'PT: choose a state',
     describeWorkWeek(form.workWeek),
     form.rules.late.enabled ? `Every ${form.rules.late.every} lates = ${form.rules.late.penalty === 'full' ? '1 day' : '½ day'}` : 'Lates free',
     form.rules.overtime.mode === 'pay' ? `OT paid ${form.rules.overtime.multiplier}×` : form.rules.overtime.mode === 'comp_off' ? 'OT → Comp Off' : 'OT not paid',
     form.leaveFirst ? 'Casual leave first' : 'Absence = LOP',
-  ], [form.workWeek, form.rules, form.leaveFirst]);
+  ], [form.workWeek, form.rules, form.leaveFirst, form.pfPolicy, form.ptState]);
 
   const overrides = useMemo(() => simulatorOverrides(form), [form]);
 
@@ -202,7 +234,7 @@ export function PayrollSettingsSection() {
             </p>
             <h2 className="mt-1 text-2xl font-extrabold tracking-tight text-fg">How your company pays</h2>
             <p className="mt-1 max-w-xl text-sm text-fg-muted">
-              Every change saves on its own and updates this month&apos;s draft payslips. Try anything in the simulator first.
+              Every change saves on its own and updates draft payslips — a published payslip never changes. Try anything in the simulator first.
             </p>
           </div>
           <SaveStatusIndicator status={status} onRetry={retry} />
@@ -271,11 +303,14 @@ export function PayrollSettingsSection() {
               </p>
             </>
           )}
+          {tab === 'calculation' && (
+            <CalculationCards calc={form.calc} customOptions={form.customPayrollOptions} onChange={(calc) => patch({ calc })} />
+          )}
           {tab === 'structure' && <StructureCard form={form} patch={patch} />}
           {tab === 'run' && <RunCards form={form} patch={patch} />}
         </div>
         <div className="xl:sticky xl:top-14 xl:self-start">
-          <PaySimulator overrides={overrides} employees={employees} />
+          <PaySimulator overrides={overrides} employees={employees} onEditStructure={() => setTab('structure')} />
         </div>
       </div>
     </div>

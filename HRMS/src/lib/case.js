@@ -68,6 +68,7 @@ export function mapEmployeeFromApi(emp) {
       : (c.isActive === false ? 'resigned' : (c.status || 'active')),
     employmentStatus: c.employmentStatus || (c.isActive === false ? 'offboarded' : 'active'),
     offboardedAt: c.offboardedAt,
+    lastWorkingDay: c.lastWorkingDay ? String(c.lastWorkingDay).slice(0, 10) : null,
     dataRetentionReviewAt: c.dataRetentionReviewAt,
     employmentType: (c.employmentType || 'full_time').replace(/_/g, '-'),
     role: c.role || 'employee',

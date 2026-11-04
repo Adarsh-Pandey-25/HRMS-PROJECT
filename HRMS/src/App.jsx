@@ -40,6 +40,7 @@ const SuperAdminUsers = lazy(() => import('./pages/super-admin/AdminUsers'));
 const SuperAdminLeads = lazy(() => import('./pages/super-admin/Leads'));
 const SuperAdminEmailLog = lazy(() => import('./pages/super-admin/EmailLog'));
 const SuperAdminWhatsApp = lazy(() => import('./pages/super-admin/WhatsApp'));
+const SuperAdminStatutoryRules = lazy(() => import('./pages/super-admin/StatutoryRules'));
 const Dashboard = lazy(loaders['/dashboard']);
 const EmployeeList = lazy(loaders['/employees']);
 const EmployeeProfile = lazy(() => import('./pages/employees/EmployeeProfile'));
@@ -65,6 +66,10 @@ const MyPayslips = lazy(loaders['/payroll/me']);
 const RunPayroll = lazy(loaders['/payroll/run']);
 const SalarySheet = lazy(loaders['/payroll/sheet']);
 const SalaryRevisions = lazy(loaders['/payroll/revisions']);
+const TdsRegister = lazy(loaders['/payroll/tds']);
+const MyTaxDeclaration = lazy(loaders['/payroll/my-tax']);
+const TaxDeclarations = lazy(loaders['/payroll/declarations']);
+const ComplianceCalendar = lazy(loaders['/payroll/compliance']);
 
 const JobOpenings = lazy(loaders['/recruitment/jobs']);
 const AddJob = lazy(loaders['/recruitment/jobs/add']);
@@ -198,6 +203,7 @@ export default function App() {
             <Route path="leads" element={<Suspense fallback={<PageLoader />}><SuperAdminLeads /></Suspense>} />
             <Route path="email-log" element={<Suspense fallback={<PageLoader />}><SuperAdminEmailLog /></Suspense>} />
             <Route path="whatsapp" element={<Suspense fallback={<PageLoader />}><SuperAdminWhatsApp /></Suspense>} />
+            <Route path="statutory-rules" element={<Suspense fallback={<PageLoader />}><SuperAdminStatutoryRules /></Suspense>} />
           </Route>
         </Route>
       </Route>
@@ -250,6 +256,10 @@ export default function App() {
             <Route path="/payroll/run" element={page(RunPayroll, { module: 'payroll', action: 'manage' })} />
             <Route path="/payroll/sheet" element={page(SalarySheet, { module: 'payroll', action: 'manage' })} />
             <Route path="/payroll/revisions" element={page(SalaryRevisions, { module: 'payroll', action: 'manage' })} />
+            <Route path="/payroll/tds" element={page(TdsRegister, { module: 'payroll', action: 'manage' })} />
+            <Route path="/payroll/my-tax" element={page(MyTaxDeclaration, SELF_SERVICE_ROLES)} />
+            <Route path="/payroll/declarations" element={page(TaxDeclarations, { module: 'payroll', action: 'manage' })} />
+            <Route path="/payroll/compliance" element={page(ComplianceCalendar, { module: 'payroll', action: 'manage' })} />
 
             {/* Recruitment */}
             <Route path="/recruitment" element={<Navigate to="/recruitment/jobs" replace />} />

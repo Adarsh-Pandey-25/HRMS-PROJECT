@@ -3,7 +3,7 @@ import { useAuthStore } from '../store/authStore';
 import {
   fetchAllPayslipsForYearApi, fetchPayrollMonthApi, fetchPayslipsApi,
   initializePayrollMonthApi, generatePayslipsApi, publishPayslipApi,
-  payslipDownloadUrl, downloadPayslipApi,
+  payslipDownloadUrl, downloadPayslipApi, fetchPayrollChecksApi,
 } from '../api/payroll.api';
 import { invalidateAndRefetch } from '../lib/queryCache';
 
@@ -59,6 +59,16 @@ export function useMonthPayslips(month, year) {
   return useQuery({
     queryKey: ['payroll', 'payslips', month, year],
     queryFn: () => fetchPayslipsApi({ month, year }),
+    enabled: isAuthenticated && Boolean(month && year),
+  });
+}
+
+/** Pending requests, missing details and settings to sort out before a month's payroll. */
+export function usePayrollChecks(month, year) {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  return useQuery({
+    queryKey: ['payroll', 'checks', month, year],
+    queryFn: () => fetchPayrollChecksApi(month, year),
     enabled: isAuthenticated && Boolean(month && year),
   });
 }

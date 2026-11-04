@@ -73,6 +73,8 @@ export const setSeatOverrideApi = (id, maxSeatsOverride) =>
 
 // ── Module 7: System health ──────────────────────────────────────────────
 export const getSystemHealthApi = () => apiRequest({ method: 'GET', url: '/super-admin/system/health' });
+/** The statutory values payroll uses, with sources and effective dates (read-only). */
+export const getStatutoryRulesApi = () => apiRequest({ method: 'GET', url: '/super-admin/statutory-rules' });
 export const getSystemCronsApi = () => apiRequest({ method: 'GET', url: '/super-admin/system/crons' });
 export const getSystemEmailFailuresApi = (hours = 24) =>
   apiRequest({ method: 'GET', url: '/super-admin/system/email-failures', params: { hours } });

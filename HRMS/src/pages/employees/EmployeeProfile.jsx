@@ -25,6 +25,9 @@ import { useCompanyStore } from '../../store/companyStore';
 import { useAuthStore } from '../../store/authStore';
 import { LeaveBalanceCard } from '../../components/leave/LeaveBalanceCard';
 import { PayrollSetupCard } from '../../components/payroll/PayrollSetupCard';
+import { LoansCard } from '../../components/payroll/LoansCard';
+import { OneTimePayCard } from '../../components/payroll/OneTimePayCard';
+import { FullAndFinalCard } from '../../components/payroll/FullAndFinalCard';
 import { fetchSalaryPreviewApi } from '../../api/payroll.api';
 import { useSettingsStore } from '../../store/settingsStore';
 import { useCan } from '../../hooks/useCan';
@@ -841,6 +844,27 @@ export default function EmployeeProfile() {
               employeeId={resolvedId}
               employeeName={emp?.firstName || emp?.name}
               // HR/Admin set it; HR not their own (the server refuses it too).
+              canEdit={!(role === 'hr' && isOwnProfile)}
+            />
+          )}
+          {isHrAdmin && resolvedId && (emp?.employmentStatus === 'offboarded' || emp?.lastWorkingDay) && (
+            <FullAndFinalCard
+              employeeId={resolvedId}
+              employeeName={emp?.firstName || emp?.name}
+              canEdit={!(role === 'hr' && isOwnProfile)}
+            />
+          )}
+          {isHrAdmin && resolvedId && (
+            <OneTimePayCard
+              employeeId={resolvedId}
+              employeeName={emp?.firstName || emp?.name}
+              canEdit={!(role === 'hr' && isOwnProfile)}
+            />
+          )}
+          {isHrAdmin && resolvedId && (
+            <LoansCard
+              employeeId={resolvedId}
+              employeeName={emp?.firstName || emp?.name}
               canEdit={!(role === 'hr' && isOwnProfile)}
             />
           )}

@@ -14,7 +14,7 @@ import { useAuthStore } from '../../store/authStore';
 import { useCompanyStore } from '../../store/companyStore';
 import { useSaveShortcut } from '../../hooks/useSaveShortcut';
 import { formatCurrency, humanize } from '../../lib/utils';
-import { recalculatePayslipsFromSettingsApi } from '../../api/payroll.api';
+import { recalculatePayslipsFromSettingsApi, simulatePayApi, splitCtcApi } from '../../api/payroll.api';
 import { uploadDocumentApi } from '../../api/documents.api';
 import { uploadEmployeePhotoApi } from '../../api/employees.api';
 import { mapWizardDocType } from '../../lib/documentTypeMap';
@@ -51,61 +51,6 @@ function salaryPeriodLabel(period = 'monthly') {
   return period === 'annual' ? 'per annum' : 'per month';
 }
 
-function calcPayrollOptionAmount(opt, basic, gross) {
-  if (!opt?.name) return 0;
-  const base = opt.base === 'gross' ? gross : basic;
-  if (opt.valueType === 'percent') return Math.round(base * Number(opt.value || 0) / 100);
-  return Number(opt.value || 0);
-}
-
-/**
- * Deductions preview — mirrors backend calculateContractPayslip (no LOP).
- * `overrides` = per-employee PF/PT/TDS exceptions.
- */
-function deductionsFromPayrollSettings(payrollConfig, basic, gross, overrides = {}) {
-  const companyPfPct = Number(payrollConfig?.pfEmployeePercent ?? 12);
-  const pfPct = overrides.pfPercentOverride != null && overrides.pfPercentOverride !== ''
-    ? Number(overrides.pfPercentOverride)
-    : companyPfPct;
-  const pfRate = Math.max(0, pfPct) / 100;
-  const pfApplicable = overrides.pfApplicable !== false;
-  const ptApplicable = overrides.ptApplicable !== false;
-  const pt = ptApplicable ? Number(payrollConfig?.professionalTaxAmount ?? 200) : 0;
-  const pfCeiling = payrollConfig?.pfWageCeiling != null ? Number(payrollConfig.pfWageCeiling) : null;
-  const pfBase = pfCeiling != null && pfCeiling > 0 ? Math.min(Number(basic || 0), pfCeiling) : Number(basic || 0);
-  const pf = pfApplicable ? Math.round(pfBase * pfRate) : 0;
-
-  const customLines = (payrollConfig?.customPayrollOptions || [])
-    .filter((o) => o.active !== false && o.name)
-    .map((o) => ({
-      id: o.id,
-      name: o.name,
-      kind: o.kind || 'deduction',
-      amount: calcPayrollOptionAmount(o, Number(basic || 0), Number(gross || 0)),
-    }));
-  const customAllowances = customLines
-    .filter((l) => l.kind === 'allowance')
-    .reduce((s, l) => s + Number(l.amount || 0), 0);
-  const grossFinal = Number(gross || 0) + customAllowances;
-
-  const tdsCompanyRate = Number(payrollConfig?.tdsPercent ?? 8) / 100;
-  const tdsMode = String(overrides.tdsMode || 'company').toLowerCase();
-  let tds = 0;
-  if (tdsMode === 'none') tds = 0;
-  else if (tdsMode === 'fixed') tds = Math.round(Number(overrides.tdsFixed || 0));
-  else tds = Math.round(grossFinal * tdsCompanyRate);
-
-  return {
-    pf,
-    pt,
-    tds,
-    pfRate: Math.round(pfRate * 100),
-    tdsRate: Math.round(tdsCompanyRate * 100),
-    customLines,
-    grossFinal,
-  };
-}
-
 function buildSalaryDetails(data, payrollConfig) {
   const period = data.salaryPeriod || 'monthly';
   const normalized = normalizeSalaryByComponents(data, payrollConfig?.components);
@@ -115,17 +60,9 @@ function buildSalaryDetails(data, payrollConfig) {
   const special = toMonthlyAmount(normalized.special, period);
   const transport = toMonthlyAmount(normalized.transport, period);
   const medical = toMonthlyAmount(normalized.medical, period);
-  const gross = basic + hra + da + special + transport + medical;
-  const overrides = {
-    pfApplicable: data.pfApplicable !== false,
-    ptApplicable: data.ptApplicable !== false,
-    pfPercentOverride: data.pfPercentOverride === '' || data.pfPercentOverride == null
-      ? null
-      : Number(data.pfPercentOverride),
-    tdsMode: data.tdsMode || 'company',
-    tdsFixed: toMonthlyAmount(data.tdsFixed, period),
-  };
-  const { pf, pt, tds } = deductionsFromPayrollSettings(payrollConfig, basic, gross, overrides);
+  // Only what HR typed and chose. Payroll works out PF, PT and TDS itself on
+  // the server — the form used to save its own estimates here (a flat ₹200
+  // PT and 8% TDS), and payroll then charged that TDS.
   return {
     basic,
     hra,
@@ -133,15 +70,11 @@ function buildSalaryDetails(data, payrollConfig) {
     special,
     transport,
     medical,
-    pf,
-    pt,
-    tds,
     salary_period: period,
-    pf_applicable: overrides.pfApplicable,
-    pt_applicable: overrides.ptApplicable,
-    pf_percent: overrides.pfPercentOverride,
-    tds_mode: overrides.tdsMode,
-    tds_fixed: overrides.tdsFixed,
+    pf_applicable: data.pfApplicable !== false,
+    pt_applicable: data.ptApplicable !== false,
+    tds_mode: data.tdsMode || 'company',
+    tds_fixed: toMonthlyAmount(data.tdsFixed, period),
   };
 }
 
@@ -400,61 +333,85 @@ function employeeContactDefaults(employee = {}) {
 }
 
 
-function SalaryPreview({ basic, hra, da, special, transport, medical, payrollConfig, overrides, salaryPeriod = 'monthly' }) {
+/**
+ * What this salary pays in a full month, worked out by the server's payroll
+ * engine under the company's settings — the same calculation as a payslip
+ * (this form used to keep its own copy, with a flat ₹200 PT and 8% TDS).
+ * Nothing is saved.
+ */
+function SalaryPreview({ basic, hra, da, special, transport, medical, overrides, salaryPeriod = 'monthly', gender }) {
   const scale = salaryPeriod === 'annual' ? 12 : 1;
-  const mBasic = toMonthlyAmount(basic, salaryPeriod);
-  const mHra = toMonthlyAmount(hra, salaryPeriod);
-  const mDa = toMonthlyAmount(da, salaryPeriod);
-  const mSpecial = toMonthlyAmount(special, salaryPeriod);
-  const mTransport = toMonthlyAmount(transport, salaryPeriod);
-  const mMedical = toMonthlyAmount(medical, salaryPeriod);
-  const gross = mBasic + mHra + mDa + mSpecial + mTransport + mMedical;
-  const monthlyOverrides = {
-    ...overrides,
-    tdsFixed: toMonthlyAmount(overrides?.tdsFixed, salaryPeriod),
-  };
-  const { pf, pt, tds, pfRate, tdsRate, customLines, grossFinal } = deductionsFromPayrollSettings(
-    payrollConfig,
-    mBasic,
-    gross,
-    monthlyOverrides
-  );
-  const customDeductions = customLines.filter((l) => l.kind === 'deduction').reduce((s, l) => s + Number(l.amount || 0), 0);
-  const netMonthly = grossFinal - pf - pt - tds - customDeductions;
-  const grossDisplay = grossFinal * scale;
-  const netDisplay = netMonthly * scale;
-  const tdsLabel = overrides?.tdsMode === 'fixed'
-    ? 'TDS (fixed)'
-    : overrides?.tdsMode === 'none'
-      ? 'TDS (exempt)'
-      : `TDS (est. ${tdsRate}%)`;
-  const rows = [
-    ['Gross', grossDisplay],
-    ...customLines.filter((l) => l.kind === 'allowance' && l.amount).map((l) => [l.name, Number(l.amount) * scale]),
-    [overrides?.pfApplicable === false ? 'PF (exempt)' : `PF (${pfRate}%)`, -pf * scale],
-    [overrides?.ptApplicable === false ? 'Professional tax (exempt)' : 'Professional tax', -pt * scale],
-    [tdsLabel, -tds * scale],
-    ...customLines.filter((l) => l.kind === 'deduction' && l.amount).map((l) => [l.name, -Number(l.amount) * scale]),
-  ];
+  const salaryKey = JSON.stringify({
+    basic: toMonthlyAmount(basic, salaryPeriod),
+    hra: toMonthlyAmount(hra, salaryPeriod),
+    da: toMonthlyAmount(da, salaryPeriod),
+    special: toMonthlyAmount(special, salaryPeriod),
+    transport: toMonthlyAmount(transport, salaryPeriod),
+    medical: toMonthlyAmount(medical, salaryPeriod),
+    pf_applicable: overrides?.pfApplicable !== false,
+    pt_applicable: overrides?.ptApplicable !== false,
+    tds_mode: overrides?.tdsMode || 'company',
+    tds_fixed: toMonthlyAmount(overrides?.tdsFixed, salaryPeriod),
+  });
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        const data = await simulatePayApi({ salary: JSON.parse(salaryKey), gender: gender || undefined });
+        if (!cancelled) { setResult(data); setError(''); }
+      } catch (err) {
+        if (!cancelled) setError(err.message || 'Could not work out the pay');
+      }
+    }, 400);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [salaryKey, gender]);
+
+  // Responses arrive camelCased (api/client.js).
+  const breakdown = result?.breakdownJson || {};
+  const earnings = breakdown.earnings || [];
+  const deductions = breakdown.deductions || [];
+  const employer = breakdown.employerContributions || [];
+  const totals = breakdown.totals || {};
+  const blockers = result?.blockers || [];
   return (
     <div className="rounded-input bg-muted/50 p-5">
       <p className="text-sm font-semibold text-fg mb-1">Salary Preview</p>
-      <p className="text-xs text-fg-subtle mb-3">All amounts shown {salaryPeriodLabel(salaryPeriod)}</p>
+      <p className="text-xs text-fg-subtle mb-3">A full month, no leave — shown {salaryPeriodLabel(salaryPeriod)}</p>
+      {error && <p className="mb-2 text-xs text-danger">{error}</p>}
+      {blockers.map((b) => <p key={b.code} className="mb-2 text-xs font-semibold text-danger">{b.message}</p>)}
       <div className="space-y-2 text-sm">
-        {rows.map(([l, v]) => (
-          <div key={l} className="flex justify-between">
-            <span className="text-fg-muted">{l}</span>
-            <span className={v < 0 ? 'text-danger' : 'text-fg'}>{formatCurrency(v)}</span>
+        {earnings.filter((e) => Number(e.amount) > 0).map((e) => (
+          <div key={`e-${e.name}`} className="flex justify-between">
+            <span className="text-fg-muted">{e.name}</span>
+            <span className="text-fg">{formatCurrency(Number(e.amount) * scale)}</span>
+          </div>
+        ))}
+        <div className="flex justify-between font-medium">
+          <span className="text-fg-muted">Gross</span>
+          <span className="text-fg">{formatCurrency(Number(totals.grossSalary || 0) * scale)}</span>
+        </div>
+        {deductions.map((d) => (
+          <div key={`d-${d.name}`} className="flex justify-between">
+            <span className="text-fg-muted">{d.name}</span>
+            <span className="text-danger">{formatCurrency(-Number(d.amount) * scale)}</span>
           </div>
         ))}
         <div className="border-t border-border pt-2 mt-2 flex justify-between">
           <span className="font-semibold text-fg">
             Net pay ({salaryPeriod === 'annual' ? 'annual' : 'monthly'})
           </span>
-          <span className="font-semibold text-primary text-base">{formatCurrency(netDisplay)}</span>
+          <span className="font-semibold text-primary text-base">{formatCurrency(Number(totals.netPay || 0) * scale)}</span>
         </div>
+        {employer.length > 0 && (
+          <p className="text-[11px] text-fg-subtle">
+            The company also pays {formatCurrency(Number(totals.employerContributions || 0) * scale)} ({employer.map((e) => e.name).join(', ')}).
+          </p>
+        )}
         <p className="text-[11px] text-fg-subtle pt-1">
-          Payroll stores monthly values. LOP is deducted at payroll run from actual attendance absences.
+          Payroll stores monthly values. Unpaid days come off at the payroll run, from actual attendance.
         </p>
       </div>
     </div>
@@ -752,6 +709,42 @@ function JobStep({
   );
 }
 
+/**
+ * Fill the salary from a yearly CTC, by the company's template (Basic a % of
+ * CTC, HRA and DA a % of Basic, Special Allowance balancing the CTC as the
+ * company counts it). Worked out on the server with the payroll calculation.
+ */
+function CtcFill({ onFill, disabled }) {
+  const [ctc, setCtc] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState(null);
+  const fill = async () => {
+    setBusy(true);
+    try {
+      const r = await splitCtcApi(Number(ctc));
+      onFill(r.monthly);
+      setNote(`CTC ${formatCurrency(r.monthlyCtc)} a month${r.leftOver > 0 ? ` (${formatCurrency(r.leftOver)} short of ${formatCurrency(Number(ctc) / 12)})` : ''}`);
+    } catch (err) {
+      toast.error(err.message || 'Could not split the CTC');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="rounded-xl border border-dashed border-border p-3">
+      <div className="flex flex-wrap items-end gap-2">
+        <div className="min-w-[180px] flex-1">
+          <Input label="Fill from yearly CTC (optional)" type="number" placeholder="e.g. 600000" value={ctc} onChange={(e) => setCtc(e.target.value)} disabled={disabled} />
+        </div>
+        <Button type="button" size="sm" variant="outline" loading={busy} disabled={disabled || !(Number(ctc) > 0)} onClick={fill}>Fill</Button>
+      </div>
+      <p className="mt-1 text-[11px] text-fg-subtle">
+        {disabled ? 'Switch on Special Allowance (Settings → Payroll → Salary structure) to use this.' : (note || 'Basic, HRA and DA by your template; Special Allowance makes up the CTC.')}
+      </p>
+    </div>
+  );
+}
+
 function SalaryStep({ register, errors, watch, setValue, payrollConfig, isAdd = false }) {
   const components = payrollConfig?.components;
   const showHra = isSalaryComponentEnabled(components, 'hra');
@@ -762,18 +755,15 @@ function SalaryStep({ register, errors, watch, setValue, payrollConfig, isAdd = 
   const hraPercent = Number(payrollConfig?.hraPercent ?? 40);
   const daPercent = Number(payrollConfig?.daPercent ?? 10);
 
-  const [basic, hra, da, special, transport, medical, salaryPeriod, pfApplicable, ptApplicable, pfPercentOverride, tdsMode, tdsFixed] = watch([
+  const [basic, hra, da, special, transport, medical, salaryPeriod, pfApplicable, ptApplicable, tdsMode, tdsFixed, gender] = watch([
     'basic', 'hra', 'da', 'special', 'transport', 'medical', 'salaryPeriod',
-    'pfApplicable', 'ptApplicable', 'pfPercentOverride', 'tdsMode', 'tdsFixed',
+    'pfApplicable', 'ptApplicable', 'tdsMode', 'tdsFixed', 'gender',
   ]);
   const period = salaryPeriod || 'monthly';
   const periodSuffix = salaryPeriodLabel(period);
-  const companyPf = payrollConfig?.pfEmployeePercent ?? 12;
-  const ptMonthly = Number(payrollConfig?.professionalTaxAmount ?? 200);
   const overrides = {
     pfApplicable: pfApplicable !== false,
     ptApplicable: ptApplicable !== false,
-    pfPercentOverride: pfPercentOverride === '' || pfPercentOverride == null ? null : pfPercentOverride,
     tdsMode: tdsMode || 'company',
     tdsFixed: Number(tdsFixed || 0),
   };
@@ -807,9 +797,20 @@ function SalaryStep({ register, errors, watch, setValue, payrollConfig, isAdd = 
     salaryPeriodReg.onChange(e);
   };
 
+  // The split is monthly; a salary entered yearly gets it × 12.
+  const fillFromCtc = (m) => {
+    const f = period === 'annual' ? 12 : 1;
+    const opts = { shouldDirty: true, shouldValidate: true };
+    setValue('basic', m.basic * f, opts);
+    if (showHra) setValue('hra', m.hra * f, opts);
+    if (showDa) setValue('da', m.da * f, opts);
+    if (showSpecial) setValue('special', m.special * f, opts);
+  };
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
       <div className="space-y-5">
+        <CtcFill onFill={fillFromCtc} disabled={!showSpecial} />
         <Select
           label="Salary entered as"
           required
@@ -883,36 +884,25 @@ function SalaryStep({ register, errors, watch, setValue, payrollConfig, isAdd = 
         <div className="rounded-input border border-border/70 p-4 space-y-3">
           <p className="text-sm font-semibold text-fg">Deduction exceptions</p>
           <p className="text-xs text-fg-subtle">
-            Company defaults come from Payroll Settings. Deductions are calculated monthly and shown {periodSuffix}.
+            How PF, ESI and PT work is set in Settings → Payroll; the rates are set by law. Switch one off here only for this person.
           </p>
           <Toggle
             label="Apply PF"
-            hint={`Default ${companyPf}% of Basic (${periodSuffix})`}
+            hint="12% of Basic + DA, by the company's PF method (Settings → Payroll)"
             checked={pfApplicable !== false}
             onChange={(v) => setValue('pfApplicable', v, { shouldDirty: true })}
           />
-          {pfApplicable !== false && (
-            <Input
-              label="PF % override (optional)"
-              type="number"
-              placeholder={`Leave blank for company ${companyPf}%`}
-              {...register('pfPercentOverride')}
-              error={errors.pfPercentOverride?.message}
-            />
-          )}
           <Toggle
             label="Apply Professional Tax"
-            hint={period === 'annual'
-              ? `Flat ₹${ptMonthly * 12}/year (₹${ptMonthly}/month)`
-              : `Flat ₹${ptMonthly}/month`}
+            hint="By the state set in Settings → Payroll"
             checked={ptApplicable !== false}
             onChange={(v) => setValue('ptApplicable', v, { shouldDirty: true })}
           />
           <Select
-            label="TDS"
+            label="TDS (monthly)"
             options={[
-              { value: 'company', label: 'Use company estimate' },
-              { value: 'fixed', label: 'Fixed amount' },
+              { value: 'company', label: 'Not set yet (₹0 until entered)' },
+              { value: 'fixed', label: 'Monthly amount' },
               { value: 'none', label: 'No TDS' },
             ]}
             {...register('tdsMode')}
@@ -937,6 +927,7 @@ function SalaryStep({ register, errors, watch, setValue, payrollConfig, isAdd = 
         payrollConfig={payrollConfig}
         overrides={overrides}
         salaryPeriod={period}
+        gender={gender}
       />
     </div>
   );

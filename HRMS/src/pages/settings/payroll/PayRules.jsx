@@ -70,7 +70,9 @@ export function LateRuleCard({ late, onChange }) {
 /** Overtime: off, paid at a multiple of the hourly rate, or comp-off days. */
 export function OvertimeCard({ overtime, onChange, perDay }) {
   const set = (patch) => onChange({ ...overtime, ...patch });
-  const hourly = perDay / 9;
+  // The simulator's sample salary is half Basic, so "Basic + DA" halves the rate on ₹30k.
+  const hourly = (perDay / 9) * (overtime.base === 'basic_da' ? 0.5 : 1);
+  const multipliers = [...new Set([1.5, 2, 2.5, 3, Number(overtime.multiplier)])].sort((a, b) => a - b);
   return (
     <RuleCard
       icon={Hourglass}
@@ -94,20 +96,34 @@ export function OvertimeCard({ overtime, onChange, perDay }) {
       ) : (
         <div className="space-y-1">
           {overtime.mode === 'pay' ? (
-            <Sentence>
-              Pay
-              <PillGroup
-                size="sm"
-                className="mx-1 align-middle"
-                ariaLabel="Multiplier"
-                value={overtime.multiplier}
-                onChange={(v) => set({ multiplier: v })}
-                options={[1, 1.5, 2].map((m) => ({ value: m, label: `${m}×` }))}
-              />
-              the hourly rate
-              <Tag className="mx-1" tone="primary">≈ {formatCurrency(hourly * overtime.multiplier)}/h on ₹30k</Tag>
-              for overtime.
-            </Sentence>
+            <>
+              <Sentence>
+                Pay
+                <PillGroup
+                  size="sm"
+                  className="mx-1 align-middle"
+                  ariaLabel="Multiplier"
+                  value={Number(overtime.multiplier)}
+                  onChange={(v) => set({ multiplier: v })}
+                  options={multipliers.map((m) => ({ value: m, label: `${m}×` }))}
+                />
+                the hourly rate of
+                <PillGroup
+                  size="sm"
+                  className="mx-1 align-middle"
+                  ariaLabel="Overtime is paid on"
+                  value={overtime.base || 'gross'}
+                  onChange={(v) => set({ base: v })}
+                  options={[{ value: 'gross', label: 'full pay' }, { value: 'basic_da', label: 'Basic + DA' }]}
+                />
+                <Tag className="mx-1" tone="primary">≈ {formatCurrency(hourly * overtime.multiplier)}/h on ₹30k</Tag>
+              </Sentence>
+              {Number(overtime.multiplier) < 2 && (
+                <p className="text-[11px] font-semibold text-warning">
+                  Below 2× — the Code on Wages sets twice the normal rate as the minimum where it applies. Use less only for staff it doesn&apos;t cover.
+                </p>
+              )}
+            </>
           ) : (
             <Sentence>
               Every
