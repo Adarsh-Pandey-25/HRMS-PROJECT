@@ -309,7 +309,7 @@ export default function App() {
             <Route path="/reports" element={page(Reports, { module: 'reports', action: 'view' })} />
             <Route path="/audit-log" element={page(AuditLog, ['admin', 'hr'])} />
             <Route path="/subscription-billing" element={page(SubscriptionBilling, ['admin', 'hr'])} />
-            <Route path="/organizations" element={page(Organizations, ['admin', 'hr'])} />
+            <Route path="/organizations" element={page(Organizations, { module: 'organizations', action: 'view' })} />
             <Route path="/settings" element={page(Settings, { module: 'settings', action: 'manage' })} />
             <Route path="/account/security" element={page(AccountSecurity)} />
             <Route path="/search" element={page(SearchResults)} />

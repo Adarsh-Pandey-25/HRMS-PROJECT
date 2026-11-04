@@ -20,6 +20,7 @@ import { companyTypeLabel } from '../../lib/companyLabels';
 import { mergeLegalProfile, formatRegisteredAddress } from '../../lib/companyLegal';
 import { CompanyLegalFields } from '../../components/shared/CompanyLegalFields';
 import { useAuthStore } from '../../store/authStore';
+import { useCan } from '../../hooks/useCan';
 import { useCompanyStore } from '../../store/companyStore';
 import { PortalLinks } from '../../components/shared/PortalLinks';
 
@@ -517,7 +518,7 @@ function ViewTab({
   );
 }
 
-function AddTab({ canManage, createChild, uploadLogo, onCreated }) {
+function AddTab({ canManage, blockedMessage, createChild, uploadLogo, onCreated }) {
   const [name, setName] = useState('');
   const [slug, setSlug] = useState('');
   const [logoFile, setLogoFile] = useState(null);
@@ -530,7 +531,7 @@ function AddTab({ canManage, createChild, uploadLogo, onCreated }) {
       <EmptyState
         icon={ShieldCheck}
         title="Cannot add companies"
-        message="Subsidiary admins cannot create further subsidiaries. Ask your main company admin."
+        message={blockedMessage}
       />
     );
   }
@@ -621,7 +622,7 @@ function AddTab({ canManage, createChild, uploadLogo, onCreated }) {
   );
 }
 
-function AccessTab({ companies, myCompany, loading }) {
+function AccessTab({ companies, myCompany, loading, canAdd }) {
   if (loading) {
     return (
       <Card className="p-6 space-y-3">
@@ -650,9 +651,11 @@ function AccessTab({ companies, myCompany, loading }) {
             </div>
           </div>
           <div className="text-sm text-fg-muted">
-            {myCompany?.canManageChildren
-              ? 'You can create subsidiaries and assign employees to them.'
-              : 'This is a subsidiary — you only manage this workspace.'}
+            {!myCompany?.canManageChildren
+              ? 'This is a subsidiary — you only manage this workspace.'
+              : canAdd
+                ? 'You can create subsidiaries and assign employees to them.'
+                : 'You can assign employees to companies. Adding subsidiaries needs an Admin\'s permission.'}
           </div>
         </div>
       </Card>
@@ -732,10 +735,18 @@ export default function Organizations() {
   }), [companies]);
 
   const isAdmin = String(role || '').toLowerCase() === 'admin';
-  const canManage = isAdmin
-    && myCompanyQ.data?.canManageChildren !== false
+  const isParentCompany = myCompanyQ.data?.canManageChildren !== false
     && myCompanyQ.data?.companyType !== 'child';
-  const canEditLegal = ['admin', 'hr'].includes(String(role || '').toLowerCase());
+  // Admin always; HR as Settings → User & Role Management allows (Organizations).
+  const canCreateCompanies = useCan('organizations', 'create');
+  const canEditCompanies = useCan('organizations', 'edit');
+  const canAdd = canCreateCompanies && isParentCompany;
+  // Switching a subsidiary on or off stays with Admin.
+  const canManage = isAdmin && isParentCompany;
+  const canEditLegal = ['admin', 'hr'].includes(String(role || '').toLowerCase()) && canEditCompanies;
+  const addBlockedMessage = isParentCompany
+    ? 'Your role can\'t add companies. An Admin can allow it in Settings → User & Role Management (Organizations → Create).'
+    : 'Subsidiary admins cannot create further subsidiaries. Ask your main company admin.';
 
   const onToggle = async (company) => {
     try {
@@ -788,7 +799,8 @@ export default function Organizations() {
       )}
       {tab === 'add' && (
         <AddTab
-          canManage={canManage}
+          canManage={canAdd}
+          blockedMessage={addBlockedMessage}
           createChild={createChild}
           uploadLogo={uploadLogo}
           onCreated={(created) => {
@@ -802,6 +814,7 @@ export default function Organizations() {
           companies={companies}
           myCompany={myCompanyQ.data}
           loading={accessibleQ.isLoading || myCompanyQ.isLoading}
+          canAdd={canAdd}
         />
       )}
 

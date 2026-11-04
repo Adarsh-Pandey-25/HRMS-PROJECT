@@ -1,7 +1,9 @@
 import { create } from 'zustand';
 import { DEFAULT_PAY_RULES, DEFAULT_WORK_WEEK } from '../lib/payRules';
 import { persist } from 'zustand/middleware';
-import { buildDefaultRolePermissions, mergeRolePermissions, PERMISSION_ACTIONS } from '../lib/permissions';
+import {
+  buildDefaultRolePermissions, cellApplies, mergeRolePermissions, PERMISSION_ACTIONS,
+} from '../lib/permissions';
 
 // ---------------------------------------------------------------------------
 // Employee Document Config — default document types (Settings -> Employee
@@ -277,7 +279,8 @@ export const useSettingsStore = create(
       updateRoleModuleAll: (role, module, value) =>
         set((s) => {
           const nextMod = { ...(s.rolePermissions[role]?.[module] || {}) };
-          for (const action of PERMISSION_ACTIONS) nextMod[action] = value;
+          // Only the cells this role uses; the rest stay off.
+          for (const action of PERMISSION_ACTIONS) nextMod[action] = value && cellApplies(role, module, action);
           return {
             rolePermissions: {
               ...s.rolePermissions,

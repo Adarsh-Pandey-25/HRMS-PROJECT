@@ -156,6 +156,11 @@ const updateKey = async (req, res, next) => {
         throw new (require('../utils/errors').ForbiddenError)('Only an admin can switch approval before publishing on or off.');
       }
     }
+    // The role matrix rows the server enforces (Organizations): only an Admin changes them.
+    if (key === 'role_permissions' && req.user.role !== 'admin') {
+      const before = await settingsService.getSetting('role_permissions', null, req.user.company_id);
+      value = require('../services/rolePermissions.service').keepAdminOnlyCells(value, before);
+    }
     if (key === 'asset_config' && value && typeof value === 'object') {
       const names = Array.isArray(value.categories) ? value.categories : [];
       const assetsService = require('../services/assets.service');
@@ -172,7 +177,7 @@ const updateKey = async (req, res, next) => {
     );
     if (error) throw new BadRequestError(error.message);
 
-    let responseValue = key === 'payroll_calc' ? value : req.body.value;
+    let responseValue = key === 'payroll_calc' || key === 'role_permissions' ? value : req.body.value;
     if (key === 'company_profile') {
       responseValue = await enrichCompanyProfileValue(value);
     }

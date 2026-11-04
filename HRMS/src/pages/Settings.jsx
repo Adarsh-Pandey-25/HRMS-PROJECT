@@ -15,7 +15,10 @@ import { useEmployees } from '../hooks/useEmployees';
 import { useSettingsStore } from '../store/settingsStore';
 import { useSaveShortcut } from '../hooks/useSaveShortcut';
 import { INDUSTRIES, COMPANY_SIZES } from '../lib/constants';
-import { PERMISSION_MODULES, PERMISSION_ACTIONS, MODULE_LABELS, ROLES as RBAC_ROLES, isPrivilegedRole } from '../lib/permissions';
+import {
+  PERMISSION_MODULES, PERMISSION_ACTIONS, MODULE_LABELS, MODULE_SCOPE, ROLES as RBAC_ROLES, isPrivilegedRole, cellApplies, rowLockedFor,
+} from '../lib/permissions';
+import { useAuthStore } from '../store/authStore';
 import { cn, humanize } from '../lib/utils';
 import { invalidateAndRefetch } from '../lib/queryCache';
 import { CompanyLegalFields } from '../components/shared/CompanyLegalFields';
@@ -66,7 +69,9 @@ function RolePermissionsMatrix() {
   const updateRolePermission = useSettingsStore((s) => s.updateRolePermission);
   const updateRoleModuleAll = useSettingsStore((s) => s.updateRoleModuleAll);
   const resetRolePermissions = useSettingsStore((s) => s.resetRolePermissions);
+  const viewerRole = useAuthStore((s) => s.role);
   const isPrivilegedMatrixRole = isPrivilegedRole(activeRole);
+  const lockedLabels = Object.keys(MODULE_SCOPE).filter((m) => rowLockedFor(viewerRole, m)).map((m) => MODULE_LABELS[m]);
 
   const saveMatrix = async () => {
     setSaving(true);
@@ -88,9 +93,10 @@ function RolePermissionsMatrix() {
 
   const rowState = (mod) => {
     if (isPrivilegedMatrixRole) return { all: true, some: false };
-    const cells = PERMISSION_ACTIONS.map((a) => !!rolePermissions[activeRole]?.[mod]?.[a]);
-    const on = cells.filter(Boolean).length;
-    return { all: on === PERMISSION_ACTIONS.length, some: on > 0 && on < PERMISSION_ACTIONS.length };
+    // Only the cells this role uses count.
+    const used = PERMISSION_ACTIONS.filter((a) => cellApplies(activeRole, mod, a));
+    const on = used.filter((a) => !!rolePermissions[activeRole]?.[mod]?.[a]).length;
+    return { all: used.length > 0 && on === used.length, some: on > 0 && on < used.length, none: used.length === 0 };
   };
 
   return (
@@ -130,16 +136,20 @@ function RolePermissionsMatrix() {
           </thead>
           <tbody>
             {PERMISSION_MODULES.map((mod) => {
-              const { all, some } = rowState(mod);
+              const { all, some, none } = rowState(mod);
+              const locked = rowLockedFor(viewerRole, mod);
               return (
                 <tr key={mod} className="border-b border-border/50">
-                  <td className="py-2 pr-3 text-fg whitespace-nowrap">{MODULE_LABELS[mod]}</td>
+                  <td className="py-2 pr-3 text-fg whitespace-nowrap">
+                    {MODULE_LABELS[mod]}
+                    {locked && <Lock className="ml-1.5 inline h-3 w-3 text-fg-subtle" aria-label="Only an Admin can change this row" />}
+                  </td>
                   <td className="text-center py-2 px-1.5">
                     <input
                       type="checkbox"
                       checked={all}
                       ref={(el) => { if (el) el.indeterminate = some; }}
-                      disabled={isPrivilegedMatrixRole}
+                      disabled={isPrivilegedMatrixRole || locked || none}
                       onChange={(e) => updateRoleModuleAll(activeRole, mod, e.target.checked)}
                       aria-label={`Select all — ${MODULE_LABELS[mod]} — ${PERMISSION_ROLE_LABELS[activeRole]}`}
                       title="Select all actions for this module"
@@ -147,13 +157,17 @@ function RolePermissionsMatrix() {
                     />
                   </td>
                   {PERMISSION_ACTIONS.map((action) => {
+                    if (!cellApplies(activeRole, mod, action)) {
+                      return <td key={action} className="text-center py-2 px-1.5 text-fg-subtle" title="Not used for this role">—</td>;
+                    }
                     const checked = isPrivilegedMatrixRole ? true : !!rolePermissions[activeRole]?.[mod]?.[action];
                     return (
                       <td key={action} className="text-center py-2 px-1.5">
                         <input
                           type="checkbox"
                           checked={checked}
-                          disabled={isPrivilegedMatrixRole}
+                          disabled={isPrivilegedMatrixRole || locked}
+                          title={locked ? 'Only an Admin can change this' : undefined}
                           onChange={(e) => updateRolePermission(activeRole, mod, action, e.target.checked)}
                           aria-label={`${humanize(action)} — ${MODULE_LABELS[mod]} — ${PERMISSION_ROLE_LABELS[activeRole]}`}
                           className="h-4 w-4 rounded border-border text-primary accent-primary cursor-pointer disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
@@ -167,6 +181,11 @@ function RolePermissionsMatrix() {
           </tbody>
         </table>
       </div>
+      {lockedLabels.length > 0 && (
+        <p className="flex items-center gap-1.5 text-xs text-fg-subtle">
+          <Lock className="h-3.5 w-3.5" /> Only an Admin can change {lockedLabels.join(', ')}.
+        </p>
+      )}
 
       <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
         <Button type="button" variant="outline" size="sm" onClick={resetDefaults}>

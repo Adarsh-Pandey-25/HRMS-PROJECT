@@ -1,10 +1,10 @@
-// Role-Based Access Control model: 12 modules × 8 actions × 4 roles.
+// Role-Based Access Control model: modules × 8 actions × 4 roles.
 // Settings → User & Role Management matrix is authoritative for manager/employee/HR
 // (Admin always has full access). Gates: ProtectedRoute, useCan, sidebar nav.
 
 export const PERMISSION_MODULES = [
   'employees', 'attendance', 'leave', 'payroll', 'recruitment', 'performance',
-  'training', 'assets', 'expenses', 'helpdesk', 'announcements', 'settings', 'reports',
+  'training', 'assets', 'expenses', 'helpdesk', 'announcements', 'settings', 'reports', 'organizations',
 ];
 
 export const MODULE_LABELS = {
@@ -21,6 +21,7 @@ export const MODULE_LABELS = {
   announcements: 'Announcements',
   settings: 'Settings',
   reports: 'Reports',
+  organizations: 'Organizations (companies & subsidiaries)',
 };
 
 export const PERMISSION_ACTIONS = ['view', 'create', 'edit', 'delete', 'approve', 'import', 'export', 'manage'];
@@ -32,6 +33,29 @@ export const PRIVILEGED_ROLES = ['admin'];
 
 export function isPrivilegedRole(role) {
   return PRIVILEGED_ROLES.includes(role);
+}
+
+/**
+ * Modules used only by some roles and actions; their other cells stay off.
+ * `adminOnly`: only an Admin may change the row, because the server enforces
+ * it too (backend/src/services/rolePermissions.service.js — keep in step).
+ * Organizations: View = the page, Create = add subsidiaries, Edit = company
+ * details and logos. Switching a subsidiary on or off stays with Admin.
+ */
+export const MODULE_SCOPE = {
+  organizations: { roles: ['hr'], actions: ['view', 'create', 'edit'], adminOnly: true },
+};
+
+/** Is this cell used for this role? */
+export function cellApplies(role, module, action) {
+  const scope = MODULE_SCOPE[module];
+  if (!scope || isPrivilegedRole(role)) return true;
+  return scope.roles.includes(role) && scope.actions.includes(action);
+}
+
+/** May someone signed in as `viewerRole` change this module's row? */
+export function rowLockedFor(viewerRole, module) {
+  return Boolean(MODULE_SCOPE[module]?.adminOnly) && !isPrivilegedRole(viewerRole);
 }
 
 /**
@@ -53,6 +77,7 @@ const DEFAULT_GRANTS = {
     ['announcements', 'view'], ['announcements', 'create'], ['announcements', 'manage'],
     ['settings', 'view'], ['settings', 'manage'],
     ['reports', 'view'],
+    ['organizations', 'view'], ['organizations', 'create'], ['organizations', 'edit'],
   ],
   manager: [
     ['employees', 'view'],
@@ -108,6 +133,14 @@ export function mergeRolePermissions(saved) {
         if (typeof saved[role][mod][action] === 'boolean') {
           base[role][mod][action] = saved[role][mod][action];
         }
+      }
+    }
+  }
+  // Cells a module doesn't use for a role stay off, whatever was saved.
+  for (const role of ROLES) {
+    for (const mod of Object.keys(MODULE_SCOPE)) {
+      for (const action of PERMISSION_ACTIONS) {
+        if (!cellApplies(role, mod, action)) base[role][mod][action] = false;
       }
     }
   }

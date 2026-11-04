@@ -35,7 +35,7 @@ export const NAV_ITEMS = [
     label: 'Organizations',
     roles: ['admin', 'hr'],
     children: [
-      { label: 'Companies', path: '/organizations', roles: ['admin', 'hr'] },
+      { label: 'Companies', path: '/organizations', roles: ['admin', 'hr'], permission: { module: 'organizations', action: 'view' } },
     ],
   },
   {
