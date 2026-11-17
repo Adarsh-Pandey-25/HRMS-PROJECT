@@ -278,9 +278,9 @@ describe('Professional Tax', () => {
   });
 
   test('a PT state without a built-in table needs the company\'s amount — otherwise the slip is blocked', () => {
-    const blocked = computePayslip(base({ components: [component('BASIC', 'Basic', 30000)], ptState: 'West Bengal' }));
+    const blocked = computePayslip(base({ components: [component('BASIC', 'Basic', 30000)], ptState: 'Jharkhand' }));
     expect(blocked.blockers.map((b) => b.code)).toContain('pt_amount_missing');
-    expect(ptFor(30000, 'West Bengal', { pt: { manualAmount: R(150) } })).toBe(R(150));
+    expect(ptFor(30000, 'Jharkhand', { pt: { manualAmount: R(150) } })).toBe(R(150));
     // "No PT" chosen for an unclear state = amount 0
     expect(ptFor(30000, 'Punjab', { pt: { manualAmount: 0 } })).toBe(0);
   });

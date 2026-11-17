@@ -90,7 +90,7 @@ describe('review fixes (independent review, 2 Nov 2026)', () => {
 
   test('a state without a SpaxSync table: the slabs the company entered, not one flat amount', () => {
     const slabs = [{ from: 10001, amount: 110 }, { from: 15001, amount: 130 }, { from: 25001, amount: 150 }, { from: 40001, amount: 200 }];
-    const policy = payroll.resolvePayrollPolicy({ pt_state: 'West Bengal', pt_manual_slabs: slabs });
+    const policy = payroll.resolvePayrollPolicy({ pt_state: 'Jharkhand', pt_manual_slabs: slabs });
     const ctx = ctxWith({ ctx: { ...policy, ptManualAmount: 20000 } });
     const pt = (gross) => slip(ctx, { basic: gross }).professional_tax;
     expect(pt(9000)).toBe(0);

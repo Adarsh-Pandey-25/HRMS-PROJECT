@@ -210,7 +210,7 @@ const seedCompanySettings = async (companyId, companyProfile, updatedBy = null, 
   // A company's own state, PT, LWF and statutory choices are never copied to
   // another: a new company chooses them itself (until then payroll asks).
   const PAYROLL_OWN_KEYS = [
-    'pt_state', 'ptState', 'pt_state_set', 'pt_manual_amount', 'pt_manual_slabs', 'pt_other_states', 'lwf_states',
+    'pt_state', 'ptState', 'pt_state_set', 'pt_manual_amount', 'pt_manual_slabs', 'pt_other_states', 'pt_override', 'lwf_states',
     'pf_policy', 'esi_applicable', 'tds_policy',
   ];
   for (const key of copyKeys) {

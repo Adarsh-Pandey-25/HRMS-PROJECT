@@ -26,18 +26,33 @@
  * such a slip, while the simulator shows it.
  */
 const { mulDiv, rateRupees, roundRupees, sum } = require('./money');
+const { PT_ANNUAL_CAP } = require('./statutory');
 
 const pickSlab = (slabs, amount) => slabs.find((s) => s.upTo == null || amount <= s.upTo) || slabs[slabs.length - 1];
+
+/** A PT slab's amount in a month: February or March differ where the state sets it so. */
+const slabAmount = (s, month) => {
+  if (month === 2 && s.februaryAmount != null) return s.februaryAmount;
+  if (month === 3 && s.marchAmount != null) return s.marchAmount;
+  return s.amount;
+};
 
 /** Monthly-basis PT for one month's gross. */
 const monthlyPt = (rule, gross, { month, gender }) => {
   const slabs = (gender && rule.slabsByGender?.[gender]) || rule.slabs;
-  const s = pickSlab(slabs, gross);
-  return month === 2 && s.februaryAmount != null ? s.februaryAmount : s.amount;
+  return slabAmount(pickSlab(slabs, gross), month);
 };
 
 /**
- * Half-yearly PT (Tamil Nadu): the half-year's amount comes from the slab of
+ * Annual-basis PT (Madhya Pradesh): the slab of the year's salary, taken as
+ * the month's contract gross × 12, so it stays the same each month while the
+ * salary does (one-time pay, overtime and loss of pay don't move it). Its
+ * monthly amount; in March the last month's amount where the state sets one.
+ */
+const annualPt = (rule, contractGross, { month }) => slabAmount(pickSlab(rule.slabs, contractGross * 12), month);
+
+/**
+ * Half-yearly PT (Tamil Nadu, Kerala): the half-year's amount comes from the slab of
  * the half-year's income — the months already paid, this month, and this
  * month's contract pay for the months still to come. What hasn't been
  * deducted yet is spread over the months left; the last month settles the
@@ -77,7 +92,7 @@ const steadyHalfYearPtHistory = (rule, contractGross, monthsLeft) => {
 const computePayslip = (input) => {
   const {
     period, employee = {}, components = [], days, overtime = {}, policy = {}, setup = {},
-    customDeductions = [], rules = {}, ptHistory = null, esiCoveredEarlierInPeriod = false,
+    customDeductions = [], rules = {}, ptHistory = null, ptPaidThisYear = 0, esiCoveredEarlierInPeriod = false,
     esiCoverageGross = null, rounding = 'rupee', oneTime = [],
   } = input;
   // 'rupee': each earned part to ₹1 (the default). 'paise': each part to the
@@ -208,13 +223,17 @@ const computePayslip = (input) => {
 
   // ── PT ──────────────────────────────────────────────────────────────────
   const ptInfo = policy.pt || { kind: 'unknown' };
-  const pt = { kind: ptInfo.kind, amount: 0, halfYearAmount: null };
+  const pt = {
+    kind: ptInfo.kind, amount: 0, halfYearAmount: null, capped: false,
+  };
   if (setup.pt !== false && gross > 0) {
     if (ptInfo.kind === 'slab' && ptInfo.rule) {
       if (ptInfo.rule.basis === 'half_yearly') {
         const r = halfYearlyPt(ptInfo.rule, gross, contractGross, ptHistory);
         pt.amount = r.amount;
         pt.halfYearAmount = r.halfYearAmount;
+      } else if (ptInfo.rule.basis === 'annual') {
+        pt.amount = annualPt(ptInfo.rule, contractGross, { month: period.month });
       } else {
         pt.amount = monthlyPt(ptInfo.rule, gross, { month: period.month, gender: employee.gender });
       }
@@ -226,6 +245,18 @@ const computePayslip = (input) => {
       blockers.push({ code: 'pt_state_missing', message: 'Choose the company\'s Professional Tax state in Settings → Payroll.' });
     } else {
       blockers.push({ code: 'pt_amount_missing', message: `SpaxSync has no Professional Tax table for ${ptInfo.stateName || 'this state'} yet — enter the monthly PT amount (or choose "No PT") in Settings → Payroll.` });
+    }
+    // Art. 276: at most ₹2,500 of PT in a financial year, whatever the state
+    // or the company's own amounts — this month's stops at what is left.
+    const capLeft = Math.max(0, PT_ANNUAL_CAP.amount - Math.max(0, Math.round(Number(ptPaidThisYear) || 0)));
+    if (pt.amount > capLeft) {
+      const rs = (paise) => `₹${(paise / 100).toLocaleString('en-IN')}`;
+      warnings.push({
+        code: 'pt_annual_cap',
+        message: `Professional Tax is limited to ${rs(PT_ANNUAL_CAP.amount)} a year (Constitution Art. 276): ${rs(PT_ANNUAL_CAP.amount - capLeft)} was already deducted this financial year, so this month's is ${rs(capLeft)}, not ${rs(pt.amount)}.`,
+      });
+      pt.amount = capLeft;
+      pt.capped = true;
     }
   }
 
@@ -317,5 +348,5 @@ const computePayslip = (input) => {
 };
 
 module.exports = {
-  computePayslip, monthlyPt, halfYearlyPt, steadyHalfYearPtHistory, pickSlab,
+  computePayslip, monthlyPt, annualPt, halfYearlyPt, steadyHalfYearPtHistory, pickSlab,
 };

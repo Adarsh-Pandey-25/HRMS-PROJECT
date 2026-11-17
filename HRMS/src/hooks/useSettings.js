@@ -161,9 +161,12 @@ export function useSettingsBootstrap() {
       patch.ptStateSet = v('ptStateSet', 'pt_state_set') === true;
       const manualSlabs = v('ptManualSlabs', 'pt_manual_slabs');
       patch.ptManualSlabs = Array.isArray(manualSlabs) && manualSlabs.length ? slabRows(manualSlabs) : null;
+      patch.ptOverride = v('ptOverride', 'pt_override') === true;
       const otherStates = v('ptOtherStates', 'pt_other_states');
       patch.ptOtherStates = Array.isArray(otherStates)
-        ? otherStates.filter((o) => o && o.state).map((o) => ({ state: String(o.state), slabs: Array.isArray(o.slabs) ? slabRows(o.slabs) : [] }))
+        ? otherStates.filter((o) => o && o.state).map((o) => ({
+          state: String(o.state), slabs: Array.isArray(o.slabs) ? slabRows(o.slabs) : [], ...(o.override === true ? { override: true } : {}),
+        }))
         : [];
       const lwfStates = v('lwfStates', 'lwf_states');
       patch.lwfStates = Array.isArray(lwfStates)

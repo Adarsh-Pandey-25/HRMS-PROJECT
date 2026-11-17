@@ -1,14 +1,30 @@
 import { useState } from 'react';
 import { BadgePercent, Building2, HeartHandshake, HeartPulse, Landmark, Plus, Receipt, Sparkles, Trash2 } from 'lucide-react';
 import { cn, formatCurrency } from '../../../lib/utils';
-import { INDIAN_STATES, PT_APPLICABLE_LABEL, ptKindOf } from '../../../lib/indianStates';
+import {
+  INDIAN_STATES, PT_APPLICABLE_LABEL, PT_BUILT_IN, PT_CHANGED_2026, ptBuiltInToday, ptKindOf,
+} from '../../../lib/indianStates';
 import { Select } from '../../../components/ui';
 import { NumberChip, PillGroup, RuleCard, Tag } from './bits';
 
 const PT_STATE_OPTIONS = [
   { value: '', label: 'Choose a state…' },
-  ...INDIAN_STATES.map((s) => ({ value: s.name, label: `${s.name}${PT_APPLICABLE_LABEL[s.ptApplicable]}` })),
+  ...INDIAN_STATES.map((s) => ({
+    value: s.name,
+    label: `${s.name}${ptKindOf(s.name) === 'none' ? PT_APPLICABLE_LABEL.false : PT_APPLICABLE_LABEL[s.ptApplicable]}`,
+  })),
 ];
+
+/** '2026-04-01' → '1 Apr 2026'. */
+const dayLabel = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+
+/** What happens to amounts a company typed for a state SpaxSync now has its own rule for. */
+const keptNote = (state) => {
+  const from = PT_BUILT_IN[state]?.from;
+  return from
+    ? `The amounts entered for ${state} still apply to months before ${dayLabel(from)}; from then, SpaxSync's rule.`
+    : `The amounts entered for ${state} aren't used: SpaxSync's rule applies.`;
+};
 
 const PF_SUMMARY = {
   statutory_ceiling: '12% of Basic + DA, counted up to the legal limit',
@@ -95,8 +111,10 @@ function PtSlabEditor({ slabs, onChange }) {
 function OtherStatesPt({ list, ownState, onChange }) {
   const rows = list || [];
   const used = new Set([ownState, ...rows.map((r) => r.state)]);
-  const choices = INDIAN_STATES.filter((s) => ['manual', 'verify'].includes(ptKindOf(s.name)) && !used.has(s.name));
-  const setSlabs = (i, slabs) => onChange(rows.map((r, j) => (j === i ? { ...r, slabs } : r)));
+  // States without a SpaxSync rule; and those with one, for a company that chooses its own slabs over it.
+  const choices = INDIAN_STATES.filter((s) => (['manual', 'verify'].includes(ptKindOf(s.name)) || ptBuiltInToday(s.name)) && !used.has(s.name));
+  const setRow = (i, p) => onChange(rows.map((r, j) => (j === i ? { ...r, ...p } : r)));
+  const setSlabs = (i, slabs) => setRow(i, { slabs });
   return (
     <div className="mt-4 space-y-3 border-t border-border/60 pt-3">
       <p className="text-xs font-semibold text-fg">Staff in other states</p>
@@ -104,21 +122,41 @@ function OtherStatesPt({ list, ownState, onChange }) {
         Set where someone works in their profile → Payroll → Payroll setup. States with a SpaxSync table need nothing here;
         for the others, enter their slabs once.
       </p>
-      {rows.map((r, i) => (
-        <div key={r.state} className="rounded-xl bg-muted/30 p-2.5">
-          <div className="mb-2 flex items-center justify-between">
-            <span className="text-xs font-semibold text-fg">{r.state}</span>
-            <button type="button" onClick={() => onChange(rows.filter((_, j) => j !== i))} className="text-[11px] text-fg-subtle hover:text-danger">Remove</button>
+      {rows.map((r, i) => {
+        const builtIn = ptBuiltInToday(r.state);
+        return (
+          <div key={r.state} className="rounded-xl bg-muted/30 p-2.5">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-xs font-semibold text-fg">{r.state}</span>
+              <button type="button" onClick={() => onChange(rows.filter((_, j) => j !== i))} className="text-[11px] text-fg-subtle hover:text-danger">Remove</button>
+            </div>
+            {builtIn && (
+              <div className="mb-2 space-y-1">
+                <PillGroup
+                  size="sm"
+                  ariaLabel={`Whose Professional Tax for ${r.state}`}
+                  value={r.override ? 'own' : 'law'}
+                  onChange={(v) => setRow(i, { override: v === 'own' })}
+                  options={[{ value: 'law', label: 'SpaxSync\'s rule' }, { value: 'own', label: 'These slabs instead' }]}
+                />
+                {r.override
+                  ? <ChooseNote>Payslips use these slabs instead of the law&apos;s, and each one says so.</ChooseNote>
+                  : <Law>{keptNote(r.state)}</Law>}
+              </div>
+            )}
+            <PtSlabEditor slabs={r.slabs} onChange={(slabs) => setSlabs(i, slabs)} />
           </div>
-          <PtSlabEditor slabs={r.slabs} onChange={(slabs) => setSlabs(i, slabs)} />
-        </div>
-      ))}
+        );
+      })}
       {choices.length > 0 && (
         <div className="flex items-center gap-2">
           <Select
             value=""
             onChange={(e) => e.target.value && onChange([...rows, { state: e.target.value, slabs: [{ from: 0, amount: 0, february_amount: null }] }])}
-            options={[{ value: '', label: 'Add a state…' }, ...choices.map((s) => ({ value: s.name, label: s.name }))]}
+            options={[
+              { value: '', label: 'Add a state…' },
+              ...choices.map((s) => ({ value: s.name, label: ptBuiltInToday(s.name) ? `${s.name} — your own slabs instead of SpaxSync's` : s.name })),
+            ]}
             aria-label="Add a state your staff work in"
           />
         </div>
@@ -193,18 +231,12 @@ function LwfCard({ list, onChange }) {
   );
 }
 
-export function StatutoryCards({ form, patch }) {
-  const ptKind = ptKindOf(form.ptState);
+/**
+ * The company's own PT for its state: slabs by pay, one amount for everyone,
+ * or none. `unsetNote` says what happens until one is chosen.
+ */
+function PtOwnAmounts({ form, patch, unsetNote }) {
   const hasSlabs = Array.isArray(form.ptManualSlabs) && form.ptManualSlabs.length > 0;
-  let ptSummary = 'Choose the state your staff work in';
-  if (ptKind === 'slab') ptSummary = `${form.ptState} slab, on pay actually earned`;
-  else if (ptKind === 'none') ptSummary = `${form.ptState} — no Professional Tax`;
-  else if (ptKind === 'manual' || ptKind === 'verify') {
-    if (hasSlabs) ptSummary = `${form.ptState} — your slabs, on pay actually earned`;
-    else if (form.ptManualAmount === 0) ptSummary = `${form.ptState} — no PT deducted`;
-    else if (form.ptManualAmount > 0) ptSummary = `${form.ptState} — ${formatCurrency(form.ptManualAmount)} a month for everyone`;
-    else ptSummary = `${form.ptState} — enter the slabs or the monthly amount`;
-  }
   let ptMethod = null;
   if (hasSlabs) ptMethod = 'slabs';
   else if (form.ptManualAmount === 0) ptMethod = 'none';
@@ -214,6 +246,55 @@ export function StatutoryCards({ form, patch }) {
     else if (v === 'none') patch({ ptManualSlabs: null, ptManualAmount: 0 });
     else patch({ ptManualSlabs: null, ptManualAmount: form.ptManualAmount > 0 ? form.ptManualAmount : 200 });
   };
+  return (
+    <>
+      <div className="flex flex-wrap items-center gap-2">
+        <PillGroup
+          size="sm"
+          ariaLabel="Professional Tax method"
+          value={ptMethod}
+          onChange={choosePtMethod}
+          options={[{ value: 'slabs', label: 'Slabs by pay' }, { value: 'amount', label: 'One amount' }, { value: 'none', label: 'No PT' }]}
+        />
+        {ptMethod === 'amount' && form.ptManualAmount > 0 && (
+          <NumberChip value={Number(form.ptManualAmount)} min={1} max={2500} step={25} prefix="₹" width="w-16" onCommit={(v) => patch({ ptManualAmount: v })} ariaLabel="monthly Professional Tax" />
+        )}
+      </div>
+      {ptMethod === 'slabs' && <PtSlabEditor slabs={form.ptManualSlabs} onChange={(next) => patch({ ptManualSlabs: next })} />}
+      {ptMethod === 'amount' && <Law>The same amount is deducted from everyone, whatever they earn.</Law>}
+      {ptMethod == null && unsetNote}
+    </>
+  );
+}
+
+/** Where the company's staff are, as far as this screen can tell: its PT state, other PT and LWF states, addresses. */
+const staffStates = (form, employees) => new Set([
+  form.ptState,
+  ...(form.ptOtherStates || []).map((o) => o.state),
+  ...(form.lwfStates || []).map((o) => o.state),
+  ...(employees || []).map((e) => (e?.address && typeof e.address === 'object' ? e.address.state : null)),
+].filter(Boolean));
+
+export function StatutoryCards({ form, patch, employees = [] }) {
+  const ptKind = ptKindOf(form.ptState);
+  const hasSlabs = Array.isArray(form.ptManualSlabs) && form.ptManualSlabs.length > 0;
+  const hasOwnAmounts = hasSlabs || form.ptManualAmount != null;
+  // SpaxSync has its own rule for the state today; the company may still choose its own amounts.
+  const builtIn = ptBuiltInToday(form.ptState);
+  const ownOverTable = builtIn && Boolean(form.ptOverride);
+  const ptNote = PT_BUILT_IN[form.ptState]?.note;
+  const staffIn = staffStates(form, employees);
+  const pt2026Changed = PT_CHANGED_2026.some((st) => staffIn.has(st));
+  let ptSummary = 'Choose the state your staff work in';
+  if (ownOverTable) ptSummary = `${form.ptState} — your own amounts, instead of SpaxSync's`;
+  else if (ptKind === 'slab') ptSummary = `${form.ptState} slab, on pay actually earned`;
+  else if (ptKind === 'none') ptSummary = `${form.ptState} — no Professional Tax`;
+  else if (ptKind === 'manual' || ptKind === 'verify') {
+    if (hasSlabs) ptSummary = `${form.ptState} — your slabs, on pay actually earned`;
+    else if (form.ptManualAmount === 0) ptSummary = `${form.ptState} — no PT deducted`;
+    else if (form.ptManualAmount > 0) ptSummary = `${form.ptState} — ${formatCurrency(form.ptManualAmount)} a month for everyone`;
+    else ptSummary = `${form.ptState} — enter the slabs or the monthly amount`;
+  }
 
   return (
     <div className="grid grid-cols-1 gap-4 2xl:grid-cols-2">
@@ -254,12 +335,17 @@ export function StatutoryCards({ form, patch }) {
       </RuleCard>
 
       <RuleCard icon={Building2} tone="sky" title="Professional Tax" summary={ptSummary}>
+        {pt2026Changed && (
+          <p role="note" className="mb-3 rounded-xl bg-warning/10 px-3 py-2 text-xs font-semibold text-warning ring-1 ring-warning/30">
+            PT rules changed in 2026 (Odisha abolished PT from Apr 2026; West Bengal new slabs from Oct 2026) — check any amounts you entered.
+          </p>
+        )}
         <Select
           label="State your staff work in"
           options={PT_STATE_OPTIONS}
           value={form.ptState}
           onChange={(e) => patch({
-            ptState: e.target.value, ptManualAmount: null, ptManualSlabs: null, ptStateSet: Boolean(e.target.value),
+            ptState: e.target.value, ptManualAmount: null, ptManualSlabs: null, ptOverride: false, ptStateSet: Boolean(e.target.value),
           })}
         />
         {form.ptState === 'Karnataka' && !form.ptStateSet && (
@@ -270,8 +356,27 @@ export function StatutoryCards({ form, patch }) {
             </button>
           </div>
         )}
-        {ptKind === 'slab' && <Law>SpaxSync applies {form.ptState}&apos;s PT slab to the pay actually earned each month.</Law>}
-        {ptKind === 'none' && <Law>{form.ptState} levies no Professional Tax — nothing is deducted.</Law>}
+        {ptKind === 'slab' && <Law>SpaxSync applies {form.ptState}&apos;s PT slab to the pay actually earned each month.{ptNote ? ` ${ptNote}` : ''}</Law>}
+        {ptKind === 'none' && <Law>{form.ptState} levies no Professional Tax — nothing is deducted.{ptNote ? ` ${ptNote}` : ''}</Law>}
+        {builtIn && (
+          <div className="mt-2 space-y-2">
+            <PillGroup
+              size="sm"
+              ariaLabel="Whose Professional Tax amounts"
+              value={ownOverTable ? 'own' : 'law'}
+              onChange={(v) => patch({ ptOverride: v === 'own' })}
+              options={[{ value: 'law', label: 'SpaxSync\'s rule' }, { value: 'own', label: 'Our own amounts' }]}
+            />
+            {ownOverTable ? (
+              <>
+                <ChooseNote>Payslips use your amounts instead of the law&apos;s, and each one says so. Only if you&apos;re sure.</ChooseNote>
+                <PtOwnAmounts form={form} patch={patch} unsetNote={<Law>Until you choose, SpaxSync&apos;s rule applies.</Law>} />
+              </>
+            ) : (
+              hasOwnAmounts && <Law>{keptNote(form.ptState)}</Law>
+            )}
+          </div>
+        )}
         {(ptKind === 'manual' || ptKind === 'verify') && (
           <div className="mt-2 space-y-2">
             <Law>
@@ -280,23 +385,10 @@ export function StatutoryCards({ form, patch }) {
                 : `SpaxSync has no PT table for ${form.ptState} yet. `}
               Enter your state&apos;s slabs (best: low earners pay less or nothing), one amount for everyone, or choose No PT.
             </Law>
-            <div className="flex flex-wrap items-center gap-2">
-              <PillGroup
-                size="sm"
-                ariaLabel="Professional Tax method"
-                value={ptMethod}
-                onChange={choosePtMethod}
-                options={[{ value: 'slabs', label: 'Slabs by pay' }, { value: 'amount', label: 'One amount' }, { value: 'none', label: 'No PT' }]}
-              />
-              {ptMethod === 'amount' && form.ptManualAmount > 0 && (
-                <NumberChip value={Number(form.ptManualAmount)} min={1} max={2500} step={25} prefix="₹" width="w-16" onCommit={(v) => patch({ ptManualAmount: v })} ariaLabel="monthly Professional Tax" />
-              )}
-            </div>
-            {ptMethod === 'slabs' && <PtSlabEditor slabs={form.ptManualSlabs} onChange={(next) => patch({ ptManualSlabs: next })} />}
-            {ptMethod === 'amount' && <Law>The same amount is deducted from everyone, whatever they earn.</Law>}
-            {ptMethod == null && <p className="text-[11px] font-semibold text-danger">Payroll can&apos;t run until this is set.</p>}
+            <PtOwnAmounts form={form} patch={patch} unsetNote={<p className="text-[11px] font-semibold text-danger">Payroll can&apos;t run until this is set.</p>} />
           </div>
         )}
+        <Law>Nobody pays more than ₹2,500 of PT in a financial year (Constitution Art. 276); payroll stops there.</Law>
         {ptKind === 'unknown' && <p className="mt-2 text-[11px] font-semibold text-danger">Choose a state — payroll can&apos;t run without it.</p>}
         {form.ptState && (
           <OtherStatesPt list={form.ptOtherStates} ownState={form.ptState} onChange={(ptOtherStates) => patch({ ptOtherStates })} />

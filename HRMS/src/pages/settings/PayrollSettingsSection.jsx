@@ -45,7 +45,9 @@ const formFrom = (cfg, leaveFirst) => ({
   ptStateSet: Boolean(cfg.ptStateSet) || Boolean(cfg.ptState && cfg.ptState !== 'Karnataka'),
   ptManualAmount: cfg.ptManualAmount == null || cfg.ptManualAmount === '' ? null : Number(cfg.ptManualAmount),
   ptManualSlabs: Array.isArray(cfg.ptManualSlabs) && cfg.ptManualSlabs.length ? cfg.ptManualSlabs : null,
-  // Slabs for other states staff work in, where SpaxSync has no table: [{ state, slabs }].
+  // The company's own PT amounts over SpaxSync's rule for its state (a deliberate choice).
+  ptOverride: cfg.ptOverride === true,
+  // Slabs for other states staff work in, where SpaxSync has no table (or `override`: instead of it): [{ state, slabs, override }].
   ptOtherStates: Array.isArray(cfg.ptOtherStates) ? cfg.ptOtherStates : [],
   // Labour Welfare Fund per state, as the company entered it: [{ state, employee, employer, months }].
   lwfStates: Array.isArray(cfg.lwfStates) ? cfg.lwfStates : [],
@@ -77,6 +79,7 @@ const GROUPS = {
         amount: Number(r.amount) || 0,
         february_amount: r.february_amount == null ? null : Number(r.february_amount),
       })) : null,
+      pt_override: Boolean(f.ptOverride),
       lwf_states: (f.lwfStates || []).map((o) => ({
         state: o.state,
         employee: Number(o.employee) || 0,
@@ -90,6 +93,7 @@ const GROUPS = {
           amount: Number(r.amount) || 0,
           february_amount: r.february_amount == null ? null : Number(r.february_amount),
         })),
+        ...(o.override ? { override: true } : {}),
       })),
       components: f.components || DEFAULT_SALARY_COMPONENTS,
       hra_percent: f.hraPercent ?? 40,
@@ -119,6 +123,7 @@ const simulatorOverrides = (f) => ({
   ptState: f.ptState || '',
   ptManualAmount: f.ptManualAmount == null ? null : f.ptManualAmount,
   ptManualSlabs: f.ptManualSlabs || null,
+  ptOverride: Boolean(f.ptOverride),
   ptOtherStates: f.ptOtherStates || [],
   lwfStates: f.lwfStates || [],
   workingDaysSetting: f.workingDaysPerMonth,
@@ -296,7 +301,7 @@ export function PayrollSettingsSection() {
           )}
           {tab === 'deductions' && (
             <>
-              <StatutoryCards form={form} patch={patch} />
+              <StatutoryCards form={form} patch={patch} employees={employees} />
               <CustomOptions options={form.customPayrollOptions} onChange={(customPayrollOptions) => patch({ customPayrollOptions })} />
               <p className="px-1 text-xs text-fg-subtle">
                 Want PF, ESI, PT, TDS or one of these off for one person? Open their profile → Payroll → Payroll setup.

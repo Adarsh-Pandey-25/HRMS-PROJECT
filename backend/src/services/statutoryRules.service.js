@@ -14,10 +14,13 @@ const { BONUS_RULES } = require('../payroll/bonusEncashment');
 const rupees = (paise) => (paise == null ? null : paise / 100);
 const percent = (rate) => (rate ? Number(((rate.num * 100) / rate.den).toFixed(4)) : null);
 const ref = (r) => ({
-  id: r.id, from: r.from, to: r.to ?? null, source: r.source, status: r.status,
+  id: r.id, from: r.from, to: r.to ?? null, source: r.source, status: r.status, ...(r.url ? { url: r.url } : {}),
 });
 const slabRows = (slabs) => (slabs || []).map((s) => ({
-  upTo: rupees(s.upTo), amount: rupees(s.amount), februaryAmount: s.februaryAmount != null ? rupees(s.februaryAmount) : null,
+  upTo: rupees(s.upTo),
+  amount: rupees(s.amount),
+  februaryAmount: s.februaryAmount != null ? rupees(s.februaryAmount) : null,
+  marchAmount: s.marchAmount != null ? rupees(s.marchAmount) : null,
 }));
 
 const listStatutoryRules = () => ({
@@ -41,12 +44,14 @@ const listStatutoryRules = () => ({
     exemptDailyWage: rupees(r.employeeExemptDailyWage),
   })),
   overtime: statutory.OVERTIME.map((r) => ({ ...ref(r), minimumMultiplier: r.minimumMultiplier.num / r.minimumMultiplier.den })),
+  ptAnnualCap: rupees(statutory.PT_ANNUAL_CAP.amount),
   professionalTax: statutory.STATES.map((s) => {
     const versions = statutory.PT_TABLES[s.name] || [];
     return {
       code: s.code,
       state: s.name,
-      kind: s.pt,
+      // As of today: a table in force decides (Odisha: no PT from April 2026).
+      kind: statutory.ptRule(s.name, new Date().toISOString().slice(0, 10)).kind,
       tables: versions.map((v) => ({
         ...ref(v),
         basis: v.basis,

@@ -133,9 +133,9 @@ describe('payslip rows from salary records (October 2026, Bengaluru)', () => {
   test('PT not set up → the slip is marked blocked, not guessed', () => {
     const noState = slip(ctxWith({ ctx: { ptState: '' } }), { basic: 30000 }, { workingDays: 22 });
     expect(noState.breakdown_json.config.blockers.map((b) => b.code)).toEqual(['pt_state_missing']);
-    const noTable = slip(ctxWith({ ctx: { ptState: 'Gujarat' } }), { basic: 30000 }, { workingDays: 22 });
+    const noTable = slip(ctxWith({ ctx: { ptState: 'Jharkhand' } }), { basic: 30000 }, { workingDays: 22 });
     expect(noTable.breakdown_json.config.blockers.map((b) => b.code)).toEqual(['pt_amount_missing']);
-    const manual = slip(ctxWith({ ctx: { ptState: 'Gujarat', ptManualAmount: 20000 } }), { basic: 30000 }, { workingDays: 22 });
+    const manual = slip(ctxWith({ ctx: { ptState: 'Jharkhand', ptManualAmount: 20000 } }), { basic: 30000 }, { workingDays: 22 });
     expect(ded(manual, 'Professional Tax')).toBe(200);
   });
 
