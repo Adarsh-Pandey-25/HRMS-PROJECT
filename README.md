@@ -99,6 +99,15 @@ function) and must go first on a fresh project; everything in
 26. `20261007_wfh_date_range_requests.sql` — **adds `wfh_day_requests.batch_id`**, which groups the per-day rows of one multi-day WFH request. Until it runs, submitting any WFH request fails — the table still stays one row per day, so approved-WFH check-in is unaffected either way
 27. `20261008_assets_ownership.sql` — **adds `assets.ownership`** (`purchased` / `rented`), which bulk import and the Add Asset form now send. Until it runs, creating an asset fails; existing assets are backfilled to `purchased`
 28. `20261028_whatsapp_channel.sql` — WhatsApp notifications: new tables only (`whatsapp_links`, `whatsapp_link_codes`, `whatsapp_messages`, `whatsapp_inbound`, `company_whatsapp_settings`, `platform_whatsapp_state`) and the `whatsapp_claim_outbox()` function; changes nothing existing. Until it runs, WhatsApp stays unavailable even with `WHATSAPP_ENABLED=true`
+29. `20261030_whatsapp_approval_buttons.sql` — new table `whatsapp_actions` for the Approve / Reject buttons on WhatsApp approval requests; nothing existing changes
+30. `20261102_clear_done_review_notifications.sql` — optional one-off tidy-up: marks "please review" notifications read for requests already decided; only `is_read` changes
+31. `20261102_payroll_last_working_day.sql` — `employees.last_working_day`, so a leaver is paid up to their last day; until it runs payroll uses the offboarding date
+32. `20261102_wfh_approval_flow.sql` — **adds the WFH manager-step columns.** Until it runs, the WFH manager step fails on the website and on WhatsApp
+33. `20261103_employee_loans.sql` — loans and salary advances recovered through payroll; until it runs, payroll deducts no loans
+34. `20261103_payroll_payment_reference.sql` — payment date and bank reference (UTR) on "Mark paid"
+35. `20261103_tax_declarations.sql` — employee tax declarations (Form 124, formerly 12BB) used by TDS
+36. `20261104_payroll_approval.sql` — "Approval before publishing" (maker-checker); until it runs, switching it on blocks publishing with a message
+37. `20261104_payroll_one_time_items.sql` — one-time pay and recoveries (arrears, bonus, encashment, gratuity, notice pay) on a month's payslip
 
 Migrations are idempotent (`IF NOT EXISTS` / `CREATE OR REPLACE`), so
 re-running one is safe.

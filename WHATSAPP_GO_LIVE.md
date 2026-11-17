@@ -61,7 +61,8 @@ Leave, work-from-home, expense and attendance-correction requests reach the appr
 - **A tap does exactly what the button on the website does**, with the same rules: right role and team, the company's approval steps, nobody approves their own request, and the request must still be pending. The employee is told as usual.
 - **Reject is one tap.** The employee sees the reason "Rejected on WhatsApp. Please contact your approver for details."
 - **Attendance corrections:** Approve saves the times the employee asked for, then closes the request, like "Save attendance" on the website. To change the times, use the website.
-- **Safety:** the buttons only work from the approver's own connected WhatsApp number. Each set works once and stops working after 7 days. They don't work if the approver's account is switched off or the company is suspended. Every decision is recorded with who made it and when.
+- **Safety:** the buttons only work from the WhatsApp number connected to the approver. Each set works once and stops working after 7 days. They don't work if the approver's account is switched off or the company is suspended. Every decision is recorded with who made it and when.
+- **Known gap (audit 4 Nov 2026, #11 and #12):** a number connected automatically is the number HR typed in, not one the approver proved they own, and if HR edits the approver's number the buttons move to the new number with no check. So a mistyped, old or recycled number can approve requests. Until approvers re-verify their number, keep WhatsApp approvals off (see "To stop everything" below).
 - **Live since 30 Oct 2026:** Meta approved `approval_request`, and the first leave and work-from-home requests were approved from WhatsApp that afternoon.
 
 ### Approval Flows (added 2 Nov 2026)
@@ -195,7 +196,8 @@ Nothing changes for anyone until step C.
 
 ### D. After going live
 - **Check health:** Super Admin → WhatsApp shows quality, messages, failures and estimated cost.
-- **To stop everything instantly:** use **Pause all sending** on that page, or remove `WHATSAPP_ENABLED=true` and restart pm2. Emails and in-app notifications keep working either way.
+- **To stop sending:** use **Pause all sending** on that page. Pausing stops outgoing messages only: **Approve/Reject taps on messages already delivered still work while paused.**
+- **To stop everything, including taps:** set `WHATSAPP_ENABLED=false` in the server's `backend/.env`, then run `pm2 restart hrms-backend --update-env`. Emails and in-app notifications keep working either way.
 - **Your PC:** close the tunnel. You can uninstall cloudflared; it's no longer needed.
 
 ---

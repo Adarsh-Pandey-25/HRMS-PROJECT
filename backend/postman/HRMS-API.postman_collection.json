@@ -8,7 +8,10 @@
     { "key": "baseUrl", "value": "http://localhost:5000" },
     { "key": "accessToken", "value": "" },
     { "key": "employeeId", "value": "" },
-    { "key": "leaveId", "value": "" }
+    { "key": "leaveId", "value": "" },
+    { "key": "adminEmail", "value": "" },
+    { "key": "adminPassword", "value": "" },
+    { "key": "newPassword", "value": "" }
   ],
   "item": [
     {
@@ -47,7 +50,7 @@
             "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"email\": \"admin@company.com\",\n  \"password\": \"SystemAdmin@123\"\n}"
+              "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{adminPassword}}\"\n}"
             },
             "url": "{{baseUrl}}/api/auth/login"
           }
@@ -92,7 +95,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"currentPassword\": \"SystemAdmin@123\",\n  \"newPassword\": \"SystemAdmin@1234\"\n}"
+              "raw": "{\n  \"currentPassword\": \"{{adminPassword}}\",\n  \"newPassword\": \"{{newPassword}}\"\n}"
             },
             "url": "{{baseUrl}}/api/auth/change-password"
           }
