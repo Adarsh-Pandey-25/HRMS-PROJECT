@@ -146,6 +146,23 @@ function refusal(req, { target = null, companyId = null, action, attempted = {},
   return new ErrorType(message);
 }
 
+/**
+ * Audit #9: Settings → User & Role Management guards acting on someone
+ * else's record. Checked in the controller because these routes also accept
+ * employee codes. The Admin always passes; your own record is never blocked.
+ */
+async function assertEmployeesPermission(req, action, target) {
+  if (req.user.role === 'admin') return;
+  if (await require('../services/rolePermissions.service').can(req.user, 'employees', action)) return;
+  throw refusal(req, {
+    target,
+    action: `employees.${action}`,
+    message: action === 'view'
+      ? 'You don\'t have permission to view employees. Ask an Admin.'
+      : 'You don\'t have permission to edit employees. Ask an Admin.',
+  });
+}
+
 /** Active Admins of one company — the last one is never removed. */
 async function countActiveAdmins(companyId) {
   const { count, error } = await supabaseAdmin
@@ -567,6 +584,7 @@ const getById = async (req, res, next) => {
     if (!isSelf && !isPrivileged && !isManager) {
       throw new ForbiddenError('Not authorized to view this employee');
     }
+    if (!isSelf) await assertEmployeesPermission(req, 'view', data);
 
     let profilePictureUrl = null;
     if (data.profile_picture) {
@@ -645,6 +663,11 @@ const update = async (req, res, next) => {
       changesPhone: req.body.phone !== undefined && digitsOnly(req.body.phone) !== digitsOnly(existing.phone),
       changesCompany: isPrivileged && Boolean(requestedCompanyId) && !sameId(requestedCompanyId, getCompanyId(existing)),
     });
+
+    // Audit #9: Settings → User & Role Management guards editing someone
+    // else's record. Checked here, not in the route, because the route also
+    // accepts employee codes. The Admin always passes.
+    if (!isSelf) await assertEmployeesPermission(req, 'edit', existing);
 
     // Item 3: the narrow self-edit path (a non-HR/Admin editing their own
     // record — the dedicated "Edit my info" flow) is allowed exactly once.
@@ -769,6 +792,17 @@ const update = async (req, res, next) => {
       allowedFields.address = withCompanyId(existing.address, stampCompanyId);
     }
 
+    // Audit #10: reactivating someone, or moving an active person in from
+    // outside the group, takes a seat from the paying company's pool. A move
+    // inside the group costs nothing (assertSeatAvailable works that out).
+    if (isPrivileged && requestedActive === true && !wasActive) {
+      await require('../services/subscription.service').assertSeatAvailable(stampCompanyId || previousCompanyId);
+    } else if (isPrivileged && wasActive && requestedActive !== false
+      && stampCompanyId && !sameId(stampCompanyId, previousCompanyId)) {
+      await require('../services/subscription.service')
+        .assertSeatAvailable(stampCompanyId, { fromCompanyId: previousCompanyId });
+    }
+
     // The Edit Employee form sends the whole salary record. Keep what the
     // Payroll setup card owns (ESI choice, extra-deduction opt-outs), so a
     // form save never undoes it.
@@ -868,6 +902,16 @@ const update = async (req, res, next) => {
       }
     }
 
+    // Audit #6: switching someone off, or changing their role, ends every
+    // session they have (access and refresh tokens), not just new logins.
+    if ((allowedFields.is_active === false && wasActive) || allowedFields.role !== undefined) {
+      try {
+        await authService.bumpTokenVersion(targetId);
+      } catch (e) {
+        logger.error('Could not sign the employee out after an access change', { employeeId: targetId, error: e.message });
+      }
+    }
+
     // Item 5: audit trail. isNarrowSelfEdit gets its own action_type
     // (profile.self_edit) — item 5 explicitly calls out logging this
     // employee self-action, not just HR/Admin writes.
@@ -917,6 +961,7 @@ const uploadPhoto = async (req, res, next) => {
     if (!isSelf && !isPrivileged) {
       throw new ForbiddenError('Not authorized to update this employee\'s photo');
     }
+    if (!isSelf) await assertEmployeesPermission(req, 'edit', existing);
     await assertMayChangeAccount(req, existing, { action: 'photo' });
 
     const { path } = await uploadProfilePicture(req.file, targetId);
@@ -1249,6 +1294,7 @@ const listCareerEvents = async (req, res, next) => {
     if (!employee) throw new NotFoundError('Employee not found');
 
     await assertCanViewCareerEvents(req, employee);
+    if (!sameId(req.user.id, employee.id)) await assertEmployeesPermission(req, 'view', employee);
 
     // Belt-and-suspenders on top of the employee-scope check above: events
     // are also filtered by the employee's own company_id, so a row stamped
@@ -1331,6 +1377,7 @@ const addCareerNote = async (req, res, next) => {
     if (!['hr', 'admin'].includes(req.user.role)) {
       throw new ForbiddenError('Only HR or Admin can add a career note');
     }
+    await assertEmployeesPermission(req, 'edit', employee);
 
     const note = String(req.body.note || '').trim();
     if (!note) throw new BadRequestError('Note text is required');

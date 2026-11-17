@@ -113,6 +113,8 @@ const runDayOneCheck = withCronLock('onboarding_day_one', 5 * 60 * 1000, async (
           logger.warn('[Onboarding] Failed to set temp password', { employeeId: emp.id, error: updateError.message });
           continue;
         }
+        // Audit #6: a fresh temporary password ends sessions from the old one.
+        await require('../services/auth.service').bumpTokenVersion(emp.id);
 
         await dayOneEmail(emp, tempPassword, TEMP_PASSWORD_EXPIRY_HOURS);
         summary.sent += 1;

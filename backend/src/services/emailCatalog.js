@@ -87,6 +87,7 @@ const EMAIL_TYPES = [
   { key: 'onboarding_invite', label: 'Self-service onboarding invite', audience: 'employee', trigger: 'HR adds an employee with self-service onboarding on.', preference: null, lock: 'credentials', companyScoped: true },
   { key: 'bulk_import', label: 'Bulk-import account created', audience: 'employee', trigger: 'An employee is created through bulk import.', preference: null, lock: 'credentials', companyScoped: true },
   { key: 'password_reset', label: 'Password reset code', audience: 'employee', trigger: 'Someone requests a password reset.', preference: null, lock: 'credentials', companyScoped: true },
+  { key: 'two_step_login_reset', label: 'Two-step login reset', audience: 'employee', trigger: 'An Admin or HR resets someone\'s two-step login (lost phone); they are signed out everywhere.', preference: null, lock: 'security', companyScoped: true },
   { key: 'prejoining', label: 'Pre-joining reminder', audience: 'employee', trigger: 'Onboarding cron, a few days before the joining date.', preference: 'prejoining_reminder', companyScoped: true },
   { key: 'day_one', label: 'Day-one welcome', audience: 'employee', trigger: 'Onboarding cron, on the joining date.', preference: 'day_one_welcome', companyScoped: true },
   { key: 'checklist_reminder', label: 'Onboarding checklist reminder', audience: 'employee', trigger: 'Nothing sends this yet.', preference: 'checklist_reminder', companyScoped: true, live: false },

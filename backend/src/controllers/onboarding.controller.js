@@ -122,6 +122,10 @@ const complete = async (req, res, next) => {
     if (error) throw new BadRequestError(error.message);
     if (!data) throw new ForbiddenError('Onboarding already completed. You can log in normally.');
 
+    // Audit #6: a new password ends any session started with the earlier
+    // temporary password (access and refresh tokens).
+    await authService.bumpTokenVersion(data.id);
+
     // A corrected mobile number takes a WhatsApp connection SpaxSync made with it.
     if (updates.phone !== undefined) {
       require('../utils/background').runInBackground('whatsapp number change', () => require('../services/whatsappLink.service')
