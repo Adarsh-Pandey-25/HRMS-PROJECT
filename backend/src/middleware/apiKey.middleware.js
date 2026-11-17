@@ -38,6 +38,30 @@ const attachApiKeyUser = (req, keyRow) => {
   req.authType = 'api_key';
 };
 
+/**
+ * Audit #17: a company API key is accepted only on the endpoints built for
+ * machines (each one also checks the key's scope with requireApiScope).
+ * Everywhere else, including logged-in routes that have no role check (e.g.
+ * GET /api/attendance/report/:id), a key is refused, so a device key with
+ * attendance:write can't read anyone's attendance, GPS points or selfies.
+ * To open another endpoint to keys, add it here AND put requireApiScope on
+ * the route.
+ */
+const API_KEY_ENDPOINTS = [
+  ['GET', '/api/integration/ping'],
+  ['GET', '/api/integration/employees'],
+  ['POST', '/api/attendance/biometric-webhook'],
+];
+
+const isApiKeyEndpoint = (req) => {
+  const method = String(req.method || '').toUpperCase();
+  const path = String(req.originalUrl || req.url || '')
+    .split('?')[0]
+    .replace(/\/+$/, '')
+    .toLowerCase();
+  return API_KEY_ENDPOINTS.some(([m, p]) => m === method && p === path);
+};
+
 /** Require a verified API key (no JWT). */
 const authenticateApiKey = async (req, res, next) => {
   try {
@@ -83,6 +107,8 @@ const allowJwtOrApiScope = (...scopes) => (req, res, next) => {
 };
 
 module.exports = {
+  API_KEY_ENDPOINTS,
+  isApiKeyEndpoint,
   extractApiKey,
   attachApiKeyUser,
   authenticateApiKey,
