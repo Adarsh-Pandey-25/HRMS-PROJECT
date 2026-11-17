@@ -11,9 +11,10 @@
  * come in as `calc`; left empty, the law and the standard apply.
  */
 const { mulDiv, toPaise } = require('./money');
-const { GRATUITY_RULES, computeGratuity } = require('./gratuity');
+const { GRATUITY_RULES, computeGratuity, serviceLength } = require('./gratuity');
 const { BONUS_RULES, computeEncashment, computeStatutoryBonus } = require('./bonusEncashment');
 const { resolveCompanyCalc } = require('./companyRules');
+const { gratuityExemption, leaveEncashmentExemption } = require('./retirementExemption');
 
 const NOTICE_ACTIONS = ['recover', 'pay', 'waive'];
 /** The statutory bonus is 8.33%–20% of bonus wages; more than 20% is ex-gratia, paid as one-time pay. */
@@ -30,11 +31,15 @@ const BONUS_MAX_PERCENT = 20;
  *   notice                    { requiredDays, servedDays, action: 'recover' | 'pay' | 'waive', base: 'gross' | 'basic_da', divisor }
  *   bonusMonths               [{ wages }] of the accounting year so far (paise), for the statutory bonus; null = none due
  *   calc                      the company's values (payroll_calc)
- * @returns {{ items: [{ code, kind: 'earning' | 'deduction', name, amount, working }], notes: string[] }}
+ *   tax                       for the tax-free part of gratuity and leave encashment (payroll/retirementExemption.js);
+ *                             null = not worked out. { rules (taxRules RETIREMENT_EXEMPTIONS), averageBasicDa (paise,
+ *                             the 10 months before leaving), gratuityActCovered (default true),
+ *                             exemptionUsed: { gratuity, leaveEncashment } (paise, e.g. a previous employer) }
+ * @returns {{ items: [{ code, kind: 'earning' | 'deduction', name, amount, working, exempt?, taxable?, exemption? }], notes: string[] }}
  */
 const computeFullAndFinal = ({
   joinedOn, lastWorkingDay, fixedTerm = false, monthlyBasicDa = 0, monthlyWages = 0, monthlyGross = 0,
-  leaveDays = 0, notice = null, bonusMonths = null, calc = null,
+  leaveDays = 0, notice = null, bonusMonths = null, calc = null, tax = null,
 }) => {
   const c = resolveCompanyCalc(calc);
   const items = [];
@@ -51,7 +56,7 @@ const computeFullAndFinal = ({
   const wages = paise(monthlyWages) || paise(monthlyBasicDa);
   const g = computeGratuity({ joinedOn, lastWorkingDay, monthlyWages: wages, fixedTerm, rule });
   if (g.eligible && g.amount > 0) {
-    items.push({
+    const item = {
       code: 'GRATUITY',
       kind: 'earning',
       name: 'Gratuity',
@@ -59,7 +64,32 @@ const computeFullAndFinal = ({
       working: {
         monthly_wages: wages, days_per_year: rule.factor.num, divisor: rule.factor.den, years: g.countedYears, capped: g.capped,
       },
-    });
+    };
+    if (tax) {
+      // Tax-free up to the statutory gratuity on the last Basic + DA and the lifetime limit.
+      const ex = gratuityExemption({
+        amount: g.amount,
+        joinedOn,
+        lastWorkingDay,
+        lastBasicDa: paise(monthlyBasicDa),
+        averageBasicDa: paise(tax.averageBasicDa),
+        covered: tax.gratuityActCovered !== false,
+        fixedTerm,
+        alreadyUsed: paise(tax.exemptionUsed?.gratuity),
+        rules: tax.rules,
+      });
+      Object.assign(item, {
+        exempt: ex.exempt,
+        taxable: ex.taxable,
+        exemption: {
+          statutory: ex.statutory, basis: ex.basis, limit: ex.limit, completed_years: ex.completedYears,
+        },
+      });
+      if (ex.taxable > 0 && wages > paise(monthlyBasicDa)) {
+        notes.push('Gratuity was worked out on wages above Basic + DA (the 50% wage rule); the tax-free part counts Basic + DA only — check this with your CA.');
+      }
+    }
+    items.push(item);
   } else {
     notes.push(`No gratuity: ${g.reason || 'nothing due'}.`);
   }
@@ -70,13 +100,33 @@ const computeFullAndFinal = ({
     const base = c.encashment.base === 'gross' ? paise(monthlyGross) : paise(monthlyBasicDa);
     const amount = computeEncashment({ days, monthlyBase: base, divisor: c.encashment.divisor });
     if (amount > 0) {
-      items.push({
+      const item = {
         code: 'LEAVE_ENCASHMENT',
         kind: 'earning',
         name: 'Leave encashment',
         amount,
         working: { days, monthly_base: base, base: c.encashment.base, divisor: c.encashment.divisor },
-      });
+      };
+      if (tax) {
+        // Encashed on leaving: tax-free up to the least of the four limits.
+        const ex = leaveEncashmentExemption({
+          amount,
+          onLeaving: true,
+          leaveDays: days,
+          completedYears: serviceLength(joinedOn, lastWorkingDay)?.years || 0,
+          averageBasicDa: paise(tax.averageBasicDa),
+          alreadyUsed: paise(tax.exemptionUsed?.leaveEncashment),
+          rules: tax.rules,
+        });
+        Object.assign(item, {
+          exempt: ex.exempt,
+          taxable: ex.taxable,
+          exemption: {
+            limit: ex.limit, ten_months: ex.tenMonths, cash_value: ex.cashValue, days_counted: ex.daysCounted,
+          },
+        });
+      }
+      items.push(item);
     }
   }
 

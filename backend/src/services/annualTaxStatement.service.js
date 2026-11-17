@@ -12,6 +12,7 @@ const { toPaise, toRupees } = require('../payroll/money');
 const { annualTax } = require('../payroll/incomeTax');
 const { TAX_YEARS } = require('../payroll/taxRules');
 const tds = require('../payroll/tds');
+const { exemptOneTimePaise } = require('../payroll/retirementExemption');
 
 const QUARTERS = [
   { key: 'Q1', months: [4, 5, 6] },
@@ -59,11 +60,19 @@ const getAnnualTaxStatement = async (companyId, employeeId, taxYear) => {
   const profile = tds.resolveTaxProfile(employee.salary_details, taxYear, calc.tds.defaultRegime);
   const regime = rules.regimes[profile.regime];
   const sum = (key) => slips.reduce((s, r) => s + toPaise(r[key]), 0);
-  // Salary on the payslips, less one-time pay marked not taxable (e.g. exempt gratuity).
-  const exemptOneTime = slips.reduce((s, r) => s + (r.breakdown_json?.config?.one_time || [])
-    .filter((i) => i && i.earning && i.taxable === false)
-    .reduce((a, i) => a + toPaise(i.amount), 0), 0);
-  const salaryHere = Math.max(0, sum('gross_salary') - exemptOneTime);
+  // Salary on the payslips, less the tax-free part of one-time pay (gratuity
+  // and leave encashment on leaving up to their limits; items marked not taxable).
+  const grossHere = sum('gross_salary');
+  const exemptOneTime = slips.reduce((s, r) => s + exemptOneTimePaise(r.breakdown_json?.config?.one_time), 0);
+  const salaryHere = Math.max(0, grossHere - exemptOneTime);
+  // Each tax-free item, by name (Form 16-style: allowances exempt under s.10).
+  const exemptByName = new Map();
+  for (const r of slips) {
+    for (const i of r.breakdown_json?.config?.one_time || []) {
+      const part = exemptOneTimePaise([i]);
+      if (part > 0) exemptByName.set(i.name, (exemptByName.get(i.name) || 0) + part);
+    }
+  }
   const ptPaid = sum('professional_tax');
   const tdsHere = sum('tds');
   const outside = profile.previous_employer_income + profile.earlier_income;
@@ -95,7 +104,11 @@ const getAnnualTaxStatement = async (companyId, employeeId, taxYear) => {
     months: slips.length,
     draftsNotCounted: drafts,
     salary: {
+      // Taxable salary paid here; the gross and its tax-free part are shown too.
       paidHere: R(salaryHere),
+      grossPaidHere: R(grossHere),
+      exemptOneTime: R(exemptOneTime),
+      exemptItems: [...exemptByName.entries()].map(([name, amount]) => ({ name, amount: R(amount) })),
       previousEmployer: R(profile.previous_employer_income),
       outsideSpaxSync: R(profile.earlier_income),
       total: R(salary),

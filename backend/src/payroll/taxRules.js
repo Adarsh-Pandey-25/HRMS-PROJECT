@@ -72,6 +72,30 @@ const OLD_REGIME = {
   allowsDeclarations: true, // HRA, LTA, 80C-type deductions, Professional Tax
 };
 
+/**
+ * What a leaver is paid that is tax-free, under both regimes, for employees
+ * other than government's (the 1961 Act's s.10(10) and s.10(10AA), carried
+ * into the Income-tax Act 2025). The limits are for a person's whole working
+ * life, across employers (payroll/retirementExemption.js).
+ *   gratuityLimit               gratuity: at most ₹20 lakh tax-free
+ *   gratuityNotCovered          not covered by the Payment of Gratuity Act: half a
+ *                               month's average salary for each completed year
+ *   leaveEncashmentLimit        leave encashed on retirement or resignation: at
+ *                               most ₹25 lakh tax-free (from 1 April 2023)
+ *   averageSalaryMonths         the average salary (Basic + DA) is of the 10
+ *                               months before leaving; encashment at most 10 of them
+ *   leaveDaysPerCompletedYear   leave counted at most 30 days for each completed year
+ */
+const RETIREMENT_EXEMPTIONS = {
+  gratuityLimit: 20 * L,
+  gratuityNotCovered: { num: 1, den: 2 },
+  leaveEncashmentLimit: 25 * L,
+  averageSalaryMonths: 10,
+  leaveDaysPerCompletedYear: 30,
+  source: 'Income-tax Act 1961 s.10(10)(ii)/(iii) and s.10(10AA)(ii) (₹25 lakh, CBDT notification 31/2023), carried into the Income-tax Act 2025',
+  status: 'confirm',
+};
+
 const TAX_YEARS = [
   {
     id: 'IT-2025-26',
@@ -79,6 +103,7 @@ const TAX_YEARS = [
     from: '2025-04-01',
     to: '2026-03-31',
     regimes: { new: NEW_REGIME, old: OLD_REGIME },
+    retirement: RETIREMENT_EXEMPTIONS,
     source: 'Finance Act 2025 slabs (Income-tax Act 1961, s.192)',
     status: 'confirm',
   },
@@ -88,6 +113,7 @@ const TAX_YEARS = [
     from: '2026-04-01',
     to: '2027-03-31',
     regimes: { new: NEW_REGIME, old: OLD_REGIME },
+    retirement: RETIREMENT_EXEMPTIONS,
     source: 'Income-tax Act 2025, s.392; slabs unchanged for tax year 2026-27 (per the 27 Oct 2026 report)',
     status: 'confirm',
   },
@@ -104,6 +130,9 @@ const monthsLeftInTaxYear = (month) => (month >= 4 ? 16 - month : 4 - month);
 
 const taxRulesFor = (month, year) => TAX_YEARS.find((t) => t.taxYear === taxYearOf(month, year)) || null;
 
+/** The tax-free limits on a leaver's pay for a month's tax year (the latest year set up, if that one isn't). */
+const retirementExemptionsFor = (month, year) => (taxRulesFor(month, year) || TAX_YEARS[TAX_YEARS.length - 1]).retirement;
+
 module.exports = {
-  TAX_YEARS, NEW_REGIME, OLD_REGIME, taxYearOf, monthsLeftInTaxYear, taxRulesFor,
+  TAX_YEARS, NEW_REGIME, OLD_REGIME, RETIREMENT_EXEMPTIONS, taxYearOf, monthsLeftInTaxYear, taxRulesFor, retirementExemptionsFor,
 };

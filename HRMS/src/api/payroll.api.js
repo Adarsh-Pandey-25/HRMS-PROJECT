@@ -1,4 +1,4 @@
-import { apiRequest } from './client';
+import { apiRequest, apiRequestPaginated } from './client';
 import { mapPayslipFromApi } from '../lib/mappers';
 
 const now = () => {
@@ -14,17 +14,57 @@ export async function fetchPayslipsApi(query = {}) {
   return (Array.isArray(rows) ? rows : []).map(mapPayslipFromApi);
 }
 
-export async function fetchAllPayslipsForYearApi(year, { mine = false } = {}) {
+/** The server sends at most this many payslips a page. */
+const PAYSLIP_PAGE_SIZE = 200;
+
+/**
+ * Every payslip of a month (HR/Admin), page by page until the whole month is
+ * in — Run Payroll and the Salary Sheet used to stop at the first 50.
+ * Optional: one employee's (employeeId), or 'draft' / 'published' only.
+ */
+export async function fetchMonthPayslipsApi(month, year, { employeeId, status } = {}) {
+  const params = { month, year, limit: PAYSLIP_PAGE_SIZE };
+  if (employeeId) params.employee_id = employeeId;
+  if (status) params.status = status;
+  const byId = new Map();
+  for (let page = 1; page <= 1000; page += 1) {
+    const { items, meta } = await apiRequestPaginated({ method: 'GET', url: '/payroll/payslips', params: { ...params, page } });
+    // A payslip generated while paging shifts the pages: never count one twice.
+    for (const row of items) byId.set(row.id, mapPayslipFromApi(row));
+    if (!meta || page >= Number(meta.totalPages || 1) || items.length < Number(meta.limit || PAYSLIP_PAGE_SIZE)) break;
+  }
+  return [...byId.values()];
+}
+
+export async function fetchAllPayslipsForYearApi(year, { mine = false, employeeId } = {}) {
   const results = [];
   for (let month = 1; month <= 12; month += 1) {
     try {
-      const rows = await fetchPayslipsApi({ month, year, mine });
+      const rows = mine ? await fetchPayslipsApi({ month, year, mine }) : await fetchMonthPayslipsApi(month, year, { employeeId });
       results.push(...(Array.isArray(rows) ? rows : []));
     } catch {
       /* month may have no payroll */
     }
   }
   return results.sort((a, b) => (b.year - a.year) || (b.monthNum - a.monthNum));
+}
+
+/**
+ * Runs a month-wide action a batch at a time until the server says it is
+ * done (next is null). `call(after)` makes one request; onProgress(reply)
+ * after each. Returns every reply.
+ */
+export async function runInBatches(call, onProgress) {
+  const replies = [];
+  let after = null;
+  for (let i = 0; i < 10000; i += 1) {
+    const reply = await call(after);
+    replies.push(reply);
+    if (onProgress) onProgress(reply, replies);
+    if (!reply?.next || reply.next === after) break;
+    after = reply.next;
+  }
+  return replies;
 }
 
 export async function fetchPayrollMonthApi(month, year) {
@@ -43,8 +83,28 @@ export async function generatePayslipsApi(payrollMonthId, userId) {
   });
 }
 
+/**
+ * Drafts for everyone in the month, one batch: { results, next, done, remaining, total }.
+ * Call again with after = next until next is null (runInBatches).
+ */
+export async function generatePayslipsBatchApi(payrollMonthId, after = null) {
+  return apiRequest({
+    method: 'POST',
+    url: '/payroll/payslips/generate',
+    data: { payroll_month_id: payrollMonthId, batch: true, ...(after ? { after } : {}) },
+  });
+}
+
 export async function publishPayslipApi(id) {
   return apiRequest({ method: 'PUT', url: `/payroll/payslips/${id}/publish` });
+}
+
+/**
+ * Publish every draft of the month, one batch (the server picks them):
+ * { published, skipped: [{ payslipId, employeeId, reason, own }], ownSkipped, next, remaining, total }.
+ */
+export async function publishMonthApi(month, year, after = null) {
+  return apiRequest({ method: 'POST', url: '/payroll/payslips/publish-month', data: { month, year, ...(after ? { after } : {}) } });
 }
 
 /** Approve a draft payslip (approval before publishing). */
@@ -52,9 +112,12 @@ export async function approvePayslipApi(id) {
   return apiRequest({ method: 'PUT', url: `/payroll/payslips/${id}/approve` });
 }
 
-/** Approve every draft of a month that can be approved: { approved, skipped: [{ employeeId, reason }] }. */
-export async function approveMonthApi(month, year) {
-  return apiRequest({ method: 'POST', url: '/payroll/payslips/approve-month', data: { month, year } });
+/**
+ * Approve every draft of a month that can be approved, one batch:
+ * { approved, skipped: [{ employeeId, reason, own }], ownSkipped, next, remaining, total }.
+ */
+export async function approveMonthApi(month, year, after = null) {
+  return apiRequest({ method: 'POST', url: '/payroll/payslips/approve-month', data: { month, year, ...(after ? { after } : {}) } });
 }
 
 /** What to sort out before generating a month's payslips (read-only). */
@@ -143,6 +206,15 @@ export async function markPayslipsPaidApi(body) {
   return apiRequest({ method: 'POST', url: '/payroll/payments/mark-paid', data: body });
 }
 
+/**
+ * Records that the bank paid the month: every published, unpaid payslip of
+ * it (the server picks them). { month, year, paidOn, reference } →
+ * { updated, alreadyPaid, skipped: [{ employeeId, reason, own }], ownSkipped, referenceStored }.
+ */
+export async function markMonthPaidApi(body) {
+  return apiRequest({ method: 'POST', url: '/payroll/payments/mark-paid-month', data: body });
+}
+
 /** The signed-in employee's tax declaration for a tax year (Form 124). */
 export async function fetchMyTaxDeclarationApi(taxYear) {
   return apiRequest({ method: 'GET', url: '/payroll/tax-declaration/me', params: { taxYear } });
@@ -185,7 +257,10 @@ export async function applyAdjustmentsApi(month, year, employeeIds) {
   return apiRequest({ method: 'POST', url: '/payroll/adjustments/apply', data: { month, year, employeeIds } });
 }
 
-/** A leaver's full and final settlement, for HR to review: { leaveDays, notice, fixedTerm, includeBonus }. */
+/**
+ * A leaver's full and final settlement, for HR to review:
+ * { leaveDays, notice, fixedTerm, includeBonus, gratuityActCovered, exemptionUsed: { gratuity, leaveEncashment } }.
+ */
 export async function previewFullAndFinalApi(employeeId, inputs) {
   return apiRequest({ method: 'POST', url: `/payroll/fnf/${employeeId}/preview`, data: inputs });
 }

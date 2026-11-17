@@ -22,7 +22,7 @@ jest.mock('../../src/config/supabase', () => {
       return { data: rows().filter(match), error: null };
     };
     const q = {};
-    for (const m of ['select', 'order', 'in', 'gte', 'lte', 'neq', 'limit', 'ilike', 'is', 'not', 'or']) q[m] = () => q;
+    for (const m of ['select', 'order', 'range', 'in', 'gte', 'lte', 'neq', 'limit', 'ilike', 'is', 'not', 'or']) q[m] = () => q;
     q.eq = (f, v) => { state.filters.push([f, v]); return q; };
     q.insert = (p) => { state.op = 'insert'; state.payload = p; return q; };
     q.maybeSingle = () => {

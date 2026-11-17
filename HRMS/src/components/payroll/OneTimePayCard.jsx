@@ -132,7 +132,7 @@ export function OneTimePayCard({ employeeId, employeeName, canEdit }) {
                 </p>
                 <p className="text-xs text-fg-muted">
                   {MONTHS[i.month - 1]} {i.year} payslip
-                  {i.earning ? ` · ${i.taxable ? 'taxable' : 'not taxable'}${i.pfWage ? ' · PF' : ''}${i.esiWage ? ' · ESI' : ''}` : ''}
+                  {i.earning ? ` · ${i.exemptAmount > 0 ? `tax-free ${formatCurrency(i.exemptAmount)}, taxable ${formatCurrency(i.taxableAmount)}` : (i.taxable ? 'taxable' : 'not taxable')}${i.pfWage ? ' · PF' : ''}${i.esiWage ? ' · ESI' : ''}` : ''}
                   {i.source === 'fnf' ? ' · full and final' : ''}
                   {i.status !== 'active' ? ' · removed' : ''}
                   {i.note ? ` · ${i.note}` : ''}

@@ -12,7 +12,8 @@ const notificationService = require('./notification.service');
 const emailService = require('./email.service');
 const { buildPayslipPdfBuffer } = require('./payslipPdf.service');
 const { buildMeta } = require('../utils/helpers');
-const { selectIn } = require('../utils/selectIn');
+const { selectIn, selectAllPages } = require('../utils/selectIn');
+const ownPay = require('./ownPayslip');
 
 const WORKING_DAYS_PER_MONTH = 26;
 const MONTH_STATUS = { PENDING: 'PENDING', COMPLETED: 'COMPLETED' };
@@ -40,6 +41,7 @@ const round2 = (n) => Math.round(Number(n) * 100) / 100;
 const payrollEngine = require('../payroll/engine');
 const statutory = require('../payroll/statutory');
 const tdsProjection = require('../payroll/tds');
+const { exemptOneTimePaise } = require('../payroll/retirementExemption');
 // The company's own calculation values, laid over the law (Settings → Payroll → Calculation).
 const companyRules = require('../payroll/companyRules');
 const { taxYearOf } = require('../payroll/taxRules');
@@ -815,9 +817,21 @@ const computePayslip = (ctx, {
   // One-time pay this month (arrears, bonus, …) goes into the calculation; one-time
   // recoveries (notice not served, …) come off at the end, like loans.
   const oneTimeItems = Array.isArray(oneTime) ? oneTime.filter((i) => i && Number(i.amount) > 0) : [];
-  const oneTimeEarnings = oneTimeItems.filter((i) => i.earning).map((i) => ({
-    code: `ONE_TIME:${i.id}`, name: i.name, amount: Math.round(Number(i.amount)), pfWage: Boolean(i.pfWage), esiWage: Boolean(i.esiWage), taxable: i.taxable !== false,
-  }));
+  const oneTimeEarnings = oneTimeItems.filter((i) => i.earning).map((i) => {
+    const amount = Math.round(Number(i.amount));
+    const taxable = i.taxable !== false;
+    return {
+      code: `ONE_TIME:${i.id}`,
+      name: i.name,
+      amount,
+      pfWage: Boolean(i.pfWage),
+      esiWage: Boolean(i.esiWage),
+      taxable,
+      // The tax-free part of a taxable item (gratuity, leave encashment on
+      // leaving, up to their limits): income tax is on the rest only.
+      exempt: taxable ? Math.min(amount, Math.max(0, Math.round(Number(i.exempt) || 0))) : 0,
+    };
+  });
   const oneTimeRecoveryItems = oneTimeItems.filter((i) => !i.earning);
   const engineInput = {
     period: { year: payslipYear, month: payslipMonth },
@@ -985,7 +999,7 @@ const computePayslip = (ctx, {
       profile,
       dateOfBirth: employee?.date_of_birth,
       thisMonth: out.regularGross + toPaise(legacyNow.earningsTotal),
-      oneTime: oneTimeEarnings.filter((i) => i.taxable).reduce((a, i) => a + i.amount, 0),
+      oneTime: oneTimeEarnings.filter((i) => i.taxable).reduce((a, i) => a + i.amount - i.exempt, 0),
       futureMonthly: fullMonthly,
       futureMonths,
       comingMonths,
@@ -1011,9 +1025,18 @@ const computePayslip = (ctx, {
   }
 
   const shownCodes = new Set(components.filter((c) => c.alwaysShown || c.monthly > 0).map((c) => c.code));
+  // One-time pay that is partly or wholly tax-free shows both parts.
+  const exemptByCode = new Map(oneTimeEarnings.filter((i) => i.exempt > 0).map((i) => [i.code, i.exempt]));
   const earnings = out.earnings
     .filter((e) => shownCodes.has(e.code) || e.earned > 0)
-    .map((e) => ({ name: e.name, amount: R(e.earned), rate: R(e.rate) }));
+    .flatMap((e) => {
+      const exempt = exemptByCode.get(e.code);
+      if (!exempt) return [{ name: e.name, amount: R(e.earned), rate: R(e.rate) }];
+      return [
+        { name: `${e.name} (exempt)`, amount: R(exempt), rate: R(e.rate) },
+        ...(e.earned > exempt ? [{ name: `${e.name} (taxable)`, amount: R(e.earned - exempt), rate: R(e.rate) }] : []),
+      ];
+    });
   if (out.overtimePay > 0) earnings.push({ name: 'Overtime', amount: R(out.overtimePay) });
   const deductions = out.deductions.map((d) => ({ name: d.name, amount: R(d.amount) }));
   const earnedOf = (code) => R(out.earnings.find((e) => e.code === code)?.earned || 0);
@@ -1210,7 +1233,15 @@ const computePayslip = (ctx, {
       one_time: oneTimeItems.length
         ? [
           ...oneTimeEarnings.map((i) => ({
-            id: i.code.slice('ONE_TIME:'.length), name: i.name, earning: true, amount: R(i.amount), taxable: i.taxable, pf_wage: i.pfWage, esi_wage: i.esiWage,
+            id: i.code.slice('ONE_TIME:'.length),
+            name: i.name,
+            earning: true,
+            amount: R(i.amount),
+            taxable: i.taxable,
+            // Partly tax-free: the exempt part and the taxable part.
+            ...(i.exempt > 0 ? { exempt: R(i.exempt), taxable_amount: R(i.amount - i.exempt) } : {}),
+            pf_wage: i.pfWage,
+            esi_wage: i.esiWage,
           })),
           ...oneTimeRecovered.map((r) => ({ ...r, earning: false })),
         ]
@@ -1337,13 +1368,11 @@ const taxYearMonthsBefore = (month, year) => {
  * first, or this month's TDS would miss them); a preview counts drafts too,
  * as the best estimate.
  */
-/** A payslip's gross that is taxable salary: one-time pay marked not taxable (e.g. exempt gratuity) left out. */
-const taxableGrossOf = (row) => {
-  const exempt = (row?.breakdown_json?.config?.one_time || [])
-    .filter((i) => i && i.earning && i.taxable === false)
-    .reduce((s, i) => s + toPaise(i.amount), 0);
-  return Math.max(0, toPaise(row?.gross_salary) - exempt);
-};
+/**
+ * A payslip's gross that is taxable salary: one-time pay marked not taxable
+ * left out, and the tax-free part of gratuity or leave encashment.
+ */
+const taxableGrossOf = (row) => Math.max(0, toPaise(row?.gross_salary) - exemptOneTimePaise(row?.breakdown_json?.config?.one_time));
 
 const loadTaxYearHistory = async (employee, month, year, { countDrafts = false } = {}) => {
   const earlier = taxYearMonthsBefore(month, year);
@@ -1483,10 +1512,9 @@ const employmentInMonth = (employee, month, year) => {
   const joined = employee?.date_of_joining ? String(employee.date_of_joining).slice(0, 10) : null;
   if (joined && joined > end) return { employed: false, reason: 'Joins after this month' };
   const lastWorkingDay = lastWorkingDayOf(employee);
-  if (employee?.is_active === false) {
-    if (!lastWorkingDay) return { employed: false, reason: 'Not active' };
-    if (lastWorkingDay < start) return { employed: false, reason: 'Left before this month' };
-  }
+  if (employee?.is_active === false && !lastWorkingDay) return { employed: false, reason: 'Not active' };
+  // Left before the month began — even if the profile is still switched on.
+  if (lastWorkingDay && lastWorkingDay < start) return { employed: false, reason: 'Left before this month' };
   return { employed: true, lastWorkingDay: lastWorkingDay && lastWorkingDay <= end ? lastWorkingDay : null };
 };
 
@@ -2526,6 +2554,12 @@ const generateDraftPayslip = async (payrollMonthId, userId, companyId = null, op
   );
   const blockers = calc.breakdown_json?.config?.blockers || [];
   if (blockers.length) throw new BadRequestError(blockers.map((b) => b.message).join(' '));
+  // Who made this draft (maker-checker: they can't also approve it). The
+  // automatic monthly run has no person behind it.
+  calc.breakdown_json = {
+    ...calc.breakdown_json,
+    prepared: { generated_by: opts.actor?.id || null, generated_at: new Date().toISOString() },
+  };
 
   let saved;
   if (existing?.id) {
@@ -2574,8 +2608,68 @@ const generateDraftPayslip = async (payrollMonthId, userId, companyId = null, op
   return mapPayslipRow(saved);
 };
 
+/**
+ * A bulk action works through the company's payslips a batch at a time:
+ * each request stops starting new ones after this long and says where to
+ * carry on (requests are cut off after 25 seconds), so any number of
+ * employees can be run.
+ */
+const BULK_TIME_BUDGET_MS = 12_000;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const cursorOf = (after) => {
+  if (after == null || after === '') return null;
+  if (!UUID_RE.test(String(after))) throw new BadRequestError('Unknown place to carry on from — start again');
+  return String(after).toLowerCase();
+};
+/** The rows after the cursor (ids in the database's order: lower-case UUIDs compare as text). */
+const afterCursor = (rows, cursor) => (cursor ? rows.filter((r) => String(r.id).toLowerCase() > cursor) : rows);
+const checkMonthYear = (month, year) => {
+  const m = Number(month);
+  const y = Number(year);
+  if (!(m >= 1 && m <= 12) || !(y >= 2000 && y <= 2100)) throw new BadRequestError('month and year are required');
+  return { m, y };
+};
+
+/**
+ * Works through `rows` a few at a time until the time budget is used (at
+ * least one batch always runs). `work` handles its own errors. Returns how
+ * far it got: { processed, remaining, next } — next is the id to carry on
+ * after, or null when every row is done (or `stop()` asked to stop).
+ */
+const runBatch = async (rows, work, { timeBudgetMs = BULK_TIME_BUDGET_MS, concurrency = 4, stop = () => false } = {}) => {
+  const started = Date.now();
+  let processed = 0;
+  while (processed < rows.length && !stop()) {
+    if (processed > 0 && Date.now() - started >= timeBudgetMs) break;
+    const chunk = rows.slice(processed, processed + concurrency);
+    // eslint-disable-next-line no-await-in-loop
+    await Promise.all(chunk.map((r) => work(r)));
+    processed += chunk.length;
+  }
+  const remaining = stop() ? 0 : rows.length - processed;
+  return { processed, remaining, next: remaining > 0 ? String(rows[processed - 1].id).toLowerCase() : null };
+};
+
+/**
+ * Who is in a month's payroll run: everyone employed during it (joined by
+ * its last day, not left before its first). Someone still switched on whose
+ * last working day was before the month is listed, so HR sees why.
+ */
+const employeesForRun = (employees, month, year) => {
+  const due = [];
+  const notDue = [];
+  for (const emp of employees) {
+    const employment = employmentInMonth(emp, month, year);
+    if (employment.employed) due.push(emp);
+    else if (emp.is_active !== false && employment.reason === 'Left before this month') {
+      notDue.push({ user_id: emp.id, status: 'skipped', reason: `Left before this month (last working day ${lastWorkingDayOf(emp)}) — their profile is still active` });
+    }
+  }
+  return { due, notDue };
+};
+
 /** Drafts for everyone employed during the month — active staff and anyone who left during it. */
-const generateAllDraftPayslips = async (payrollMonthId, companyId = null) => {
+const generateAllDraftPayslips = async (payrollMonthId, companyId = null, opts = {}) => {
   // No caller in this codebase ever legitimately omits companyId for a
   // payroll operation — fail closed instead of silently generating payslips
   // for every active employee on the entire platform.
@@ -2585,21 +2679,56 @@ const generateAllDraftPayslips = async (payrollMonthId, companyId = null) => {
     throw new BadRequestError(monthNotOverMessage(payrollMonth.month, payrollMonth.year));
   }
 
-  const employees = await loadCompanyEmployees(companyId);
-  const results = [];
+  // Every employee row of the company, a page at a time (any headcount).
+  const { due, notDue } = employeesForRun(await loadCompanyEmployees(companyId), payrollMonth.month, payrollMonth.year);
+  const results = [...notDue];
   const ctx = await loadPayrollContext(companyId);
-  for (const emp of employees) {
-    // People who weren't employed at all this month are simply not part of it.
-    if (!employmentInMonth(emp, payrollMonth.month, payrollMonth.year).employed) continue;
+  for (const emp of due) {
     try {
       // eslint-disable-next-line no-await-in-loop
-      const payslip = await generateDraftPayslip(payrollMonth.id, emp.id, companyId, { ctx, payrollMonth });
+      const payslip = await generateDraftPayslip(payrollMonth.id, emp.id, companyId, { ctx, payrollMonth, actor: opts.actor });
       results.push({ user_id: emp.id, status: 'generated', payslip });
     } catch (err) {
       results.push({ user_id: emp.id, status: 'skipped', reason: err.message });
     }
   }
   return results;
+};
+
+/**
+ * The same, a batch at a time (Run Payroll): drafts for the employees after
+ * `after` (employee id) until the time budget is used, then
+ * { results, next, done, remaining, total } — call again with after = next
+ * until next is null. HR's own draft is worked out like everyone else's (only
+ * from the salary an Admin set); publishing it is left to an Admin.
+ */
+const generateMonthBatch = async (payrollMonthId, companyId, { actor = null, after = null, timeBudgetMs = BULK_TIME_BUDGET_MS } = {}) => {
+  if (!companyId) throw new BadRequestError('companyId is required to generate payslips');
+  const cursor = cursorOf(after);
+  const payrollMonth = await loadPayrollMonth(payrollMonthId, companyId);
+  if (!monthHasEnded(payrollMonth.month, payrollMonth.year)) {
+    throw new BadRequestError(monthNotOverMessage(payrollMonth.month, payrollMonth.year));
+  }
+  const { due, notDue } = employeesForRun(await loadCompanyEmployees(companyId), payrollMonth.month, payrollMonth.year);
+  const todo = afterCursor(due, cursor);
+  // The people who aren't in the month are reported once, with the first batch.
+  const results = cursor ? [] : [...notDue];
+  const ctx = await loadPayrollContext(companyId);
+  const progress = await runBatch(todo, async (emp) => {
+    try {
+      const payslip = await generateDraftPayslip(payrollMonth.id, emp.id, companyId, { ctx, payrollMonth, actor });
+      results.push({ user_id: emp.id, status: 'generated', payslip });
+    } catch (err) {
+      results.push({ user_id: emp.id, status: 'skipped', reason: err.message });
+    }
+  }, { timeBudgetMs });
+  return {
+    results,
+    next: progress.next,
+    done: due.length - progress.remaining,
+    remaining: progress.remaining,
+    total: due.length,
+  };
 };
 
 const generatePayslipPdf = (employee, payslip, payrollMonth, companyId) =>
@@ -2618,10 +2747,11 @@ const maybeCloseMonth = async (payrollMonthId) => {
     .maybeSingle();
   if (!payrollMonth) return;
 
-  const { data: slips, error } = await supabaseAdmin
+  // Every payslip of the month (a page at a time: one select stops at ~1,000 rows).
+  const { data: slips, error } = await selectAllPages(() => supabaseAdmin
     .from('payroll')
-    .select('employee_id, payslip_status')
-    .eq('payroll_month_id', payrollMonthId);
+    .select('id, employee_id, payslip_status')
+    .eq('payroll_month_id', payrollMonthId));
   if (error || !(slips || []).length) return;
   if (slips.some((s) => String(s.payslip_status || '').toUpperCase() !== PAYSLIP_STATUS.PUBLISHED)) return;
 
@@ -2751,8 +2881,9 @@ const getPayrollChecks = async (month, year, companyId) => {
     const earlier = taxYearMonthsBefore(m, y);
     if (earlier.length && projectedFor.length) {
       const years = [...new Set(earlier.map((p) => p.year))];
+      // 40 people a batch: up to two years of payslips each stays under the ~1,000 rows one select returns.
       const { data: rows, error } = await selectIn(supabaseAdmin, 'payroll', 'employee_id, month, year, payslip_status', 'employee_id',
-        projectedFor.map((e) => e.id), { filter: (q) => q.in('year', years) });
+        projectedFor.map((e) => e.id), { batchSize: 40, filter: (q) => q.in('year', years) });
       if (error) throw new BadRequestError(error.message);
       const slips = (rows || []).filter((r) => earlier.some((p) => p.month === Number(r.month) && p.year === Number(r.year)));
       const withDraft = [...new Set(slips.filter((r) => String(r.payslip_status || '').toUpperCase() !== PAYSLIP_STATUS.PUBLISHED).map((r) => String(r.employee_id)))];
@@ -2998,6 +3129,19 @@ const approvalFingerprint = (row) => {
   ]);
 };
 
+const MAKER_CANNOT_APPROVE = 'You generated or changed this payslip, so someone else has to approve it (approval before publishing needs two people).';
+
+/**
+ * The people who made a draft what it is (lower-case ids): who generated it,
+ * who last changed it, and who added the one-time pay on it.
+ */
+const payslipMakers = async (payslip) => {
+  const prepared = payslip?.breakdown_json?.prepared || {};
+  const ids = [prepared.generated_by, prepared.edited_by];
+  ids.push(...await require('./oneTimePay.service').itemMakers(payslip.employee_id, payslip.month, payslip.year));
+  return new Set(ids.filter(Boolean).map((id) => String(id).toLowerCase()));
+};
+
 const APPROVAL_SQL = '20261104_payroll_approval.sql';
 const approvalRequired = async (companyId) => companyRules.resolveCompanyCalc(
   await settingsService.getSetting('payroll_calc', null, companyId),
@@ -3019,7 +3163,7 @@ const approvePayslip = async (payslipId, approver, { ipAddress = null } = {}) =>
     throw new NotFoundError('Payslip not found');
   }
   if (payslip.payslip_status === PAYSLIP_STATUS.PUBLISHED) throw new BadRequestError('Payslip is already published');
-  if (String(payslip.employee_id) === String(approver.id)) {
+  if (ownPay.sameId(payslip.employee_id, approver.id)) {
     throw new ForbiddenError('You can\'t approve your own payslip — someone else has to.');
   }
   if (payslip.breakdown_json?.config?.engine !== 2) {
@@ -3027,6 +3171,11 @@ const approvePayslip = async (payslipId, approver, { ipAddress = null } = {}) =>
   }
   if (!('approved_figures' in payslip)) {
     throw new BadRequestError(`Approvals can't be recorded yet — run the SQL file ${APPROVAL_SQL} first.`);
+  }
+  // Maker-checker: whoever generated this draft or changed it (one-time pay
+  // on it, a full and final settlement) can't also approve it.
+  if ((await payslipMakers(payslip)).has(String(approver.id).toLowerCase())) {
+    throw new ForbiddenError(MAKER_CANNOT_APPROVE);
   }
   await assertDraftIsCurrent(payslip);
   const patch = { approved_by: approver.id, approved_at: new Date().toISOString(), approved_figures: approvalFingerprint(payslip) };
@@ -3052,32 +3201,101 @@ const approvePayslip = async (payslipId, approver, { ipAddress = null } = {}) =>
   return { id: payslipId, approvedAt: patch.approved_at };
 };
 
-/** Approve every draft of a month that can be approved; the rest are listed with the reason. */
-const approveMonth = async (month, year, approver, opts = {}) => {
-  const m = Number(month);
-  const y = Number(year);
-  if (!(m >= 1 && m <= 12) || !(y >= 2000 && y <= 2100)) throw new BadRequestError('month and year are required');
-  const ids = await require('./tenant.service').getCompanyEmployeeIds(approver.company_id);
-  const { data: rows, error } = await selectIn(supabaseAdmin, 'payroll', 'id, employee_id, payslip_status', 'employee_id', ids, {
-    filter: (q) => q.eq('month', m).eq('year', y).eq('payslip_status', PAYSLIP_STATUS.DRAFT),
-  });
+/** The company's payslips of a month in one status (every one of them, a page at a time), in id order. */
+const monthPayslipRefs = async (companyId, month, year, status) => {
+  if (!companyId) throw new BadRequestError('companyId is required');
+  const { data, error } = await selectAllPages(() => supabaseAdmin
+    .from('payroll')
+    .select('id, employee_id, payroll_month_id, payslip_status, payment_status')
+    .eq('company_id', companyId)
+    .eq('month', month)
+    .eq('year', year)
+    .eq('payslip_status', status));
   if (error) throw new BadRequestError(error.message);
+  return (data || []).filter((r) => String(r.payslip_status || '').toUpperCase() === status);
+};
+
+const OWN_SKIPPED = {
+  publish: 'Your payslip was skipped — an Admin has to publish it.',
+  approve: 'Your payslip was skipped — someone else has to approve it.',
+};
+
+/**
+ * Approve every draft of the company's month that can be approved, a batch
+ * at a time (opts.after: carry on after that payslip id). The rest are
+ * listed with the reason; nobody's own payslip is approved.
+ * → { approved, skipped: [{ payslipId, employeeId, reason, own? }], ownSkipped, next, remaining, total }
+ */
+const approveMonth = async (month, year, approver, opts = {}) => {
+  const { m, y } = checkMonthYear(month, year);
+  const cursor = cursorOf(opts.after);
+  const rows = await monthPayslipRefs(approver?.company_id, m, y, PAYSLIP_STATUS.DRAFT);
+  const todo = afterCursor(rows, cursor);
   let approved = 0;
+  let ownSkipped = false;
+  let sqlMissing = false;
   const skipped = [];
-  for (const r of rows || []) {
+  const progress = await runBatch(todo, async (r) => {
+    if (ownPay.isOwnPay(approver, r.employee_id)) {
+      ownSkipped = true;
+      skipped.push({ payslipId: r.id, employeeId: r.employee_id, reason: OWN_SKIPPED.approve, own: true });
+      return;
+    }
+    if (sqlMissing) return;
     try {
-      // eslint-disable-next-line no-await-in-loop
-      await approvePayslip(r.id, approver, opts);
+      await approvePayslip(r.id, approver, { ipAddress: opts.ipAddress ?? null });
       approved += 1;
     } catch (err) {
       skipped.push({ payslipId: r.id, employeeId: r.employee_id, reason: err.message });
-      if (/run the SQL file/.test(err.message || '')) break;
+      if (/run the SQL file/.test(err.message || '')) sqlMissing = true;
     }
-  }
-  return { approved, skipped };
+  }, { timeBudgetMs: opts.timeBudgetMs, stop: () => sqlMissing });
+  return {
+    approved, skipped, ownSkipped, next: progress.next, remaining: progress.remaining, total: rows.length,
+  };
 };
 
-const publishPayslip = async (payslipId, publisher) => {
+/**
+ * Publish every draft of the company's month, a batch at a time (opts.after:
+ * carry on after that payslip id). Each one is checked as a single publish
+ * is; the ones that can't be published are listed with the reason. Someone
+ * who isn't an Admin never publishes their own payslip — it is skipped.
+ * → { published, skipped: [{ payslipId, employeeId, reason, own? }], ownSkipped, next, remaining, total }
+ */
+const publishMonth = async (month, year, publisher, opts = {}) => {
+  const { m, y } = checkMonthYear(month, year);
+  const cursor = cursorOf(opts.after);
+  const rows = await monthPayslipRefs(publisher?.company_id, m, y, PAYSLIP_STATUS.DRAFT);
+  const todo = afterCursor(rows, cursor);
+  let published = 0;
+  let ownSkipped = false;
+  const skipped = [];
+  const monthIds = new Set();
+  const progress = await runBatch(todo, async (r) => {
+    if (ownPay.skipsOwnPay(publisher, r.employee_id)) {
+      ownSkipped = true;
+      skipped.push({ payslipId: r.id, employeeId: r.employee_id, reason: OWN_SKIPPED.publish, own: true });
+      return;
+    }
+    try {
+      const done = await publishPayslip(r.id, publisher, { closeMonth: false });
+      published += 1;
+      if (done?.payroll_month_id || r.payroll_month_id) monthIds.add(done?.payroll_month_id || r.payroll_month_id);
+    } catch (err) {
+      skipped.push({ payslipId: r.id, employeeId: r.employee_id, reason: err.message });
+    }
+  }, { timeBudgetMs: opts.timeBudgetMs });
+  // Once per batch rather than once per payslip (it reads the whole month).
+  for (const id of monthIds) {
+    // eslint-disable-next-line no-await-in-loop
+    await maybeCloseMonth(id).catch((err) => logger.warn('Could not check whether the month is complete', { payrollMonthId: id, error: err.message }));
+  }
+  return {
+    published, skipped, ownSkipped, next: progress.next, remaining: progress.remaining, total: rows.length,
+  };
+};
+
+const publishPayslip = async (payslipId, publisher, opts = {}) => {
   const { data: payslip } = await supabaseAdmin
     .from('payroll')
     .select(`*, employee:employee_id(${PAYSLIP_EMPLOYEE_SELECT})`)
@@ -3088,6 +3306,8 @@ const publishPayslip = async (payslipId, publisher) => {
   if (require('../utils/tenant').getCompanyId(payslip.employee) !== publisher.company_id) {
     throw new NotFoundError('Payslip not found');
   }
+  // HR can't publish their own payslip — an Admin must (an Admin's own is audit-logged).
+  const adminOwn = ownPay.assertNotOwnPay(publisher, payslip.employee_id);
   if (payslip.payslip_status === PAYSLIP_STATUS.PUBLISHED) {
     throw new BadRequestError('Payslip is already published');
   }
@@ -3129,6 +3349,7 @@ const publishPayslip = async (payslipId, publisher) => {
       .from('payroll_months')
       .select('*')
       .eq('id', payslip.payroll_month_id)
+      .eq('company_id', publisher.company_id)
       .maybeSingle();
     payrollMonth = data;
   }
@@ -3198,10 +3419,12 @@ const publishPayslip = async (payslipId, publisher) => {
     if (payslip.approved_figures !== approvalFingerprint(payslip) || payslip.approved_figures !== approvalFingerprint(fresh)) {
       throw new ConflictError('This payslip changed after it was approved — approve it again, then publish.');
     }
-    if (String(payslip.approved_by) === String(publisher.id)) {
+    if (ownPay.sameId(payslip.approved_by, publisher.id)) {
       throw new ForbiddenError('You approved this payslip, so someone else has to publish it (approval before publishing needs two people).');
     }
   }
+  // Who made the draft stays on the published payslip (the audit trail).
+  const prepared = payslip.breakdown_json?.prepared || null;
   Object.assign(payslip, fresh);
   // Saved with the published payslip: the tax year so far, and the statutory
   // numbers as they are today (a later change to them doesn't rewrite it).
@@ -3209,6 +3432,7 @@ const publishPayslip = async (payslipId, publisher) => {
     const ids = resolvePayrollSetup(payslip.employee?.salary_details).statutoryIds;
     fresh.breakdown_json = {
       ...fresh.breakdown_json,
+      ...(prepared ? { prepared } : {}),
       meta: {
         ...(fresh.breakdown_json?.meta || {}),
         ytd: await yearToDate(payslip, publisher.company_id),
@@ -3317,8 +3541,12 @@ const publishPayslip = async (payslipId, publisher) => {
     logger.warn('Later payslips\' year to date could not be brought up to date', { payslipId, error: err.message });
   }
 
-  await maybeCloseMonth(payslip.payroll_month_id);
+  // A bulk publish checks the month once, after its batch.
+  if (opts.closeMonth !== false) await maybeCloseMonth(payslip.payroll_month_id);
   logger.info('Payslip published', { payslipId, publisherId: publisher.id });
+  if (adminOwn) {
+    ownPay.logOwnPayAction(publisher, 'publish', { payslip_id: payslipId, month: payslip.month, year: payslip.year, net_salary: payslip.net_salary });
+  }
 
   // TDS by projection counts published payslips, so this employee's later
   // drafts are worked out again now that this month is final (drafts only;
@@ -3363,6 +3591,8 @@ const publishPayslip = async (payslipId, publisher) => {
 };
 
 const PAYROLL_LIST_SELECT = '*, employee:employee_id(id, first_name, last_name, employee_code, email, company_id, address)';
+/** The most payslips one page of the list returns (each carries its full breakdown). */
+const MAX_PAYSLIP_PAGE = 200;
 
 const listPayslips = async ({
   month, year, user, role, mine = false, companyId = null, pageQuery = {},
@@ -3385,27 +3615,38 @@ const listPayslips = async ({
 
   // hr / admin without mine=true: company-wide list (Run Payroll / Salary
   // Sheet) — this is the branch that scales with headcount (audit M-14).
+  // A page at a time: meta.total is the whole month's count, and the screens
+  // page through until they have every payslip (audit #21: they used to stop
+  // at the first 50). Payslips carry their company, so the filter is that
+  // column — a list of every employee id overflows the URL for a big company.
+  if (!companyId) throw new BadRequestError('companyId is required');
   let query = supabaseAdmin
     .from('payroll')
     .select(PAYROLL_LIST_SELECT, { count: 'exact' })
+    .eq('company_id', companyId)
     .eq('month', month)
     .eq('year', year);
 
-  if (companyId) {
-    const tenantService = require('./tenant.service');
-    const ids = await tenantService.getCompanyEmployeeIds(companyId);
-    query = query.in(
-      'employee_id',
-      ids.length ? ids : ['00000000-0000-0000-0000-000000000000']
-    );
+  // Optional: one employee (their profile), or draft / published only.
+  const employeeId = pageQuery.employee_id || pageQuery.employeeId;
+  if (employeeId) {
+    if (!UUID_RE.test(String(employeeId))) throw new BadRequestError('Unknown employee');
+    query = query.eq('employee_id', employeeId);
+  }
+  const status = String(pageQuery.status || '').toUpperCase();
+  if (status) {
+    if (![PAYSLIP_STATUS.DRAFT, PAYSLIP_STATUS.PUBLISHED].includes(status)) throw new BadRequestError('status must be draft or published');
+    query = query.eq('payslip_status', status);
   }
 
   const page = Math.max(1, parseInt(pageQuery.page, 10) || 1);
-  const limit = Math.min(100, Math.max(1, parseInt(pageQuery.limit, 10) || 50));
+  const limit = Math.min(MAX_PAYSLIP_PAGE, Math.max(1, parseInt(pageQuery.limit, 10) || 50));
   const offset = (page - 1) * limit;
 
   const { data, error, count } = await query
     .order('created_at', { ascending: false })
+    // Ties broken by id, so no payslip falls between two pages.
+    .order('id', { ascending: true })
     .range(offset, offset + limit - 1);
   if (error) throw new BadRequestError(error.message);
   return { data: (data || []).map(mapPayslipRow), meta: buildMeta(page, limit, count || 0) };
@@ -3421,7 +3662,7 @@ const listPayslips = async ({
  * was and reported, rather than overwritten with wrong numbers.
  */
 const recalculatePayslipsFromSettings = async ({
-  month, year, employeeId, companyId,
+  month, year, employeeId, companyId, edited = null,
 } = {}) => {
   const now = moment.tz(TIMEZONE);
   const focusMonth = Number(month) || now.month() + 1;
@@ -3443,29 +3684,22 @@ const recalculatePayslipsFromSettings = async ({
 
   let updated = 0;
   const details = [];
-  let companyEmployeeIds = null;
-  if (companyId) {
-    companyEmployeeIds = await require('./tenant.service').getCompanyEmployeeIds(companyId);
-  }
 
   for (const t of targets.values()) {
-    let query = supabaseAdmin
-      .from('payroll')
-      .select('*')
-      .eq('month', t.month)
-      .eq('year', t.year)
-      .eq('payslip_status', PAYSLIP_STATUS.DRAFT);
-    if (employeeId) query = query.eq('employee_id', employeeId);
-    else if (companyEmployeeIds) {
-      query = query.in(
-        'employee_id',
-        companyEmployeeIds.length
-          ? companyEmployeeIds
-          : ['00000000-0000-0000-0000-000000000000']
-      );
-    }
-
-    const { data: slips, error } = await query;
+    // Every draft of the month (a page at a time: one select stops at ~1,000
+    // rows), by the payslip's company column — a list of every employee id
+    // would overflow the URL for a big company.
+    const { data: slips, error } = await selectAllPages(() => {
+      let query = supabaseAdmin
+        .from('payroll')
+        .select('*')
+        .eq('month', t.month)
+        .eq('year', t.year)
+        .eq('payslip_status', PAYSLIP_STATUS.DRAFT);
+      if (employeeId) query = query.eq('employee_id', employeeId);
+      if (companyId) query = query.eq('company_id', companyId);
+      return query;
+    }, { pageSize: 500 });
 
     if (error) throw new BadRequestError(error.message);
 
@@ -3517,6 +3751,15 @@ const recalculatePayslipsFromSettings = async ({
           details.push({ id: row.id, employee_id: row.employee_id, status: 'blocked', reason: blockers.map((b) => b.message).join(' ') });
           return;
         }
+
+        // Who made the draft stays on it; a change made by a person (one-time
+        // pay, a settlement) to this month's draft records them as its last editor.
+        const prepared = { ...(row.breakdown_json?.prepared || {}) };
+        if (edited?.by && (!edited.month || (Number(edited.month) === Number(row.month) && Number(edited.year) === Number(row.year)))) {
+          prepared.edited_by = edited.by;
+          prepared.edited_at = new Date().toISOString();
+        }
+        if (Object.keys(prepared).length) calc.breakdown_json = { ...calc.breakdown_json, prepared };
 
         // Numbers only here — downloadPayslip always rebuilds PDF from the stored row.
         const { data: written, error: updErr } = await supabaseAdmin
@@ -3593,7 +3836,7 @@ const downloadPayslip = async (payslipId, user) => {
 
   if (!payslip) throw new NotFoundError('Payslip not found');
 
-  const isOwn = payslip.employee_id === user.id;
+  const isOwn = ownPay.sameId(payslip.employee_id, user.id);
   const isHrAdmin = ['hr', 'admin'].includes(user.role);
   if (require('../utils/tenant').getCompanyId(payslip.employee) !== user.company_id) {
     throw new NotFoundError('Payslip not found');
@@ -3604,12 +3847,15 @@ const downloadPayslip = async (payslipId, user) => {
     throw new ForbiddenError('Payslip is not published yet');
   }
 
+  // The payroll month, always of the caller's own company (the month/year
+  // fallback used to match any company's month of that name).
   let payrollMonth = null;
   if (payslip.payroll_month_id) {
     const { data } = await supabaseAdmin
       .from('payroll_months')
       .select('*')
       .eq('id', payslip.payroll_month_id)
+      .eq('company_id', user.company_id)
       .maybeSingle();
     payrollMonth = data;
   }
@@ -3619,6 +3865,7 @@ const downloadPayslip = async (payslipId, user) => {
       .select('*')
       .eq('month', payslip.month)
       .eq('year', payslip.year)
+      .eq('company_id', user.company_id)
       .maybeSingle();
     payrollMonth = data;
   }
@@ -3775,7 +4022,9 @@ module.exports = {
   getMonthStatus,
   generateDraftPayslip,
   generateAllDraftPayslips,
+  generateMonthBatch,
   publishPayslip,
+  publishMonth,
   approvePayslip,
   approveMonth,
   listPayslips,

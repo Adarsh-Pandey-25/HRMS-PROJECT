@@ -224,24 +224,21 @@ const getPayrollSummary = async (month, year, employeeIds = []) => {
     return { current: 0, previous: 0, changePercent: 0 };
   }
 
-  const { data, error } = await supabaseAdmin
-    .from('payroll')
-    .select('gross_salary')
-    .in('employee_id', employeeIds)
-    .eq('month', month)
-    .eq('year', year);
+  // A hundred employees at a time: one IN filter with every id of a big
+  // company overflows the URL, and one select stops at ~1,000 rows.
+  const { selectIn } = require('../utils/selectIn');
+  const { data, error } = await selectIn(supabaseAdmin, 'payroll', 'gross_salary', 'employee_id', employeeIds, {
+    filter: (q) => q.eq('month', month).eq('year', year),
+  });
 
   if (error) throw new BadRequestError(error.message);
 
   const current = (data || []).reduce((s, r) => s + Number(r.gross_salary || 0), 0);
 
   const prev = moment({ year, month: month - 1 }).subtract(1, 'month');
-  const { data: prevData } = await supabaseAdmin
-    .from('payroll')
-    .select('gross_salary')
-    .in('employee_id', employeeIds)
-    .eq('month', prev.month() + 1)
-    .eq('year', prev.year());
+  const { data: prevData } = await selectIn(supabaseAdmin, 'payroll', 'gross_salary', 'employee_id', employeeIds, {
+    filter: (q) => q.eq('month', prev.month() + 1).eq('year', prev.year()),
+  });
 
   const previous = (prevData || []).reduce((s, r) => s + Number(r.gross_salary || 0), 0);
   const changePercent = previous
