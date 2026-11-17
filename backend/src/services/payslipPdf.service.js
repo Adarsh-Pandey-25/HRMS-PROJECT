@@ -281,10 +281,20 @@ async function buildPayslipPdfBuffer(employee, payslip, payrollMonth, { companyI
     rows: [
       ['Taxable income for the year (projected)', fmt(taxCfg.taxable_income)],
       ['Tax for the year, with cess', fmt(taxCfg.annual_tax)],
+      // No PAN on file: the year's TDS is 20% of the taxable income when that is more than the tax.
+      ...(taxCfg.no_pan && taxCfg.higher_rate_applied ? [
+        ['TDS at 20% — no PAN on file', fmt(taxCfg.no_pan_tds)],
+        ['TDS for the year (the higher)', fmt(taxCfg.tds_target)],
+      ] : []),
       ['TDS deducted before this month', fmt(taxCfg.tds_before)],
       ['TDS this month', fmt(taxCfg.tds)],
     ],
   } : null;
+  // Plain-words lines payroll wrote for this payslip: deductions held back by
+  // the 50% limit, TDS at 20% without a PAN, … (printed whatever the display choices).
+  const notes = (Array.isArray(breakdown.config?.payslip_notes) ? breakdown.config.payslip_notes : [])
+    .filter((n) => typeof n === 'string' && n.trim())
+    .map((n) => n.replace(/₹\s?/g, 'Rs. ')); // no rupee sign in the PDF's font (see fmt)
 
   // Year to date (the tax year so far), saved when the payslip was published.
   const ytd = meta.ytd || null;
@@ -321,10 +331,14 @@ async function buildPayslipPdfBuffer(employee, payslip, payrollMonth, { companyI
     const reimbH = colHeadH + reimbursements.length * rowH + rowH;
     const netH = colHeadH + 4 * rowH;
     const footerH = 48;
-    const taxH = tax ? colHeadH + 2 * rowH : 0;
+    const taxRowsH = tax ? Math.ceil(tax.rows.length / 2) * rowH : 0;
+    const taxH = tax ? colHeadH + taxRowsH : 0;
+    // A note wraps at about 110 characters a line (8 pt across the page).
+    const noteHeights = notes.map((n) => Math.max(rowH, 8 + Math.ceil(n.length / 110) * 10));
+    const notesH = notes.length ? colHeadH + noteHeights.reduce((a, b) => a + b, 0) : 0;
     const employerH = employerRows.length ? colHeadH + Math.ceil(employerRows.length / 2) * rowH : 0;
     const ytdH = ytdRows.length ? colHeadH + Math.ceil(ytdRows.length / 2) * rowH : 0;
-    const totalH = headerH + titleH + summaryH + earnH + reimbH + netH + footerH + taxH + employerH + ytdH;
+    const totalH = headerH + titleH + summaryH + earnH + reimbH + netH + footerH + notesH + taxH + employerH + ytdH;
 
     const doc = new PDFDocument({ size: [pageW, Math.max(A4[1], Math.ceil(top + totalH + 36))], margin: 0 });
     const chunks = [];
@@ -479,14 +493,27 @@ async function buildPayslipPdfBuffer(employee, payslip, payrollMonth, { companyI
       { bold: true, size: 8, align: 'center' },
     );
 
+    if (notes.length) {
+      const nY0 = fY + footerH;
+      hline(doc, x, nY0, w);
+      cellText(doc, 'NOTES', x, nY0, w, colHeadH, { bold: true, size: 9, align: 'center', valign: 'center' });
+      hline(doc, x, nY0 + colHeadH, w);
+      let ny = nY0 + colHeadH;
+      notes.forEach((note, i) => {
+        cellText(doc, note, x, ny, w, noteHeights[i], { size: 8 });
+        ny += noteHeights[i];
+        hline(doc, x, ny, w);
+      });
+    }
+
     if (tax) {
-      const tY = fY + footerH;
+      const tY = fY + footerH + notesH;
       hline(doc, x, tY, w);
       cellText(doc, tax.heading, x, tY, w, colHeadH, { bold: true, size: 9, align: 'center', valign: 'center' });
       hline(doc, x, tY + colHeadH, w);
-      vline(doc, mid, tY + colHeadH, 2 * rowH);
-      vline(doc, mid - amtW, tY + colHeadH, 2 * rowH);
-      vline(doc, x + w - amtW, tY + colHeadH, 2 * rowH);
+      vline(doc, mid, tY + colHeadH, taxRowsH);
+      vline(doc, mid - amtW, tY + colHeadH, taxRowsH);
+      vline(doc, x + w - amtW, tY + colHeadH, taxRowsH);
       tax.rows.forEach(([label, amount], i) => {
         const ry = tY + colHeadH + Math.floor(i / 2) * rowH;
         const left = i % 2 === 0;
@@ -497,7 +524,7 @@ async function buildPayslipPdfBuffer(employee, payslip, payrollMonth, { companyI
     }
 
     if (employerRows.length) {
-      const eY = fY + footerH + taxH;
+      const eY = fY + footerH + notesH + taxH;
       hline(doc, x, eY, w);
       cellText(doc, 'EMPLOYER CONTRIBUTIONS (paid by the company, not deducted from pay)', x, eY, w, colHeadH, { bold: true, size: 9, align: 'center', valign: 'center' });
       hline(doc, x, eY + colHeadH, w);
@@ -516,7 +543,7 @@ async function buildPayslipPdfBuffer(employee, payslip, payrollMonth, { companyI
     }
 
     if (ytdRows.length) {
-      const yY = fY + footerH + taxH + employerH;
+      const yY = fY + footerH + notesH + taxH + employerH;
       hline(doc, x, yY, w);
       cellText(doc, `YEAR TO DATE — tax year ${ytd.tax_year || ''} (${ytd.months} month${ytd.months === 1 ? '' : 's'})`, x, yY, w, colHeadH, { bold: true, size: 9, align: 'center', valign: 'center' });
       hline(doc, x, yY + colHeadH, w);

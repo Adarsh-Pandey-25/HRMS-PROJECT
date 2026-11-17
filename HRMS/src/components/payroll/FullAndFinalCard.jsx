@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Calculator, FileCheck2, Scale } from 'lucide-react';
+import { AlertTriangle, Calculator, FileCheck2, Scale } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { Button, Card } from '../ui';
 import { applyFullAndFinalApi, generateFinalPayslipApi, previewFullAndFinalApi } from '../../api/payroll.api';
@@ -179,6 +179,13 @@ export function FullAndFinalCard({ employeeId, employeeName, canEdit }) {
           ))}
           {result.items.length > 0 && (
             <p className="text-right text-xs font-semibold text-fg">Settlement besides the month&apos;s pay: {formatCurrency(total)}</p>
+          )}
+          {result.deductionCapWarning && (
+            // The final payslip isn't held to the 50% limit on total deductions (nothing can be carried past it).
+            <p role="alert" className="flex items-start gap-2 rounded-xl border border-warning/40 bg-warning/10 p-2.5 text-xs font-semibold text-fg">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+              {result.deductionCapWarning}
+            </p>
           )}
           {(result.notes || []).map((n) => <p key={n} className="text-[11px] text-fg-subtle">{n}</p>)}
           {(result.leaveBalances || []).length > 0 && (

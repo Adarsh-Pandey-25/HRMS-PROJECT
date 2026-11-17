@@ -61,7 +61,16 @@ test('Example 1 with a ₹5,000 instalment: after PF and PT, net 36,364 − 7,60
 test('never more than the pay left: the rest stays on the loan, with a warning', () => {
   // Basic ₹3,000, full month: PF 12% = 360; ESI covered but the employee share is nil (₹96.77 a day ≤ ₹176);
   // PT nil (under ₹25,000). Pay left 2,640: the ₹5,000 loan takes 2,640, the advance nothing.
-  const out = slip({ basic: 3000 }, { workingDays: 22 }, [loan('L1', 5000), loan('A1', 1000, 'advance')]);
+  // With the company's limit on total deductions switched off (100%): under the
+  // 50% limit only ₹1,140 could go (tests/payroll/deductionCap.test.js).
+  const out = payroll.computePayslip({ ...ctx, calc: { deductionCap: { percent: 100 } } }, {
+    employee: { id: 'e1', gender: 'male', salary_details: { basic: 3000 } },
+    summary: { workingDays: 22 },
+    records: [],
+    month: 10,
+    year: 2026,
+    loans: [loan('L1', 5000), loan('A1', 1000, 'advance')],
+  });
   expect(out.net_salary).toBe(0);
   expect(out.breakdown_json.config.loans).toEqual([{
     loan_id: 'L1', kind: 'loan', name: 'Loan recovery', amount: 2640, due: 5000,

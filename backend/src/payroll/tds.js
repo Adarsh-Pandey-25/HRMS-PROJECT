@@ -18,6 +18,19 @@
  *                     deducted in full now, not spread over the months left.
  *                     Never more than this month's pay after its other
  *                     deductions (the shortfall is reported).
+ *   no PAN            Income-tax Act 2025 s.397(2) (was s.206AA): without a
+ *                     valid PAN, TDS at the highest of the rate in force or
+ *                     20%. For salary SpaxSync follows the CBDT's practice
+ *                     under the 1961 Act — the higher of the average rate and
+ *                     20%, nothing if income is below the taxable limit: the
+ *                     year's TDS is the higher of the annual tax and 20% of
+ *                     the projected taxable income, and nil when the annual
+ *                     tax (after the rebate, with cess) is nil; it is spread
+ *                     over the months left like any other year's TDS, so a
+ *                     PAN added mid-year brings it back to normal from that
+ *                     month. The owner's CA is confirming this reading for
+ *                     the 2025 Act. A company setting (companyRules
+ *                     tds.noPanHigherTds, on by default).
  *
  * The employee's tax inputs live in salary_details.tax_profile, per tax year
  * (resolveTaxProfile).
@@ -27,6 +40,13 @@ const { monthlyTds } = require('./incomeTax');
 const { taxYearOf, taxRulesFor, monthsLeftInTaxYear } = require('./taxRules');
 
 const REGIMES = ['new', 'old'];
+
+/** A PAN as the Income-tax Department issues it: 5 letters, 4 digits, 1 letter (ABCDE1234F). */
+const PAN_PATTERN = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
+/** A PAN on file that has the right shape. Anything else counts as no PAN. */
+const hasValidPan = (pan) => PAN_PATTERN.test(String(pan || '').trim().toUpperCase());
+/** TDS without a PAN: at least 20% (s.397(2), was s.206AA). */
+const NO_PAN_RATE = Object.freeze({ num: 20, den: 100 });
 
 /** The rupee amounts HR records per tax year, and what each one means. */
 const PROFILE_AMOUNTS = [
@@ -132,6 +152,8 @@ const leavingMonthShare = (lastWorkingDay, comingMonths) => {
  *   history               { salaryPaid, tdsPaid, ptPaid, earlierDrafts: [{month, year}] }
  *                         from this tax year's published payslips before this month
  *   payAfterDeductions    this month's pay after every deduction except TDS (paise)
+ *   noPan                 no valid PAN on file and the company applies the higher rate:
+ *                         the year's TDS is at least 20% of the taxable income (see above)
  * @returns {{ tds, blockers, warnings, worksheet }}
  */
 const projectMonthlyTds = (p) => {
@@ -195,14 +217,16 @@ const projectMonthlyTds = (p) => {
     otherIncome: profile.other_income,
     deductions: ptTotal + declared,
     ageBand: ageBand === 'under_60' ? null : ageBand,
+    // No PAN: the year's TDS is at least 20% of the taxable income (when there is tax).
+    higherRate: p.noPan ? NO_PAN_RATE : null,
   };
   const t = monthlyTds(inputs);
-  // One-time pay this month: the tax for the year with it, less without it,
+  // One-time pay this month: the TDS for the year with it, less without it,
   // is deducted in full now (the difference method). The regular TDS stays
   // as it was; the next months count the one-time pay as paid.
   const oneTime = Math.max(0, Math.round(Number(p.oneTime) || 0));
   const w = oneTime > 0 ? monthlyTds({ ...inputs, thisMonth: inputs.thisMonth + oneTime }) : t;
-  const oneTimeTax = Math.max(0, w.annualTax - t.annualTax);
+  const oneTimeTax = Math.max(0, w.tdsTarget - t.tdsTarget);
 
   const payAfterDeductions = Math.max(0, p.payAfterDeductions ?? Number.MAX_SAFE_INTEGER);
   // Never more than the year still owes, to the rupee (TDS already deducted may
@@ -246,6 +270,12 @@ const projectMonthlyTds = (p) => {
     surcharge: w.surcharge,
     cess: w.cess,
     annual_tax: w.annualTax,
+    // No PAN on file (and the company applies the higher rate): 20% of the
+    // taxable income, and the year's TDS — the higher of it and the tax.
+    no_pan: Boolean(p.noPan),
+    no_pan_tds: w.higherRateTax,
+    tds_target: w.tdsTarget,
+    higher_rate_applied: w.tdsTarget > w.annualTax,
     // Without this month's one-time pay, and the tax that pay adds (deducted now in full).
     annual_tax_regular: t.annualTax,
     one_time_tax: oneTimeTax,
@@ -269,7 +299,7 @@ const projectMonthlyTds = (p) => {
  * every month from April, with each month's TDS worked out the same way.
  */
 const steadyStateHistory = ({
-  month, year, profile: given, dateOfBirth, monthly, ptMonthly = 0,
+  month, year, profile: given, dateOfBirth, monthly, ptMonthly = 0, noPan = false,
 }) => {
   // Paid here since April, so no salary from elsewhere in the earlier months.
   const profile = {
@@ -292,6 +322,7 @@ const steadyStateHistory = ({
       ptThisMonth: ptMonthly,
       ptFutureMonthly: ptMonthly,
       history: h,
+      noPan,
     });
     h.salaryPaid += monthly;
     h.tdsPaid += r.tds;
@@ -304,6 +335,9 @@ const steadyStateHistory = ({
 
 module.exports = {
   REGIMES,
+  PAN_PATTERN,
+  NO_PAN_RATE,
+  hasValidPan,
   PROFILE_AMOUNTS,
   OLD_REGIME_AMOUNTS,
   resolveTaxProfile,

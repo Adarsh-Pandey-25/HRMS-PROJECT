@@ -43,8 +43,10 @@ const R = (rupees) => Math.round(rupees * 100);
 const item = (id, kind, name, rupees, flags = {}) => ({
   id, kind, name, earning: !['notice_recovery', 'other_deduction'].includes(kind), amount: R(rupees), taxable: true, pfWage: false, esiWage: false, ...flags,
 });
+// A PAN on file: TDS at the normal rate (without one it is at least 20% — tests/payroll/noPanTds.test.js).
+const WITH_PAN = { statutory_ids: { pan: 'ABCDE1234F' } };
 const slip = (ctx, salary, summary, oneTime, extra = {}) => payroll.computePayslip(ctx, {
-  employee: { id: 'e1', gender: 'male', salary_details: salary }, summary, records: [], month: 10, year: 2026, oneTime, ...extra,
+  employee: { id: 'e1', gender: 'male', salary_details: { ...WITH_PAN, ...salary } }, summary, records: [], month: 10, year: 2026, oneTime, ...extra,
 });
 const example1 = { basic: 22000, hra: 8800, special: 9200 };
 
@@ -96,8 +98,10 @@ test('a recovery comes off after every other deduction, never more than the pay 
   expect(out.breakdown_json.config.one_time).toEqual([{
     id: 'n1', kind: 'notice_recovery', name: 'Notice period not served', amount: 5000, due: 5000, earning: false,
   }]);
-  // ₹40,000 to recover from 33,764 left: 33,764 taken, 6,236 to recover another way.
-  const big = slip(ctxWith(), example1, { workingDays: 22, absent: 2 }, [item('n2', 'notice_recovery', 'Notice period not served', 40000)]);
+  // ₹40,000 to recover from 33,764 left: 33,764 taken, 6,236 to recover another way —
+  // with the company's limit on total deductions switched off (100%). Under the
+  // 50% limit only half the pay can go (tests/payroll/deductionCap.test.js).
+  const big = slip(ctxWith({ calc: { deductionCap: { percent: 100 } } }), example1, { workingDays: 22, absent: 2 }, [item('n2', 'notice_recovery', 'Notice period not served', 40000)]);
   expect(big.net_salary).toBe(0);
   expect(big.breakdown_json.config.warnings.find((w) => w.code === 'recovery_short').message).toMatch(/₹6,236/);
   expect(big.breakdown_json.config.blockers).toEqual([]);

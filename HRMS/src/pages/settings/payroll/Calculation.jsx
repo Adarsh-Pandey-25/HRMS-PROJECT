@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { Calculator, Eye, Gift, HeartPulse, Landmark, PiggyBank, Receipt, Scale, UserCheck } from 'lucide-react';
+import { Calculator, Eye, Gift, HandCoins, HeartPulse, Landmark, PiggyBank, Receipt, Scale, UserCheck } from 'lucide-react';
 import { Skeleton } from '../../../components/ui';
 import { fetchCalcDefaultsApi } from '../../../api/payroll.api';
 import { cn } from '../../../lib/utils';
@@ -102,6 +102,11 @@ export function CalculationCards({ calc, onChange, customOptions = [] }) {
   const esi = c.esi || {};
   const wageCodes = c.wages?.components || std.wages.components;
   const fiftyPercent = c.wages?.fiftyPercentRule ?? std.wages.fiftyPercentRule;
+  // The limit on a month's total deductions (Code on Wages s.18): its share and the wages it is of.
+  const capStd = std.deductionCap || { base: 'gross', percent: 50 };
+  const capPercent = Number(c.deductionCap?.percent ?? capStd.percent);
+  const capBase = c.deductionCap?.base || capStd.base;
+  const noPanStd = std.tds.noPanHigherTds ?? true;
   const allowances = customOptions
     .filter((o) => o && o.active !== false && ['allowance', 'earning'].includes(String(o.kind || '').toLowerCase()) && String(o.name || '').trim() && o.id)
     .map((o) => ({ code: `ALLOW:${o.id}`, name: String(o.name).trim() }));
@@ -180,7 +185,7 @@ export function CalculationCards({ calc, onChange, customOptions = [] }) {
           <Note>The law: Basic + DA (and a retaining allowance). Whether a general Special Allowance is wages is a question for your labour-law advisor (Supreme Court, 2019).</Note>
         </RuleCard>
 
-        <RuleCard icon={Receipt} tone="sky" title="Income tax (TDS)" summary="For employees who haven't chosen a regime">
+        <RuleCard icon={Receipt} tone="sky" title="Income tax (TDS)" summary="The regime for employees who haven't chosen one, and TDS without a PAN">
           <PillGroup
             size="sm"
             ariaLabel="Default tax regime"
@@ -190,6 +195,57 @@ export function CalculationCards({ calc, onChange, customOptions = [] }) {
           />
           {c.tds?.defaultRegime === 'old' && <p className="mt-2 text-[11px] font-semibold text-warning">By law the new regime applies unless the employee chooses the old one.</p>}
           <Note>An employee&apos;s own choice (My Tax Declaration, or their Payroll setup) always wins.</Note>
+          <div className="mt-3">
+            <StandardSwitch
+              label="Higher TDS without a PAN"
+              help="No valid PAN on file: TDS at 20% of the taxable income, or the normal rate if higher, and nothing when no tax is due (Income-tax Act 2025 s.397(2)). Once a PAN is recorded, TDS goes back to normal from that month."
+              standard={noPanStd}
+              value={c.tds?.noPanHigherTds ?? null}
+              onChange={set('tds', 'noPanHigherTds')}
+            />
+          </div>
+          {c.tds?.noPanHigherTds === false && <p className="mt-2 text-[11px] font-semibold text-warning">The law requires TDS of at least 20% without a PAN; the company is liable for what isn&apos;t deducted.</p>}
+          <Note>&quot;The higher of the average rate and 20%&quot; is how the CBDT applied the no-PAN rule to salary under the old Act; your CA is confirming it for the new Act.</Note>
+        </RuleCard>
+
+        <RuleCard
+          icon={HandCoins}
+          tone="rose"
+          title="Limit on total deductions"
+          summary={capPercent >= 100 ? 'No limit' : `At most ${capPercent}% of ${capBase === 'code_wages' ? 'Labour Code wages' : 'gross pay'} a month`}
+        >
+          <LawValue
+            label="A month's deductions, at most"
+            law={capStd.percent}
+            value={c.deductionCap?.percent}
+            onChange={set('deductionCap', 'percent')}
+            min={1}
+            max={100}
+            step={1}
+            hint="of the month's wages (Code on Wages s.18); 100% = no limit"
+          />
+          {capPercent >= 100 && (
+            <p className="mt-2 text-[11px] font-semibold text-warning">No limit: loans and recoveries can take all the pay that is left. The Code on Wages limits a month&apos;s deductions to 50% of wages.</p>
+          )}
+          {capPercent > 50 && capPercent < 100 && (
+            <p className="mt-2 text-[11px] font-semibold text-warning">Above the 50% the Code on Wages allows.</p>
+          )}
+          <p className="mt-3 text-xs text-fg-muted">Worked out on:</p>
+          <PillGroup
+            size="sm"
+            className="mt-1"
+            ariaLabel="Wages the deduction limit is of"
+            value={capBase}
+            onChange={(v) => set('deductionCap', 'base')(v === capStd.base ? null : v)}
+            options={[{ value: 'gross', label: 'Gross pay (standard)' }, { value: 'code_wages', label: 'Labour Code wages' }]}
+          />
+          <Note>Gross pay: everything earned on the month&apos;s payslip, before deductions.</Note>
+          <p className="text-[11px] text-fg-subtle">Labour Code wages: the wages PF is worked out on (the parts counted as wages, with the 50% rule), before the PF limit — usually a lower limit.</p>
+          <Note>
+            PF, ESI, Professional Tax, LWF and TDS are never reduced. Above the limit, loan instalments are reduced first (the rest stays on the loan),
+            then one-time recoveries (the rest goes on next month&apos;s payslip), then your own deductions. A final settlement isn&apos;t limited, as nothing
+            can be carried past it, but it is flagged. Which wages to use is for your CA to confirm.
+          </Note>
         </RuleCard>
 
         <RuleCard icon={Calculator} tone="teal" title="Rounding" summary={(c.rounding?.earnings || std.rounding.earnings) === 'paise' ? 'Each part to the paisa; the total paid to the rupee' : 'Each earned part to the rupee'}>

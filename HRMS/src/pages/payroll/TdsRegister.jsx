@@ -84,8 +84,9 @@ export default function TdsRegister() {
           {reg.withoutPan > 0 && (
             <p className="flex items-start gap-2 rounded-2xl bg-warning/10 px-4 py-3 text-sm text-fg">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
-              {reg.withoutPan} {reg.withoutPan === 1 ? 'person had' : 'people had'} TDS deducted with no PAN recorded. Add it on their
-              Payroll tab — without a PAN, the law can require TDS at a higher rate; check with your CA.
+              {reg.withoutPan} {reg.withoutPan === 1 ? 'person had' : 'people had'} TDS deducted with no valid PAN recorded. Add it on their
+              Payroll tab — without a PAN, TDS is at 20% or the normal rate if higher (Income-tax Act 2025 s.397(2)), and the TDS statement
+              shows PANNOTAVBL for them.
             </p>
           )}
 
@@ -175,7 +176,11 @@ export default function TdsRegister() {
                           <span className="font-medium text-fg">{e.name}</span>
                           {e.code && <span className="ml-2 text-xs text-fg-subtle">{e.code}</span>}
                         </td>
-                        <td className={cn('py-2 font-mono text-xs', e.pan ? 'text-fg' : 'text-warning')}>{e.pan || 'Not recorded'}</td>
+                        <td className={cn('py-2 font-mono text-xs', e.pan && e.panValid !== false ? 'text-fg' : 'text-warning')}>
+                          {e.pan || 'Not recorded'}
+                          {e.pan && e.panValid === false && <span className="block font-sans text-[10px]">Not a valid PAN</span>}
+                          {e.higherRateNoPan && <span className="block font-sans text-[10px]">TDS at 20% (no PAN)</span>}
+                        </td>
                         <td className="py-2 text-xs capitalize text-fg-muted">{e.regime ? `${e.regime} regime` : '—'}</td>
                         <td className="py-2 text-right tabular-nums">{formatCurrency(e.gross)}</td>
                         <td className="py-2 text-right font-semibold tabular-nums text-fg">{formatCurrency(e.tds)}</td>

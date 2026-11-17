@@ -23,10 +23,10 @@ const SALARY_CODES = ['BASIC', 'HRA', 'DA', 'SPECIAL', 'TRANSPORT', 'MEDICAL'];
 const DEFAULT_WAGE_CODES = Object.freeze(['BASIC', 'DA']);
 const RUPEE_LIMIT = 1_00_00_000; // ₹1 crore
 
-const percentOrNull = (v, { max = 100 } = {}) => {
+const percentOrNull = (v, { min = 0, max = 100 } = {}) => {
   if (v === null || v === undefined || v === '') return null;
   const n = Number(v);
-  if (!Number.isFinite(n) || n < 0 || n > max) return null;
+  if (!Number.isFinite(n) || n < min || n > max) return null;
   return Math.round(n * 100) / 100;
 };
 const rupeesOrNull = (v, { min = 0, max = RUPEE_LIMIT } = {}) => {
@@ -67,6 +67,7 @@ const normalizeCompanyCalc = (raw) => {
   const payslip = section(r, 'payslip');
   const approval = section(r, 'approval');
   const ctcTemplate = section(r, 'ctcTemplate');
+  const deductionCap = section(r, 'deductionCap');
   return {
     pf: {
       employeeRate: percentOrNull(pf.employeeRate),
@@ -87,7 +88,11 @@ const normalizeCompanyCalc = (raw) => {
       pwdCoverageCeiling: rupeesOrNull(esi.pwdCoverageCeiling, { min: 1 }),
       exemptDailyWage: rupeesOrNull(esi.exemptDailyWage, { max: 1_00_000 }),
     },
-    tds: { defaultRegime: oneOfOrNull(tds.defaultRegime, ['new', 'old']) },
+    tds: {
+      defaultRegime: oneOfOrNull(tds.defaultRegime, ['new', 'old']),
+      // no_pan_higher_tds: TDS at 20% (or the normal rate, if higher) without a valid PAN.
+      noPanHigherTds: boolOrNull(tds.noPanHigherTds),
+    },
     rounding: { earnings: oneOfOrNull(rounding.earnings, ['rupee', 'paise']) },
     gratuity: {
       daysPerYear: wholeOrNull(gratuity.daysPerYear, 1, 60),
@@ -118,13 +123,21 @@ const normalizeCompanyCalc = (raw) => {
     },
     approval: { required: boolOrNull(approval.required) },
     ctcTemplate: { basicPercent: percentOrNull(ctcTemplate.basicPercent) },
+    // The limit on a month's total deductions (Code on Wages s.18):
+    // deduction_cap_base and deduction_cap_percent (100 = no limit).
+    deductionCap: {
+      base: oneOfOrNull(deductionCap.base, ['gross', 'code_wages']),
+      percent: percentOrNull(deductionCap.percent, { min: 1 }),
+    },
   };
 };
 
 /** The standard for everything that isn't a dated statutory rule. */
 const STANDARD = Object.freeze({
   wages: { components: DEFAULT_WAGE_CODES, fiftyPercentRule: true },
-  tds: { defaultRegime: 'new' },
+  // Without a valid PAN, TDS at the higher of the normal rate and 20% (Income-tax
+  // Act 2025 s.397(2), was s.206AA) — on unless the company switches it off.
+  tds: { defaultRegime: 'new', noPanHigherTds: true },
   rounding: { earnings: 'rupee' },
   gratuity: {
     daysPerYear: GRATUITY_RULES[0].factor.num,
@@ -147,6 +160,11 @@ const STANDARD = Object.freeze({
   // A new salary from a yearly CTC: Basic is this share of it (half keeps
   // Labour Code wages at 50% of pay), HRA and DA the company's % of Basic.
   ctcTemplate: { basicPercent: 50 },
+  // A month's deductions together at most 50% of its wages (Code on Wages s.18;
+  // Central Rules r.13). Which "wages" is for the company's CA to confirm:
+  // 'gross' (the month's gross pay) by default, or 'code_wages' (Labour Code
+  // wages, as PF counts them before its ceiling).
+  deductionCap: { base: 'gross', percent: 50 },
 });
 
 /** The company's values with the standard filled in where it set none. */
@@ -157,6 +175,21 @@ const resolveCompanyCalc = (raw) => {
     out[key] = Object.fromEntries(Object.entries(standard).map(([k, v]) => [k, c[key]?.[k] ?? v]));
   }
   return out;
+};
+
+/** The legal limit on a month's total deductions, as a percentage of wages (Code on Wages s.18). */
+const LEGAL_DEDUCTION_CAP_PERCENT = 50;
+
+/**
+ * The company's limit on a month's total deductions: { base, percent, rate,
+ * on } — `rate` an exact fraction for money.rateRupees; `on` is false at 100%
+ * (no limit).
+ */
+const companyDeductionCap = (calc) => {
+  const { base, percent } = resolveCompanyCalc(calc).deductionCap;
+  return {
+    base, percent, rate: percentRate(String(percent)), on: percent < 100,
+  };
 };
 
 const rateText = (rate) => `${Number(((rate.num * 100) / rate.den).toFixed(4))}%`;
@@ -257,8 +290,10 @@ module.exports = {
   SALARY_CODES,
   DEFAULT_WAGE_CODES,
   STANDARD,
+  LEGAL_DEDUCTION_CAP_PERCENT,
   normalizeCompanyCalc,
   resolveCompanyCalc,
+  companyDeductionCap,
   companyEpf,
   companyEsi,
   companyWages,

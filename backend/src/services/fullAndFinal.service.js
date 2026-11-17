@@ -16,6 +16,7 @@ const { computeFullAndFinal, NOTICE_ACTIONS } = require('../payroll/fullAndFinal
 const { retirementExemptionsFor } = require('../payroll/taxRules');
 const companyRules = require('../payroll/companyRules');
 const ownPay = require('./ownPayslip');
+const logger = require('../utils/logger');
 
 /** The one-time pay kind each settlement item is paid as. */
 const KIND_OF = {
@@ -165,6 +166,49 @@ const bonusMonthsFor = async (employeeId, month, year, finalMonthWages) => {
 };
 
 /**
+ * The final payslip as it would be with this settlement in (replacing one
+ * added before): a full and final settlement isn't held to the 50% limit on
+ * total deductions (Code on Wages s.18) — nothing can be carried past it —
+ * so HR is warned when its deductions pass the limit. null when they don't,
+ * or when the payslip can't be worked out yet (it then warns itself).
+ */
+const finalPayslipOverLimit = async ({
+  employee, lastWorkingDay, payOn, ctx, items,
+}) => {
+  const payroll = require('./payroll.service');
+  const oneTime = require('./oneTimePay.service');
+  try {
+    const others = await oneTime.itemsDue(employee.id, payOn.month, payOn.year, { exceptSource: 'fnf' });
+    const settlement = items.map((i) => {
+      const kind = KIND_OF[i.code];
+      const def = oneTime.KINDS[kind];
+      return {
+        id: `fnf:${i.code}`,
+        kind,
+        name: i.name,
+        earning: def.earning,
+        amount: i.amount,
+        taxable: def.earning && def.taxable,
+        ...(i.exempt > 0 ? { exempt: i.exempt } : {}),
+        pfWage: def.earning && def.pfWage,
+        esiWage: def.earning && def.esiWage,
+      };
+    });
+    const { summary, records } = await require('./attendance.service').getMonthlySummary(employee.id, payOn.month, payOn.year, { lastWorkingDay });
+    const slip = await payroll.calculateContractPayslip(employee, summary, payOn.month, {
+      year: payOn.year, records, ctx, withHistory: true, oneTime: [...others, ...settlement],
+    });
+    const cap = slip.breakdown_json?.config?.deduction_cap;
+    if (!(cap?.over_limit > 0)) return null;
+    const money = (v) => `₹${Number(v).toLocaleString('en-IN')}`;
+    return `The final payslip's deductions (${money(cap.total)}) would be more than the ${cap.percent}% deduction limit (${money(cap.limit)} of ${money(cap.wages)}). A full and final settlement isn't held to the limit, because nothing can be carried past it — check the recoveries with the employee, and with your CA if in doubt.`;
+  } catch (err) {
+    logger.warn('Full and final preview: the final payslip could not be worked out to check the deduction limit', { employeeId: employee.id, error: err.message });
+    return null;
+  }
+};
+
+/**
  * What the settlement comes to, for HR to review before adding it to the
  * final payslip. Read-only.
  */
@@ -247,6 +291,9 @@ const previewFullAndFinal = async ({ companyId, employeeId, inputs }) => {
   if (loansLeft.length) {
     notes.push(`Loans and advances still owed: ${loansLeft.map((l) => `${l.name} ₹${toRupees(l.amount).toLocaleString('en-IN')}`).join(', ')} — the payslip recovers what its pay allows; anything more must be recovered another way.`);
   }
+  const deductionCapWarning = await finalPayslipOverLimit({
+    employee, lastWorkingDay, payOn, ctx, items: result.items,
+  });
   const today = moment.tz(TIMEZONE).format('YYYY-MM-DD');
   return {
     employeeId,
@@ -275,6 +322,9 @@ const previewFullAndFinal = async ({ companyId, employeeId, inputs }) => {
       } : {}),
     })),
     notes,
+    // The final payslip's deductions pass the limit on total deductions (not
+    // held to it, as a settlement): a plain-words warning, or null.
+    deductionCapWarning,
     // What the tax-free parts were worked out with.
     tax: {
       averageBasicDa: toRupees(average.average),

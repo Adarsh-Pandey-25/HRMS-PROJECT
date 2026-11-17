@@ -4,6 +4,7 @@ import {
 } from 'lucide-react';
 import { PageHeader, Card, CardHeader, Button, StatusBadge, DataTable, Avatar, Skeleton } from '../../components/ui';
 import { PayslipPreviewModal } from '../../components/payroll/PayslipPreviewModal';
+import { PayslipFlags } from '../../components/payroll/PayslipFlags';
 import {
   usePayrollMonth, useMonthPayslips, usePayrollMutations, usePayrollChecks, downloadPayslipApi,
 } from '../../hooks/usePayroll';
@@ -551,7 +552,18 @@ export default function RunPayroll() {
       },
       { accessorFn: (r) => r.earnings?.basic, id: 'basic', header: 'Basic', cell: ({ getValue }) => formatCurrency(getValue() || 0) },
       { accessorFn: (r) => r.grossPay, id: 'gross', header: 'Gross', cell: ({ getValue }) => formatCurrency(getValue() || 0) },
-      { accessorFn: (r) => r.deductions?.total, id: 'ded', header: 'Deductions', cell: ({ getValue }) => <span className="text-danger">{formatCurrency(getValue() || 0)}</span> },
+      {
+        accessorFn: (r) => r.deductions?.total,
+        id: 'ded',
+        header: 'Deductions',
+        cell: ({ getValue, row }) => (
+          <div className="flex flex-col items-start gap-0.5">
+            <span className="text-danger">{formatCurrency(getValue() || 0)}</span>
+            {/* Held back by the 50% limit, a final payslip over it, TDS at 20% without a PAN. */}
+            <PayslipFlags payslip={row.original} />
+          </div>
+        ),
+      },
       { accessorKey: 'netPay', header: 'Net', cell: ({ getValue }) => <span className="font-semibold">{formatCurrency(getValue() || 0)}</span> },
       {
         accessorKey: 'payslipStatus',

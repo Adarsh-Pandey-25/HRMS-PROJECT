@@ -109,6 +109,9 @@ const annualTax = (taxableIncome, regime, { ageBand = null } = {}) => {
  *   otherIncome            other income the employee declared
  *   deductions             old regime only: declared HRA/LTA/80C-type total and PT paid
  *   ageBand                old regime only: 'senior' (60–79) or 'super_senior' (80+)
+ *   higherRate             (optional) no PAN (s.397(2), was s.206AA): when the year's tax is
+ *                          above nil, the year's TDS is at least this share ({ num, den }) of
+ *                          the taxable income — then spread over the months left as usual
  */
 const monthlyTds = (p) => {
   const regimeKey = p.regime === 'old' ? 'old' : 'new';
@@ -128,8 +131,15 @@ const monthlyTds = (p) => {
   const taxable = Math.max(0, salary + otherIncome - standardDeduction - deductions);
   const ageBand = regimeKey === 'old' ? (p.ageBand || null) : null;
   const tax = annualTax(taxable, regime, { ageBand });
+  // Without a PAN: the higher of the year's tax and the higher rate on the
+  // taxable income — and nothing when there is no tax (below the taxable
+  // limit, or covered by the rebate).
+  const higherRateTax = p.higherRate && tax.total > 0
+    ? mulDiv(tax.taxableIncome, p.higherRate.num, p.higherRate.den)
+    : 0;
+  const tdsTarget = Math.max(tax.total, higherRateTax);
   const alreadyDeducted = Math.max(0, p.tdsBefore || 0);
-  const remaining = Math.max(0, tax.total - alreadyDeducted);
+  const remaining = Math.max(0, tdsTarget - alreadyDeducted);
   // To the rupee — the last month too (TDS from outside SpaxSync may carry paise).
   const tds = mulDiv(remaining, 1, monthsLeft * 100) * 100;
   return {
@@ -140,6 +150,9 @@ const monthlyTds = (p) => {
     deductions,
     ...tax,
     annualTax: tax.total,
+    // What the year's TDS comes to: the tax, or the higher rate without a PAN.
+    higherRateTax,
+    tdsTarget,
     alreadyDeducted,
     remaining,
     monthsLeft,
