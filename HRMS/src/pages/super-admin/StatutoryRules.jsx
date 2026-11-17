@@ -137,15 +137,28 @@ export default function StatutoryRules() {
                     slab: 'SpaxSync applies the state\'s table.',
                     none: 'No Professional Tax in this state.',
                     manual: 'PT is levied, but SpaxSync has no table yet: each company enters its slabs.',
+                    missing: 'SpaxSync\'s table doesn\'t cover today: each company enters its slabs.',
                     verify: 'Unclear whether PT applies: each company decides.',
                   }[pt.kind]}
+                  {data.ptAnnualCap ? ` At most ${rs(data.ptAnnualCap)} a person a year (Art. 276).` : ''}
                 </p>
                 {pt.tables.map((v) => (
                   <div key={v.id} className="mt-2">
                     <RuleHead r={v} />
-                    <p className="mt-1 text-xs text-fg-subtle">{v.basis === 'half_yearly' ? 'On each half-year\'s income' : 'On each month\'s gross'}</p>
+                    <p className="mt-1 text-xs text-fg-subtle">
+                      {{
+                        half_yearly: 'On each half-year\'s income',
+                        annual: 'On the year\'s salary (the month\'s contract pay × 12); the amount is a month\'s',
+                        none: 'No Professional Tax from this date',
+                      }[v.basis] || 'On each month\'s gross'}
+                      {v.url && <> · <a href={v.url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">source</a></>}
+                    </p>
                     {v.slabs.map((s) => (
-                      <Row key={`${s.upTo}`} label={`Up to ${rs(s.upTo)}`} value={`${rs(s.amount)}${s.februaryAmount != null ? ` (February ${rs(s.februaryAmount)})` : ''}`} />
+                      <Row
+                        key={`${s.upTo}`}
+                        label={`Up to ${rs(s.upTo)}`}
+                        value={`${rs(s.amount)}${s.februaryAmount != null ? ` (February ${rs(s.februaryAmount)})` : ''}${s.marchAmount != null ? ` (March ${rs(s.marchAmount)})` : ''}`}
+                      />
                     ))}
                   </div>
                 ))}

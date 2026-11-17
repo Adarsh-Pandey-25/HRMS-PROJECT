@@ -98,6 +98,7 @@ const DEFAULT_PAYROLL_CONFIG = {
   ptStateSet: false, // the state was picked on the current screen (not the old Karnataka default)
   ptManualAmount: null, // ₹ a month, for a PT state without a built-in slab; 0 = no PT
   ptManualSlabs: null, // [{ from, amount, february_amount }] for a PT state without a built-in slab
+  ptOverride: false, // the company chose its own PT amounts over SpaxSync's rule for its state
   // Older fields, kept so screens that still read them don't break.
   pfEmployeePercent: 12,
   pfEmployerPercent: 12,

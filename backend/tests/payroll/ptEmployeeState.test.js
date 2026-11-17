@@ -20,9 +20,9 @@ const payroll = require('../../src/services/payroll.service');
 const { normalizePayrollRules } = require('../../src/utils/payrollRules');
 const { normalizeWorkWeek } = require('../../src/utils/workWeek');
 
-// West Bengal (no SpaxSync table), as the company entered it: nil to ₹10,000; ₹110; ₹130 from ₹15,001;
-// ₹150 from ₹25,001; ₹200 from ₹40,001.
-const westBengal = [
+// Slabs a company entered for a state with no SpaxSync table (Jharkhand here): nil to ₹10,000; ₹110;
+// ₹130 from ₹15,001; ₹150 from ₹25,001; ₹200 from ₹40,001.
+const entered = [
   { from: 0, amount: 0 }, { from: 10001, amount: 110 }, { from: 15001, amount: 130 }, { from: 25001, amount: 150 }, { from: 40001, amount: 200 },
 ];
 const ctxFor = (config = {}) => ({
@@ -59,13 +59,13 @@ test('an employee in Tamil Nadu: the half-year rule — ₹40,000 a month → �
 });
 
 test('a state with no SpaxSync table: the slabs the company entered for it (₹150 on ₹30,000), else blocked', () => {
-  const withSlabs = slip(ctxFor({ pt_other_states: [{ state: 'West Bengal', slabs: westBengal }] }), { basic: 30000, pt_state: 'West Bengal' });
+  const withSlabs = slip(ctxFor({ pt_other_states: [{ state: 'Jharkhand', slabs: entered }] }), { basic: 30000, pt_state: 'Jharkhand' });
   expect(withSlabs.professional_tax).toBe(150);
   expect(cfg(withSlabs).blockers).toEqual([]);
   // The company's own single amount (for Karnataka) never applies to another state.
-  const without = slip(ctxFor({ pt_manual_amount: 200 }), { basic: 30000, pt_state: 'West Bengal' });
+  const without = slip(ctxFor({ pt_manual_amount: 200 }), { basic: 30000, pt_state: 'Jharkhand' });
   expect(cfg(without).blockers.map((b) => b.code)).toContain('pt_amount_missing');
-  expect(cfg(without).blockers.find((b) => b.code === 'pt_amount_missing').message).toMatch(/West Bengal/);
+  expect(cfg(without).blockers.find((b) => b.code === 'pt_amount_missing').message).toMatch(/Jharkhand/);
 });
 
 test('an unconfirmed company Karnataka blocks only those who pay PT there', () => {

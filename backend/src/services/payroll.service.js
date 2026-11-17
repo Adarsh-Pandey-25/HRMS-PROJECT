@@ -166,6 +166,10 @@ const resolvePayrollPolicy = (payrollConfig = {}, legacy = {}) => {
     ptManualSlabs: normalizePtSlabs(cfg.pt_manual_slabs),
     // Slabs the company entered for other states its staff work in (no SpaxSync table): { state name: slabs }.
     ptOtherStates: normalizeOtherStatePt(cfg.pt_other_states),
+    // The company chose its own PT amounts over SpaxSync's table (or "no PT"):
+    // for its own state, and for those other states marked so.
+    ptOverride: cfg.pt_override === true,
+    ptOtherOverrides: otherStatePtOverrides(cfg.pt_other_states),
     // Labour Welfare Fund as the company entered it per state: { state name: { employee, employer, months } }.
     lwfStates: normalizeLwfStates(cfg.lwf_states),
     // The earlier settings screen saved Karnataka whenever no state was
@@ -220,6 +224,10 @@ const normalizeOtherStatePt = (raw) => {
   }
   return out;
 };
+/** The other states whose entered slabs the company chose over SpaxSync's table: { state name: true }. */
+const otherStatePtOverrides = (raw) => Object.fromEntries((Array.isArray(raw) ? raw : []).slice(0, MAX_PT_OTHER_STATES)
+  .filter((entry) => entry?.override === true && statutory.findState(entry.state))
+  .map((entry) => [statutory.findState(entry.state).name, true]));
 /**
  * Labour Welfare Fund per state, as the company entered it from its state's
  * notification (SpaxSync ships no LWF table: only verified values may be
@@ -792,11 +800,23 @@ const computePayslip = (ctx, {
   const ownPtState = Boolean(setup.ptState) && setup.ptState !== (statutory.findState(ctx.ptState)?.name || ctx.ptState);
   const ptStateName = ownPtState ? setup.ptState : ctx.ptState;
   const statePt = statutory.ptRule(ptStateName, onDate);
-  // A state SpaxSync has no table for: the slabs the company entered for it, if any.
+  // What the company entered for the state (slabs; for its own state, or one
+  // amount) is used where SpaxSync has no table on this date — or, if the
+  // company chose its own over the table, everywhere (recorded and warned).
   const enteredSlabs = ownPtState ? (ctx.ptOtherStates || {})[setup.ptState] : ctx.ptManualSlabs;
-  const pt = enteredSlabs && ['manual', 'verify', 'missing'].includes(statePt.kind)
-    ? { ...statePt, kind: 'slab', rule: companyPtRule(enteredSlabs) }
-    : statePt;
+  const enteredAmount = ownPtState ? null : ctx.ptManualAmount;
+  const noTable = ['manual', 'verify', 'missing'].includes(statePt.kind);
+  // Only over a SpaxSync table (or its "no PT" from a date) — never over a state that has no PT at all.
+  const ptOverride = Boolean(statePt.rule) && (ownPtState ? Boolean((ctx.ptOtherOverrides || {})[setup.ptState]) : Boolean(ctx.ptOverride))
+    && Boolean(enteredSlabs || enteredAmount != null);
+  let pt = statePt;
+  if (enteredSlabs && (noTable || ptOverride)) pt = { ...statePt, kind: 'slab', rule: companyPtRule(enteredSlabs) };
+  else if (ptOverride) pt = { ...statePt, kind: 'manual', rule: null };
+  if (ptOverride) {
+    companyValues.push({
+      key: 'pt', label: `Professional Tax (${statePt.state?.name})`, law: statePt.kind === 'none' ? 'no PT' : 'SpaxSync\'s table', company: 'your own amounts',
+    });
+  }
   // Labour Welfare Fund of the state the employee works in, in its deduction months.
   const lwfStateName = statutory.findState(ptStateName)?.name || null;
   const lwfRule = lwfStateName ? (ctx.lwfStates || {})[lwfStateName] || null : null;
@@ -880,6 +900,8 @@ const computePayslip = (ctx, {
     customDeductions,
     rules: { epf, esi, overtime: otMinimum },
     ptHistory,
+    // PT already deducted this financial year (published payslips), for the ₹2,500 limit.
+    ptPaidThisYear: history?.ptPaidThisYear || 0,
     esiCoveredEarlierInPeriod: Boolean(history?.esiCoveredEarlier),
     esiCoverageGross: salarySplit ? salaryParts[0].runningGross : null,
     rounding: calc.rounding.earnings,
@@ -1302,15 +1324,13 @@ const monthsLeftInHalfYear = (month) => {
 
 /**
  * What this six-month period's earlier payslips say, for the two rules that
- * look back: Tamil Nadu's half-yearly PT (the income and PT so far) and ESI
- * (once covered in a contribution period, an employee stays covered to its
- * end). Published payslips only — drafts can still change.
+ * look back: half-yearly PT (Tamil Nadu, Kerala: the income and PT so far)
+ * and ESI (once covered in a contribution period, an employee stays covered
+ * to its end) — and the PT deducted so far this financial year, which may
+ * not pass ₹2,500 (Art. 276). Published payslips only — drafts can still change.
  */
 const loadPeriodHistory = async (employeeId, month, year, ctx, ptState = null) => {
   if (!employeeId || !month || !year) return null;
-  const onDate = moment.tz({ year, month: month - 1, day: 1 }, TIMEZONE).endOf('month').format('YYYY-MM-DD');
-  const ptHalfYearly = statutory.ptRule(ptState || ctx.ptState, onDate).rule?.basis === 'half_yearly';
-  if (!ptHalfYearly && !ctx.esiApplicable) return null;
   const earlier = [];
   const cursor = halfYearStart(month, year);
   while (!(cursor.month === month && cursor.year === year)) {
@@ -1318,18 +1338,25 @@ const loadPeriodHistory = async (employeeId, month, year, ctx, ptState = null) =
     cursor.month += 1;
     if (cursor.month === 13) { cursor.month = 1; cursor.year += 1; }
   }
+  // The financial year's months before this one (the half-year's among them).
+  const yearBefore = taxYearMonthsBefore(month, year);
+  const isPublished = (r) => String(r.payslip_status || '').toUpperCase() === PAYSLIP_STATUS.PUBLISHED;
   let rows = [];
   let drafts = [];
-  if (earlier.length) {
-    const { data, error } = await supabaseAdmin
+  let ptPaidThisYear = 0;
+  if (yearBefore.length) {
+    let query = supabaseAdmin
       .from('payroll')
       .select('month, year, gross_salary, professional_tax, breakdown_json, payslip_status')
-      .eq('employee_id', employeeId)
-      .in('year', [...new Set(earlier.map((p) => p.year))]);
+      .eq('employee_id', employeeId);
+    if (ctx?.companyId) query = query.eq('company_id', ctx.companyId);
+    const { data, error } = await query.in('year', [...new Set(yearBefore.map((p) => p.year))]);
     if (error) throw new BadRequestError(error.message);
-    const inPeriod = (data || []).filter((r) => earlier.some((p) => p.month === Number(r.month) && p.year === Number(r.year)));
-    rows = inPeriod.filter((r) => String(r.payslip_status || '').toUpperCase() === PAYSLIP_STATUS.PUBLISHED);
-    drafts = inPeriod.filter((r) => String(r.payslip_status || '').toUpperCase() !== PAYSLIP_STATUS.PUBLISHED);
+    const within = (list) => (r) => list.some((p) => p.month === Number(r.month) && p.year === Number(r.year));
+    const inPeriod = (data || []).filter(within(earlier));
+    rows = inPeriod.filter(isPublished);
+    drafts = inPeriod.filter((r) => !isPublished(r));
+    ptPaidThisYear = (data || []).filter(within(yearBefore)).filter(isPublished).reduce((s, r) => s + toPaise(r.professional_tax), 0);
   }
   // The half-year's PT is the state's own: months whose PT went to another
   // state (the employee moved) don't count towards it.
@@ -1345,6 +1372,8 @@ const loadPeriodHistory = async (employeeId, month, year, ctx, ptState = null) =
     esiCoveredEarlier: rows.some((r) => r.breakdown_json?.config?.esi_eligible === true),
     // Half-yearly PT counts published months only; an earlier draft of the same state must be published first.
     ptEarlierDrafts: drafts.filter(sameState).map((r) => ({ month: Number(r.month), year: Number(r.year) })),
+    // Any state's: the ₹2,500 a year is per person.
+    ptPaidThisYear,
   };
 };
 
@@ -2175,7 +2204,11 @@ const simulatePay = async (companyId, body = {}) => {
     ctx.ptState = o.ptState.trim();
     ctx.ptStateUnconfirmed = false;
   }
-  if (Array.isArray(o.ptOtherStates)) ctx.ptOtherStates = normalizeOtherStatePt(o.ptOtherStates);
+  if (Array.isArray(o.ptOtherStates)) {
+    ctx.ptOtherStates = normalizeOtherStatePt(o.ptOtherStates);
+    ctx.ptOtherOverrides = otherStatePtOverrides(o.ptOtherStates);
+  }
+  if (typeof o.ptOverride === 'boolean') ctx.ptOverride = o.ptOverride;
   if (Array.isArray(o.lwfStates)) ctx.lwfStates = normalizeLwfStates(o.lwfStates);
   if (o.ptManualSlabs === null) ctx.ptManualSlabs = null;
   else if (Array.isArray(o.ptManualSlabs)) ctx.ptManualSlabs = normalizePtSlabs(o.ptManualSlabs);
