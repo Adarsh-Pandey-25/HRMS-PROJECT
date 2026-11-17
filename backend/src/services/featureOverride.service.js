@@ -1,6 +1,42 @@
 const { supabaseAdmin } = require('../config/supabase');
 const { BadRequestError, NotFoundError, ForbiddenError } = require('../utils/errors');
 const { FEATURE_REGISTRY, isComingSoon, getFeatureMeta } = require('../config/featureRegistry');
+const subscriptionService = require('./subscription.service');
+
+/**
+ * Subsidiaries: features come from the company that pays (the top parent —
+ * see subscription.service.js's getBillingAccount): its plan, plus any
+ * override set on it. An override set directly on a subsidiary can only
+ * switch a feature OFF there; a switched-on override on a subsidiary does
+ * nothing (it just follows the parent), so it can never grant a feature the
+ * parent doesn't pay for.
+ *
+ * Never billed at all (no subscription row, ever — the default company, or a
+ * company set up without a plan): every feature stays on unless overridden,
+ * as before. A lapsed payer (cancelled/expired) reads its last plan's
+ * features instead of every feature.
+ */
+const readOverrides = async (companyIds, featureKey = null, columns = 'company_id, feature_key, enabled') => {
+  if (!companyIds.length) return { data: [], error: null };
+  let query = supabaseAdmin
+    .from('company_feature_overrides')
+    .select(columns)
+    .in('company_id', companyIds);
+  if (featureKey) query = query.eq('feature_key', featureKey);
+  return query;
+};
+
+/** One feature for a billing account, from its override rows (any of account.chain). */
+const effectiveFor = (account, overrides, featureKey) => {
+  const rows = (overrides || []).filter((o) => o.feature_key === featureKey);
+  const payerRow = rows.find((o) => String(o.company_id) === account.billingCompanyId);
+  let enabled;
+  if (payerRow) enabled = Boolean(payerRow.enabled);
+  else if (!account.subscription) enabled = true;
+  else enabled = Boolean(account.subscription.plans?.features?.[featureKey]);
+  const switchedOffBelow = rows.some((o) => String(o.company_id) !== account.billingCompanyId && o.enabled === false);
+  return enabled && !switchedOffBelow;
+};
 
 /**
  * Bugfix: this used to build its key set from `[...Object.keys(planFeatures),
@@ -26,25 +62,18 @@ const { FEATURE_REGISTRY, isComingSoon, getFeatureMeta } = require('../config/fe
  * never again disagree about what a company can actually do.
  */
 const getEffectiveFeatures = async (companyId) => {
-  const { data: subscription } = await supabaseAdmin
-    .from('company_billing_subscriptions')
-    .select('plan_id, plans:subscription_plans(features)')
-    .eq('company_id', companyId)
-    .in('status', ['trialing', 'active', 'past_due', 'grace_period', 'suspended'])
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  // A subsidiary reads its paying parent's plan and overrides (see effectiveFor).
+  const account = await subscriptionService.getBillingAccount(companyId);
+  const planFeatures = account.subscription?.plans?.features || {};
 
-  const hasSubscription = Boolean(subscription);
-  const planFeatures = subscription?.plans?.features || {};
-
-  const { data: overrides, error } = await supabaseAdmin
-    .from('company_feature_overrides')
-    .select('*')
-    .eq('company_id', companyId);
+  const { data: overrides, error } = await readOverrides(account.chain, null, '*');
   if (error) throw new BadRequestError(error.message);
+  const chainOverrides = overrides || [];
 
-  const overrideMap = new Map((overrides || []).map((o) => [o.feature_key, o]));
+  // This company's own rows — what the super-admin sees as "overridden" here.
+  const overrideMap = new Map(chainOverrides
+    .filter((o) => String(o.company_id) === account.companyId)
+    .map((o) => [o.feature_key, o]));
   // Registry is authoritative — every key it defines is always present in
   // the result, plus any override row for a key the registry itself no
   // longer knows about (stale row from a removed feature), so an existing
@@ -60,16 +89,15 @@ const getEffectiveFeatures = async (companyId) => {
     // permissive no-subscription behavior below via `effective`.
     const planDefault = Boolean(planFeatures[key]);
     const comingSoon = isComingSoon(key);
-    const effective = comingSoon
-      ? false
-      : override
-        ? override.enabled
-        : hasSubscription ? planDefault : true;
+    const effective = comingSoon ? false : effectiveFor(account, chainOverrides, key);
     return {
       key,
       planDefault,
       effective,
-      isOverridden: Boolean(override),
+      // On a subsidiary only a switched-off override changes anything.
+      isOverridden: account.billedThroughParent
+        ? Boolean(override && override.enabled === false)
+        : Boolean(override),
       overrideReason: override?.reason || null,
       overrideSetBy: override?.set_by || null,
       overrideSetAt: override?.created_at || null,
@@ -81,37 +109,29 @@ const getEffectiveFeatures = async (companyId) => {
     };
   });
 
-  return { features, maxSeatsOverride: null };
+  return {
+    features,
+    maxSeatsOverride: null,
+    // Set for a subsidiary: whose plan these features come from.
+    billedThrough: account.billedThroughParent
+      ? { id: account.billingCompanyId, name: account.billingCompanyName }
+      : null,
+  };
 };
 
 const hasFeature = async (companyId, featureKey) => {
   // Section B: absolute — no company/override ever bypasses this.
   if (isComingSoon(featureKey)) return false;
 
-  const { data: override } = await supabaseAdmin
-    .from('company_feature_overrides')
-    .select('enabled')
-    .eq('company_id', companyId)
-    .eq('feature_key', featureKey)
-    .maybeSingle();
-  if (override) return override.enabled;
-
-  const { data: subscription } = await supabaseAdmin
-    .from('company_billing_subscriptions')
-    .select('plans:subscription_plans(features)')
-    .eq('company_id', companyId)
-    .in('status', ['trialing', 'active', 'past_due', 'grace_period', 'suspended'])
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  const account = await subscriptionService.getBillingAccount(companyId);
+  const { data: overrides } = await readOverrides(account.chain, featureKey);
 
   // Same fail-open convention as subscription.service.js's assertSeatAvailable:
-  // a company with no subscription wired up at all (dev/legacy/pre-billing)
-  // isn't blocked — only a company that HAS a subscription whose plan
-  // explicitly omits the feature is. Without this, turning on a new gate
-  // would silently lock every not-yet-subscribed company out of the module.
-  if (!subscription) return true;
-  return Boolean(subscription.plans?.features?.[featureKey]);
+  // a company never billed at all (dev/legacy/pre-billing) isn't blocked —
+  // only one whose plan omits the feature is. Without this, turning on a new
+  // gate would silently lock every not-yet-subscribed company out of the
+  // module. A subsidiary answers from its parent's plan (effectiveFor).
+  return effectiveFor(account, overrides, featureKey);
 };
 
 const setFeatureOverride = async (companyId, featureKey, enabled, reason, setBy) => {
@@ -122,6 +142,21 @@ const setFeatureOverride = async (companyId, featureKey, enabled, reason, setBy)
   // in the UI, so a direct API call can't bypass it either.
   if (enabled && isComingSoon(cleanKey)) {
     throw new ForbiddenError(`${cleanKey} is a "Coming soon" feature and cannot be enabled yet.`);
+  }
+  // A subsidiary can't be given a feature its paying parent doesn't have.
+  // Switching one back on there only removes its own "off" (the row then
+  // just follows the parent).
+  if (enabled) {
+    const account = await subscriptionService.getBillingAccount(companyId);
+    if (account.billedThroughParent) {
+      const { data: payerOverrides } = await readOverrides([account.billingCompanyId], cleanKey);
+      if (!effectiveFor(account, payerOverrides, cleanKey)) {
+        const parent = account.billingCompanyName || 'its parent company';
+        throw new ForbiddenError(
+          `${account.companyName || 'This company'} is a subsidiary of ${parent} and gets ${parent}'s features. ${parent}'s plan doesn't include this feature — turn it on for ${parent} instead.`,
+        );
+      }
+    }
   }
   const { data, error } = await supabaseAdmin
     .from('company_feature_overrides')
@@ -157,7 +192,13 @@ const setDataCollectionMode = async (companyId, featureKey, mode, reason, setBy)
     .eq('feature_key', cleanKey)
     .maybeSingle();
 
-  const effectiveEnabled = existing ? existing.enabled : await hasFeature(companyId, cleanKey);
+  let effectiveEnabled = existing?.enabled;
+  if (!existing) {
+    // On a subsidiary a switched-on row just follows the parent; storing the
+    // parent's current answer would freeze it there.
+    const account = await subscriptionService.getBillingAccount(companyId);
+    effectiveEnabled = account.billedThroughParent ? true : await hasFeature(companyId, cleanKey);
+  }
 
   const { data, error } = await supabaseAdmin
     .from('company_feature_overrides')
@@ -186,6 +227,13 @@ const clearFeatureOverride = async (companyId, featureKey) => {
 };
 
 const setSeatOverride = async (companyId, maxSeatsOverride) => {
+  const account = await subscriptionService.getBillingAccount(companyId);
+  if (account.billedThroughParent) {
+    throw new BadRequestError(
+      `${account.companyName || 'This company'} uses ${account.billingCompanyName}'s seats. Set the seat override on ${account.billingCompanyName} instead.`,
+    );
+  }
+
   const { data: subscription, error: findError } = await supabaseAdmin
     .from('company_billing_subscriptions')
     .select('id')

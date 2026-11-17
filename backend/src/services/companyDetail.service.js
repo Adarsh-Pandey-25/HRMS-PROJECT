@@ -89,7 +89,17 @@ const getCompanySubscription = async (companyId) => {
     events = eventRows || [];
   }
 
-  return { subscription: subscription || null, invoices: (invoices || []).map(withInvoiceGst), events };
+  // Seats are one pool per group (parent + subsidiaries); a subsidiary is
+  // billed through its parent — see subscription.service.js.
+  const seatUsage = await require('./subscription.service').getSeatUsage(companyId);
+
+  return {
+    subscription: subscription || null,
+    invoices: (invoices || []).map(withInvoiceGst),
+    events,
+    seatUsage,
+    billedThrough: seatUsage.billedThrough,
+  };
 };
 
 /**

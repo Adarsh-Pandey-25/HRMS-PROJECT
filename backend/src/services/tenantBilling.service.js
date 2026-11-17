@@ -21,9 +21,46 @@ const getCurrentSubscriptionOrNull = async (companyId) => {
   return data;
 };
 
+/**
+ * A subsidiary is billed through its top parent (subscription.service.js's
+ * getBillingAccount): its plan, seats and invoices are the parent's, managed
+ * from the parent's workspace.
+ */
+const assertBilledDirectly = async (companyId) => {
+  const account = await subscriptionService.getBillingAccount(companyId);
+  if (account.billedThroughParent) {
+    const parent = account.billingCompanyName || 'your parent company';
+    throw new ForbiddenError(`This company is billed through ${parent}. Its plan, seats and invoices are managed by ${parent}'s admin.`);
+  }
+};
+
 // ── Overview ──────────────────────────────────────────────────────────────
 
+/** A subsidiary's view: the parent's plan and the group's seats — no price, no invoices. */
+const getParentBilledSubscription = async (account) => {
+  const subscription = account.subscription;
+  const seatUsage = await subscriptionService.getSeatUsage(account.companyId);
+  return {
+    billedThrough: { id: account.billingCompanyId, name: account.billingCompanyName },
+    planName: subscription?.plans?.name || null,
+    planCode: subscription?.plans?.code || null,
+    price: null,
+    priceGst: null,
+    trialEndsAt: subscription?.status === 'trialing' ? subscription.current_period_end : null,
+    billingCycle: subscription?.billing_cycle || null,
+    status: subscription?.status || null,
+    currentPeriodEnd: subscription?.current_period_end || null,
+    nextRenewalDate: null,
+    autoRenew: null,
+    cancelAtPeriodEnd: null,
+    seatUsage,
+  };
+};
+
 const getMySubscription = async (companyId) => {
+  const account = await subscriptionService.getBillingAccount(companyId);
+  if (account.billedThroughParent) return getParentBilledSubscription(account);
+
   const subscription = await getCurrentSubscriptionOrNull(companyId);
   if (!subscription) return null;
   const seatUsage = await subscriptionService.getSeatUsage(companyId);
@@ -104,6 +141,7 @@ const notifySuperAdminOfRequest = async (subject, htmlBody) => {
  * processes it, same functions Module 5's Assign Subscription flow reuses.
  */
 const createChangeRequest = async (companyId, requestType, payload, requestedBy) => {
+  await assertBilledDirectly(companyId);
   const subscription = await getCurrentSubscriptionOrNull(companyId);
   if (!subscription) throw new NotFoundError('No active subscription to change');
 
@@ -162,6 +200,7 @@ const requestFeature = async (companyId, featureKey, requestedBy) => {
  * confirmation IS the company-name check either way).
  */
 const cancelMySubscription = async (companyId, { reason, confirmCompanyName, immediate = false }, actorId) => {
+  await assertBilledDirectly(companyId);
   const subscription = await getCurrentSubscriptionOrNull(companyId);
   if (!subscription) throw new NotFoundError('No active subscription to cancel');
 

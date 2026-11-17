@@ -109,7 +109,16 @@ export default function SubscriptionDetail() {
         </Card>
         <Card className="p-4"><p className="text-xs text-fg-subtle">Current period</p><p className="mt-1 text-sm font-medium text-fg">{formatDate(s.currentPeriodStart)} – {formatDate(s.currentPeriodEnd)}</p></Card>
         <Card className="p-4"><p className="text-xs text-fg-subtle">Next renewal</p><p className="mt-1 text-sm font-medium text-fg">{s.nextRenewalDate ? formatDate(s.nextRenewalDate) : '—'}{s.cancelAtPeriodEnd && <span className="block text-xs text-danger mt-0.5">Cancels at period end</span>}</p></Card>
-        <Card className="p-4"><p className="text-xs text-fg-subtle">Seat usage</p><p className="mt-1 text-lg font-semibold text-fg tabular-nums">{seatUsage?.used ?? 0} / {seatUsage?.limit ?? s.seatCount}</p></Card>
+        <Card className="p-4">
+          <p className="text-xs text-fg-subtle">Seat usage</p>
+          <p className="mt-1 text-lg font-semibold text-fg tabular-nums">{seatUsage?.used ?? 0} / {seatUsage?.limit ?? s.seatCount}</p>
+          {seatUsage?.usedInSubsidiaries > 0 && (
+            <p className="mt-0.5 text-xs text-fg-subtle tabular-nums">Includes {seatUsage.usedInSubsidiaries} in subsidiaries</p>
+          )}
+          {seatUsage?.billedThrough && (
+            <p className="mt-0.5 text-xs text-warning">Not used: this company is billed through {seatUsage.billedThrough.name}</p>
+          )}
+        </Card>
       </div>
 
       <Card>
