@@ -386,6 +386,7 @@ module.exports = {
  getClientIp,
  getClientIps,
  getTrustedClientIp,
+ useTrustedClientIp,
  isTrustedProxyIp,
  CLOUDFLARE_CIDRS,
  anyIpInCidr,
