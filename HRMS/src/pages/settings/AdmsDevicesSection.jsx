@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
-import { Plus, Pencil, Fingerprint, CheckCircle2, Loader2 } from 'lucide-react';
+import { Plus, Pencil, Fingerprint, CheckCircle2, Loader2, RotateCcw } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { Card, CardHeader, Button, Input, Modal, Badge, EmptyState, Skeleton } from '../../components/ui';
-import { useAdmsStatus, useUpdateAdmsDevice } from '../../hooks/useAttendance';
+import { Card, CardHeader, Button, Input, Modal, Badge, EmptyState, Skeleton, ConfirmDialog } from '../../components/ui';
+import {
+  useAdmsStatus, useUpdateAdmsDevice, useAllowAdmsDeviceNewIp, useRelearnAdmsDeviceIp,
+} from '../../hooks/useAttendance';
 
 const ONLINE_WINDOW_MS = 90_000; // device heartbeats every ~30s
 
@@ -126,12 +128,69 @@ function DeviceModal({ open, device, onClose }) {
   );
 }
 
+/**
+ * The IP a device is pinned to. Punches are accepted only from it; a request
+ * from any other IP is refused and shown here as waiting for approval.
+ */
+function DeviceIpCell({ device, onAllow, onRelearn }) {
+  return (
+    <div className="space-y-1">
+      {device.allowedIp ? (
+        <div className="flex items-center gap-1.5">
+          <span className="font-mono text-xs text-fg">{device.allowedIp}</span>
+          <button
+            type="button"
+            title="Re-learn IP"
+            onClick={() => onRelearn(device)}
+            className="p-1 rounded-md text-fg-subtle hover:bg-primary/10 hover:text-primary"
+          >
+            <RotateCcw className="h-3 w-3" />
+          </button>
+        </div>
+      ) : (
+        <span className="text-xs text-fg-subtle italic">Learns on next contact</span>
+      )}
+      {device.pendingIp ? (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Badge tone="warning">New IP waiting: <span className="font-mono">{device.pendingIp}</span></Badge>
+          <Button size="sm" variant="secondary" onClick={() => onAllow(device)}>Allow new IP</Button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function AdmsDevicesSection() {
   const { data, isLoading } = useAdmsStatus();
   const [editing, setEditing] = useState(null);
   const [adding, setAdding] = useState(false);
+  const [allowing, setAllowing] = useState(null); // { deviceSerial, pendingIp, ... }
+  const [relearning, setRelearning] = useState(null);
+  const allowNewIp = useAllowAdmsDeviceNewIp();
+  const relearnIp = useRelearnAdmsDeviceIp();
   const devices = data?.devices || [];
   const now = useNow();
+
+  const confirmAllow = async () => {
+    try {
+      await allowNewIp.mutateAsync({ serial: allowing.deviceSerial, ip: allowing.pendingIp });
+      toast.success(`Punches from ${allowing.pendingIp} will now be accepted`);
+      setAllowing(null);
+    } catch (err) {
+      toast.error(err.message || 'Could not allow the new IP');
+      setAllowing(null);
+    }
+  };
+
+  const confirmRelearn = async () => {
+    try {
+      await relearnIp.mutateAsync({ serial: relearning.deviceSerial });
+      toast.success('The device will be pinned to the IP of its next request');
+      setRelearning(null);
+    } catch (err) {
+      toast.error(err.message || 'Could not reset the device IP');
+    }
+  };
 
   return (
     <Card>
@@ -160,6 +219,7 @@ export function AdmsDevicesSection() {
                 <th className="py-2 font-semibold text-fg-subtle text-xs uppercase">Name</th>
                 <th className="py-2 font-semibold text-fg-subtle text-xs uppercase">Location</th>
                 <th className="py-2 font-semibold text-fg-subtle text-xs uppercase">Last Seen</th>
+                <th className="py-2 font-semibold text-fg-subtle text-xs uppercase">Allowed IP</th>
                 <th className="py-2 font-semibold text-fg-subtle text-xs uppercase">Status</th>
                 <th className="py-2"></th>
               </tr>
@@ -173,6 +233,9 @@ export function AdmsDevicesSection() {
                     <td className="py-2.5 text-fg-muted">{d.name || <span className="text-fg-subtle italic">Unlabeled</span>}</td>
                     <td className="py-2.5 text-fg-muted">{d.location || '—'}</td>
                     <td className="py-2.5 text-fg-muted text-xs">{relativeTime(d.lastSeenAt, now)}</td>
+                    <td className="py-2.5 pr-3">
+                      <DeviceIpCell device={d} onAllow={setAllowing} onRelearn={setRelearning} />
+                    </td>
                     <td className="py-2.5">
                       <Badge tone={online ? 'success' : 'neutral'}>
                         <span className={`inline-block h-1.5 w-1.5 rounded-full mr-1.5 ${online ? 'bg-success animate-pulse' : 'bg-fg-subtle'}`} />
@@ -193,6 +256,30 @@ export function AdmsDevicesSection() {
       </div>
       <DeviceModal key={editing?.deviceSerial || 'edit-none'} open={Boolean(editing)} device={editing} onClose={() => setEditing(null)} />
       <DeviceModal key={adding ? 'add-open' : 'add-closed'} open={adding} device={null} onClose={() => setAdding(false)} />
+      <ConfirmDialog
+        open={Boolean(allowing)}
+        onClose={() => setAllowing(null)}
+        onConfirm={confirmAllow}
+        loading={allowNewIp.isPending}
+        tone="warning"
+        title="Allow this new IP?"
+        message={allowing
+          ? `Punches for ${allowing.name || allowing.deviceSerial} will be accepted from ${allowing.pendingIp} instead of ${allowing.allowedIp || 'its old IP'}. Only allow it if your office's internet connection changed. If nothing changed, someone may be using this device's serial to send fake attendance.`
+          : ''}
+        confirmLabel="Allow new IP"
+      />
+      <ConfirmDialog
+        open={Boolean(relearning)}
+        onClose={() => setRelearning(null)}
+        onConfirm={confirmRelearn}
+        loading={relearnIp.isPending}
+        tone="warning"
+        title="Re-learn this device's IP?"
+        message={relearning
+          ? `${relearning.name || relearning.deviceSerial} will be pinned to whichever IP it next connects from. Use this when your office's public IP changes often, and only while the device is switched on and connected, so it is the first to connect.`
+          : ''}
+        confirmLabel="Re-learn IP"
+      />
     </Card>
   );
 }

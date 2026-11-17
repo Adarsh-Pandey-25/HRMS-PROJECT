@@ -178,6 +178,16 @@ export async function updateAdmsDeviceApi(serial, { name, location }) {
   return apiRequest({ method: 'PUT', url: `/attendance/adms/devices/${serial}`, data: { name, location } });
 }
 
+/** Accept the IP a device now reports from. `ip` is the pending IP the admin was shown. */
+export async function allowAdmsDeviceNewIpApi(serial, ip) {
+  return apiRequest({ method: 'POST', url: `/attendance/adms/devices/${encodeURIComponent(serial)}/allow-new-ip`, data: { ip } });
+}
+
+/** Forget a device's IP; its next request pins a new one. */
+export async function relearnAdmsDeviceIpApi(serial) {
+  return apiRequest({ method: 'POST', url: `/attendance/adms/devices/${encodeURIComponent(serial)}/relearn-ip` });
+}
+
 export async function fetchDevicePunchesTodayApi(employeeId) {
   return apiRequest({
     method: 'GET',

@@ -3,7 +3,7 @@ const settingsService = require('../services/settings.service');
 const featureOverrideService = require('../services/featureOverride.service');
 const { supabaseAdmin } = require('../config/supabase');
 const config = require('../config/database');
-const { successResponse, getClientIp, getClientIps } = require('../utils/helpers');
+const { successResponse, getTrustedClientIp } = require('../utils/helpers');
 const moment = require('moment-timezone');
 const { TIMEZONE } = require('../utils/constants');
 const { auditFromRequest } = require('../services/auditLog.service');
@@ -37,12 +37,12 @@ const rejectSpoofedBiometricMethod = (req) => {
 const checkIn = async (req, res, next) => {
   try {
     rejectSpoofedBiometricMethod(req);
-    const clientIps = getClientIps(req);
-    const clientIp = req.clientIp || getClientIp(req) || clientIps[0] || '';
+    // Only the trusted IP, set after the body so a client-sent clientIp
+    // can't replace it (the service takes no list of IPs any more).
+    const clientIp = getTrustedClientIp(req);
     const record = await attendanceService.checkIn(req.user.id, {
       ...req.body,
       clientIp,
-      clientIps,
     });
     successResponse(res, 'Checked in successfully', record, null, 201);
   } catch (err) { next(err); }
@@ -62,7 +62,7 @@ const checkOut = async (req, res, next) => {
     rejectSpoofedBiometricMethod(req);
     const record = await attendanceService.checkOut(req.user.id, {
       method: req.body.method,
-      clientIp: req.clientIp,
+      clientIp: getTrustedClientIp(req),
       break_minutes: req.body.break_minutes,
       location: req.body.location,
     });
@@ -241,14 +241,14 @@ const monthlySummary = async (req, res, next) => {
 
 const checkContext = async (req, res, next) => {
   try {
-    const clientIps = getClientIps(req);
-    const clientIp = getClientIp(req) || clientIps[0] || '';
+    const clientIp = getTrustedClientIp(req);
+    const clientIps = clientIp ? [clientIp] : [];
     // Section 0/C: same real ip_whitelist table assertOfficeIpAllowed
     // enforces against at submit time — this used to read the disconnected
     // office_cidr/office_ip settings, which could tell an employee they
     // were "allowed" or "blocked" in a way that didn't match what actually
     // happened when they clicked the button.
-    const ipCheck = await attendanceService.isOfficeIpAllowed(clientIp, req.user.company_id, clientIps);
+    const ipCheck = await attendanceService.isOfficeIpAllowed(clientIp, req.user.company_id);
     const isOfficeIp = ipCheck.ok;
     const cidr = ipCheck.reason === 'none_configured' ? '' : 'your office network';
 

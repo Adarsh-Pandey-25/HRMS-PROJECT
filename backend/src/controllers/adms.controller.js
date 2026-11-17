@@ -1,9 +1,38 @@
 const { supabaseAdmin } = require('../config/supabase');
 const logger = require('../utils/logger');
-const { successResponse, isMissingColumnError } = require('../utils/helpers');
+const { successResponse, isMissingColumnError, getTrustedClientIp } = require('../utils/helpers');
 const { ForbiddenError, BadRequestError, ConflictError, NotFoundError } = require('../utils/errors');
 const admsService = require('../services/adms.service');
 const featureOverrideService = require('../services/featureOverride.service');
+const { auditFromRequest } = require('../services/auditLog.service');
+
+/**
+ * What every /iclock request is checked with. The secret is read only from
+ * the X-Device-Secret header — never the query string, which access logs
+ * record. The IP is the trusted one (helpers.getTrustedClientIp).
+ */
+const deviceRequest = (req) => ({
+  deviceSerial: typeof req.query.SN === 'string' ? req.query.SN : null,
+  providedSecret: typeof req.headers['x-device-secret'] === 'string' ? req.headers['x-device-secret'] : null,
+  clientIp: getTrustedClientIp(req),
+});
+
+/**
+ * Heartbeats and device info go through the same check as punches, so the
+ * real device usually pins its IP on its first heartbeat after
+ * registration. A request that fails it still gets a plain OK (the protocol
+ * expects one), but no last-seen update and no command, so it can't make a
+ * device look online or create a row for an unknown serial.
+ */
+const isAuthorizedDevice = async ({ deviceSerial, providedSecret, clientIp }, kind) => {
+  try {
+    await admsService.assertDeviceAuthorized(deviceSerial, providedSecret, clientIp);
+    return true;
+  } catch (err) {
+    logger.info(`[ADMS] ${kind} not accepted`, { deviceSerial: String(deviceSerial || '').slice(0, 64), ip: clientIp, reason: err.message });
+    return false;
+  }
+};
 
 /**
  * Device sends this every ~30s. No auth — the eSSL protocol can't send any.
@@ -11,19 +40,24 @@ const featureOverrideService = require('../services/featureOverride.service');
  * it's holding on the very next request instead of waiting on its own timer.
  */
 const getrequest = async (req, res) => {
-  const deviceSerial = req.query.SN || null;
-  logger.info('[ADMS] Heartbeat', { deviceSerial });
-  await admsService.touchHeartbeat(deviceSerial);
-  res.status(200).type('text/plain').send('OK\nGetRequest:ATTLOG');
+  const request = deviceRequest(req);
+  if (await isAuthorizedDevice(request, 'Heartbeat')) {
+    logger.info('[ADMS] Heartbeat', { deviceSerial: request.deviceSerial });
+    await admsService.touchHeartbeat(request.deviceSerial);
+    return res.status(200).type('text/plain').send('OK\nGetRequest:ATTLOG');
+  }
+  res.status(200).type('text/plain').send('OK');
 };
 
 /** Device sends this once on first connect. No auth. */
 const deviceinfo = async (req, res) => {
-  const deviceSerial = req.query.SN || null;
+  const request = deviceRequest(req);
   // Unauthenticated, attacker-controlled input — log a capped preview only, never the raw body verbatim.
   const bodyPreview = String(req.body || '').slice(0, 200);
-  logger.info('[ADMS] Device info', { deviceSerial, bodyLength: String(req.body || '').length, bodyPreview });
-  await admsService.touchHeartbeat(deviceSerial);
+  if (await isAuthorizedDevice(request, 'Device info')) {
+    logger.info('[ADMS] Device info', { deviceSerial: request.deviceSerial, bodyLength: String(req.body || '').length, bodyPreview });
+    await admsService.touchHeartbeat(request.deviceSerial);
+  }
   res.status(200).type('text/plain').send('OK');
 };
 
@@ -31,24 +65,31 @@ const deviceinfo = async (req, res) => {
  * Device pushes fingerprint punches here. No protocol-level auth — but
  * unlike benign save failures (which always answer OK to avoid a
  * retry-storm), an authorization rejection (unclaimed serial, wrong/missing
- * device secret) is a genuine "reject" — 403/401 — since accepting the
- * write is the actual vulnerability being closed here, not a transient
- * infra failure. Every rejection is alerted the same way save failures are.
+ * device secret, a request from an IP the device isn't pinned to) is a
+ * genuine "reject" — 403/401 "NOK" — which the device treats as a failed
+ * upload: it keeps the punches and sends them again later, so a device
+ * whose IP changed loses nothing while an Admin allows the new IP.
+ * Unregistered/secret rejections alert platform admins; a new IP alerts the
+ * company's admins instead (adms.service.js recordPendingIp).
  */
 const cdata = async (req, res) => {
-  const deviceSerial = req.query.SN || null;
+  const request = deviceRequest(req);
+  const { deviceSerial, clientIp } = request;
   const table = req.query.table || null;
-  const providedSecret = req.headers['x-device-secret'] || req.query.device_secret || null;
 
   let registeredCompanyId;
   try {
-    registeredCompanyId = await admsService.assertDeviceAuthorized(deviceSerial, providedSecret);
+    registeredCompanyId = await admsService.assertDeviceAuthorized(deviceSerial, request.providedSecret, clientIp);
   } catch (err) {
     const status = err.statusCode || 403;
-    logger.warn('[ADMS] Rejected unauthorized cdata push', { deviceSerial, ip: req.ip, status, reason: err.message });
-    await admsService.alertOnUnauthorizedDevice(deviceSerial, err.message, { ip: req.ip }).catch((e) => {
-      logger.error('[ADMS] alertOnUnauthorizedDevice failed', { error: e.message });
+    logger.warn('[ADMS] Rejected unauthorized cdata push', {
+      deviceSerial: String(deviceSerial || '').slice(0, 64), ip: clientIp, status, reason: err.message,
     });
+    if (!err.deviceIpMismatch) {
+      await admsService.alertOnUnauthorizedDevice(deviceSerial, err.message, { ip: clientIp }).catch((e) => {
+        logger.error('[ADMS] alertOnUnauthorizedDevice failed', { error: e.message });
+      });
+    }
     return res.status(status).type('text/plain').send('NOK');
   }
 
@@ -86,11 +127,19 @@ const testStatus = async (req, res, next) => {
         .eq('company_id', companyId)
         .order('punch_time', { ascending: false })
         .limit(5),
-      supabaseAdmin
-        .from('device_heartbeats')
-        .select('device_serial, last_seen_at, name, location')
-        .eq('company_id', companyId)
-        .order('last_seen_at', { ascending: false }),
+      (async () => {
+        const query = (columns) => supabaseAdmin
+          .from('device_heartbeats')
+          .select(columns)
+          .eq('company_id', companyId)
+          .order('last_seen_at', { ascending: false });
+        const result = await query('device_serial, last_seen_at, name, location, allowed_ip, pending_ip, pending_ip_seen_at, ip_pinned_at');
+        // Before 20261117_adms_device_ip_pinning.sql runs: list devices without their IP details.
+        if (result.error && admsService.isMissingPinColumn(result.error.message)) {
+          return query('device_serial, last_seen_at, name, location');
+        }
+        return result;
+      })(),
       (async () => {
         const { start, end } = admsService.todayRangeIso();
         return supabaseAdmin
@@ -115,6 +164,10 @@ const testStatus = async (req, res, next) => {
         lastSeenAt: h.last_seen_at,
         name: h.name,
         location: h.location,
+        allowedIp: h.allowed_ip ?? null,
+        pendingIp: h.pending_ip ?? null,
+        pendingIpSeenAt: h.pending_ip_seen_at ?? null,
+        ipPinnedAt: h.ip_pinned_at ?? null,
       })),
     });
   } catch (err) { next(err); }
@@ -138,6 +191,9 @@ const registerDevice = async (req, res, next) => {
     const { serial } = req.params;
     const { name, location } = req.body || {};
     if (!serial) throw new BadRequestError('Device serial is required');
+    if (!admsService.isValidDeviceSerial(serial)) {
+      throw new BadRequestError('Device serial can only contain letters, numbers, dots, dashes and underscores');
+    }
     const companyId = req.user.company_id;
 
     const { data: existing, error: findError } = await supabaseAdmin
@@ -185,6 +241,8 @@ const registerDevice = async (req, res, next) => {
           .single());
       }
       if (updateError) throw updateError;
+      // A new owner's device learns its IP afresh on its next request.
+      if (isFreshClaim) await admsService.clearDeviceIpPin(serial);
       return successResponse(res, 'Device updated', {
         deviceSerial: updated.device_serial,
         lastSeenAt: updated.last_seen_at,
@@ -260,8 +318,43 @@ const releaseDevice = async (req, res, next) => {
       .update({ company_id: null, name: null, location: null })
       .eq('device_serial', serial);
     if (releaseError) throw releaseError;
+    await admsService.clearDeviceIpPin(serial);
 
     successResponse(res, 'Device released');
+  } catch (err) { next(err); }
+};
+
+/**
+ * Authenticated: HR/Admin allows the IP a device is now reporting from
+ * (its pending_ip). The body carries the IP the admin was shown; if a
+ * different one arrived since, nothing changes (409).
+ */
+const allowDeviceNewIp = async (req, res, next) => {
+  try {
+    const result = await admsService.allowPendingDeviceIp(req.params.serial, req.user.company_id, req.body?.ip);
+    auditFromRequest(req, {
+      actionType: 'biometric_device.allow_new_ip',
+      targetType: 'biometric_device',
+      targetId: result.deviceSerial,
+      beforeState: { allowed_ip: result.previousIp },
+      afterState: { allowed_ip: result.allowedIp },
+    });
+    successResponse(res, `Punches from ${result.allowedIp} will now be accepted for this device`, result);
+  } catch (err) { next(err); }
+};
+
+/** Authenticated: HR/Admin clears a device's pinned IP; its next request pins a new one. */
+const relearnDeviceIp = async (req, res, next) => {
+  try {
+    const result = await admsService.relearnDeviceIp(req.params.serial, req.user.company_id);
+    auditFromRequest(req, {
+      actionType: 'biometric_device.relearn_ip',
+      targetType: 'biometric_device',
+      targetId: result.deviceSerial,
+      beforeState: { allowed_ip: result.previousIp },
+      afterState: { allowed_ip: null },
+    });
+    successResponse(res, 'The device will be pinned to the IP of its next request', result);
   } catch (err) { next(err); }
 };
 
@@ -311,4 +404,6 @@ const todayPunches = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-module.exports = { getrequest, deviceinfo, cdata, testStatus, registerDevice, releaseDevice, todayPunches };
+module.exports = {
+  getrequest, deviceinfo, cdata, testStatus, registerDevice, releaseDevice, allowDeviceNewIp, relearnDeviceIp, todayPunches,
+};

@@ -8,7 +8,7 @@ const {
 } = require('../utils/errors');
 const {
   calculateWorkingHours, determineAttendanceStatus, getShiftDayWindow, shiftStartOfWindow,
-  isLateCheckIn, nowIST, paginate, buildMeta, ipInCidr,
+  isLateCheckIn, nowIST, paginate, buildMeta, ipInCidr, normalizeIp, isTrustedProxyIp,
 } = require('../utils/helpers');
 const { autoCheckoutEmail } = require('./email.service');
 const logger = require('../utils/logger');
@@ -33,8 +33,16 @@ const resolveAttendanceMode = (employee) => {
  * (Section A) — multi-branch, "a match against ANY active entry is
  * sufficient" — and is also exactly what Section D's beacons write into.
  */
-/** Boolean check, split out so Section E's OR-logic can try both IP and GPS without one throwing first. */
-const isOfficeIpAllowed = async (clientIp, companyId = null, clientIps = null) => {
+/**
+ * Boolean check, split out so Section E's OR-logic can try both IP and GPS without one throwing first.
+ *
+ * `clientIp` must come from helpers.getTrustedClientIp. It used to be a list
+ * of every forwarded header and a match on any one passed, so a client could
+ * send "X-Client-IP: <office IP>" from home. A Cloudflare edge address never
+ * matches: it stands for whoever shares that edge, not the office (an older
+ * whitelist entry may hold one, from when the check-in page showed it).
+ */
+const isOfficeIpAllowed = async (clientIp, companyId = null) => {
   if (!companyId) return { ok: true, reason: 'no_company' };
   const { data: entries, error } = await supabaseAdmin
     .from('ip_whitelist')
@@ -48,9 +56,8 @@ const isOfficeIpAllowed = async (clientIp, companyId = null, clientIps = null) =
   const cidrs = (entries || []).map((e) => e.cidr).filter(Boolean);
   if (!cidrs.length) return { ok: true, reason: 'none_configured' };
 
-  const { anyIpInCidr } = require('../utils/helpers');
-  const ips = Array.isArray(clientIps) && clientIps.length ? clientIps : [clientIp].filter(Boolean);
-  const ok = anyIpInCidr(ips, cidrs.join(','));
+  const ip = normalizeIp(clientIp);
+  const ok = Boolean(ip) && !isTrustedProxyIp(ip) && ipInCidr(ip, cidrs.join(','));
   return { ok, reason: ok ? 'matched' : 'no_match' };
 };
 
@@ -64,8 +71,8 @@ const isOfficeIpAllowed = async (clientIp, companyId = null, clientIps = null) =
  * (Section A) — multi-branch, "a match against ANY active entry is
  * sufficient" — and is also exactly what Section D's beacons write into.
  */
-const assertOfficeIpAllowed = async (clientIp, companyId = null, clientIps = null) => {
-  const { ok } = await isOfficeIpAllowed(clientIp, companyId, clientIps);
+const assertOfficeIpAllowed = async (clientIp, companyId = null) => {
+  const { ok } = await isOfficeIpAllowed(clientIp, companyId);
   if (!ok) {
     throw new ForbiddenError("Check-in is restricted to your office network. Contact HR if you're working remotely today.");
   }
@@ -313,7 +320,7 @@ const attachSelfieUrls = async (rows) => {
   return list.map((r) => (r?.check_in_selfie ? { ...r, check_in_selfie_url: urls.get(r.check_in_selfie) || null } : r));
 };
 
-const checkIn = async (employeeId, { method, device_id, location, clientIp, clientIps, is_wfh, selfie_token }) => {
+const checkIn = async (employeeId, { method, device_id, location, clientIp, is_wfh, selfie_token }) => {
   const { data: emp, error: empErr } = await supabaseAdmin
     .from('employees')
     .select('id, address, role, company_id')
@@ -346,7 +353,7 @@ const checkIn = async (employeeId, { method, device_id, location, clientIp, clie
   // wipe out. (Under 'wfh_only' a web check-in is always a WFH day.)
   let fromOfficeNetwork = false;
   if (provisionalWfh && attendanceConfig.methods.webMode !== 'wfh_only') {
-    const officeIp = await isOfficeIpAllowed(clientIp, companyId, clientIps);
+    const officeIp = await isOfficeIpAllowed(clientIp, companyId);
     fromOfficeNetwork = officeIp.reason === 'matched';
     if (fromOfficeNetwork) provisionalWfh = false;
   }
@@ -416,7 +423,7 @@ const checkIn = async (employeeId, { method, device_id, location, clientIp, clie
 
     if (ipWebOn && gpsOn) {
       const [ipResult, gpsResult] = await Promise.all([
-        isOfficeIpAllowed(clientIp, companyId, clientIps),
+        isOfficeIpAllowed(clientIp, companyId),
         geofenceService.isWithinAnyGeofence(companyId, location?.latitude, location?.longitude),
       ]);
       if (requireBoth) {
@@ -430,7 +437,7 @@ const checkIn = async (employeeId, { method, device_id, location, clientIp, clie
         throw new ForbiddenError("Check-in is restricted to your office network or one of your company's approved locations. Contact HR if you're working remotely today.");
       }
     } else if (ipWebOn) {
-      await assertOfficeIpAllowed(clientIp, companyId, clientIps);
+      await assertOfficeIpAllowed(clientIp, companyId);
     } else if (gpsOn) {
       await geofenceService.assertWithinGeofence(companyId, location?.latitude, location?.longitude);
     }
