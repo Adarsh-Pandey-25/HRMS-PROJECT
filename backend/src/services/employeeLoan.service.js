@@ -73,6 +73,31 @@ const toView = (row, recovered = toPaise(row.recovered)) => {
   };
 };
 
+/** Same employee id? Ignores case: the database matches ids either way. */
+const sameId = (a, b) => a != null && b != null
+  && String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
+
+/**
+ * Is the actor the employee the loan is for? `ids` are the id as sent and as
+ * stored. A refused attempt is audit-logged.
+ */
+const refuseOwnLoan = ({
+  actor, ids, companyId, attempted, message, ipAddress, details,
+}) => {
+  if (!ids.some((id) => sameId(id, actor?.id))) return;
+  require('./auditLog.service').logAudit({
+    companyId,
+    actorId: actor?.id || null,
+    actorRole: actor?.role || null,
+    actionType: 'payroll.loan.self_refused',
+    targetType: 'employee',
+    targetId: ids.find(Boolean),
+    afterState: { attempted, ...details },
+    ipAddress,
+  }).catch(() => {});
+  throw new ForbiddenError(message);
+};
+
 const employeeInCompany = async (employeeId, companyId) => {
   const { data, error } = await supabaseAdmin
     .from('employees').select('id, company_id').eq('id', employeeId).maybeSingle();
@@ -95,10 +120,16 @@ const listLoans = async (companyId, employeeId) => {
 const createLoan = async ({
   companyId, employeeId, actor, kind = 'loan', principal, instalment, startMonth, startYear, note, ipAddress = null,
 }) => {
-  await employeeInCompany(employeeId, companyId);
-  if (String(employeeId) === String(actor?.id)) {
-    throw new ForbiddenError('You cannot add a loan for yourself — an admin has to.');
-  }
+  const employee = await employeeInCompany(employeeId, companyId);
+  refuseOwnLoan({
+    actor,
+    ids: [employee.id, employeeId],
+    companyId,
+    attempted: 'create',
+    message: 'You cannot add a loan for yourself — an admin has to.',
+    ipAddress,
+    details: { kind, principal: principal ?? null },
+  });
   if (!['loan', 'advance'].includes(kind)) throw new BadRequestError('Kind must be loan or advance');
   const p = amount(principal, 'The amount');
   const i = amount(instalment, 'The monthly instalment');
@@ -136,11 +167,25 @@ const createLoan = async ({
   return toView(data);
 };
 
-/** Cancel a loan entered by mistake — only before anything was recovered. */
+/**
+ * Cancel a loan entered by mistake — only before anything was recovered, and
+ * never your own unless you are an Admin.
+ */
 const cancelLoan = async ({
   companyId, employeeId, loanId, actor, ipAddress = null,
 }) => {
-  await employeeInCompany(employeeId, companyId);
+  const employee = await employeeInCompany(employeeId, companyId);
+  if (actor?.role !== 'admin') {
+    refuseOwnLoan({
+      actor,
+      ids: [employee.id, employeeId],
+      companyId,
+      attempted: 'cancel',
+      message: 'You cannot cancel your own loan or advance — an Admin has to.',
+      ipAddress,
+      details: { loan: loanId },
+    });
+  }
   const { data: row, error } = await supabaseAdmin.from(LOANS).select('*').eq('id', loanId).maybeSingle();
   check(error);
   if (!row || String(row.employee_id) !== String(employeeId)) throw new NotFoundError('Loan not found');

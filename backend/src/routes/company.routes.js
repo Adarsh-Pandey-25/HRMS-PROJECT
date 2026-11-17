@@ -2,7 +2,7 @@ const express = require('express');
 const companyController = require('../controllers/company.controller');
 const { authenticate } = require('../middleware/auth.middleware');
 const { isAdmin, isHROrAdmin } = require('../middleware/role.middleware');
-const { requirePermission } = require('../middleware/permission.middleware');
+const { requirePermission } = require('../middleware/requirePermission');
 const { validate } = require('../middleware/validation.middleware');
 const { upload } = require('../middleware/upload.middleware');
 const { body, param } = require('express-validator');
@@ -38,6 +38,7 @@ router.get('/me/export-status', companyController.exportStatus);
 // Settings → User & Role Management allows it (Organizations → Create / Edit).
 const canCreateCompanies = requirePermission('organizations', 'create', 'Your role can\'t add companies. An Admin can allow it in Settings → User & Role Management.');
 const canEditCompanies = requirePermission('organizations', 'edit', 'Your role can\'t edit company details. An Admin can allow it in Settings → User & Role Management.');
+const canViewCompanies = requirePermission('organizations', 'view');
 
 // Listing child companies and switching them on or off: Admin only
 router.get('/children', isAdmin, companyController.listChildren);
@@ -45,7 +46,7 @@ router.post('/children', canCreateCompanies, createChildRules, validate, company
 router.patch('/children/:id', isAdmin, updateChildRules, validate, companyController.updateChild);
 
 // Org-scoped company detail actions (Admin / HR)
-router.get('/:id/details', isHROrAdmin, companyIdParam, validate, companyController.getDetails);
+router.get('/:id/details', isHROrAdmin, canViewCompanies, companyIdParam, validate, companyController.getDetails);
 router.patch('/:id/details', canEditCompanies, companyIdParam, validate, companyController.updateDetails);
 router.get('/:id/employees', isAdmin, companyIdParam, validate, companyController.listEmployees);
 router.post('/:id/logo', canEditCompanies, companyIdParam, validate, upload.single('logo'), companyController.uploadLogo);

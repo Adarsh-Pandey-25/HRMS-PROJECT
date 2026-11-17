@@ -1,6 +1,8 @@
 // Role-Based Access Control model: modules × 8 actions × 4 roles.
 // Settings → User & Role Management matrix is authoritative for manager/employee/HR
-// (Admin always has full access). Gates: ProtectedRoute, useCan, sidebar nav.
+// (Admin always has full access). Gates: ProtectedRoute, useCan, sidebar nav —
+// and the server checks the same cells (backend/src/services/rolePermissions.service.js,
+// keep the defaults in step). Only an Admin can change the matrix.
 
 export const PERMISSION_MODULES = [
   'employees', 'attendance', 'leave', 'payroll', 'recruitment', 'performance',
@@ -37,13 +39,11 @@ export function isPrivilegedRole(role) {
 
 /**
  * Modules used only by some roles and actions; their other cells stay off.
- * `adminOnly`: only an Admin may change the row, because the server enforces
- * it too (backend/src/services/rolePermissions.service.js — keep in step).
  * Organizations: View = the page, Create = add subsidiaries, Edit = company
  * details and logos. Switching a subsidiary on or off stays with Admin.
  */
 export const MODULE_SCOPE = {
-  organizations: { roles: ['hr'], actions: ['view', 'create', 'edit'], adminOnly: true },
+  organizations: { roles: ['hr'], actions: ['view', 'create', 'edit'] },
 };
 
 /** Is this cell used for this role? */
@@ -53,14 +53,18 @@ export function cellApplies(role, module, action) {
   return scope.roles.includes(role) && scope.actions.includes(action);
 }
 
-/** May someone signed in as `viewerRole` change this module's row? */
-export function rowLockedFor(viewerRole, module) {
-  return Boolean(MODULE_SCOPE[module]?.adminOnly) && !isPrivilegedRole(viewerRole);
+/** May someone signed in as `viewerRole` change the matrix? Only an Admin. */
+export function canEditMatrix(viewerRole) {
+  return isPrivilegedRole(viewerRole);
 }
 
 /**
  * Defaults match typical self-service + HR/manager powers.
  * Admin is always all-true in buildDefaultRolePermissions.
+ * The server uses the same defaults (ENFORCED in
+ * backend/src/services/rolePermissions.service.js), except that until an Admin
+ * saves the matrix it still lets managers read recruitment lists and manage
+ * courses, as they always could.
  */
 const DEFAULT_GRANTS = {
   hr: [
@@ -77,7 +81,8 @@ const DEFAULT_GRANTS = {
     ['announcements', 'view'], ['announcements', 'create'], ['announcements', 'manage'],
     ['settings', 'view'], ['settings', 'manage'],
     ['reports', 'view'],
-    ['organizations', 'view'], ['organizations', 'create'], ['organizations', 'edit'],
+    // Adding or editing companies (subsidiaries) only when an Admin ticks it.
+    ['organizations', 'view'],
   ],
   manager: [
     ['employees', 'view'],
@@ -121,18 +126,33 @@ export function buildDefaultRolePermissions() {
   return matrix;
 }
 
-/** Deep-merge a server matrix onto defaults so missing cells stay sensible. */
+const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+/**
+ * One saved cell, as the server reads it: nothing saved for it → the default;
+ * saved but not true/false where it should be → off.
+ */
+function savedCell(saved, role, mod, action, fallback) {
+  if (!isPlainObject(saved)) return false;
+  const row = saved[role];
+  if (row === undefined) return fallback;
+  if (!isPlainObject(row)) return false;
+  const cells = row[mod];
+  if (cells === undefined) return fallback;
+  if (!isPlainObject(cells)) return false;
+  const cell = cells[action];
+  if (cell === undefined) return fallback;
+  return cell === true;
+}
+
+/** Merge a server matrix onto defaults the way the server reads it. */
 export function mergeRolePermissions(saved) {
   const base = buildDefaultRolePermissions();
-  if (!saved || typeof saved !== 'object') return base;
+  if (saved === null || saved === undefined) return base;
   for (const role of ROLES) {
-    if (!saved[role] || typeof saved[role] !== 'object') continue;
     for (const mod of PERMISSION_MODULES) {
-      if (!saved[role][mod] || typeof saved[role][mod] !== 'object') continue;
       for (const action of PERMISSION_ACTIONS) {
-        if (typeof saved[role][mod][action] === 'boolean') {
-          base[role][mod][action] = saved[role][mod][action];
-        }
+        base[role][mod][action] = savedCell(saved, role, mod, action, base[role][mod][action]);
       }
     }
   }

@@ -1,6 +1,8 @@
 const moment = require('moment-timezone');
 const { supabaseAdmin } = require('../config/supabase');
-const { BadRequestError, NotFoundError, ConflictError } = require('../utils/errors');
+const {
+  BadRequestError, NotFoundError, ConflictError, ForbiddenError,
+} = require('../utils/errors');
 const { TIMEZONE } = require('../utils/constants');
 const logger = require('../utils/logger');
 
@@ -18,6 +20,9 @@ const REVISION_SELECT = `*,
   creator:created_by(id, first_name, last_name)`;
 
 const round2 = (n) => Math.round(Number(n || 0) * 100) / 100;
+/** Same employee id? Ignores case: the database matches ids either way. */
+const sameId = (a, b) => a != null && b != null
+  && String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
 const todayIst = () => moment().tz(TIMEZONE).format('YYYY-MM-DD');
 const fullName = (e) => `${e?.first_name || ''} ${e?.last_name || ''}`.trim();
 
@@ -56,6 +61,28 @@ const loadEmployeeInScope = async (employeeId, scopeIds) => {
   if (error) throw new BadRequestError(error.message);
   if (!data) throw new NotFoundError('Employee not found');
   return data;
+};
+
+/**
+ * Nobody but an Admin changes their own salary: HR may not create, cancel or
+ * apply a revision for themselves. A refused attempt is audit-logged.
+ */
+const refuseOwnRevision = ({
+  actorId, actorRole, employeeIds, companyId, attempted, ipAddress, details,
+}) => {
+  if (!actorId || actorRole === 'admin' || actorRole === 'system') return;
+  if (!employeeIds.some((id) => sameId(id, actorId))) return;
+  require('./auditLog.service').logAudit({
+    companyId,
+    actorId,
+    actorRole,
+    actionType: 'salary_revision.self_refused',
+    targetType: 'employee',
+    targetId: employeeIds.find(Boolean),
+    afterState: { attempted, ...details },
+    ipAddress,
+  }).catch((e) => logger.warn('Audit log failed', { error: e.message }));
+  throw new ForbiddenError('An Admin has to revise your salary.');
 };
 
 const listRevisions = async ({ scopeIds, employeeId, status, limit = 200 }) => {
@@ -97,6 +124,15 @@ const applyRevision = async (revisionId, { actorId = null, actorRole = 'system',
     .maybeSingle();
   if (revError) throw new BadRequestError(revError.message);
   if (!rev || rev.status !== 'scheduled') return null;
+  refuseOwnRevision({
+    actorId,
+    actorRole,
+    employeeIds: [rev.employee_id],
+    companyId: rev.company_id,
+    attempted: 'apply',
+    ipAddress,
+    details: { revision_id: rev.id },
+  });
 
   const { data: employee, error: empError } = await supabaseAdmin
     .from('employees')
@@ -188,6 +224,17 @@ const applyRevision = async (revisionId, { actorId = null, actorRole = 'system',
 
 const createRevision = async ({ scopeIds, actor, ipAddress, employeeId, components, effectiveDate, reason }) => {
   const employee = await loadEmployeeInScope(employeeId, scopeIds);
+  refuseOwnRevision({
+    actorId: actor.id,
+    actorRole: actor.role,
+    employeeIds: [employee.id, employeeId],
+    companyId: employee.company_id,
+    attempted: 'create',
+    ipAddress,
+    details: { components: components ?? null, effective_date: effectiveDate ?? null },
+  });
+  // An Admin may revise their own salary; the audit entry says so.
+  const selfRevision = sameId(employee.id, actor.id);
   if (employee.is_active === false) throw new BadRequestError('Salary can only be revised for active employees');
 
   const newSalary = normalizeComponents(components);
@@ -236,7 +283,12 @@ const createRevision = async ({ scopeIds, actor, ipAddress, employeeId, componen
     targetType: 'employee',
     targetId: employee.id,
     beforeState: current,
-    afterState: { ...newSalary, effective_date: effectiveStr, reason: reason || null },
+    afterState: {
+      ...newSalary,
+      effective_date: effectiveStr,
+      reason: reason || null,
+      ...(selfRevision ? { self_revision: true } : {}),
+    },
     ipAddress,
   }).catch((e) => logger.warn('Audit log failed', { error: e.message }));
 
@@ -247,6 +299,24 @@ const createRevision = async ({ scopeIds, actor, ipAddress, employeeId, componen
 };
 
 const cancelRevision = async ({ scopeIds, actor, ipAddress, id }) => {
+  const { data: found, error: findError } = await supabaseAdmin
+    .from('salary_revisions')
+    .select('id, company_id, employee_id')
+    .eq('id', id)
+    .in('company_id', scopeIds)
+    .maybeSingle();
+  if (findError) throw new BadRequestError(findError.message);
+  if (found) {
+    refuseOwnRevision({
+      actorId: actor.id,
+      actorRole: actor.role,
+      employeeIds: [found.employee_id],
+      companyId: found.company_id,
+      attempted: 'cancel',
+      ipAddress,
+      details: { revision_id: id },
+    });
+  }
   const { data, error } = await supabaseAdmin
     .from('salary_revisions')
     .update({ status: 'cancelled', cancelled_at: new Date().toISOString(), cancelled_by: actor.id })

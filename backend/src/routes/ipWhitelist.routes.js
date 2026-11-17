@@ -5,10 +5,14 @@ const { authenticate } = require('../middleware/auth.middleware');
 const { isHROrAdmin } = require('../middleware/role.middleware');
 const { requireFeature } = require('../middleware/featureGate.middleware');
 const { validate } = require('../middleware/validation.middleware');
+const { requirePermission } = require('../middleware/requirePermission');
 
 const router = express.Router();
 
 router.use(authenticate, isHROrAdmin);
+// Set up under Settings → Attendance Config: needs Settings → Manage and
+// Attendance Tracking → Manage in Settings → User & Role Management.
+router.use(requirePermission('settings', 'manage'), requirePermission('attendance', 'manage'));
 router.use(requireFeature('ip_based_web'));
 
 router.get('/', ipWhitelistController.list);

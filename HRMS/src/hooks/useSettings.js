@@ -108,11 +108,13 @@ export function useSettingsBootstrap() {
     if (Object.keys(patch).length) updateCompany(patch);
   }, [myCompanyQuery.data, updateCompany]);
 
+  // Nothing saved yet means the defaults (what the server enforces), not
+  // whatever matrix this browser kept from before.
   useEffect(() => {
-    if (rolePermissionsQuery.data != null) {
+    if (rolePermissionsQuery.isSuccess) {
       setRolePermissions(rolePermissionsQuery.data);
     }
-  }, [rolePermissionsQuery.data, setRolePermissions]);
+  }, [rolePermissionsQuery.isSuccess, rolePermissionsQuery.data, setRolePermissions]);
 
   useEffect(() => {
     if (!settingsQuery.data?.length) return;
