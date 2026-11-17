@@ -3,7 +3,8 @@ const authService = require('../services/auth.service');
 const { successResponse, paginate, buildMeta, omitSensitive, generateDefaultPassword, isMissingColumnError } = require('../utils/helpers');
 const { BadRequestError, NotFoundError, ConflictError, ForbiddenError } = require('../utils/errors');
 const { getCompanyId, withCompanyId, companyIdFields } = require('../utils/tenant');
-const { auditFromRequest } = require('../services/auditLog.service');
+const { isUuid, normalizeId, sameId } = require('../utils/sameId');
+const { auditFromRequest, logAudit } = require('../services/auditLog.service');
 const {
   employeeBelongsToCompany,
   getOrgCompanyIds,
@@ -15,8 +16,6 @@ const { uploadProfilePicture, getSignedUrl, getSignedUrls, STORAGE_BUCKETS, dele
 const logger = require('../utils/logger');
 const profileCompletion = require('../services/profileCompletion.service');
 const { runInBackground } = require('../utils/background');
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /** Employee fields that auto-log a career event when HR/Admin changes them via update(). */
 const CAREER_TRACKED_FIELDS = {
@@ -108,19 +107,156 @@ const pickEmployeeFields = (body = {}, { includeRole = true } = {}) => {
   return out;
 };
 
+const ALL_ROLES = ['admin', 'hr', 'manager', 'employee'];
+/** Roles only an Admin may give or take away (audit #7, #41). */
+const PRIVILEGED_ROLES = ['admin', 'hr'];
+
+/** The role as sent, lower-cased; undefined when nothing (or a blank) was sent. */
+const sentRole = (value) => {
+  if (value === undefined || value === null || String(value).trim() === '') return undefined;
+  return String(value).trim().toLowerCase();
+};
+
+/** true/false (or 'true'/'false'); undefined when not sent. */
+const sentBoolean = (value, field) => {
+  if (value === undefined) return undefined;
+  if (value === true || value === 'true') return true;
+  if (value === false || value === 'false') return false;
+  throw new BadRequestError(`${field} must be true or false`);
+};
+
+const digitsOnly = (value) => String(value ?? '').replace(/\D/g, '');
+
+/**
+ * Write a refusal to the audit log and return the error for the caller to
+ * throw, so every "no" about someone's account leaves a trail.
+ */
+function refusal(req, { target = null, companyId = null, action, attempted = {}, message, ErrorType = ForbiddenError }) {
+  logAudit({
+    companyId: companyId || (target ? getCompanyId(target) : (req.user.company_id || getCompanyId(req.user))),
+    actorId: req.user.id,
+    actorRole: req.user.role,
+    actionType: 'employee.refused',
+    targetType: 'employee',
+    targetId: target?.id || null,
+    beforeState: target ? { role: target.role, isActive: target.is_active } : null,
+    afterState: { action, ...attempted, reason: message },
+    ipAddress: req.ip,
+  }).catch((e) => logger.warn('Audit log failed', { error: e.message }));
+  return new ErrorType(message);
+}
+
+/** Active Admins of one company — the last one is never removed. */
+async function countActiveAdmins(companyId) {
+  const { count, error } = await supabaseAdmin
+    .from('employees')
+    .select('id', { count: 'exact', head: true })
+    .eq('company_id', companyId)
+    .eq('role', 'admin')
+    .eq('is_active', true);
+  if (error) throw new BadRequestError(error.message);
+  return count || 0;
+}
+
+const SELF_REMOVAL_MESSAGES = {
+  update: 'You can\'t deactivate your own account.',
+  deactivate: 'You can\'t deactivate your own account.',
+  offboard: 'You can\'t offboard yourself.',
+  erase: 'You can\'t erase your own account.',
+};
+
+/**
+ * Who may change whose account (audit #4, #7, #41):
+ * - Nobody changes their own role, removes their own access or moves
+ *   themselves to another company.
+ * - Only an Admin changes anything on an Admin's account.
+ * - Only an Admin changes another HR user's role, access (deactivate,
+ *   reactivate, offboard, erase), mobile number or company. HR may still
+ *   edit the rest of another HR user's profile, as before.
+ * - Only an Admin gives or takes away the HR or Admin role.
+ * - The company's last active Admin can't be demoted, deactivated,
+ *   offboarded or erased.
+ *
+ * `change`: newRole (only when it differs from the current role),
+ * removesAccess, restoresAccess, changesPhone, changesCompany.
+ * Throws a logged refusal; returns nothing when allowed.
+ */
+async function assertMayChangeAccount(req, target, change = {}) {
+  const {
+    action, newRole, removesAccess = false, restoresAccess = false, changesPhone = false, changesCompany = false,
+  } = change;
+  const actorIsAdmin = req.user.role === 'admin';
+  const isSelf = sameId(req.user.id, target.id);
+  const roleChanging = newRole !== undefined;
+  const attempted = {
+    ...(roleChanging ? { fromRole: target.role, toRole: newRole } : {}),
+    ...(removesAccess ? { removesAccess: true } : {}),
+    ...(restoresAccess ? { restoresAccess: true } : {}),
+    ...(changesPhone ? { changesPhone: true } : {}),
+    ...(changesCompany ? { changesCompany: true } : {}),
+  };
+  const no = (message, ErrorType) => refusal(req, { target, action, attempted, message, ErrorType });
+
+  if (isSelf) {
+    if (roleChanging) throw no('You can\'t change your own role. Ask an Admin.');
+    if (removesAccess) throw no(SELF_REMOVAL_MESSAGES[action] || 'You can\'t remove your own access.');
+    if (changesCompany) throw no('You can\'t move yourself to another company. Ask an Admin.');
+  } else if (!PRIVILEGED_ROLES.includes(req.user.role)) {
+    throw no('Only HR or an Admin can change someone else\'s account.');
+  }
+
+  if (!actorIsAdmin) {
+    if (target.role === 'admin') throw no('Only an Admin can change another Admin\'s account.');
+    if (target.role === 'hr' && !isSelf
+      && (roleChanging || removesAccess || restoresAccess || changesPhone || changesCompany)) {
+      throw no('Only an Admin can change another HR user\'s role, access, mobile number or company.');
+    }
+    if (roleChanging && PRIVILEGED_ROLES.includes(newRole)) {
+      throw no('Only an Admin can give someone the HR or Admin role.');
+    }
+  }
+
+  const removesAnAdmin = target.role === 'admin' && target.is_active !== false
+    && ((roleChanging && newRole !== 'admin') || removesAccess);
+  if (removesAnAdmin && await countActiveAdmins(getCompanyId(target)) <= 1) {
+    throw no('This is the company\'s last active Admin. Make someone else an Admin first.', ConflictError);
+  }
+}
+
+/** Throws unless `requestedRole` is a real role this actor may give a new hire. */
 const resolveAssignableRole = (actorRole, requestedRole, fallback = 'employee') => {
-  const allowed = actorRole === 'admin'
-    ? ['admin', 'hr', 'manager', 'employee']
-    : ['hr', 'manager', 'employee'];
   if (!requestedRole) return fallback;
-  if (!allowed.includes(requestedRole)) {
-    throw new ForbiddenError(
-      actorRole === 'admin'
-        ? 'Invalid role'
-        : 'HR cannot assign the admin role',
-    );
+  if (!ALL_ROLES.includes(requestedRole)) throw new BadRequestError('Invalid role');
+  if (PRIVILEGED_ROLES.includes(requestedRole) && actorRole !== 'admin') {
+    throw new ForbiddenError('Only an Admin can give someone the HR or Admin role.');
   }
   return requestedRole;
+};
+
+/**
+ * Address keys an employee may set on their own record. Everything else in
+ * the address JSON (attendance_mode, shift, shift_id, work_location,
+ * company_id, education, …) is set by HR and survives a self-edit
+ * untouched (audit #13).
+ */
+const SELF_EDITABLE_ADDRESS_KEYS = [
+  'line1', 'line2', 'street', 'landmark', 'city', 'district', 'state', 'pincode', 'postal_code', 'country',
+  'personal_email',
+];
+
+/** The stored address with only the self-editable keys taken from `submitted`; null if none were sent. */
+const mergeSelfAddress = (stored, submitted) => {
+  if (!submitted || typeof submitted !== 'object' || Array.isArray(submitted)) return null;
+  const merged = (stored && typeof stored === 'object' && !Array.isArray(stored)) ? { ...stored } : {};
+  let changed = false;
+  for (const key of SELF_EDITABLE_ADDRESS_KEYS) {
+    const value = submitted[key];
+    if (value === undefined) continue;
+    if (value !== null && typeof value !== 'string' && typeof value !== 'number') continue;
+    merged[key] = value === null ? '' : String(value).trim().slice(0, 500);
+    changed = true;
+  }
+  return changed ? merged : null;
 };
 
 /** Resolve which company IDs this actor may see/manage. */
@@ -136,14 +272,14 @@ async function findEmployeeByRef(ref, scopeCompanyIds, select = '*') {
   const scopeIds = [...new Set((scopeCompanyIds || []).map(String).filter(Boolean))];
   if (!scopeIds.length) return null;
 
-  const isUuid = UUID_RE.test(String(ref || ''));
+  const refIsUuid = isUuid(ref);
   let query = supabaseAdmin
     .from('employees')
     .select(select)
     .in('company_id', scopeIds);
 
-  if (isUuid) {
-    query = query.eq('id', ref);
+  if (refIsUuid) {
+    query = query.eq('id', normalizeId(ref));
   } else {
     // Employee codes restart per company (EMP001…) — may match multiple rows in org scope
     query = query.eq('employee_code', ref).limit(5);
@@ -156,10 +292,40 @@ async function findEmployeeByRef(ref, scopeCompanyIds, select = '*') {
   if (!rows.length) return null;
 
   // Prefer exact UUID match; for codes take first in-scope row
-  if (isUuid) {
-    return rows.find((r) => String(r.id) === String(ref)) || rows[0];
+  if (refIsUuid) {
+    return rows.find((r) => sameId(r.id, ref)) || rows[0];
   }
   return rows[0];
+}
+
+/**
+ * The employee a write endpoint acts on, found by uuid only (codes restart
+ * per company, so across a parent and its subsidiaries one could match the
+ * wrong person) and only inside the caller's companies. Callers use the
+ * returned row's id from here on, never req.params.id, so the id's letter
+ * case can't change any "is this me?" decision (audit #4).
+ * `fallbackSelect` is retried when `isMissing(message)` says a column from a
+ * migration not yet applied here is missing.
+ */
+async function loadTargetEmployee(req, scopeCompanyIds, select, fallbackSelect = null, isMissing = () => false) {
+  const id = normalizeId(req.params.id);
+  const scopeIds = [...new Set((scopeCompanyIds || []).map(String).filter(Boolean))];
+  if (!isUuid(id) || !scopeIds.length) throw new NotFoundError('Employee not found');
+  const run = (columns) => supabaseAdmin
+    .from('employees')
+    .select(columns)
+    .eq('id', id)
+    .in('company_id', scopeIds)
+    .maybeSingle();
+  let { data, error } = await run(select);
+  if (error && fallbackSelect && isMissing(error.message)) {
+    ({ data, error } = await run(fallbackSelect));
+  }
+  if (error) throw new BadRequestError(error.message);
+  if (!data || !scopeIds.includes(String(getCompanyId(data)))) {
+    throw new NotFoundError('Employee not found');
+  }
+  return data;
 }
 
 /**
@@ -188,6 +354,18 @@ const create = async (req, res, next) => {
   try {
     const requestedCompanyId = req.body.company_id || req.body.companyId;
     const companyId = await resolveTargetCompanyId(req, requestedCompanyId);
+    // Only an Admin creates HR or Admin accounts (audit #41). Checked before
+    // anything else so a refused hire costs nothing. Bulk import comes
+    // through here too, one row at a time.
+    const newHireRole = sentRole(req.body.role);
+    if (PRIVILEGED_ROLES.includes(newHireRole) && req.user.role !== 'admin') {
+      throw refusal(req, {
+        companyId,
+        action: 'create',
+        attempted: { role: newHireRole, email: req.body.email },
+        message: 'Only an Admin can create an HR or Admin account.',
+      });
+    }
     // Subscription seat enforcement — no-ops if this company has no
     // subscription wired up yet (see subscription.service.js's assertSeatAvailable).
     await require('../services/subscription.service').assertSeatAvailable(companyId);
@@ -210,7 +388,7 @@ const create = async (req, res, next) => {
     const fields = isOnboardingMode
       ? pickEmployeeFields(req.body)
       : pickEmployeeFields(req.body);
-    fields.role = resolveAssignableRole(req.user.role, fields.role || req.body.role, 'employee');
+    fields.role = resolveAssignableRole(req.user.role, newHireRole, 'employee');
     const employeeCode = await allocateNextEmployeeCode(companyId);
     // `source: 'bulk_import'` is set by the frontend's CSV-import loop
     // (BulkImportPanel.jsx) so this one endpoint — the only employee-create
@@ -378,9 +556,9 @@ const getById = async (req, res, next) => {
 
     if (!data) throw new NotFoundError('Employee not found');
 
-    const isSelf = req.user.id === data.id;
+    const isSelf = sameId(req.user.id, data.id);
     const isPrivileged = ['hr', 'admin'].includes(req.user.role);
-    const isManager = req.user.role === 'manager' && data.manager_id === req.user.id;
+    const isManager = req.user.role === 'manager' && sameId(data.manager_id, req.user.id);
 
     // Employees may only open their own profile; managers see direct reports; HR/Admin see all.
     if (!isSelf && !isPrivileged && !isManager) {
@@ -428,29 +606,42 @@ const getById = async (req, res, next) => {
 const update = async (req, res, next) => {
   try {
     const scopeIds = await resolveScopeCompanyIds(req);
-    let { data: existing, error: existingError } = await supabaseAdmin
-      .from('employees')
-      .select('id, address, company_id, designation, department, manager_id, salary_details, bank_details, profile_self_edit_used')
-      .eq('id', req.params.id)
-      .maybeSingle();
-    if (existingError && isMissingColumnError(existingError.message, 'profile_self_edit_used')) {
-      ({ data: existing, error: existingError } = await supabaseAdmin
-        .from('employees')
-        .select('id, address, company_id, designation, department, manager_id, salary_details, bank_details')
-        .eq('id', req.params.id)
-        .maybeSingle());
-    }
-    if (existingError) throw new BadRequestError(existingError.message);
-    if (!existing || !scopeIds.map(String).includes(String(getCompanyId(existing)))) {
-      throw new NotFoundError('Employee not found');
-    }
+    const baseColumns = 'id, role, is_active, phone, address, company_id, designation, department, manager_id, salary_details, bank_details';
+    const existing = await loadTargetEmployee(
+      req,
+      scopeIds,
+      `${baseColumns}, profile_self_edit_used`,
+      baseColumns,
+      (message) => isMissingColumnError(message, 'profile_self_edit_used'),
+    );
+    const targetId = existing.id;
 
-    const isSelf = req.user.id === req.params.id;
+    // Decided from the stored row, not the id as typed (audit #4).
+    const isSelf = sameId(req.user.id, targetId);
     const isPrivileged = ['hr', 'admin'].includes(req.user.role);
 
     if (!isSelf && !isPrivileged) {
       throw new ForbiddenError('Not authorized to update this employee');
     }
+
+    // What this request would change about the account itself, for the
+    // role and access rules (assertMayChangeAccount).
+    const requestedRole = sentRole(req.body.role);
+    if (requestedRole !== undefined && !ALL_ROLES.includes(requestedRole)) {
+      throw new BadRequestError('Invalid role');
+    }
+    const newRole = requestedRole !== undefined && requestedRole !== existing.role ? requestedRole : undefined;
+    const requestedActive = sentBoolean(req.body.is_active, 'is_active');
+    const wasActive = existing.is_active !== false;
+    const requestedCompanyId = req.body.company_id || req.body.companyId;
+    await assertMayChangeAccount(req, existing, {
+      action: 'update',
+      newRole,
+      removesAccess: requestedActive === false && wasActive,
+      restoresAccess: requestedActive === true && !wasActive,
+      changesPhone: req.body.phone !== undefined && digitsOnly(req.body.phone) !== digitsOnly(existing.phone),
+      changesCompany: isPrivileged && Boolean(requestedCompanyId) && !sameId(requestedCompanyId, getCompanyId(existing)),
+    });
 
     // Item 3: the narrow self-edit path (a non-HR/Admin editing their own
     // record — the dedicated "Edit my info" flow) is allowed exactly once.
@@ -489,8 +680,15 @@ const update = async (req, res, next) => {
       allowedFields.bank_details = req.body.bank_details;
     }
 
-    if (isPrivileged && req.body.role !== undefined) {
-      allowedFields.role = resolveAssignableRole(req.user.role, req.body.role);
+    // The role is written only when it actually changes, after
+    // assertMayChangeAccount allowed it. A blank role no longer falls back
+    // to 'employee' (that silently demoted whoever was being edited).
+    delete allowedFields.role;
+    if (isPrivileged && newRole !== undefined) {
+      allowedFields.role = newRole;
+    }
+    if (allowedFields.is_active !== undefined) {
+      allowedFields.is_active = requestedActive;
     }
 
     delete allowedFields.password_hash;
@@ -521,17 +719,23 @@ const update = async (req, res, next) => {
       delete allowedFields.designation;
       delete allowedFields.department;
       delete allowedFields.role;
+
+      // Audit #13: the address JSON also holds what HR sets — attendance
+      // mode, shift, work location. A self-edit only changes the real
+      // address lines, merged into what is stored; it can't set or remove
+      // anything else in there.
+      if (allowedFields.address !== undefined) {
+        const merged = mergeSelfAddress(existing.address, allowedFields.address);
+        if (merged) allowedFields.address = merged;
+        else delete allowedFields.address;
+      }
     }
 
     // Admin / HR may move employee within org (parent ↔ child)
     const previousCompanyId = getCompanyId(existing);
     let stampCompanyId = previousCompanyId;
-    if (
-      isPrivileged
-      && (req.user.role === 'admin' || req.user.role === 'hr')
-      && (req.body.company_id || req.body.companyId)
-    ) {
-      stampCompanyId = await resolveTargetCompanyId(req, req.body.company_id || req.body.companyId);
+    if (isPrivileged && requestedCompanyId) {
+      stampCompanyId = await resolveTargetCompanyId(req, requestedCompanyId);
       allowedFields.company_id = stampCompanyId;
     } else {
       delete allowedFields.company_id;
@@ -539,7 +743,8 @@ const update = async (req, res, next) => {
 
     if (allowedFields.address !== undefined) {
       allowedFields.address = withCompanyId(allowedFields.address, stampCompanyId);
-      allowedFields.company_id = stampCompanyId;
+      // Only HR/Admin edits write the company column; a self-edit leaves it be.
+      if (isPrivileged) allowedFields.company_id = stampCompanyId;
     } else if (allowedFields.company_id) {
       allowedFields.address = withCompanyId(existing.address, stampCompanyId);
     }
@@ -568,7 +773,7 @@ const update = async (req, res, next) => {
     let { data, error } = await supabaseAdmin
       .from('employees')
       .update(allowedFields)
-      .eq('id', req.params.id)
+      .eq('id', targetId)
       .select()
       .single();
 
@@ -577,7 +782,7 @@ const update = async (req, res, next) => {
       ({ data, error } = await supabaseAdmin
         .from('employees')
         .update(allowedFields)
-        .eq('id', req.params.id)
+        .eq('id', targetId)
         .select()
         .single());
     }
@@ -587,7 +792,7 @@ const update = async (req, res, next) => {
     // A WhatsApp connection made from the old mobile number follows the new one.
     if (allowedFields.phone !== undefined && data) {
       runInBackground('whatsapp number change', () => require('../services/whatsappLink.service').followNumberChange({
-        employeeId: req.params.id, phone: data.phone,
+        employeeId: targetId, phone: data.phone,
       }));
     }
 
@@ -595,7 +800,7 @@ const update = async (req, res, next) => {
     // filled everything in, the employee isn't asked; if anything is still
     // missing, the employee is asked for it on their next sign-in.
     if (isPrivileged && !isSelf) {
-      const complete = await profileCompletion.syncAfterHrEdit(req.params.id);
+      const complete = await profileCompletion.syncAfterHrEdit(targetId);
       if (complete != null && data) data.profile_completed = complete;
     }
 
@@ -613,7 +818,7 @@ const update = async (req, res, next) => {
 
     if (isPrivileged) {
       await logCareerEvents({
-        employeeId: req.params.id,
+        employeeId: targetId,
         companyId: stampCompanyId,
         before: existing,
         after: allowedFields,
@@ -635,10 +840,10 @@ const update = async (req, res, next) => {
       const { error: mappingCleanupError } = await supabaseAdmin
         .from('device_employee_mapping')
         .delete()
-        .eq('employee_id', req.params.id);
+        .eq('employee_id', targetId);
       if (mappingCleanupError) {
         logger.warn('Failed to purge device mappings after company transfer', {
-          employeeId: req.params.id, error: mappingCleanupError.message,
+          employeeId: targetId, error: mappingCleanupError.message,
         });
       }
     }
@@ -652,10 +857,25 @@ const update = async (req, res, next) => {
       actorRole: req.user.role,
       actionType: isNarrowSelfEdit ? 'profile.self_edit' : 'employee.update',
       targetType: 'employee',
-      targetId: req.params.id,
+      targetId,
       afterState: allowedFields,
       ipAddress: req.ip,
     }).catch((e) => logger.warn('Audit log failed', { error: e.message }));
+
+    // A role change gets its own entry, easy to find in the Audit Log.
+    if (allowedFields.role !== undefined) {
+      logAudit({
+        companyId: stampCompanyId,
+        actorId: req.user.id,
+        actorRole: req.user.role,
+        actionType: 'employee.role_change',
+        targetType: 'employee',
+        targetId,
+        beforeState: { role: existing.role },
+        afterState: { role: allowedFields.role },
+        ipAddress: req.ip,
+      }).catch((e) => logger.warn('Audit log failed', { error: e.message }));
+    }
 
     successResponse(res, 'Employee updated', omitSensitive(data, ['password_hash']));
   } catch (err) { next(err); }
@@ -669,27 +889,22 @@ const uploadPhoto = async (req, res, next) => {
     }
 
     const scopeIds = await resolveScopeCompanyIds(req);
-    const { data: existing } = await supabaseAdmin
-      .from('employees')
-      .select('id, company_id')
-      .eq('id', req.params.id)
-      .maybeSingle();
-    if (!existing || !scopeIds.map(String).includes(String(getCompanyId(existing)))) {
-      throw new NotFoundError('Employee not found');
-    }
+    const existing = await loadTargetEmployee(req, scopeIds, 'id, role, is_active, company_id');
+    const targetId = existing.id;
 
-    const isSelf = req.user.id === req.params.id;
+    const isSelf = sameId(req.user.id, targetId);
     const isPrivileged = ['hr', 'admin'].includes(req.user.role);
     if (!isSelf && !isPrivileged) {
       throw new ForbiddenError('Not authorized to update this employee\'s photo');
     }
+    await assertMayChangeAccount(req, existing, { action: 'photo' });
 
-    const { path } = await uploadProfilePicture(req.file, req.params.id);
+    const { path } = await uploadProfilePicture(req.file, targetId);
 
     const { data, error } = await supabaseAdmin
       .from('employees')
       .update({ profile_picture: path })
-      .eq('id', req.params.id)
+      .eq('id', targetId)
       .select()
       .single();
     if (error) throw new BadRequestError(error.message);
@@ -734,22 +949,15 @@ const isMissingOffboardColumn = (message) =>
 const offboard = async (req, res, next) => {
   try {
     const scopeIds = await resolveScopeCompanyIds(req);
-    let { data: existing, error: existingError } = await supabaseAdmin
-      .from('employees')
-      .select('id, address, company_id, employment_status')
-      .eq('id', req.params.id)
-      .maybeSingle();
-    if (existingError && isMissingOffboardColumn(existingError.message)) {
-      ({ data: existing, error: existingError } = await supabaseAdmin
-        .from('employees')
-        .select('id, address, company_id')
-        .eq('id', req.params.id)
-        .maybeSingle());
-    }
-    if (existingError) throw new BadRequestError(existingError.message);
-    if (!existing || !scopeIds.map(String).includes(String(getCompanyId(existing)))) {
-      throw new NotFoundError('Employee not found');
-    }
+    const existing = await loadTargetEmployee(
+      req,
+      scopeIds,
+      'id, role, is_active, address, company_id, employment_status',
+      'id, role, is_active, address, company_id',
+      isMissingOffboardColumn,
+    );
+    const targetId = existing.id;
+    await assertMayChangeAccount(req, existing, { action: 'offboard', removesAccess: true });
     if (existing.employment_status === 'offboarded') {
       throw new ConflictError('Employee is already offboarded');
     }
@@ -762,7 +970,7 @@ const offboard = async (req, res, next) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(lastWorkingDay) || Number.isNaN(Date.parse(`${lastWorkingDay}T00:00:00Z`))) {
       throw new BadRequestError('Last working day must be a date (YYYY-MM-DD)');
     }
-    const { data: joinRow } = await supabaseAdmin.from('employees').select('date_of_joining').eq('id', req.params.id).maybeSingle();
+    const { data: joinRow } = await supabaseAdmin.from('employees').select('date_of_joining').eq('id', targetId).maybeSingle();
     if (joinRow?.date_of_joining && lastWorkingDay < String(joinRow.date_of_joining).slice(0, 10)) {
       throw new BadRequestError('Last working day can\'t be before the joining date');
     }
@@ -777,7 +985,7 @@ const offboard = async (req, res, next) => {
     let { data, error } = await supabaseAdmin
       .from('employees')
       .update(fullUpdate)
-      .eq('id', req.params.id)
+      .eq('id', targetId)
       .select()
       .single();
 
@@ -788,7 +996,7 @@ const offboard = async (req, res, next) => {
       ({ data, error } = await supabaseAdmin
         .from('employees')
         .update(withoutLwd)
-        .eq('id', req.params.id)
+        .eq('id', targetId)
         .select()
         .single());
     }
@@ -797,24 +1005,24 @@ const offboard = async (req, res, next) => {
       ({ data, error } = await supabaseAdmin
         .from('employees')
         .update({ is_active: false })
-        .eq('id', req.params.id)
+        .eq('id', targetId)
         .select()
         .single());
     }
     if (error) throw new BadRequestError(error.message);
 
     // Same redundant revocation path as deactivate() (audit finding N-12).
-    await authService.bumpTokenVersion(req.params.id);
+    await authService.bumpTokenVersion(targetId);
 
     await supabaseAdmin.from('employee_career_events').insert({
-      employee_id: req.params.id,
+      employee_id: targetId,
       company_id: getCompanyId(existing),
       event_type: 'offboarded',
       note: reason,
       effective_date: new Date().toISOString().slice(0, 10),
       created_by: req.user.id,
     }).then(({ error: logError }) => {
-      if (logError) logger.warn('Failed to log offboard career event', { employeeId: req.params.id, error: logError.message });
+      if (logError) logger.warn('Failed to log offboard career event', { employeeId: targetId, error: logError.message });
     });
 
     require('../services/auditLog.service').logAudit({
@@ -823,7 +1031,7 @@ const offboard = async (req, res, next) => {
       actorRole: req.user.role,
       actionType: 'employee.offboard',
       targetType: 'employee',
-      targetId: req.params.id,
+      targetId,
       afterState: { reason },
       ipAddress: req.ip,
     }).catch((e) => logger.warn('Audit log failed', { error: e.message }));
@@ -841,7 +1049,7 @@ const offboard = async (req, res, next) => {
     }
 
     require('../services/webhook.service').dispatchWebhookEvent(getCompanyId(existing), 'employee.offboarded', {
-      employeeId: req.params.id, reason, offboardedAt: fullUpdate.offboarded_at,
+      employeeId: targetId, reason, offboardedAt: fullUpdate.offboarded_at,
     });
 
     successResponse(res, 'Employee offboarded', omitSensitive(data, ['password_hash']));
@@ -860,22 +1068,15 @@ const offboard = async (req, res, next) => {
 const permanentlyErase = async (req, res, next) => {
   try {
     const scopeIds = await resolveScopeCompanyIds(req);
-    let { data: existing, error: existingError } = await supabaseAdmin
-      .from('employees')
-      .select('id, address, company_id, employment_status, employee_code, first_name, last_name, email')
-      .eq('id', req.params.id)
-      .maybeSingle();
-    if (existingError && isMissingOffboardColumn(existingError.message)) {
-      ({ data: existing, error: existingError } = await supabaseAdmin
-        .from('employees')
-        .select('id, address, company_id, employee_code, first_name, last_name, email')
-        .eq('id', req.params.id)
-        .maybeSingle());
-    }
-    if (existingError) throw new BadRequestError(existingError.message);
-    if (!existing || !scopeIds.map(String).includes(String(getCompanyId(existing)))) {
-      throw new NotFoundError('Employee not found');
-    }
+    const existing = await loadTargetEmployee(
+      req,
+      scopeIds,
+      'id, role, is_active, address, company_id, employment_status, employee_code, first_name, last_name, email',
+      'id, role, is_active, address, company_id, employee_code, first_name, last_name, email',
+      isMissingOffboardColumn,
+    );
+    const targetId = existing.id;
+    await assertMayChangeAccount(req, existing, { action: 'erase', removesAccess: true });
     // Pre-migration, employment_status is undefined here — fails closed
     // (blocks erasure entirely) rather than allowing it incorrectly.
     if (existing.employment_status !== 'offboarded') {
@@ -903,18 +1104,18 @@ const permanentlyErase = async (req, res, next) => {
       actorRole: req.user.role,
       actionType: 'employee.erase',
       targetType: 'employee',
-      targetId: req.params.id,
+      targetId,
       beforeState: { employeeCode: existing.employee_code, name: `${existing.first_name || ''} ${existing.last_name || ''}`.trim() },
       ipAddress: req.ip,
     }).catch((e) => logger.warn('Audit log failed', { error: e.message }));
 
     await Promise.all([
-      deleteEmployeeFolder(STORAGE_BUCKETS.documents, req.params.id),
-      deleteEmployeeFolder(STORAGE_BUCKETS.receipts, req.params.id),
-      deleteEmployeeFolder(STORAGE_BUCKETS.profilePictures, req.params.id),
-      deleteEmployeeFolder(STORAGE_BUCKETS.payslips, req.params.id),
+      deleteEmployeeFolder(STORAGE_BUCKETS.documents, targetId),
+      deleteEmployeeFolder(STORAGE_BUCKETS.receipts, targetId),
+      deleteEmployeeFolder(STORAGE_BUCKETS.profilePictures, targetId),
+      deleteEmployeeFolder(STORAGE_BUCKETS.payslips, targetId),
     ]);
-    await supabaseAdmin.from('employees').delete().eq('id', req.params.id);
+    await supabaseAdmin.from('employees').delete().eq('id', targetId);
     successResponse(res, 'Employee data permanently erased');
   } catch (err) { next(err); }
 };
@@ -925,7 +1126,7 @@ const getTeam = async (req, res, next) => {
     const managerId = req.params.managerId || req.user.id;
     const isPrivileged = ['hr', 'admin'].includes(req.user.role);
     // Managers may only fetch their own reports; HR/Admin may query any manager.
-    if (!isPrivileged && String(managerId) !== String(req.user.id)) {
+    if (!isPrivileged && !sameId(managerId, req.user.id)) {
       throw new ForbiddenError('Not authorized to view this team');
     }
     const { data, error } = await supabaseAdmin
@@ -946,19 +1147,14 @@ const getTeam = async (req, res, next) => {
 const deactivate = async (req, res, next) => {
   try {
     const scopeIds = await resolveScopeCompanyIds(req);
-    const { data: existing } = await supabaseAdmin
-      .from('employees')
-      .select('id, address, company_id')
-      .eq('id', req.params.id)
-      .maybeSingle();
-    if (!existing || !scopeIds.map(String).includes(String(getCompanyId(existing)))) {
-      throw new NotFoundError('Employee not found');
-    }
+    const existing = await loadTargetEmployee(req, scopeIds, 'id, role, is_active, address, company_id');
+    const targetId = existing.id;
+    await assertMayChangeAccount(req, existing, { action: 'deactivate', removesAccess: true });
 
     const { data, error } = await supabaseAdmin
       .from('employees')
       .update({ is_active: false })
-      .eq('id', req.params.id)
+      .eq('id', targetId)
       .select()
       .single();
 
@@ -966,9 +1162,9 @@ const deactivate = async (req, res, next) => {
     // Audit finding N-12: is_active already kills the session via
     // authenticate()'s live re-check, but bump token_version too for a
     // redundant, independent revocation path.
-    await authService.bumpTokenVersion(req.params.id);
+    await authService.bumpTokenVersion(targetId);
         auditFromRequest(req, {
-      actionType: 'employee.deactivate', targetType: 'employee', targetId: req.params.id,
+      actionType: 'employee.deactivate', targetType: 'employee', targetId,
       afterState: { isActive: data?.is_active },
     });
     successResponse(res, 'Employee deactivated', omitSensitive(data, ['password_hash']));
@@ -985,32 +1181,27 @@ const deactivate = async (req, res, next) => {
 const resetSelfEditLock = async (req, res, next) => {
   try {
     const scopeIds = await resolveScopeCompanyIds(req);
-    const { data: existing } = await supabaseAdmin
-      .from('employees')
-      .select('id, company_id')
-      .eq('id', req.params.id)
-      .maybeSingle();
-    if (!existing || !scopeIds.map(String).includes(String(getCompanyId(existing)))) {
-      throw new NotFoundError('Employee not found');
-    }
+    const existing = await loadTargetEmployee(req, scopeIds, 'id, role, is_active, company_id');
+    const targetId = existing.id;
+    await assertMayChangeAccount(req, existing, { action: 'reset_self_edit_lock' });
 
     const { data, error } = await supabaseAdmin
       .from('employees')
       .update({ profile_self_edit_used: false })
-      .eq('id', req.params.id)
+      .eq('id', targetId)
       .select()
       .single();
     if (error) throw new BadRequestError(error.message);
 
     await supabaseAdmin.from('employee_career_events').insert({
-      employee_id: req.params.id,
+      employee_id: targetId,
       company_id: getCompanyId(existing),
       event_type: 'note',
       note: `Self-edit lock reset by ${req.user.role}${req.body?.reason ? `: ${req.body.reason}` : ''}`,
       effective_date: new Date().toISOString().slice(0, 10),
       created_by: req.user.id,
     }).then(({ error: logError }) => {
-      if (logError) logger.warn('Failed to log self-edit-lock reset', { employeeId: req.params.id, error: logError.message });
+      if (logError) logger.warn('Failed to log self-edit-lock reset', { employeeId: targetId, error: logError.message });
     });
 
     successResponse(res, 'Self-edit lock reset — employee can edit their profile once more', omitSensitive(data, ['password_hash']));
@@ -1019,9 +1210,9 @@ const resetSelfEditLock = async (req, res, next) => {
 
 /** Same self/manager/HR-Admin visibility check `getById` already applies to this profile. */
 async function assertCanViewCareerEvents(req, employee) {
-  const isSelf = req.user.id === employee.id;
+  const isSelf = sameId(req.user.id, employee.id);
   const isPrivileged = ['hr', 'admin'].includes(req.user.role);
-  const isManager = req.user.role === 'manager' && employee.manager_id === req.user.id;
+  const isManager = req.user.role === 'manager' && sameId(employee.manager_id, req.user.id);
   if (!isSelf && !isPrivileged && !isManager) {
     throw new ForbiddenError('Not authorized to view this employee');
   }

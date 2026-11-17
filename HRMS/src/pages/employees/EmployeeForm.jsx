@@ -933,7 +933,24 @@ function SalaryStep({ register, errors, watch, setValue, payrollConfig, isAdd = 
   );
 }
 
-function AccessStep({ register, errors, autoEmail, isEdit = false }) {
+/**
+ * Roles this user may pick in the form — the server refuses the rest:
+ * only an Admin gives or takes away HR/Admin, and nobody changes their own
+ * role. `target` is the employee being edited (none when adding).
+ */
+function roleChoices(actorRole, actorId, target) {
+  const assignable = actorRole === 'admin' ? ROLES : ROLES.filter((r) => r !== 'admin' && r !== 'hr');
+  if (!target) return { options: assignable, locked: false, hint: undefined };
+  const current = target.role || 'employee';
+  const isSelf = Boolean(actorId && target.id) && String(actorId).toLowerCase() === String(target.id).toLowerCase();
+  if (isSelf) return { options: [current], locked: true, hint: "You can't change your own role." };
+  if (actorRole !== 'admin' && (current === 'admin' || current === 'hr')) {
+    return { options: [current], locked: true, hint: 'Only an Admin can change an HR or Admin user\'s role.' };
+  }
+  return { options: assignable, locked: false, hint: undefined };
+}
+
+function AccessStep({ register, errors, autoEmail, isEdit = false, roles = { options: ROLES } }) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
       <div className="sm:col-span-2 flex items-start gap-2">
@@ -954,7 +971,16 @@ function AccessStep({ register, errors, autoEmail, isEdit = false }) {
           </Button>
         )}
       </div>
-      <Select label="System role" required placeholder="Select role" {...register('role')} options={ROLES.map((r) => ({ value: r, label: humanize(r) }))} error={errors.role?.message} />
+      <Select
+        label="System role"
+        required
+        placeholder="Select role"
+        disabled={roles.locked}
+        hint={roles.hint}
+        {...register('role')}
+        options={roles.options.map((r) => ({ value: r, label: humanize(r) }))}
+        error={errors.role?.message}
+      />
     </div>
   );
 }
@@ -1236,7 +1262,7 @@ function AddEmployeeForm({ navigate }) {
               isAdd
             />
           )}
-          {step === 3 && <AccessStep register={register} errors={errors} autoEmail={autoEmail} isAdd />}
+          {step === 3 && <AccessStep register={register} errors={errors} autoEmail={autoEmail} isAdd roles={roleChoices(role)} />}
           {step === 4 && (
             <div className="space-y-8">
               <StepDocuments documentTypes={documentTypes} files={docFiles} setFile={setDocFile} embedded />
@@ -1271,6 +1297,7 @@ function EditEmployeeForm({ navigate, existing }) {
   // someone: whatever is missing, the employee fills in on their next
   // sign-in (the server asks them — profileCompletion.syncAfterHrEdit).
   const role = useAuthStore((s) => s.role);
+  const userId = useAuthStore((s) => s.user?.id);
   const canAssignCompany = role === 'admin' || role === 'hr';
   const { employees } = useEmployees();
   const { update } = useEmployeeMutations();
@@ -1441,7 +1468,7 @@ function EditEmployeeForm({ navigate, existing }) {
               payrollConfig={payrollConfig}
             />
           )}
-          {step === 3 && <AccessStep register={register} errors={errors} autoEmail={autoEmail} isEdit />}
+          {step === 3 && <AccessStep register={register} errors={errors} autoEmail={autoEmail} isEdit roles={roleChoices(role, userId, existing)} />}
           {step === 4 && (
             <div className="space-y-4">
               <p className="text-sm text-fg-muted">Manage this employee&apos;s documents from their profile&apos;s Documents tab.</p>

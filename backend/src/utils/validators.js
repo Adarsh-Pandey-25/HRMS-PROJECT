@@ -4,6 +4,7 @@ const {
   DOCUMENT_TYPES, TRAINING_MODES, ANNOUNCEMENT_PRIORITY,
   ANNOUNCEMENT_AUDIENCE, HOLIDAY_TYPES, EMPLOYMENT_TYPES, GENDERS,
 } = require('./constants');
+const { isUuid, normalizeId } = require('./sameId');
 
 const registerRules = [
   body('email').isEmail().normalizeEmail(),
@@ -242,10 +243,25 @@ const careerNoteRules = [
   body('effective_date').optional().isISO8601(),
 ];
 
-const uuidParam = (name = 'id') => [param(name).isUUID()];
+// Lower-cased so handlers comparing it with a database id get a match (audit #4).
+const uuidParam = (name = 'id') => [param(name).isUUID().customSanitizer(normalizeId)];
 
+/** Employee codes (EMP001…); only GET /employees/:id looks people up by code. */
+const EMPLOYEE_CODE_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,63}$/;
+
+/**
+ * An employee's uuid (any letter case, stored lower-case so it compares
+ * equal to ids from the database — audit #4) or an employee code. Write
+ * endpoints still only act on a uuid; see employee.controller.js.
+ */
 const employeeRefParam = (name = 'id') => [
-  param(name).trim().notEmpty().isLength({ min: 1, max: 64 }),
+  param(name)
+    .trim()
+    .custom((value) => {
+      if (isUuid(value) || EMPLOYEE_CODE_RE.test(value)) return true;
+      throw new Error('Not a valid employee ID');
+    })
+    .customSanitizer((value) => (isUuid(value) ? normalizeId(value) : value)),
 ];
 
 const paginationQuery = [
