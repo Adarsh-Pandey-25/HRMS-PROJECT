@@ -12,7 +12,7 @@ import { useCompanyStore } from '../../store/companyStore';
 import { cn, formatCurrency, formatCompactINR, formatDate } from '../../lib/utils';
 import { ExportButton } from '../../components/shared/ExportButton';
 import {
-  applyAdjustmentsApi, approveMonthApi, downloadBankFileApi, downloadStatutoryFileApi, fetchAdjustmentsApi, fetchReconciliationApi,
+  applyAdjustmentsApi, approveMonthApi, downloadBankFileApi, downloadEsiFileApi, downloadStatutoryFileApi, fetchAdjustmentsApi, fetchReconciliationApi,
   generatePayslipsBatchApi, markMonthPaidApi, publishMonthApi, runInBatches,
 } from '../../api/payroll.api';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -245,18 +245,62 @@ function AdjustmentsCard({ month, year }) {
   );
 }
 
+/** Who the last ESI file left out, or should be checked before uploading it to ESIC. */
+function EsiFileIssues({ file }) {
+  if (!file) return null;
+  const groups = [
+    { key: 'missingIp', title: 'Left out — no valid IP number (add it on their Payroll tab)', danger: true, items: file.missingIp, text: (i) => i.reason },
+    { key: 'notPublished', title: 'Left out — payslip not published', danger: true, items: file.notPublished, text: (i) => i.reason },
+    { key: 'review', title: 'Check before uploading', danger: false, items: file.review, text: (i) => i.message },
+  ].filter((g) => g.items?.length);
+  if (!groups.length) return null;
+  return (
+    <div className="mt-3 space-y-2">
+      {groups.map((g) => (
+        <div key={g.key} className={cn('rounded-xl px-4 py-3 text-sm', g.danger ? 'bg-danger/10 text-danger' : 'bg-warning/10 text-fg')}>
+          <p className="font-semibold">ESI file: {g.title} ({g.items.length})</p>
+          <ul className="mt-1 space-y-0.5 text-xs">
+            {g.items.slice(0, 200).map((i) => (
+              <li key={i.employeeId}>
+                <EmployeeLink employeeId={i.employeeId} tab="payroll">{i.name}</EmployeeLink> — {g.text(i)}
+              </li>
+            ))}
+            {g.items.length > 200 && <li>…and {g.items.length - 200} more</li>}
+          </ul>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** The month's statutory upload files, from published payslips. */
 function StatutoryFilesCard({ month, year, monthLabel }) {
   const [busy, setBusy] = useState(null);
+  // The last ESI file's lists, for the month it was made for.
+  const [esi, setEsi] = useState(null);
   const download = async (kind) => {
     setBusy(kind);
     try {
       const r = await downloadStatutoryFileApi(kind, month, year);
       if (['register', 'journal', 'pt', 'lwf'].includes(kind)) return;
-      const what = kind === 'ecr' ? 'EPF ECR' : 'ESI';
-      const missing = kind === 'ecr' ? 'no UAN' : 'no ESIC number';
-      if (r.skipped) toast.error(`${what}: ${r.rows} member${r.rows === 1 ? '' : 's'}; ${r.skipped} left out — ${missing} on their Payroll tab`);
-      else toast.success(`${what}: ${r.rows} member${r.rows === 1 ? '' : 's'}`);
+      if (r.skipped) toast.error(`EPF ECR: ${r.rows} member${r.rows === 1 ? '' : 's'}; ${r.skipped} left out — no UAN on their Payroll tab`);
+      else toast.success(`EPF ECR: ${r.rows} member${r.rows === 1 ? '' : 's'}`);
+    } catch (err) {
+      toast.error(err.message || 'Could not download the file');
+    } finally {
+      setBusy(null);
+    }
+  };
+  const downloadEsi = async () => {
+    setBusy('esi');
+    try {
+      const f = await downloadEsiFileApi(month, year);
+      setEsi({ month, year, file: f });
+      const leftOut = (f.missingIp?.length || 0) + (f.notPublished?.length || 0);
+      const summary = `ESI: ${f.members} member${f.members === 1 ? '' : 's'}, wages ${formatCurrency(f.totalWages)}`;
+      if (!f.members) toast.error(leftOut ? `ESI: no file — ${leftOut} left out, see the list below` : 'ESI: no one was covered by ESI this month or last month');
+      else if (leftOut) toast.error(`${summary}; ${leftOut} left out — see the list below`);
+      else toast.success(summary);
     } catch (err) {
       toast.error(err.message || 'Could not download the file');
     } finally {
@@ -272,7 +316,7 @@ function StatutoryFilesCard({ month, year, monthLabel }) {
         </div>
         <div className="flex flex-wrap gap-2">
           <Button size="sm" variant="outline" icon={Download} loading={busy === 'ecr'} disabled={Boolean(busy)} onClick={() => download('ecr')}>EPF ECR file</Button>
-          <Button size="sm" variant="outline" icon={Download} loading={busy === 'esi'} disabled={Boolean(busy)} onClick={() => download('esi')}>ESI contribution data</Button>
+          <Button size="sm" variant="outline" icon={Download} loading={busy === 'esi'} disabled={Boolean(busy)} onClick={downloadEsi}>ESI contribution file (.xls)</Button>
           <Button size="sm" variant="outline" icon={Download} loading={busy === 'register'} disabled={Boolean(busy)} onClick={() => download('register')}>Salary register</Button>
           <Button size="sm" variant="outline" icon={Download} loading={busy === 'journal'} disabled={Boolean(busy)} onClick={() => download('journal')}>Accounting journal</Button>
           <Button size="sm" variant="outline" icon={Download} loading={busy === 'pt'} disabled={Boolean(busy)} onClick={() => download('pt')}>PT register</Button>
@@ -299,6 +343,7 @@ function StatutoryFilesCard({ month, year, monthLabel }) {
           </Button>
         </div>
       </div>
+      <EsiFileIssues file={esi && esi.month === month && esi.year === year ? esi.file : null} />
     </Card>
   );
 }

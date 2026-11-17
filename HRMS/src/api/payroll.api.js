@@ -164,15 +164,15 @@ export async function downloadBankFileApi(month, year) {
 }
 
 /**
- * Downloads a month's file: 'ecr' (EPF, text), 'esi' (CSV), 'register'
- * (salary register, CSV) or 'journal' (accounting entry, CSV).
- * Returns how many members it has and how many were left out (no UAN / ESIC number).
+ * Downloads a month's file: 'ecr' (EPF, text), 'register' (salary register,
+ * CSV), 'journal' (accounting entry, CSV), 'pt' or 'lwf' (registers, CSV).
+ * Returns how many members it has and how many were left out (no UAN).
  */
 export async function downloadStatutoryFileApi(kind, month, year) {
   const base = import.meta.env.VITE_API_URL || '/api';
   const params = new URLSearchParams({ month: String(month), year: String(year) });
   const path = {
-    ecr: 'statutory/ecr', esi: 'statutory/esi', register: 'reports/register', journal: 'reports/journal', pt: 'reports/pt-register', lwf: 'reports/lwf-register',
+    ecr: 'statutory/ecr', register: 'reports/register', journal: 'reports/journal', pt: 'reports/pt-register', lwf: 'reports/lwf-register',
   }[kind];
   const res = await fetch(`${base}/payroll/${path}?${params}`, {
     method: 'GET',
@@ -199,6 +199,28 @@ export async function downloadStatutoryFileApi(kind, month, year) {
   a.click();
   URL.revokeObjectURL(url);
   return { rows: Number(res.headers.get('x-file-rows') || 0), skipped: Number(res.headers.get('x-file-skipped') || 0) };
+}
+
+/**
+ * Downloads the month's ESI contribution file for ESIC's portal: the server
+ * sends the rows, the browser writes the Excel 97-2003 (.xls) file ESIC takes
+ * (every cell text). Nothing is saved when no one is in it. Returns the
+ * server's answer: { filename, header, rows, members, totalWages, missingIp,
+ * notPublished, review } — the last three list who HR should sort out.
+ */
+export async function downloadEsiFileApi(month, year) {
+  const file = await apiRequest({ method: 'GET', url: '/payroll/statutory/esi', params: { month, year } });
+  if (file?.rows?.length) {
+    const [XLSX, { esiWorkbookBytes }] = await Promise.all([import('xlsx'), import('../lib/esiFile')]);
+    const blob = new Blob([esiWorkbookBytes(XLSX, file)], { type: 'application/vnd.ms-excel' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = file.filename || `esi-contribution-${year}-${String(month).padStart(2, '0')}.xls`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+  return file;
 }
 
 /** Records that the bank paid these published payslips: { payslipIds, paidOn, reference }. */

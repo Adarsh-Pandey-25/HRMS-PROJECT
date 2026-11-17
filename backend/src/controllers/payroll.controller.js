@@ -226,20 +226,31 @@ const bankFile = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-/** A month's statutory upload file — EPF ECR (text) or ESI (CSV) — from published payslips. */
-const statutoryFile = (kind) => async (req, res, next) => {
+/** A month's EPF ECR upload file (text) from published payslips. */
+const ecrFile = async (req, res, next) => {
   try {
     const files = require('../services/statutoryFiles.service');
-    const result = kind === 'ecr'
-      ? await files.getEcrFile(req.user.company_id, req.query.month, req.query.year)
-      : await files.getEsiFile(req.user.company_id, req.query.month, req.query.year);
-    res.setHeader('Content-Type', kind === 'ecr' ? 'text/plain; charset=utf-8' : 'text/csv; charset=utf-8');
+    const result = await files.getEcrFile(req.user.company_id, req.query.month, req.query.year);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-File-Rows', String(result.members));
     res.setHeader('X-File-Skipped', String(result.skipped.length));
     res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition, X-File-Rows, X-File-Skipped');
-    return res.send(kind === 'ecr' ? result.text : result.csv);
+    return res.send(result.text);
+  } catch (err) { next(err); }
+};
+
+/**
+ * A month's ESI contribution rows, as JSON — the browser writes them into
+ * the Excel 97-2003 (.xls) file ESIC's portal takes, every cell text.
+ */
+const esiFile = async (req, res, next) => {
+  try {
+    const files = require('../services/statutoryFiles.service');
+    const result = await files.getEsiFile(req.user.company_id, req.query.month, req.query.year);
+    res.setHeader('Cache-Control', 'no-store');
+    successResponse(res, 'ESI contribution file', result);
   } catch (err) { next(err); }
 };
 /** Do the month's payslips, register, bank file and journal agree? (read-only) */
@@ -269,9 +280,6 @@ const salaryRegister = payrollReport('register');
 const journal = payrollReport('journal');
 const ptRegister = payrollReport('pt');
 const lwfRegister = payrollReport('lwf');
-
-const ecrFile = statutoryFile('ecr');
-const esiFile = statutoryFile('esi');
 
 // ── Tax declarations (Form 124): the employee declares, HR checks ───────
 const declarations = () => require('../services/taxDeclaration.service');

@@ -1210,6 +1210,8 @@ const computePayslip = (ctx, {
       esi_exempt: out.esi.exempt,
       // Calendar days paid for (weekly offs included) — ESI's ₹176-a-day test and its monthly return.
       esi_paid_days: esiPaidDays.num / 2,
+      // The wages ESI is worked out on (regular pay + one-time pay counted for ESI) — the monthly return reports them.
+      esi_wages: R(out.esi.wages),
       esi_threshold: esi ? R(esi.coverageCeiling) : null,
       esi_deduction: R(out.esi.employee),
       pt_state: pt.state?.name || ptStateName || null,

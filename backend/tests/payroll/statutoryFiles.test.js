@@ -96,14 +96,14 @@ test('EPF ECR: one #~# line per member, whole rupees', async () => {
 
 test('ESI: covered members only, with their ESIC number', async () => {
   const f = await getEsiFile('c1', 10, 2026);
-  const lines = f.csv.trim().split('\r\n');
-  expect(lines[0]).toBe('IP Number,IP Name,No of Days for which wages paid/payable during the month,Total Monthly Wages,Reason Code for Zero workings days,Last Working Day');
+  expect(f.filename).toBe('esi-contribution-2026-10.xls');
+  expect(f.header).toEqual(['IP Number', 'IP Name', 'No of Days for which wages paid/payable during the month', 'Total Monthly Wages', 'Reason Code for Zero workings days', 'Last Working Day']);
   // Example 1's ₹40,000 is above ₹21,000 → not covered, so not listed
-  // 31 calendar days paid for in October (not the 22 working days)
-  expect(lines.slice(1)).toEqual(['3100123456,Ravi K#~#X,31,18000,,']);
+  // 31 calendar days paid for in October (not the 22 working days); letters and spaces only in the name
+  expect(f.rows.map((r) => [r.ipNumber, r.ipName, r.days, r.wages, r.reasonCode, r.lastWorkingDay])).toEqual([['3100123456', 'Ravi K X', '31', '18000', '0', '']]);
   expect(f.members).toBe(1);
   expect(f.totalWages).toBe(18000);
-  expect(f.skipped).toEqual([{ employeeId: 'e3', name: 'No Ids', reason: 'No ESIC number recorded' }]);
+  expect(f.missingIp).toEqual([{ employeeId: 'e3', name: 'No Ids', ipNumber: '', reason: 'No IP number (ESIC number) recorded' }]);
 });
 
 test('month and year are checked', async () => {
