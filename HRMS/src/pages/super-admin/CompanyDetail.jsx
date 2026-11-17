@@ -321,6 +321,7 @@ function EmployeesTab({ companyId }) {
 
 function BillingTab({ companyId }) {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const [creditOpen, setCreditOpen] = useState(false);
   const [creditAmount, setCreditAmount] = useState('');
   const [creditReason, setCreditReason] = useState('');
@@ -440,22 +441,59 @@ function BillingTab({ companyId }) {
   if (isLoading) return <Skeleton className="h-64 w-full rounded-xl" />;
 
   const sub = data?.subscription;
+  const seatUsage = data?.seatUsage;
+  // A subsidiary is billed through its parent: the parent's plan, features and seats.
+  const billedThrough = data?.billedThrough;
   return (
     <div className="space-y-6">
-      <Card>
-        <CardHeader
-          title="Subscription"
-          subtitle={sub ? `${sub.plans?.name} · ${sub.billingCycle} · ${sub.seatCount} seats` : 'No subscription'}
-        />
-        {sub && (
-          <div className="px-5 pb-5 flex flex-wrap gap-3">
-            <Badge tone={sub.status === 'active' ? 'success' : sub.status === 'suspended' ? 'danger' : 'warning'}>{sub.status}</Badge>
-            <span className="text-sm text-fg-subtle">Renews {formatDateTime(sub.nextRenewalDate)}</span>
+      {billedThrough && (
+        <Card>
+          <CardHeader
+            title={`Billed through ${billedThrough.name}`}
+            subtitle="A subsidiary uses its parent's plan, features and seats, and is suspended with it. Seats, plan and invoices are managed on the parent."
+          />
+          <div className="px-5 pb-5 flex flex-wrap items-center gap-3">
+            {seatUsage && (
+              <span className="text-sm text-fg-subtle tabular-nums">
+                Group seats {seatUsage.used} / {seatUsage.limit ?? '∞'} · {seatUsage.ownUsed} in this company
+              </span>
+            )}
+            <Button size="sm" variant="outline" onClick={() => navigate(`/super-admin/companies/${billedThrough.id}`)}>
+              Open {billedThrough.name}
+            </Button>
           </div>
-        )}
-      </Card>
+        </Card>
+      )}
 
-      {!sub && <AssignSubscriptionCard companyId={companyId} onAssigned={invalidateSub} />}
+      {(sub || !billedThrough) && (
+        <Card>
+          <CardHeader
+            title="Subscription"
+            subtitle={sub ? `${sub.plans?.name} · ${sub.billingCycle} · ${sub.seatCount} seats` : 'No subscription'}
+          />
+          {sub && (
+            <div className="px-5 pb-5 space-y-2">
+              <div className="flex flex-wrap gap-3">
+                <Badge tone={sub.status === 'active' ? 'success' : sub.status === 'suspended' ? 'danger' : 'warning'}>{sub.status}</Badge>
+                <span className="text-sm text-fg-subtle">Renews {formatDateTime(sub.nextRenewalDate)}</span>
+                {!billedThrough && seatUsage && (
+                  <span className="text-sm text-fg-subtle tabular-nums">
+                    Seats used {seatUsage.used} / {seatUsage.limit ?? '∞'}
+                    {seatUsage.usedInSubsidiaries > 0 && ` (includes ${seatUsage.usedInSubsidiaries} in subsidiaries)`}
+                  </span>
+                )}
+              </div>
+              {billedThrough && (
+                <p className="text-xs text-warning">
+                  This subscription is no longer used for seats or features — {billedThrough.name}&rsquo;s is. Cancel it so it stops renewing.
+                </p>
+              )}
+            </div>
+          )}
+        </Card>
+      )}
+
+      {!sub && !billedThrough && <AssignSubscriptionCard companyId={companyId} onAssigned={invalidateSub} />}
 
       {sub && (
         <Card>
@@ -839,11 +877,17 @@ function FeaturesTab({ companyId }) {
 
   if (isLoading) return <Skeleton className="h-64 w-full rounded-xl" />;
   const features = data?.features || [];
+  const billedThrough = data?.billedThrough;
 
   return (
     <div className="space-y-6">
       <Card>
-        <CardHeader title="Feature flags" subtitle="Plan defaults, with per-company overrides" />
+        <CardHeader
+          title="Feature flags"
+          subtitle={billedThrough
+            ? `From ${billedThrough.name}'s plan and overrides (this company is its subsidiary). Here a feature can only be switched off.`
+            : 'Plan defaults, with per-company overrides'}
+        />
         <div className="px-5 pb-5">
           {features.length === 0 ? (
             <p className="text-sm text-fg-subtle py-6 text-center">This company's plan has no feature flags defined.</p>
@@ -901,10 +945,14 @@ function FeaturesTab({ companyId }) {
 
       <Card>
         <CardHeader title="Seat limit override" subtitle="Grant extra seats without a full plan change" />
-        <div className="px-5 pb-5 flex items-end gap-3">
-          <Input label="Extra seats (max_seats_override)" type="number" min="0" placeholder="e.g. 5" value={seatValue} onChange={(e) => setSeatValue(e.target.value)} />
-          <Button loading={busy} onClick={submitSeatOverride}>Apply</Button>
-        </div>
+        {billedThrough ? (
+          <p className="px-5 pb-5 text-sm text-fg-subtle">This company uses {billedThrough.name}&rsquo;s seats. Set a seat override on {billedThrough.name}.</p>
+        ) : (
+          <div className="px-5 pb-5 flex items-end gap-3">
+            <Input label="Extra seats (max_seats_override)" type="number" min="0" placeholder="e.g. 5" value={seatValue} onChange={(e) => setSeatValue(e.target.value)} />
+            <Button loading={busy} onClick={submitSeatOverride}>Apply</Button>
+          </div>
+        )}
       </Card>
 
       <Card>

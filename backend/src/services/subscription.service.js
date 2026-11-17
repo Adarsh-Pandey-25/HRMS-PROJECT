@@ -2,7 +2,9 @@ const crypto = require('crypto');
 const moment = require('moment-timezone');
 const { supabaseAdmin } = require('../config/supabase');
 const logger = require('../utils/logger');
-const { BadRequestError, NotFoundError, ConflictError } = require('../utils/errors');
+const {
+  BadRequestError, NotFoundError, ConflictError, ForbiddenError,
+} = require('../utils/errors');
 const config = require('../config/database');
 const { getInvoiceNumber } = require('./invoiceNumber.service');
 const { grossAmount } = require('../utils/gst');
@@ -130,6 +132,192 @@ const prorateForRemainder = (subscription, oldCyclePrice, newCyclePrice) => {
 };
 
 // ============================================================================
+// Billing root: a subsidiary is billed through its top parent
+// ============================================================================
+//
+// A subsidiary (companies.parent_company_id set, company_type 'child') has no
+// plan of its own. Its employees use the parent's seats (one pool for the
+// whole group), it gets the parent's features, and it is blocked when the
+// parent is suspended. Seat, feature and suspension checks all start from
+// getBillingAccount() / isBillingSuspended() below.
+
+/** Parent links followed at most; a longer chain is bad data, not guessed at. */
+const MAX_PARENT_DEPTH = 5;
+const CHAIN_CACHE_MS = 60 * 1000;
+const chainCache = new Map();
+
+const isMissingParentColumn = (error) => {
+  const msg = String(error?.message || error?.details || '');
+  return /parent_company_id/i.test(msg) && /does not exist/i.test(msg);
+};
+
+/** One company's id, name and parent link, or null when there is no such company. */
+const readCompanyLink = async (companyId) => {
+  const { data, error } = await supabaseAdmin
+    .from('companies')
+    .select('id, name, parent_company_id')
+    .eq('id', companyId)
+    .maybeSingle();
+  if (!error) return data;
+  if (!isMissingParentColumn(error)) throw error;
+  // Hierarchy migration not applied here: every company stands alone.
+  const { data: basic, error: basicError } = await supabaseAdmin
+    .from('companies')
+    .select('id, name')
+    .eq('id', companyId)
+    .maybeSingle();
+  if (basicError) throw basicError;
+  return basic ? { ...basic, parent_company_id: null } : null;
+};
+
+/**
+ * The company and the companies above it, nearest first:
+ * [{ id, name }, parent, …, top parent]. Cached for a minute — a company's
+ * parent is set when it is created and never moves. A loop in the links, or
+ * more than MAX_PARENT_DEPTH parents, is refused (the company is blocked)
+ * rather than billed to a guess.
+ */
+const getCompanyChain = async (companyId) => {
+  if (!companyId) return [];
+  const key = String(companyId);
+  const hit = chainCache.get(key);
+  if (hit && hit.expires > Date.now()) return hit.value;
+
+  const chain = [];
+  let nextId = key;
+  while (nextId) {
+    if (chain.some((c) => c.id === nextId)) {
+      logger.error('[Billing] Parent-company links loop', { companyId: key, chain: chain.map((c) => c.id) });
+      throw new ForbiddenError('This company\'s parent-company link loops back on itself, so its billing can\'t be worked out. Contact support.');
+    }
+    if (chain.length > MAX_PARENT_DEPTH) {
+      logger.error('[Billing] Parent-company chain too deep', { companyId: key, chain: chain.map((c) => c.id) });
+      throw new ForbiddenError(`This company is more than ${MAX_PARENT_DEPTH} levels below its top parent company, so its billing can't be worked out. Contact support.`);
+    }
+    const row = await readCompanyLink(nextId);
+    if (!row) break;
+    chain.push({ id: String(row.id), name: row.name || null });
+    nextId = row.parent_company_id ? String(row.parent_company_id) : null;
+  }
+  // Unknown company: stands alone, and isn't cached (it may be created next).
+  if (!chain.length) return [{ id: key, name: null }];
+  chainCache.set(key, { value: chain, expires: Date.now() + CHAIN_CACHE_MS });
+  return chain;
+};
+
+/** The top parent of this company's group (the company itself when it has no parent). */
+const getBillingRoot = async (companyId) => {
+  const chain = await getCompanyChain(companyId);
+  return chain.length ? chain[chain.length - 1].id : null;
+};
+
+/** The company and every company below it (subsidiaries, theirs, …), itself first. */
+const getGroupCompanyIds = async (companyId) => {
+  const ids = [String(companyId)];
+  let frontier = [String(companyId)];
+  for (let depth = 0; frontier.length && depth < MAX_PARENT_DEPTH; depth += 1) {
+    const { data, error } = await supabaseAdmin
+      .from('companies')
+      .select('id')
+      .in('parent_company_id', frontier);
+    if (error) {
+      if (isMissingParentColumn(error)) break;
+      throw error;
+    }
+    frontier = (data || []).map((r) => String(r.id)).filter((id) => !ids.includes(id));
+    ids.push(...frontier);
+  }
+  return ids;
+};
+
+/** The live subscription, else the suspended one, else the most recent (rows newest first). */
+const pickGoverningSubscription = (rows) => rows.find((r) => LIVE_STATUSES.includes(r.status))
+  || rows.find((r) => r.status === 'suspended')
+  || rows[0]
+  || null;
+
+/**
+ * Who pays for this company, and with which subscription.
+ *
+ * The payer is the highest company in the chain (self → top parent) that has
+ * ever had a subscription — normally the top parent. While a parent has one,
+ * a subsidiary is never billed on its own: a subscription it was given
+ * directly in the past is ignored for seats and features. Only when no
+ * company above it was ever billed does a subsidiary's own subscription
+ * still apply to it.
+ *
+ * subscription: the payer's live one, else its suspended one, else its most
+ * recent (cancelled/expired) one. null = the payer was never billed at all
+ * (the default company, or a company set up without a plan); callers keep
+ * their long-standing "no subscription" behaviour for those.
+ */
+const getBillingAccount = async (companyId) => {
+  const chain = await getCompanyChain(companyId);
+  if (!chain.length) {
+    return {
+      companyId: null, companyName: null, rootId: null, billingCompanyId: null, billingCompanyName: null,
+      chain: [], billedThroughParent: false, subscription: null,
+    };
+  }
+  const ids = chain.map((c) => c.id);
+  const { data, error } = await supabaseAdmin
+    .from('company_billing_subscriptions')
+    .select('*, plans:subscription_plans(*)')
+    .in('company_id', ids)
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  const rows = data || [];
+  const rowsOf = (id) => rows.filter((r) => String(r.company_id) === id);
+
+  let payerIndex = ids.length - 1;
+  for (let i = ids.length - 1; i >= 0; i -= 1) {
+    if (rowsOf(ids[i]).length) {
+      payerIndex = i;
+      break;
+    }
+  }
+  const payer = chain[payerIndex];
+  const governed = ids.slice(0, payerIndex + 1);
+  return {
+    companyId: ids[0],
+    companyName: chain[0].name,
+    rootId: ids[ids.length - 1],
+    billingCompanyId: payer.id,
+    billingCompanyName: payer.name,
+    // This company up to the payer: overrides on any of them are read.
+    chain: governed,
+    billedThroughParent: payerIndex > 0,
+    subscription: pickGoverningSubscription(rowsOf(payer.id)),
+  };
+};
+
+/**
+ * True when this company, or a company above it, has a suspended
+ * subscription: a subsidiary is locked out with its parent. Used by
+ * auth.middleware.js on every request, so it reads only what it needs.
+ */
+const isBillingSuspended = async (companyId) => {
+  if (!companyId) return false;
+  const chain = await getCompanyChain(companyId);
+  const { data } = await supabaseAdmin
+    .from('company_billing_subscriptions')
+    .select('id')
+    .in('company_id', chain.map((c) => c.id))
+    .eq('status', 'suspended')
+    .limit(1)
+    .maybeSingle();
+  return Boolean(data);
+};
+
+/** "Your company's" for the payer itself, "Acme Group's" for a subsidiary. */
+const payerPossessive = (account) => (account.billedThroughParent
+  ? `${account.billingCompanyName || 'Your parent company'}'s`
+  : 'Your company\'s');
+
+/** Tests only. */
+const clearBillingCache = () => chainCache.clear();
+
+// ============================================================================
 // Lifecycle
 // ============================================================================
 
@@ -149,6 +337,15 @@ const prorateForRemainder = (subscription, oldCyclePrice, newCyclePrice) => {
  * due now' invoice would incorrectly demand payment from a brand-new trial).
  */
 const createSubscription = async (companyId, planId, billingCycle, seatCount, actorId, couponCode = null, initialStatus = 'active', triggeredBy = 'super_admin') => {
+  // A subsidiary is billed through its top parent — it never gets a plan,
+  // seats or features of its own.
+  const chain = await getCompanyChain(companyId);
+  if (chain.length > 1) {
+    const top = chain[chain.length - 1];
+    throw new BadRequestError(
+      `${chain[0].name || 'This company'} is a subsidiary of ${top.name || 'another company'} and uses its plan and seats. Manage billing on ${top.name || 'the parent company'} instead.`,
+    );
+  }
   const plan = await getPlanOrThrow(planId);
   if (!plan.is_active) throw new BadRequestError('Cannot subscribe to an inactive plan');
   if (plan.max_seats && seatCount > plan.max_seats) {
@@ -514,18 +711,34 @@ const chargePaymentMethod = async (subscription, invoice) => {
 // Seat enforcement
 // ============================================================================
 
-const getSeatUsage = async (companyId) => {
-  const [{ data: subscription }, { count: used, error: countError }] = await Promise.all([
-    supabaseAdmin
-      .from('company_billing_subscriptions')
-      .select('*, plans:subscription_plans(*)')
-      .eq('company_id', companyId)
-      .in('status', LIVE_STATUSES)
-      .maybeSingle(),
-    supabaseAdmin.from('employees').select('id', { count: 'exact', head: true }).eq('company_id', companyId).eq('is_active', true),
-  ]);
-  if (countError) throw countError;
+const countActiveEmployees = async (companyIds) => {
+  const { count, error } = await supabaseAdmin
+    .from('employees')
+    .select('id', { count: 'exact', head: true })
+    .in('company_id', companyIds)
+    .eq('is_active', true);
+  if (error) throw error;
+  return count || 0;
+};
 
+/**
+ * Seats are one pool per group: active employees of the paying company and
+ * every subsidiary under it, against the paying company's subscription.
+ * Subsidiaries that are switched off still count — their employees are
+ * still active and come back the moment the subsidiary is switched on.
+ */
+const seatUsageFor = async (account) => {
+  const groupIds = await getGroupCompanyIds(account.billingCompanyId);
+  const subsidiaryIds = groupIds.slice(1);
+  const [used, usedInSubsidiaries, ownUsed] = await Promise.all([
+    countActiveEmployees(groupIds),
+    subsidiaryIds.length ? countActiveEmployees(subsidiaryIds) : 0,
+    account.companyId === account.billingCompanyId ? null : countActiveEmployees([account.companyId]),
+  ]);
+
+  const subscription = account.subscription && LIVE_STATUSES.includes(account.subscription.status)
+    ? account.subscription
+    : null;
   // Module 6: a super-admin goodwill/beta seat grant on top of the plan's
   // own seat_count, set via company_feature_overrides' sibling column
   // rather than a full plan change — see featureOverride.service.js.
@@ -535,25 +748,67 @@ const getSeatUsage = async (companyId) => {
     : planLimit;
 
   return {
-    used: used || 0,
+    used,
     limit: effectiveLimit,
     planLimit,
     seatOverride: subscription?.max_seats_override ?? null,
     planName: subscription?.plans?.name || null,
     status: subscription?.status || null,
     hasSubscription: Boolean(subscription),
+    // Of `used`: how many are in subsidiaries, and how many in this company.
+    usedInSubsidiaries,
+    subsidiaryCount: subsidiaryIds.length,
+    ownUsed: ownUsed == null ? used - usedInSubsidiaries : ownUsed,
+    // Set when this company's seats come from a parent company.
+    billedThrough: account.billedThroughParent
+      ? { id: account.billingCompanyId, name: account.billingCompanyName }
+      : null,
   };
 };
 
-/** Called from employee.controller.js's create() before inserting a new employee row. */
-const assertSeatAvailable = async (companyId) => {
-  const usage = await getSeatUsage(companyId);
-  if (!usage.hasSubscription) return; // no subscription wired up yet for this company — don't block
-  if (usage.used >= usage.limit) {
+const getSeatUsage = async (companyId) => seatUsageFor(await getBillingAccount(companyId));
+
+/**
+ * Called before an employee becomes active anywhere in a group: hiring
+ * (employee.controller.js's create(), which bulk import also goes through),
+ * and reactivating or moving an employee. A subsidiary's employees use the
+ * top parent's seats, so a group of 25 seats can't hold a 26th employee in
+ * any of its companies.
+ *
+ * fromCompanyId: the employee's current company, when they are being moved.
+ * A move inside the same group needs no seat (the group total doesn't
+ * change); a move in from outside it does.
+ */
+const assertSeatAvailable = async (companyId, { fromCompanyId = null } = {}) => {
+  const account = await getBillingAccount(companyId);
+  if (fromCompanyId) {
+    const from = await getBillingAccount(fromCompanyId);
+    if (from.billingCompanyId === account.billingCompanyId) return;
+  }
+
+  const { subscription } = account;
+  // Never billed at all (the default company, or one set up without a plan):
+  // not blocked, as before — and its subsidiaries with it.
+  if (!subscription) return;
+  if (!LIVE_STATUSES.includes(subscription.status)) {
     throw new ConflictError(
-      `Seat limit reached (${usage.used}/${usage.limit} on the ${usage.planName} plan). Increase seats to add more employees.`,
+      `${payerPossessive(account)} subscription is ${subscription.status}, so no employees can be added. Contact billing to resolve this.`,
     );
   }
+
+  const usage = await seatUsageFor(account);
+  if (usage.used < usage.limit) return;
+  if (account.billedThroughParent) {
+    throw new ConflictError(
+      `Seat limit reached (${usage.used}/${usage.limit} on ${account.billingCompanyName}'s ${usage.planName} plan, which this company shares). Increase seats on ${account.billingCompanyName}'s plan to add more employees.`,
+    );
+  }
+  const inSubsidiaries = usage.usedInSubsidiaries
+    ? `, including ${usage.usedInSubsidiaries} in subsidiaries`
+    : '';
+  throw new ConflictError(
+    `Seat limit reached (${usage.used}/${usage.limit} on the ${usage.planName} plan${inSubsidiaries}). Increase seats to add more employees.`,
+  );
 };
 
 module.exports = {
@@ -574,5 +829,11 @@ module.exports = {
   logSubscriptionEvent,
   getSeatUsage,
   assertSeatAvailable,
+  getCompanyChain,
+  getBillingRoot,
+  getBillingAccount,
+  getGroupCompanyIds,
+  isBillingSuspended,
+  clearBillingCache,
   LIVE_STATUSES,
 };

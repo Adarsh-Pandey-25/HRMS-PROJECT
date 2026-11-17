@@ -53,25 +53,40 @@ export default function SubscriptionBilling() {
   const renewalDays = daysUntil(subscription.nextRenewalDate);
   const seatPct = subscription.seatUsage?.limit ? (subscription.seatUsage.used / subscription.seatUsage.limit) * 100 : 0;
   const seatTone = seatPct >= 90 ? 'danger' : seatPct >= 70 ? 'warning' : 'primary';
+  // A subsidiary is billed through its parent: the parent's plan and seats,
+  // managed from the parent's workspace.
+  const billedThrough = subscription.billedThrough;
+  const usedInSubsidiaries = subscription.seatUsage?.usedInSubsidiaries || 0;
 
   return (
     <div className="max-w-4xl mx-auto space-y-6 animate-fade-in">
-      <PageHeader title="Subscription & Billing" subtitle="Manage your company's plan, seats, and invoices." />
+      <PageHeader
+        title="Subscription & Billing"
+        subtitle={billedThrough ? `Billed through ${billedThrough.name}.` : "Manage your company's plan, seats, and invoices."}
+      />
 
       <Card>
         <CardHeader
-          title={subscription.planName}
-          subtitle={`${formatCurrency(subscription.price)} + ${gstPercentLabel()} GST = ${formatCurrency(applyGST(subscription.price).total)} / ${subscription.billingCycle}`}
-          action={<Badge tone={['active', 'trialing'].includes(subscription.status) ? 'success' : 'warning'}>{subscription.status}</Badge>}
+          title={subscription.planName || 'No plan'}
+          subtitle={billedThrough
+            ? `${billedThrough.name}'s plan`
+            : `${formatCurrency(subscription.price)} + ${gstPercentLabel()} GST = ${formatCurrency(applyGST(subscription.price).total)} / ${subscription.billingCycle}`}
+          action={subscription.status && <Badge tone={['active', 'trialing'].includes(subscription.status) ? 'success' : 'warning'}>{subscription.status}</Badge>}
         />
         <div className="px-5 pb-5 space-y-4">
-          {subscription.status === 'trialing' && subscription.trialEndsAt && (
+          {billedThrough && (
+            <div className="rounded-lg bg-primary/10 text-primary text-sm px-3 py-2">
+              This company is a subsidiary of {billedThrough.name} and uses its plan, features and seats.
+              The plan, seats and invoices are managed from {billedThrough.name}&rsquo;s workspace.
+            </div>
+          )}
+          {!billedThrough && subscription.status === 'trialing' && subscription.trialEndsAt && (
             <div className="rounded-lg bg-primary/10 text-primary text-sm px-3 py-2 flex items-center gap-2">
               <Clock className="h-4 w-4 shrink-0" />
               Free trial ends {formatDateTime(subscription.trialEndsAt)}. Choose a plan before then to keep your workspace running.
             </div>
           )}
-          {subscription.status !== 'trialing' && renewalDays != null && renewalDays <= 30 && (
+          {!billedThrough && subscription.status !== 'trialing' && renewalDays != null && renewalDays <= 30 && (
             <div className="rounded-lg bg-warning/10 text-warning text-sm px-3 py-2 flex items-center gap-2">
               <Clock className="h-4 w-4 shrink-0" />
               Renews in {renewalDays} day{renewalDays === 1 ? '' : 's'} ({formatDateTime(subscription.nextRenewalDate)})
@@ -80,31 +95,40 @@ export default function SubscriptionBilling() {
           )}
           <div>
             <div className="flex items-center justify-between text-sm mb-1">
-              <span className="text-fg-subtle">Seats used</span>
+              <span className="text-fg-subtle">{billedThrough || usedInSubsidiaries ? 'Seats used (whole group)' : 'Seats used'}</span>
               <span className="font-medium text-fg tabular-nums">{subscription.seatUsage?.used} / {subscription.seatUsage?.limit ?? '∞'}</span>
             </div>
             <ProgressBar value={seatPct} tone={seatTone} />
+            {(billedThrough || usedInSubsidiaries > 0) && (
+              <p className="mt-1 text-xs text-fg-subtle">
+                {billedThrough
+                  ? `${subscription.seatUsage?.ownUsed ?? 0} in this company`
+                  : `Includes ${usedInSubsidiaries} in subsidiaries`}
+              </p>
+            )}
           </div>
-          <p className="text-xs text-fg-subtle">Auto-renew: {subscription.autoRenew ? 'On' : 'Off'}</p>
+          {!billedThrough && <p className="text-xs text-fg-subtle">Auto-renew: {subscription.autoRenew ? 'On' : 'Off'}</p>}
         </div>
       </Card>
 
-      <Card>
-        <CardHeader title="Actions" />
-        <div className="px-5 pb-5 flex flex-wrap gap-3">
-          <Button variant="outline" icon={ArrowUpCircle} onClick={() => setChangePlanOpen(true)}>Change Plan</Button>
-          <Button variant="outline" icon={Users} onClick={() => setChangeSeatsOpen(true)}>Add/Remove Seats</Button>
-          <Button variant="outline" icon={RefreshCw} onClick={() => setChangeCycleOpen(true)}>Change Billing Cycle</Button>
-        </div>
-        <div className="px-5 pb-5">
-          <button type="button" onClick={() => setCancelOpen(true)} className="text-xs text-fg-subtle hover:text-danger underline underline-offset-2">
-            Cancel Subscription
-          </button>
-        </div>
-      </Card>
+      {!billedThrough && (
+        <Card>
+          <CardHeader title="Actions" />
+          <div className="px-5 pb-5 flex flex-wrap gap-3">
+            <Button variant="outline" icon={ArrowUpCircle} onClick={() => setChangePlanOpen(true)}>Change Plan</Button>
+            <Button variant="outline" icon={Users} onClick={() => setChangeSeatsOpen(true)}>Add/Remove Seats</Button>
+            <Button variant="outline" icon={RefreshCw} onClick={() => setChangeCycleOpen(true)}>Change Billing Cycle</Button>
+          </div>
+          <div className="px-5 pb-5">
+            <button type="button" onClick={() => setCancelOpen(true)} className="text-xs text-fg-subtle hover:text-danger underline underline-offset-2">
+              Cancel Subscription
+            </button>
+          </div>
+        </Card>
+      )}
 
       <Card>
-        <CardHeader title="Features" subtitle="What's included on your plan" />
+        <CardHeader title="Features" subtitle={billedThrough ? `What's included on ${billedThrough.name}'s plan` : "What's included on your plan"} />
         <div className="px-5 pb-5">
           {featuresLoading ? <Skeleton className="h-32 w-full rounded-xl" /> : (
             <div className="divide-y divide-border/60">
@@ -112,9 +136,9 @@ export default function SubscriptionBilling() {
                 <button
                   key={f.key}
                   type="button"
-                  onClick={() => !f.effective && setLockedFeature(f)}
+                  onClick={() => !f.effective && !billedThrough && setLockedFeature(f)}
                   className="w-full flex items-center justify-between py-2.5 text-left disabled:cursor-default"
-                  disabled={f.effective}
+                  disabled={f.effective || Boolean(billedThrough)}
                 >
                   <span className="text-sm text-fg">{f.label}</span>
                   {f.effective ? (
@@ -129,48 +153,52 @@ export default function SubscriptionBilling() {
         </div>
       </Card>
 
-      <Card>
-        <CardHeader title="Invoices" subtitle={`${invoicesResult?.meta?.total ?? 0} total`} />
-        <div className="px-5 pb-5 overflow-x-auto">
-          {(invoicesResult?.items || []).length === 0 ? (
-            <p className="text-sm text-fg-subtle py-6 text-center">No invoices yet.</p>
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border text-left">
-                  {['Invoice #', 'Subtotal', 'GST', 'Total', 'Status', 'Issued', ''].map((h) => (
-                    <th key={h || 'actions'} className="py-2 font-semibold text-fg-subtle text-xs uppercase">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {(invoicesResult?.items || []).map((inv) => (
-                  <tr key={inv.id} className="border-b border-border/60">
-                    <td className="py-2.5 font-mono text-xs">{inv.invoiceNumber}</td>
-                    <td className="py-2.5 tabular-nums">{formatCurrency(inv.amount)}</td>
-                    <td className="py-2.5 tabular-nums text-fg-subtle">{formatCurrency(applyGST(inv.amount).gst)}</td>
-                    <td className="py-2.5 tabular-nums font-medium">{formatCurrency(applyGST(inv.amount).total)}</td>
-                    <td className="py-2.5"><Badge tone={inv.status === 'paid' ? 'success' : 'warning'}>{inv.status}</Badge></td>
-                    <td className="py-2.5 text-fg-subtle text-xs">{formatDateTime(inv.issuedAt)}</td>
-                    <td className="py-2.5 text-right">
-                      <Button size="sm" variant="ghost" icon={Download} onClick={() => downloadMyInvoiceApi(inv.id).catch((e) => toast.error(e.message))}>PDF</Button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      </Card>
+      {!billedThrough && (
+        <>
+          <Card>
+            <CardHeader title="Invoices" subtitle={`${invoicesResult?.meta?.total ?? 0} total`} />
+            <div className="px-5 pb-5 overflow-x-auto">
+              {(invoicesResult?.items || []).length === 0 ? (
+                <p className="text-sm text-fg-subtle py-6 text-center">No invoices yet.</p>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border text-left">
+                      {['Invoice #', 'Subtotal', 'GST', 'Total', 'Status', 'Issued', ''].map((h) => (
+                        <th key={h || 'actions'} className="py-2 font-semibold text-fg-subtle text-xs uppercase">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(invoicesResult?.items || []).map((inv) => (
+                      <tr key={inv.id} className="border-b border-border/60">
+                        <td className="py-2.5 font-mono text-xs">{inv.invoiceNumber}</td>
+                        <td className="py-2.5 tabular-nums">{formatCurrency(inv.amount)}</td>
+                        <td className="py-2.5 tabular-nums text-fg-subtle">{formatCurrency(applyGST(inv.amount).gst)}</td>
+                        <td className="py-2.5 tabular-nums font-medium">{formatCurrency(applyGST(inv.amount).total)}</td>
+                        <td className="py-2.5"><Badge tone={inv.status === 'paid' ? 'success' : 'warning'}>{inv.status}</Badge></td>
+                        <td className="py-2.5 text-fg-subtle text-xs">{formatDateTime(inv.issuedAt)}</td>
+                        <td className="py-2.5 text-right">
+                          <Button size="sm" variant="ghost" icon={Download} onClick={() => downloadMyInvoiceApi(inv.id).catch((e) => toast.error(e.message))}>PDF</Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </Card>
 
-      <Card>
-        <CardHeader title="Payment Method" />
-        <div className="px-5 pb-5">
-          <p className="text-sm text-fg-subtle">
-            {paymentMethod?.configured ? paymentMethod.masked : (paymentMethod?.note || 'Not yet configured, contact billing.')}
-          </p>
-        </div>
-      </Card>
+          <Card>
+            <CardHeader title="Payment Method" />
+            <div className="px-5 pb-5">
+              <p className="text-sm text-fg-subtle">
+                {paymentMethod?.configured ? paymentMethod.masked : (paymentMethod?.note || 'Not yet configured, contact billing.')}
+              </p>
+            </div>
+          </Card>
+        </>
+      )}
 
       <LockedFeatureModal feature={lockedFeature} onClose={() => setLockedFeature(null)} onUpgrade={() => { setLockedFeature(null); setChangePlanOpen(true); }} />
       <ChangePlanModal open={changePlanOpen} onClose={() => setChangePlanOpen(false)} plans={plans} currentPlanCode={subscription.planCode} billingCycle={subscription.billingCycle} onDone={invalidateSub} />

@@ -8,6 +8,7 @@ const {
   attachApiKeyUser,
 } = require('./apiKey.middleware');
 const apiKeyService = require('../services/apiKey.service');
+const subscriptionService = require('../services/subscription.service');
 
 const EMPLOYEE_SELECT_COLUMNS = 'id, employee_code, first_name, last_name, email, role, department, designation, manager_id, is_active, company_id, address, date_of_joining, phone, profile_picture';
 
@@ -45,19 +46,11 @@ const fetchEmployeeForAuth = async (id) => {
  * token_version checks above rather than a parallel check elsewhere. Data
  * is never touched — this is purely an access gate. No subscription row at
  * all (company never subscribed, or this is a dev/test environment) is not
- * suspended, so it never blocks.
+ * suspended, so it never blocks. A subsidiary is suspended with its parent
+ * (it is billed through the parent — see subscription.service.js), with the
+ * same message.
  */
-const isCompanySuspended = async (companyId) => {
-  if (!companyId) return false;
-  const { data } = await supabaseAdmin
-    .from('company_billing_subscriptions')
-    .select('id')
-    .eq('company_id', companyId)
-    .eq('status', 'suspended')
-    .limit(1)
-    .maybeSingle();
-  return Boolean(data);
-};
+const isCompanySuspended = (companyId) => subscriptionService.isBillingSuspended(companyId);
 
 /** True unless the request is on a tenant host that belongs to another company. */
 const belongsToTenant = (req, companyId) => !req.tenantCompany
