@@ -253,6 +253,23 @@ const createRevision = async ({ scopeIds, actor, ipAddress, employeeId, componen
     throw new BadRequestError('Effective date can be at most one year ahead');
   }
   const effectiveStr = effective.format('YYYY-MM-DD');
+  // A date before this month reaches back into pay already worked out (and
+  // usually paid), so only an Admin may back-date that far. HR can schedule
+  // from the first of this month onwards.
+  const monthStart = moment.tz(today, TIMEZONE).startOf('month').format('YYYY-MM-DD');
+  if (actor.role !== 'admin' && effectiveStr < monthStart) {
+    require('./auditLog.service').logAudit({
+      companyId: employee.company_id,
+      actorId: actor.id,
+      actorRole: actor.role,
+      actionType: 'salary_revision.backdate_refused',
+      targetType: 'employee',
+      targetId: employee.id,
+      afterState: { effective_date: effectiveStr },
+      ipAddress,
+    }).catch((e) => logger.warn('Audit log failed', { error: e.message }));
+    throw new ForbiddenError('Only an Admin can back-date a salary revision to an earlier month.');
+  }
 
   const { data: inserted, error } = await supabaseAdmin
     .from('salary_revisions')

@@ -110,7 +110,8 @@ function) and must go first on a fresh project; everything in
 37. `20261104_payroll_one_time_items.sql` — one-time pay and recoveries (arrears, bonus, encashment, gratuity, notice pay) on a month's payslip
 38. `20261117_adms_device_ip_pinning.sql` — **run before deploying the November security fixes.** Pins each biometric device to its office's IP. Until it runs, every biometric push is refused with `NOK` (devices keep the punches and resend them, so nothing is lost)
 39. `20261117_fnf_exemption_used.sql` — `payroll_one_time_items.exempt_amount`: the tax-free part of gratuity and leave encashment on leaving. Until it runs, full and final saves each as two items (exempt and taxable), so tax is still right
-40. `20261117_two_step_login.sql` — **run before deploying the November security fixes.** Single-use two-step login challenges. Until it runs, people with two-step login on can't sign in; everyone else is unaffected
+40. `20261117_last_admin_guard.sql` — a database rule that a company always keeps one active Admin, so two Admins demoting each other at the same moment can't leave it with none. Deleting a whole company isn't blocked
+41. `20261117_two_step_login.sql` — **run before deploying the November security fixes.** Single-use two-step login challenges. Until it runs, people with two-step login on can't sign in; everyone else is unaffected
 
 Migrations are idempotent (`IF NOT EXISTS` / `CREATE OR REPLACE`), so
 re-running one is safe.

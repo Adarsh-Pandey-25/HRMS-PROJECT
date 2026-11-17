@@ -61,10 +61,8 @@ export function canEditMatrix(viewerRole) {
 /**
  * Defaults match typical self-service + HR/manager powers.
  * Admin is always all-true in buildDefaultRolePermissions.
- * The server uses the same defaults (ENFORCED in
- * backend/src/services/rolePermissions.service.js), except that until an Admin
- * saves the matrix it still lets managers read recruitment lists and manage
- * courses, as they always could.
+ * The server uses exactly the same defaults (ENFORCED in
+ * backend/src/services/rolePermissions.service.js).
  */
 const DEFAULT_GRANTS = {
   hr: [

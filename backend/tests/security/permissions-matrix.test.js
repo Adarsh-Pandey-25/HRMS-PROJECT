@@ -162,3 +162,46 @@ describe('reading the matrix', () => {
     expect(await rolePermissions.can(admin, 'payroll', 'manage')).toBe(true);
   });
 });
+
+describe('approval flows are the Admin\'s choice', () => {
+  test('HR can\'t save the work-from-home flow', async () => {
+    const { err } = await put(hr, 'approval_flows', { wfh: 'hr-only' });
+    expect(err?.message).toBe('Only an Admin can change approval flows.');
+    expect(global.__settings.approval_flows).toBeUndefined();
+  });
+
+  test('HR saving the leave policy keeps the stored flow, whatever they send', async () => {
+    global.__settings.leave_policy_meta = { approval_level: 'two-level', accrual: 'monthly' };
+    const { err } = await put(hr, 'leave_policy_meta', { approval_level: 'single', accrual: 'yearly' });
+    expect(err).toBeUndefined();
+    expect(global.__settings.leave_policy_meta).toEqual({ approval_level: 'two-level', accrual: 'yearly' });
+  });
+
+  test('HR saving expense rules keeps the stored flow; none stored stays none', async () => {
+    const { err } = await put(hr, 'expense_config', { maxAmount: 9000, approvalFlow: 'hr-only' });
+    expect(err).toBeUndefined();
+    expect(global.__settings.expense_config).toEqual({ maxAmount: 9000 });
+  });
+
+  test('the Admin changes flows', async () => {
+    global.__settings.leave_policy_meta = { approval_level: 'two-level' };
+    expect((await put(admin, 'approval_flows', { wfh: 'hr-only' })).err).toBeUndefined();
+    expect((await put(admin, 'leave_policy_meta', { approval_level: 'single' })).err).toBeUndefined();
+    expect(global.__settings.approval_flows).toEqual({ wfh: 'hr-only' });
+    expect(global.__settings.leave_policy_meta).toEqual({ approval_level: 'single' });
+  });
+});
+
+describe('manager defaults match the screen', () => {
+  const mgr = { id: 'm1', role: 'manager', company_id: 'c1' };
+  test('no recruitment and no course management by default; courses still visible', async () => {
+    expect(await rolePermissions.can(mgr, 'recruitment', 'view')).toBe(false);
+    expect(await rolePermissions.can(mgr, 'training', 'manage')).toBe(false);
+    expect(await rolePermissions.can(mgr, 'training', 'view')).toBe(true);
+  });
+  test('an Admin can still tick them', async () => {
+    global.__settings.role_permissions = { manager: { recruitment: { view: true }, training: { manage: true } } };
+    expect(await rolePermissions.can(mgr, 'recruitment', 'view')).toBe(true);
+    expect(await rolePermissions.can(mgr, 'training', 'manage')).toBe(true);
+  });
+});

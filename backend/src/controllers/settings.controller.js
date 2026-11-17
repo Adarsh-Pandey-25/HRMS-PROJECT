@@ -87,6 +87,19 @@ const ADMIN_ONLY_SETTINGS = {
   allow_remote_login: 'Only an Admin can change security settings.',
   office_cidr: 'Only an Admin can change security settings.',
   office_ip: 'Only an Admin can change security settings.',
+  approval_flows: 'Only an Admin can change approval flows.',
+};
+
+/**
+ * Approval Flows decide who approves leave and expenses; the choice is kept
+ * inside settings HR edits for other reasons (leave policy, expense rules).
+ * HR's save there always keeps the stored flow; only an Admin changes it.
+ * [field, other spelling, the flow when nothing is stored] — matches
+ * approvalFlow.service.js.
+ */
+const APPROVAL_FLOW_FIELDS = {
+  leave_policy_meta: ['approval_level', 'approvalLevel', 'manager-only'],
+  expense_config: ['approvalFlow', 'approval_flow', 'manager-then-hr'],
 };
 
 const getRolePermissions = async (req, res, next) => {
@@ -177,6 +190,26 @@ const updateKey = async (req, res, next) => {
       }
     }
     if (key === 'role_permissions') value = require('../services/rolePermissions.service').assertValidMatrix(value);
+    if (req.user.role !== 'admin' && APPROVAL_FLOW_FIELDS[key] && value && typeof value === 'object' && !Array.isArray(value)) {
+      const { normalizeFlow } = require('../services/approvalFlow.service');
+      const [field, otherSpelling, fallback] = APPROVAL_FLOW_FIELDS[key];
+      const stored = (await settingsService.getSetting(key, null, req.user.company_id)) || {};
+      const before = normalizeFlow(stored[field] ?? stored[otherSpelling], fallback);
+      const sent = value[field] ?? value[otherSpelling];
+      // A different flow from HR is ignored (the screen may hold a stale
+      // copy, and refusing would block an ordinary leave-policy save), and
+      // the attempt is recorded.
+      if (sent !== undefined && sent !== null && normalizeFlow(sent, before) !== before) {
+        auditFromRequest(req, {
+          actionType: 'settings.approval_flow_kept', targetType: 'setting', afterState: { key, field, sent, kept: before },
+        });
+      }
+      value = { ...value };
+      for (const f of [field, otherSpelling]) {
+        if (stored[f] !== undefined) value[f] = stored[f];
+        else delete value[f];
+      }
+    }
     if (key === 'asset_config' && value && typeof value === 'object') {
       const names = Array.isArray(value.categories) ? value.categories : [];
       const assetsService = require('../services/assets.service');

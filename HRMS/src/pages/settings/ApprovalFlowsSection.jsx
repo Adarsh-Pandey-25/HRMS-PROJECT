@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Lock } from 'lucide-react';
 import { Card, CardHeader, Skeleton, SaveStatusIndicator } from '../../components/ui';
 import { useSettingsStore } from '../../store/settingsStore';
+import { useAuthStore } from '../../store/authStore';
 import { fetchAllSettingsApi, fetchSettingApi, updateSettingApi } from '../../api/settings.api';
 import { invalidateAndRefetch } from '../../lib/queryCache';
 import { toSnakeCase } from '../../lib/case';
@@ -29,7 +30,7 @@ const latest = async (key) => {
 };
 
 /** One request type's choices. Each card saves on its own, so quick changes to two cards both stick. */
-function FlowCard({ title, subtitle, name, value, onSave }) {
+function FlowCard({ title, subtitle, name, value, onSave, readOnly = false }) {
   const { status, save, retry } = useAutosave(onSave);
   return (
     <Card>
@@ -37,7 +38,7 @@ function FlowCard({ title, subtitle, name, value, onSave }) {
       <div className="p-5 pt-3 space-y-2.5">
         {APPROVAL_FLOW_OPTIONS.map((opt) => (
           <label key={opt.value} className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-border px-3.5 py-3 text-sm text-fg has-[:checked]:border-primary has-[:checked]:bg-primary/5">
-            <input type="radio" name={name} className="mt-0.5 h-4 w-4 accent-primary" checked={value === opt.value} onChange={() => save(opt.value)} />
+            <input type="radio" name={name} className="mt-0.5 h-4 w-4 accent-primary" checked={value === opt.value} disabled={readOnly} onChange={() => save(opt.value)} />
             <span>
               <span className="font-medium">{opt.label}</span>
               <span className="mt-0.5 block text-xs text-fg-subtle">{opt.hint}</span>
@@ -51,6 +52,8 @@ function FlowCard({ title, subtitle, name, value, onSave }) {
 
 export function ApprovalFlowsSection() {
   const qc = useQueryClient();
+  // Who approves is the Admin's decision (the server refuses anyone else).
+  const readOnly = useAuthStore((s) => s.role) !== 'admin';
   // Same query the settings bootstrap uses: opening this page loads the
   // company's settings now rather than after the idle delay.
   const { isLoading } = useQuery({ queryKey: ['settings', 'all'], queryFn: fetchAllSettingsApi, staleTime: 60_000 });
@@ -93,9 +96,14 @@ export function ApprovalFlowsSection() {
       <p className="text-sm text-fg-muted">
         Who approves each kind of request. Requests from people without a manager always go to HR, and WhatsApp approval messages follow the same choice.
       </p>
-      <FlowCard title="Leave" subtitle="Who approves leave requests." name="leaveFlow" value={leaveFlow} onSave={saveLeave} />
-      <FlowCard title="Work from home" subtitle="Who approves work-from-home requests." name="wfhFlow" value={wfhFlow} onSave={saveWfh} />
-      <FlowCard title="Expense claims" subtitle="Who approves expense claims." name="expenseFlow" value={expenseFlow} onSave={saveExpense} />
+      {readOnly && (
+        <p className="flex items-center gap-2 text-sm text-fg-muted">
+          <Lock className="h-4 w-4 shrink-0" /> Only an Admin can change approval flows.
+        </p>
+      )}
+      <FlowCard title="Leave" subtitle="Who approves leave requests." name="leaveFlow" value={leaveFlow} onSave={saveLeave} readOnly={readOnly} />
+      <FlowCard title="Work from home" subtitle="Who approves work-from-home requests." name="wfhFlow" value={wfhFlow} onSave={saveWfh} readOnly={readOnly} />
+      <FlowCard title="Expense claims" subtitle="Who approves expense claims." name="expenseFlow" value={expenseFlow} onSave={saveExpense} readOnly={readOnly} />
       <Card>
         <CardHeader title="Attendance corrections" subtitle="Who approves attendance corrections." />
         <div className="p-5 pt-3">

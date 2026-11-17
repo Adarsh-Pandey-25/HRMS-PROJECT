@@ -194,3 +194,29 @@ describe('HR editing someone else keeps working as before', () => {
     expect(stored(EMPLOYEE).profile_self_edit_used).toBe(false);
   });
 });
+
+describe('a self-edit photo path', () => {
+  test('pointing at someone else\'s file is ignored; the rest of the edit still saves', async () => {
+    const { error } = await call(controller.update, {
+      user: employee, params: { id: EMPLOYEE },
+      body: { first_name: 'Asha K', profile_picture: `${HR}/photo.png` },
+    });
+    expect(error).toBeNull();
+    expect(stored(EMPLOYEE).profile_picture).toBeUndefined();
+    expect(stored(EMPLOYEE).first_name).toBe('Asha K');
+  });
+
+  test('climbing out of their own folder is ignored', async () => {
+    await call(controller.update, {
+      user: employee, params: { id: EMPLOYEE }, body: { profile_picture: `${EMPLOYEE}/../${HR}/photo.png` },
+    });
+    expect(stored(EMPLOYEE).profile_picture).toBeUndefined();
+  });
+
+  test('their own upload is accepted', async () => {
+    await call(controller.update, {
+      user: employee, params: { id: EMPLOYEE }, body: { profile_picture: `${EMPLOYEE}/new.png` },
+    });
+    expect(stored(EMPLOYEE).profile_picture).toBe(`${EMPLOYEE}/new.png`);
+  });
+});

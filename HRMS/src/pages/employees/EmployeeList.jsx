@@ -10,6 +10,7 @@ import {
 import { useEmployees, useEmployeeMutations } from '../../hooks/useEmployees';
 import { useAccessibleCompanies } from '../../hooks/useCompanies';
 import { useSettingsStore } from '../../store/settingsStore';
+import { useAuthStore } from '../../store/authStore';
 import { useCompanyStore } from '../../store/companyStore';
 import { useCan } from '../../hooks/useCan';
 import { useDropdown, handleMenuArrowKeys } from '../../hooks/useDropdown';
@@ -235,6 +236,22 @@ const TABS = [
   { id: 'directory', label: 'Directory', icon: LayoutGrid },
   { id: 'org', label: 'ORG Chart', icon: Network },
 ];
+/**
+ * Account actions the server allows on this person (employee.controller.js
+ * assertMayChangeAccount): only an Admin offboards, erases or moves an HR or
+ * Admin user, HR can't touch an Admin's account at all, and nobody does
+ * these to themselves.
+ */
+function accountActionsFor(actorRole, actorId, e) {
+  const target = e?.role || 'employee';
+  const isSelf = Boolean(actorId && e?.id) && String(actorId).toLowerCase() === String(e.id).toLowerCase();
+  const privilegedTarget = target === 'admin' || target === 'hr';
+  return {
+    edit: actorRole === 'admin' || target !== 'admin',
+    manageAccount: !isSelf && (actorRole === 'admin' || !privilegedTarget),
+  };
+}
+
 export default function EmployeeList() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -243,6 +260,8 @@ export default function EmployeeList() {
   const canManage = useCan('employees', 'create');
   const canEdit = useCan('employees', 'edit');
   const canDelete = useCan('employees', 'delete') || canEdit;
+  const actorRole = useAuthStore((s) => s.role);
+  const actorId = useAuthStore((s) => s.user?.id);
   const { offboard, erase } = useEmployeeMutations();
   const { employees, isLoading, isError, refetch } = useEmployees();
   const companiesQ = useAccessibleCompanies(true);
@@ -669,9 +688,9 @@ export default function EmployeeList() {
                   <DirectoryCard
                     key={e.id}
                     e={e}
-                    canEdit={canEdit}
-                    canDelete={canDelete}
-                    canChangeCompany={canChangeCompany}
+                    canEdit={canEdit && accountActionsFor(actorRole, actorId, e).edit}
+                    canDelete={canDelete && accountActionsFor(actorRole, actorId, e).manageAccount}
+                    canChangeCompany={canChangeCompany && accountActionsFor(actorRole, actorId, e).manageAccount}
                     onDetails={() => navigate(employeeProfilePath(e, roster))}
                     onEdit={() => navigate(employeeEditPath(e, roster))}
                     onDelete={() => { setConfirmDelete(e); setLastWorkingDay(todayLocal()); }}

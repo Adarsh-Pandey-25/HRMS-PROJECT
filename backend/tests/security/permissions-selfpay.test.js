@@ -168,3 +168,35 @@ describe('loans and advances', () => {
     refusedAudit('payroll.loan.self_refused', 'create');
   });
 });
+
+describe('back-dated salary revisions (only an Admin reaches into an earlier month)', () => {
+  const todayIst = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  const firstOfMonth = () => `${todayIst().slice(0, 8)}01`;
+  const lastMonth = () => {
+    const [y, m] = todayIst().split('-').map(Number);
+    const py = m === 1 ? y - 1 : y;
+    const pm = m === 1 ? 12 : m - 1;
+    return `${py}-${String(pm).padStart(2, '0')}-15`;
+  };
+  const create = (actor, employeeId, effectiveDate) => revisions.createRevision({
+    scopeIds: ['c1'], actor, ipAddress: '10.0.0.1', employeeId, components: raise, effectiveDate,
+  });
+
+  test('HR back-dating someone else\'s revision to an earlier month is refused and logged', async () => {
+    await expect(create(hr, EMP_ID, lastMonth())).rejects.toMatchObject({
+      statusCode: 403, message: 'Only an Admin can back-date a salary revision to an earlier month.',
+    });
+    expect(global.__db.salary_revisions).toHaveLength(0);
+    expect(logAudit).toHaveBeenCalledWith(expect.objectContaining({ actionType: 'salary_revision.backdate_refused' }));
+  });
+
+  test('HR may date it from the first of this month', async () => {
+    const rev = await create(hr, EMP_ID, firstOfMonth());
+    expect(rev).toMatchObject({ employee_id: EMP_ID });
+  });
+
+  test('an Admin may back-date it', async () => {
+    const rev = await create(admin, EMP_ID, lastMonth());
+    expect(rev).toMatchObject({ employee_id: EMP_ID });
+  });
+});

@@ -8,6 +8,7 @@ import {
 } from '../../components/ui';
 import { EmployeeLink } from '../../components/shared/EmployeeLink';
 import { useEmployees } from '../../hooks/useEmployees';
+import { useAuthStore } from '../../store/authStore';
 import { fetchEmployeeByIdApi } from '../../api/employees.api';
 import {
   fetchSalaryRevisionsApi,
@@ -66,6 +67,9 @@ function RevisionModal({ open, onClose, employeeOptions }) {
   const [employeeId, setEmployeeId] = useState('');
   const [components, setComponents] = useState(emptyComponents);
   const [effectiveDate, setEffectiveDate] = useState(todayIst);
+  // Only an Admin may back-date a revision to an earlier month (the server refuses HR).
+  const isAdmin = useAuthStore((s) => s.role) === 'admin';
+  const earliestDate = isAdmin ? undefined : `${todayIst().slice(0, 8)}01`;
   const [reason, setReason] = useState('');
   const [targetCtc, setTargetCtc] = useState('');
 
@@ -204,8 +208,9 @@ function RevisionModal({ open, onClose, employeeOptions }) {
               label="Effective date"
               type="date"
               value={effectiveDate}
+              min={earliestDate}
               onChange={(e) => setEffectiveDate(e.target.value)}
-              hint={isFuture ? 'Applied automatically on this date' : 'Applied as soon as you save'}
+              hint={`${isFuture ? 'Applied automatically on this date' : 'Applied as soon as you save'}${earliestDate ? '. An earlier month needs an Admin.' : ''}`}
             />
             <Textarea label="Reason" rows={2} placeholder="e.g. Annual appraisal 2026" value={reason} onChange={(e) => setReason(e.target.value)} />
           </>

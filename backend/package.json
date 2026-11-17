@@ -10,7 +10,7 @@
     "seed:demo": "node scripts/seed-demo-data.js",
     "seed:payroll-components": "node scripts/seed-payroll-components.js",
     "super-admin": "node scripts/super-admin.js",
-    "test": "echo \"No tests yet\" && exit 0"
+    "test": "jest tests/payroll tests/security"
   },
   "keywords": [
     "hrms",

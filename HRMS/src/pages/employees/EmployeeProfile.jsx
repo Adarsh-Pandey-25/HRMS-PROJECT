@@ -597,7 +597,7 @@ export default function EmployeeProfile() {
                 Reset two-step login
               </Button>
             )}
-            {canManage && (
+            {canManage && (role === 'admin' || !isAdminAccount) && (
               <Button variant="outline" icon={Pencil} onClick={() => navigate(employeeEditPath(emp))}>Edit</Button>
             )}
           </div>

@@ -19,14 +19,13 @@ const ENFORCED = {
   attendance: { hr: ['view', 'manage', 'approve'], manager: ['view', 'approve'], employee: ['view'] },
   leave: { hr: ['create', 'view', 'approve'], manager: ['create', 'view', 'approve'], employee: ['create', 'view'] },
   payroll: { hr: ['view', 'manage'], manager: ['view'], employee: ['view'] },
-  // Managers could always read the job, candidate and interview lists, so
-  // the server keeps allowing it until an Admin saves the matrix (the screen
-  // shows Recruitment → View off for managers).
-  recruitment: { hr: ['view', 'create', 'manage'], manager: ['view'], employee: [] },
+  // Same as the screen shows: managers don't see recruitment unless an
+  // Admin ticks it.
+  recruitment: { hr: ['view', 'create', 'manage'], manager: [], employee: [] },
   performance: { hr: ['view', 'approve', 'manage'], manager: ['view', 'approve'], employee: [] },
-  // Managers could always manage courses; as above, until an Admin saves
-  // the matrix (the screen shows Training → Manage off for managers).
-  training: { hr: ['view', 'manage'], manager: ['view', 'manage'], employee: ['view'] },
+  // Same as the screen shows: managers take courses; managing them needs an
+  // Admin's tick.
+  training: { hr: ['view', 'manage'], manager: ['view'], employee: ['view'] },
   assets: { hr: ['view', 'edit', 'manage'], manager: ['view'], employee: ['view', 'create'] },
   expenses: { hr: ['approve', 'view'], manager: ['view', 'create', 'approve'], employee: ['view', 'create'] },
   helpdesk: { hr: ['manage', 'view'], manager: ['view', 'create'], employee: ['view', 'create'] },

@@ -726,6 +726,17 @@ const update = async (req, res, next) => {
       allowedFields.bank_details = req.body.bank_details;
     }
 
+    // A photo path from a self-edit must be one of the person's own uploads
+    // (uploadProfilePicture stores them under "<their id>/"), so nobody can
+    // point their photo at another file in that storage area.
+    if (isNarrowSelfEdit && allowedFields.profile_picture !== undefined) {
+      const path = String(allowedFields.profile_picture || '');
+      const ownFolder = `${String(targetId).toLowerCase()}/`;
+      if (path && (!path.toLowerCase().startsWith(ownFolder) || path.includes('..') || path.includes('//'))) {
+        delete allowedFields.profile_picture;
+      }
+    }
+
     // The role is written only when it actually changes, after
     // assertMayChangeAccount allowed it. A blank role no longer falls back
     // to 'employee' (that silently demoted whoever was being edited).
