@@ -12,6 +12,7 @@ const { handleMulterError } = require('./middleware/upload.middleware');
 const { resolveTenantSubdomain } = require('./middleware/tenantSubdomain.middleware');
 const { hostScope } = require('./middleware/hostScope.middleware');
 const { requireCsrfHeader } = require('./middleware/csrf.middleware');
+const { useTrustedClientIp } = require('./utils/helpers');
 
 const authRoutes = require('./routes/auth.routes');
 const attendanceRoutes = require('./routes/attendance.routes');
@@ -56,6 +57,9 @@ const app = express();
 app.disable('x-powered-by');
 // Local Vite/ngrok: loopback only. Render/production: trust the first proxy hop for HTTPS cookies.
 app.set('trust proxy', config.env === 'production' || process.env.RENDER ? 1 : 'loopback');
+// Audit #2: req.ip = the real visitor (CF-Connecting-IP only from a Cloudflare
+// edge; other forwarding headers are never trusted) for everything below.
+app.use(useTrustedClientIp);
 
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },

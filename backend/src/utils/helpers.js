@@ -155,6 +155,19 @@ const getTrustedClientIp = (req) => {
  return peer;
 };
 
+/**
+ * Express middleware: from here on req.ip is the visitor's real address
+ * (getTrustedClientIp), not the Cloudflare edge Express sees behind the
+ * proxy. Everything that reads req.ip (audit log, login records, access log,
+ * rate limits) then records the real person. Safe to run twice: the trusted
+ * IP is never a Cloudflare edge unless Cloudflare sent no visitor address.
+ */
+const useTrustedClientIp = (req, res, next) => {
+  const ip = getTrustedClientIp(req);
+  if (ip) Object.defineProperty(req, 'ip', { value: ip, configurable: true, enumerable: true });
+  next();
+};
+
 /** @deprecated Same as getTrustedClientIp — kept so older callers stay safe. */
 const getClientIp = (req) => getTrustedClientIp(req);
 
