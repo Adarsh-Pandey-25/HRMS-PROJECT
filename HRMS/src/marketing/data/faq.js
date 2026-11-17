@@ -19,7 +19,7 @@ export const HOME_FAQ = [
   },
   {
     q: 'What counts as a “seat”?',
-    a: 'Each active employee in your account counts as one seat. Deactivated or offboarded employees do not count.',
+    a: 'Each active employee in your account counts as one seat, including employees of any subsidiaries you add: the whole group shares your plan’s seats. Deactivated or offboarded employees do not count.',
   },
   {
     q: 'Is our data secure?',

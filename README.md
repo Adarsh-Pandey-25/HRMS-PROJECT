@@ -108,6 +108,8 @@ function) and must go first on a fresh project; everything in
 35. `20261103_tax_declarations.sql` — employee tax declarations (Form 124, formerly 12BB) used by TDS
 36. `20261104_payroll_approval.sql` — "Approval before publishing" (maker-checker); until it runs, switching it on blocks publishing with a message
 37. `20261104_payroll_one_time_items.sql` — one-time pay and recoveries (arrears, bonus, encashment, gratuity, notice pay) on a month's payslip
+38. `20261117_adms_device_ip_pinning.sql` — **run before deploying the November security fixes.** Pins each biometric device to its office's IP. Until it runs, every biometric push is refused with `NOK` (devices keep the punches and resend them, so nothing is lost)
+39. `20261117_two_step_login.sql` — **run before deploying the November security fixes.** Single-use two-step login challenges. Until it runs, people with two-step login on can't sign in; everyone else is unaffected
 
 Migrations are idempotent (`IF NOT EXISTS` / `CREATE OR REPLACE`), so
 re-running one is safe.
