@@ -444,10 +444,14 @@ const EMPLOYEE_GENERIC_MESSAGE = 'Some problem occurred. Please contact your HR/
 
 const assertCompanyInGoodStanding = async (companyId, role) => {
   if (!companyId) return;
+  // Audit #10: a subsidiary is billed through its parent, so its staff can
+  // sign in exactly when the paying company can (trial, expiry, suspension).
+  // Lazy require: subscription.service is loaded after this module.
+  const { billingCompanyId } = await require('./subscription.service').getBillingAccount(companyId);
   const { data: subscription } = await supabaseAdmin
     .from('company_billing_subscriptions')
     .select('status')
-    .eq('company_id', companyId)
+    .eq('company_id', billingCompanyId || companyId)
     .in('status', ['trialing', 'active', 'past_due', 'grace_period', 'suspended', 'cancelled', 'expired'])
     .order('created_at', { ascending: false })
     .limit(1)
@@ -1537,6 +1541,7 @@ const bootstrapAdmin = async ({
 };
 
 module.exports = {
+  assertCompanyInGoodStanding,
   login,
   loginToPortal,
   completeTwoFaLogin,

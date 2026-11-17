@@ -6,6 +6,7 @@ const { omitSensitive } = require('../utils/helpers');
 const {
   extractApiKey,
   attachApiKeyUser,
+  isApiKeyEndpoint,
 } = require('./apiKey.middleware');
 const apiKeyService = require('../services/apiKey.service');
 const subscriptionService = require('../services/subscription.service');
@@ -80,6 +81,14 @@ const authenticate = async (req, res, next) => {
       }
       if (!belongsToTenant(req, keyRow.company_id)) {
         throw new UnauthorizedError('Invalid or revoked API key');
+      }
+      // Audit #17: keys work only on the machine endpoints (each also checks
+      // the key's scope), and not while the company (or its parent) is suspended.
+      if (!isApiKeyEndpoint(req)) {
+        throw new ForbiddenError('API keys can only be used on the integration endpoints.');
+      }
+      if (await isCompanySuspended(keyRow.company_id)) {
+        throw new ForbiddenError('Your company\'s subscription is suspended. Please contact billing.');
       }
       attachApiKeyUser(req, keyRow);
       return next();
