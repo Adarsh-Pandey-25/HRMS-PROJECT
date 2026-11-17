@@ -244,6 +244,9 @@ const SELF_EDITABLE_ADDRESS_KEYS = [
   'personal_email',
 ];
 
+/** HR-controlled address keys that HR may not change on their own record (Admin only). */
+const HR_SET_ADDRESS_KEYS = ['attendance_mode', 'shift', 'shift_id', 'work_location'];
+
 /** The stored address with only the self-editable keys taken from `submitted`; null if none were sent. */
 const mergeSelfAddress = (stored, submitted) => {
   if (!submitted || typeof submitted !== 'object' || Array.isArray(submitted)) return null;
@@ -723,8 +726,25 @@ const update = async (req, res, next) => {
       // Audit #13: the address JSON also holds what HR sets — attendance
       // mode, shift, work location. A self-edit only changes the real
       // address lines, merged into what is stored; it can't set or remove
-      // anything else in there.
-      if (allowedFields.address !== undefined) {
+      // anything else in there. The Admin (account owner) may still set
+      // their own; HR is told to ask an Admin instead of being silently
+      // ignored, since HR exempting themselves from office check-in is the
+      // fraud this closes.
+      if (allowedFields.address !== undefined && req.user.role !== 'admin') {
+        const submitted = allowedFields.address;
+        if (isPrivileged && submitted && typeof submitted === 'object' && !Array.isArray(submitted)) {
+          const blank = (v) => (v === undefined || v === null || v === '' ? null : JSON.stringify(v));
+          const changedHrKey = HR_SET_ADDRESS_KEYS.find((k) => k in submitted
+            && blank(submitted[k]) !== blank(existing.address?.[k]));
+          if (changedHrKey) {
+            throw refusal(req, {
+              target: existing,
+              action: 'self_attendance_settings',
+              attempted: { [changedHrKey]: submitted[changedHrKey] },
+              message: 'Your own attendance mode, shift and work location are set by an Admin. Ask an Admin to change them.',
+            });
+          }
+        }
         const merged = mergeSelfAddress(existing.address, allowedFields.address);
         if (merged) allowedFields.address = merged;
         else delete allowedFields.address;

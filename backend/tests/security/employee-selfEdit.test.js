@@ -44,6 +44,7 @@ const controller = require('../../src/controllers/employee.controller');
 
 const COMPANY = 'aaaaaaaa-0000-4000-8000-00000000000a';
 const HR = 'e0000000-0000-4000-8000-000000000003';
+const ADMIN = 'e0000000-0000-4000-8000-000000000001';
 const EMPLOYEE = 'e0000000-0000-4000-8000-000000000006';
 
 const HR_SET_ADDRESS = {
@@ -151,12 +152,33 @@ describe('an employee\'s one-time self-edit', () => {
     expect(stored(EMPLOYEE).first_name).toBe('Asha K');
   });
 
-  test('HR editing their own record cannot change their own attendance mode either', async () => {
+  test('HR editing their own record is told to ask an Admin for their attendance mode', async () => {
     const { error } = await call(controller.update, {
       user: hr, params: { id: HR }, body: { address: { ...HR_SET_ADDRESS, attendance_mode: 'wfh', city: 'Thane' } },
     });
+    expect(error?.message).toMatch(/set by an Admin/);
+    expect(stored(HR).address).toEqual(HR_SET_ADDRESS);
+  });
+
+  test('HR saving their own form unchanged (or with blank shift) still updates the city', async () => {
+    const { error } = await call(controller.update, {
+      user: hr, params: { id: HR.toUpperCase() }, body: { address: { ...HR_SET_ADDRESS, city: 'Thane' } },
+    });
     expect(error).toBeNull();
     expect(stored(HR).address).toEqual({ ...HR_SET_ADDRESS, city: 'Thane' });
+  });
+
+  test('the Admin can set their own attendance mode and shift', async () => {
+    mockDb.table('employees').push(
+      { id: ADMIN, company_id: COMPANY, role: 'admin', is_active: true, phone: '9876500001', address: { ...HR_SET_ADDRESS } },
+    );
+    const { error } = await call(controller.update, {
+      user: { id: ADMIN, role: 'admin', company_id: COMPANY },
+      params: { id: ADMIN },
+      body: { address: { ...HR_SET_ADDRESS, attendance_mode: 'hybrid', shift: 'Night' } },
+    });
+    expect(error).toBeNull();
+    expect(stored(ADMIN).address).toMatchObject({ attendance_mode: 'hybrid', shift: 'Night' });
   });
 });
 
