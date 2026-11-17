@@ -3,7 +3,7 @@ const backupService = require('../services/backup.service');
 const { supabaseAdmin } = require('../config/supabase');
 const { uploadCompanyLogo, uploadCompanyBrandIcon, getSignedUrl, STORAGE_BUCKETS } = require('../services/storage.service');
 const { successResponse, isMissingColumnError } = require('../utils/helpers');
-const { BadRequestError, NotFoundError } = require('../utils/errors');
+const { BadRequestError, NotFoundError, ForbiddenError } = require('../utils/errors');
 const { LEAVE_CODE_PATTERN, normalizeLeaveCode } = require('../utils/constants');
 const { getCompanyId } = require('../utils/tenant');
 const { auditFromRequest } = require('../services/auditLog.service');
@@ -76,6 +76,19 @@ const normalizeLeavePolicy = (policy) => {
   });
 };
 
+/**
+ * Settings only an Admin may change: the role permission matrix, the
+ * password / 2FA / session policy, and the old office-IP keys (no longer
+ * read — office IPs live in ip_whitelist — but still security settings).
+ */
+const ADMIN_ONLY_SETTINGS = {
+  role_permissions: 'Only an Admin can change permissions.',
+  security_config: 'Only an Admin can change security settings.',
+  allow_remote_login: 'Only an Admin can change security settings.',
+  office_cidr: 'Only an Admin can change security settings.',
+  office_ip: 'Only an Admin can change security settings.',
+};
+
 const getRolePermissions = async (req, res, next) => {
   try {
     const companyId = req.user?.company_id || null;
@@ -119,6 +132,13 @@ const getByKey = async (req, res, next) => {
 const updateKey = async (req, res, next) => {
   try {
     const key = req.params.key;
+    // Who may do what, and how people sign in: only an Admin changes these.
+    if (Object.hasOwn(ADMIN_ONLY_SETTINGS, key) && req.user.role !== 'admin') {
+      auditFromRequest(req, {
+        actionType: 'settings.update_refused', targetType: 'setting', afterState: { key },
+      });
+      throw new ForbiddenError(ADMIN_ONLY_SETTINGS[key]);
+    }
     if (typeof req.body.value === 'undefined') {
       throw new BadRequestError('value is required');
     }
@@ -156,11 +176,7 @@ const updateKey = async (req, res, next) => {
         throw new (require('../utils/errors').ForbiddenError)('Only an admin can switch approval before publishing on or off.');
       }
     }
-    // The role matrix rows the server enforces (Organizations): only an Admin changes them.
-    if (key === 'role_permissions' && req.user.role !== 'admin') {
-      const before = await settingsService.getSetting('role_permissions', null, req.user.company_id);
-      value = require('../services/rolePermissions.service').keepAdminOnlyCells(value, before);
-    }
+    if (key === 'role_permissions') value = require('../services/rolePermissions.service').assertValidMatrix(value);
     if (key === 'asset_config' && value && typeof value === 'object') {
       const names = Array.isArray(value.categories) ? value.categories : [];
       const assetsService = require('../services/assets.service');

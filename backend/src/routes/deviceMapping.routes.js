@@ -3,10 +3,14 @@ const deviceMappingController = require('../controllers/deviceMapping.controller
 const { authenticate } = require('../middleware/auth.middleware');
 const { isHROrAdmin } = require('../middleware/role.middleware');
 const { requireFeature } = require('../middleware/featureGate.middleware');
+const { requirePermission } = require('../middleware/requirePermission');
 
 const router = express.Router();
 
 router.use(authenticate, isHROrAdmin);
+// Set up under Settings → Attendance Config: needs Settings → Manage and
+// Attendance Tracking → Manage in Settings → User & Role Management.
+router.use(requirePermission('settings', 'manage'), requirePermission('attendance', 'manage'));
 // Item 8B: every route here is device-management (claim status, mapping) —
 // blanket-gated. Never affects /iclock/* punch ingestion (a separate,
 // unauthenticated route file the ADMS protocol itself hits).

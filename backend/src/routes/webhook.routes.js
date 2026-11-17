@@ -5,10 +5,13 @@ const { authenticate } = require('../middleware/auth.middleware');
 const { isHROrAdmin } = require('../middleware/role.middleware');
 const { validate } = require('../middleware/validation.middleware');
 const { webhookTestLimiter } = require('../middleware/rateLimiter.middleware');
+const { requirePermission } = require('../middleware/requirePermission');
 
 const router = express.Router();
 
 router.use(authenticate, isHROrAdmin);
+// Settings → Integrations: needs Settings → Manage in Settings → User & Role Management.
+router.use(requirePermission('settings', 'manage'));
 
 router.get('/catalog', webhookController.listCatalog);
 router.get('/', webhookController.list);

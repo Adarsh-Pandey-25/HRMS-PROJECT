@@ -16,7 +16,7 @@ import { useSettingsStore } from '../store/settingsStore';
 import { useSaveShortcut } from '../hooks/useSaveShortcut';
 import { INDUSTRIES, COMPANY_SIZES } from '../lib/constants';
 import {
-  PERMISSION_MODULES, PERMISSION_ACTIONS, MODULE_LABELS, MODULE_SCOPE, ROLES as RBAC_ROLES, isPrivilegedRole, cellApplies, rowLockedFor,
+  PERMISSION_MODULES, PERMISSION_ACTIONS, MODULE_LABELS, ROLES as RBAC_ROLES, isPrivilegedRole, cellApplies, canEditMatrix,
 } from '../lib/permissions';
 import { useAuthStore } from '../store/authStore';
 import { cn, humanize } from '../lib/utils';
@@ -71,7 +71,8 @@ function RolePermissionsMatrix() {
   const resetRolePermissions = useSettingsStore((s) => s.resetRolePermissions);
   const viewerRole = useAuthStore((s) => s.role);
   const isPrivilegedMatrixRole = isPrivilegedRole(activeRole);
-  const lockedLabels = Object.keys(MODULE_SCOPE).filter((m) => rowLockedFor(viewerRole, m)).map((m) => MODULE_LABELS[m]);
+  // The server enforces these cells, so only an Admin can change them.
+  const locked = !canEditMatrix(viewerRole);
 
   const saveMatrix = async () => {
     setSaving(true);
@@ -137,12 +138,10 @@ function RolePermissionsMatrix() {
           <tbody>
             {PERMISSION_MODULES.map((mod) => {
               const { all, some, none } = rowState(mod);
-              const locked = rowLockedFor(viewerRole, mod);
               return (
                 <tr key={mod} className="border-b border-border/50">
                   <td className="py-2 pr-3 text-fg whitespace-nowrap">
                     {MODULE_LABELS[mod]}
-                    {locked && <Lock className="ml-1.5 inline h-3 w-3 text-fg-subtle" aria-label="Only an Admin can change this row" />}
                   </td>
                   <td className="text-center py-2 px-1.5">
                     <input
@@ -181,20 +180,20 @@ function RolePermissionsMatrix() {
           </tbody>
         </table>
       </div>
-      {lockedLabels.length > 0 && (
+      {locked ? (
         <p className="flex items-center gap-1.5 text-xs text-fg-subtle">
-          <Lock className="h-3.5 w-3.5" /> Only an Admin can change {lockedLabels.join(', ')}.
+          <Lock className="h-3.5 w-3.5" /> Only an Admin can change permissions.
         </p>
+      ) : (
+        <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+          <Button type="button" variant="outline" size="sm" onClick={resetDefaults}>
+            Reset to defaults
+          </Button>
+          <Button type="button" icon={Save} size="sm" loading={saving} onClick={saveMatrix}>
+            Save Changes
+          </Button>
+        </div>
       )}
-
-      <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
-        <Button type="button" variant="outline" size="sm" onClick={resetDefaults}>
-          Reset to defaults
-        </Button>
-        <Button type="button" icon={Save} size="sm" loading={saving} onClick={saveMatrix}>
-          Save Changes
-        </Button>
-      </div>
     </div>
   );
 }
@@ -472,7 +471,7 @@ function UserRoleSection() {
       </Card>
 
       <Card>
-        <CardHeader title="Role permissions matrix" subtitle="Configure what each role can do per module. Toggles update this browser immediately; Save Changes syncs for all users." />
+        <CardHeader title="Role permissions matrix" subtitle="What each role can do in each module. The server checks it too, and only an Admin can change it." />
         <div className="px-5 pb-5">
           <RolePermissionsMatrix />
         </div>
@@ -515,8 +514,11 @@ export default function Settings() {
   const [navCollapsed, setNavCollapsed] = useState(false);
   const [hoverTip, setHoverTip] = useState(null);
   const [mobileDrilledIn, setMobileDrilledIn] = useState(false);
+  const viewerRole = useAuthStore((s) => s.role);
   const active = sections.find((s) => s.id === section) || sections[0];
-  const BodyComponent = active ? SECTION_BODY[active.id] : null;
+  // Password, 2FA and session rules: only an Admin can change them (the server refuses HR).
+  const securityLocked = active?.id === 'security' && !isPrivilegedRole(viewerRole);
+  const BodyComponent = active && !securityLocked ? SECTION_BODY[active.id] : null;
 
   const selectSection = (id) => {
     setSection(id);
@@ -581,6 +583,11 @@ export default function Settings() {
             </Card>
           )}
           {active.id === 'users' && <UserRoleSection />}
+          {securityLocked && (
+            <Card>
+              <CardHeader title="Security" subtitle="Only an Admin can change security settings." />
+            </Card>
+          )}
           {BodyComponent && <BodyComponent />}
         </div>
       </div>
