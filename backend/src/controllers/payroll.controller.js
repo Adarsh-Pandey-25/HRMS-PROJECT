@@ -1,5 +1,6 @@
 const payrollService = require('../services/payroll.service');
 const { logAudit } = require('../services/auditLog.service');
+const ownPay = require('../services/ownPayslip');
 const { successResponse } = require('../utils/helpers');
 const logger = require('../utils/logger');
 
@@ -22,6 +23,12 @@ const getMonthStatus = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+/**
+ * Generate drafts: one employee (user_id), or everyone in the month. With
+ * batch: true (Run Payroll) everyone is done a batch at a time —
+ * { results, next, done, remaining, total }; send after = next until next is
+ * null. Without it, the old reply: the whole list of results.
+ */
 const generatePayslip = async (req, res, next) => {
   try {
     const { payroll_month_id, user_id } = req.body;
@@ -31,16 +38,27 @@ const generatePayslip = async (req, res, next) => {
       if (!ids.includes(user_id)) {
         throw new (require('../utils/errors').NotFoundError)('Employee not found');
       }
+      // HR can't generate their own payslip — an Admin must (an Admin's own is audit-logged).
+      if (ownPay.assertNotOwnPay(req.user, user_id)) {
+        ownPay.logOwnPayAction(req.user, 'generate', { payroll_month_id }, req.ip);
+      }
+      const data = await payrollService.generateDraftPayslip(payroll_month_id, user_id, req.user.company_id, { actor: req.user });
+      return successResponse(res, 'Draft payslip generated', data, null, 201);
     }
-    const data = user_id
-      ? await payrollService.generateDraftPayslip(payroll_month_id, user_id, req.user.company_id)
-      : await payrollService.generateAllDraftPayslips(payroll_month_id, req.user.company_id);
-    successResponse(res, user_id ? 'Draft payslip generated' : 'Draft payslips generated', data, null, 201);
+    if (req.body.batch === true) {
+      const data = await payrollService.generateMonthBatch(payroll_month_id, req.user.company_id, {
+        actor: req.user, after: req.body.after || null,
+      });
+      return successResponse(res, data.next ? 'Draft payslips generated so far' : 'Draft payslips generated', data, null, 201);
+    }
+    const data = await payrollService.generateAllDraftPayslips(payroll_month_id, req.user.company_id, { actor: req.user });
+    successResponse(res, 'Draft payslips generated', data, null, 201);
   } catch (err) { next(err); }
 };
 
 const publishPayslip = async (req, res, next) => {
   try {
+    // Refuses HR's own payslip (an Admin must publish it).
     const data = await payrollService.publishPayslip(req.params.id, req.user);
     logAudit({
       companyId: req.user.company_id || require('../utils/tenant').getCompanyId(req.user),
@@ -91,6 +109,10 @@ const recalculateFromSettings = async (req, res, next) => {
         .getOrgEmployeeIds(req.user.company_id);
       if (!ids.includes(employeeId)) {
         throw new (require('../utils/errors').NotFoundError)('Employee not found');
+      }
+      // Working out one person's drafts again is regenerating them: not HR's own.
+      if (ownPay.assertNotOwnPay(req.user, employeeId)) {
+        ownPay.logOwnPayAction(req.user, 'recalculate', { month: month ?? null, year: year ?? null }, req.ip);
       }
     }
     // background: answer now, recalculate on the server (Payroll Settings
@@ -431,8 +453,9 @@ const applyFullAndFinal = async (req, res, next) => {
 const generateFinalPayslip = async (req, res, next) => {
   try {
     await assertInOrg(req, req.params.employeeId);
-    if (String(req.params.employeeId) === String(req.user.id)) {
-      throw new (require('../utils/errors').ForbiddenError)('You cannot make your own final payslip — an admin has to.');
+    // HR can't make their own final payslip — an Admin must (an Admin's own is audit-logged).
+    if (ownPay.assertNotOwnPay(req.user, req.params.employeeId, `You can't make your own final payslip. ${ownPay.OWN_PAYSLIP_MESSAGE}`)) {
+      ownPay.logOwnPayAction(req.user, 'fnf.generate', {}, req.ip);
     }
     successResponse(res, 'Final payslip drafted', await fnf().generateFinalPayslip({
       companyId: req.user.company_id, employeeId: req.params.employeeId, actor: req.user,
@@ -447,6 +470,22 @@ const markPaid = async (req, res, next) => {
     const b = req.body || {};
     const result = await paymentService.markPaid({
       companyId: req.user.company_id, payslipIds: b.payslipIds, paidOn: b.paidOn, reference: b.reference, actor: req.user, ipAddress: req.ip,
+    });
+    successResponse(res, `${result.updated} payslip${result.updated === 1 ? '' : 's'} marked paid`, result);
+  } catch (err) { next(err); }
+};
+
+/**
+ * HR records that the bank paid the month: every published, unpaid payslip of
+ * the company's month, chosen on the server. Body { month, year, paidOn, reference }.
+ * → { updated, alreadyPaid, skipped: [{ payslipId, employeeId, reason, own }], ownSkipped, referenceStored }
+ */
+const markPaidMonth = async (req, res, next) => {
+  try {
+    const paymentService = require('../services/payrollPayment.service');
+    const b = req.body || {};
+    const result = await paymentService.markPaidMonth({
+      companyId: req.user.company_id, month: b.month, year: b.year, paidOn: b.paidOn, reference: b.reference, actor: req.user, ipAddress: req.ip,
     });
     successResponse(res, `${result.updated} payslip${result.updated === 1 ? '' : 's'} marked paid`, result);
   } catch (err) { next(err); }
@@ -492,12 +531,44 @@ const approvePayslip = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-/** Approve every draft of a month that can be approved. */
+/**
+ * Approve every draft of the company's month that can be approved, a batch at
+ * a time. Body { month, year, after? }.
+ * → { approved, skipped: [{ payslipId, employeeId, reason, own? }], ownSkipped, next, remaining, total }
+ */
 const approveMonth = async (req, res, next) => {
   try {
     const b = req.body || {};
-    const result = await payrollService.approveMonth(b.month, b.year, req.user, { ipAddress: req.ip });
+    const result = await payrollService.approveMonth(b.month, b.year, req.user, { ipAddress: req.ip, after: b.after || null });
     successResponse(res, `${result.approved} payslip${result.approved === 1 ? '' : 's'} approved`, result);
+  } catch (err) { next(err); }
+};
+
+/**
+ * Publish every draft of the company's month, a batch at a time (chosen on
+ * the server, never a list from the screen). Body { month, year, after? }.
+ * HR's own payslip is skipped — an Admin has to publish it.
+ * → { published, skipped: [{ payslipId, employeeId, reason, own? }], ownSkipped, next, remaining, total }
+ */
+const publishMonth = async (req, res, next) => {
+  try {
+    const b = req.body || {};
+    const result = await payrollService.publishMonth(b.month, b.year, req.user, { after: b.after || null });
+    if (result.published) {
+      logAudit({
+        companyId: req.user.company_id,
+        actorId: req.user.id,
+        actorRole: req.user.role,
+        actionType: 'payroll.publish_month',
+        targetType: 'payroll',
+        targetId: null,
+        afterState: {
+          month: Number(b.month), year: Number(b.year), published: result.published, skipped: result.skipped.length,
+        },
+        ipAddress: req.ip,
+      }).catch((e) => logger.warn('Audit log failed', { error: e.message }));
+    }
+    successResponse(res, `${result.published} payslip${result.published === 1 ? '' : 's'} published`, result);
   } catch (err) { next(err); }
 };
 
@@ -528,6 +599,8 @@ module.exports = {
   ctcSplit,
   approvePayslip,
   approveMonth,
+  publishMonth,
+  markPaidMonth,
   calcDefaults,
   getPayrollSetup,
   updatePayrollSetup,

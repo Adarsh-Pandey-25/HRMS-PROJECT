@@ -9,11 +9,13 @@
  */
 const moment = require('moment-timezone');
 const { supabaseAdmin } = require('../config/supabase');
-const { BadRequestError, NotFoundError, ForbiddenError } = require('../utils/errors');
+const { BadRequestError, NotFoundError } = require('../utils/errors');
 const { TIMEZONE } = require('../utils/constants');
 const { toPaise, toRupees } = require('../payroll/money');
 const { computeFullAndFinal, NOTICE_ACTIONS } = require('../payroll/fullAndFinal');
+const { retirementExemptionsFor } = require('../payroll/taxRules');
 const companyRules = require('../payroll/companyRules');
+const ownPay = require('./ownPayslip');
 
 /** The one-time pay kind each settlement item is paid as. */
 const KIND_OF = {
@@ -65,9 +67,71 @@ const cleanInputs = (raw = {}) => {
       requiredDays: days(n.requiredDays), servedDays: days(n.servedDays), action: n.action, base: n.base === 'basic_da' ? 'basic_da' : 'gross', divisor,
     };
   }
-  return {
-    leaveDays, notice, fixedTerm: raw.fixedTerm === true, includeBonus: raw.includeBonus !== false,
+  // Tax: whether the Payment of Gratuity Act covers them (default yes), and any
+  // gratuity / leave encashment exemption they already had (a previous employer).
+  const used = raw.exemptionUsed && typeof raw.exemptionUsed === 'object' ? raw.exemptionUsed : {};
+  const rupees = (v, label) => {
+    if (v == null || v === '') return 0;
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0 || n > 1_00_00_000 || Math.abs(n * 100 - Math.round(n * 100)) > 1e-6) {
+      throw new BadRequestError(`${label}: an amount from ₹0 to ₹1 crore`);
+    }
+    return Math.round(n * 100) / 100;
   };
+  return {
+    leaveDays,
+    notice,
+    fixedTerm: raw.fixedTerm === true,
+    includeBonus: raw.includeBonus !== false,
+    gratuityActCovered: raw.gratuityActCovered !== false,
+    exemptionUsed: {
+      gratuity: rupees(used.gratuity, 'Gratuity exemption already used'),
+      leaveEncashment: rupees(used.leaveEncashment, 'Leave encashment exemption already used'),
+    },
+  };
+};
+
+/**
+ * The average monthly Basic + DA of the 10 months before leaving (the leaving
+ * month counts when the last day is its last day), from published payslips —
+ * the "average salary" of the gratuity and leave encashment tax exemptions.
+ * Months since joining only; a month without a published payslip counts the
+ * full monthly Basic + DA (an estimate, reported).
+ */
+const averageBasicDaBeforeLeaving = async (employeeId, joinedOn, lastWorkingDay, fullMonthly, months = 10) => {
+  const lwd = String(lastWorkingDay).slice(0, 10);
+  const y = Number(lwd.slice(0, 4));
+  const m = Number(lwd.slice(5, 7));
+  const lastDayOfMonth = new Date(Date.UTC(y, m, 0)).getUTCDate() === Number(lwd.slice(8, 10));
+  const index = (yy, mm) => yy * 12 + (mm - 1);
+  const end = index(y, m) - (lastDayOfMonth ? 0 : 1);
+  const joined = /^\d{4}-\d{2}/.test(String(joinedOn || '')) ? index(Number(joinedOn.slice(0, 4)), Number(joinedOn.slice(5, 7))) : null;
+  const wanted = [];
+  for (let i = end - months + 1; i <= end; i += 1) if (joined == null || i >= joined) wanted.push(i);
+  if (!wanted.length) return { average: fullMonthly, months: 0, estimated: 0 };
+  const years = [...new Set(wanted.map((i) => Math.floor(i / 12)))];
+  const { data, error } = await supabaseAdmin
+    .from('payroll')
+    .select('month, year, payslip_status, basic_salary, breakdown_json')
+    .eq('employee_id', employeeId)
+    .in('year', years);
+  if (error) throw new BadRequestError(error.message);
+  const byMonth = new Map();
+  for (const r of data || []) {
+    if (String(r.payslip_status || '').toUpperCase() !== 'PUBLISHED') continue;
+    const earned = (name) => toPaise((r.breakdown_json?.earnings || []).find((e) => String(e?.name || '').trim().toLowerCase() === name)?.amount);
+    byMonth.set(index(Number(r.year), Number(r.month)), (earned('basic') || toPaise(r.basic_salary)) + earned('da'));
+  }
+  let total = 0;
+  let estimated = 0;
+  for (const i of wanted) {
+    if (byMonth.has(i)) total += byMonth.get(i);
+    else {
+      total += fullMonthly;
+      estimated += 1;
+    }
+  }
+  return { average: Math.round(total / wanted.length), months: wanted.length, estimated };
 };
 
 /** The statutory bonus's months: April of the accounting year to the leaving month, each month's Labour Code wages. */
@@ -137,8 +201,15 @@ const previewFullAndFinal = async ({ companyId, employeeId, inputs }) => {
     bonusMonths = await bonusMonthsFor(employeeId, month, year, Math.max(0, toPaise(fcfg.pf_wages) - oneTimeWages));
   }
 
+  // The tax-free part of gratuity and leave encashment (both regimes): the
+  // tax year's limits, less what the person already had; the average salary
+  // of the 10 months before leaving.
+  const joinedOn = employee.date_of_joining ? String(employee.date_of_joining).slice(0, 10) : null;
+  const exemptionRules = retirementExemptionsFor(payOn.month, payOn.year);
+  const average = await averageBasicDaBeforeLeaving(employeeId, joinedOn, lastWorkingDay, monthlyBasicDa, exemptionRules.averageSalaryMonths);
+
   const result = computeFullAndFinal({
-    joinedOn: employee.date_of_joining ? String(employee.date_of_joining).slice(0, 10) : null,
+    joinedOn,
     lastWorkingDay,
     fixedTerm: p.fixedTerm,
     monthlyBasicDa,
@@ -148,6 +219,12 @@ const previewFullAndFinal = async ({ companyId, employeeId, inputs }) => {
     notice: p.notice,
     bonusMonths,
     calc: ctx.calc,
+    tax: {
+      rules: exemptionRules,
+      averageBasicDa: average.average,
+      gratuityActCovered: p.gratuityActCovered,
+      exemptionUsed: { gratuity: toPaise(p.exemptionUsed.gratuity), leaveEncashment: toPaise(p.exemptionUsed.leaveEncashment) },
+    },
   });
 
   // Leave balances this year, for reference (HR decides what is encashable).
@@ -160,6 +237,13 @@ const previewFullAndFinal = async ({ companyId, employeeId, inputs }) => {
   // Outstanding loans: the final payslip recovers what its pay allows; the rest is listed.
   const loansLeft = await require('./employeeLoan.service').recoveriesDue(employeeId, payOn.month, payOn.year, { finalPay: true });
   const notes = [...result.notes];
+  const exemptItems = result.items.filter((i) => i.exempt != null);
+  if (exemptItems.length) {
+    notes.push('Gratuity and leave encashment are tax-free up to their limits (₹20 lakh and ₹25 lakh for a whole working life, across employers). If this person received a gratuity or leave encashment exemption from a previous employer, enter it under "Exemption already used" — it reduces the exemption here.');
+    if (average.estimated > 0) {
+      notes.push(`The average salary for the tax-free part counts the full monthly Basic + DA for ${average.estimated} of the ${average.months} months before leaving (no published payslip for ${average.estimated === 1 ? 'it' : 'them'} in SpaxSync).`);
+    }
+  }
   if (loansLeft.length) {
     notes.push(`Loans and advances still owed: ${loansLeft.map((l) => `${l.name} ₹${toRupees(l.amount).toLocaleString('en-IN')}`).join(', ')} — the payslip recovers what its pay allows; anything more must be recovered another way.`);
   }
@@ -176,9 +260,30 @@ const previewFullAndFinal = async ({ companyId, employeeId, inputs }) => {
     inputs: p,
     monthly: { basicDa: toRupees(monthlyBasicDa), wages: toRupees(monthlyWages), gross: toRupees(monthlyGross) },
     items: result.items.map((i) => ({
-      code: i.code, kind: KIND_OF[i.code], earning: i.kind === 'earning', name: i.name, amount: toRupees(i.amount), working: i.working,
+      code: i.code,
+      kind: KIND_OF[i.code],
+      earning: i.kind === 'earning',
+      name: i.name,
+      amount: toRupees(i.amount),
+      working: i.working,
+      // Gratuity and leave encashment: the tax-free part and the taxable part.
+      ...(i.exempt != null ? {
+        exempt: toRupees(i.exempt),
+        taxable: toRupees(i.taxable),
+        exemption: Object.fromEntries(Object.entries(i.exemption || {})
+          .map(([k, v]) => [k, ['statutory', 'limit', 'ten_months', 'cash_value'].includes(k) ? toRupees(v) : v])),
+      } : {}),
     })),
     notes,
+    // What the tax-free parts were worked out with.
+    tax: {
+      averageBasicDa: toRupees(average.average),
+      monthsAveraged: average.months,
+      monthsEstimated: average.estimated,
+      gratuityActCovered: p.gratuityActCovered,
+      exemptionUsed: p.exemptionUsed,
+      limits: { gratuity: toRupees(exemptionRules.gratuityLimit), leaveEncashment: toRupees(exemptionRules.leaveEncashmentLimit) },
+    },
     leaveBalances: (balances || []).map((b) => ({
       type: b.leave_type,
       available: Math.max(0, Number(b.total_allocated || 0) - Number(b.used || 0) - Number(b.encashed || 0)),
@@ -194,7 +299,8 @@ const previewFullAndFinal = async ({ companyId, employeeId, inputs }) => {
 const applyFullAndFinal = async ({
   companyId, employeeId, actor, inputs, ipAddress = null,
 }) => {
-  if (String(employeeId) === String(actor?.id)) throw new ForbiddenError('You cannot settle your own pay — an admin has to.');
+  // HR can't settle their own pay — an Admin must (an Admin's own is audit-logged).
+  const adminOwn = ownPay.assertNotOwnPay(actor, employeeId, `You can't settle your own pay. ${ownPay.OWN_PAYSLIP_MESSAGE}`);
   const preview = await previewFullAndFinal({ companyId, employeeId, inputs });
   const oneTime = require('./oneTimePay.service');
   await oneTime.cancelSource({
@@ -212,14 +318,19 @@ const applyFullAndFinal = async ({
       kind: i.kind,
       name: i.name,
       amount: i.amount,
+      // Gratuity and leave encashment: only the part above the tax-free limit is taxed.
+      exemptAmount: i.exempt ?? null,
       source: 'fnf',
-      note: 'Full and final settlement',
+      note: i.exempt != null
+        ? `Full and final settlement — tax-free ₹${Number(i.exempt).toLocaleString('en-IN')}, taxable ₹${Number(i.taxable).toLocaleString('en-IN')}`
+        : 'Full and final settlement',
       ipAddress,
       recalculate: false,
     }));
   }
   // One refresh of the final payslip's draft, with every item in.
-  oneTime.recalculateDrafts(employeeId, companyId);
+  oneTime.recalculateDrafts(employeeId, companyId, { by: actor?.id || null, month: preview.month, year: preview.year });
+  if (adminOwn) ownPay.logOwnPayAction(actor, 'fnf.apply', { month: preview.month, year: preview.year }, ipAddress);
   require('./auditLog.service').logAudit({
     companyId,
     actorId: actor?.id || null,
@@ -227,7 +338,12 @@ const applyFullAndFinal = async ({
     actionType: 'payroll.fnf.apply',
     targetType: 'employee',
     targetId: employeeId,
-    afterState: { month: preview.month, year: preview.year, items: preview.items.map((i) => ({ code: i.code, amount: i.amount })) },
+    afterState: {
+      month: preview.month,
+      year: preview.year,
+      items: preview.items.map((i) => ({ code: i.code, amount: i.amount, ...(i.exempt != null ? { exempt: i.exempt, taxable: i.taxable } : {}) })),
+      exemption_used: preview.tax.exemptionUsed,
+    },
     ipAddress,
   }).catch(() => {});
   return { ...preview, added: created };
@@ -243,7 +359,7 @@ const generateFinalPayslip = async ({ companyId, employeeId, actor }) => {
     throw new BadRequestError(`The final payslip can be made from the day after their last working day (${lastWorkingDay}).`);
   }
   const payrollMonth = await payroll.initializeMonth(month, year, actor?.id || null, companyId);
-  return payroll.generateDraftPayslip(payrollMonth.id, employeeId, companyId, { payrollMonth });
+  return payroll.generateDraftPayslip(payrollMonth.id, employeeId, companyId, { payrollMonth, actor });
 };
 
 module.exports = {

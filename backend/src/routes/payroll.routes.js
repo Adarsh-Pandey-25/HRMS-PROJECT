@@ -38,6 +38,7 @@ router.post('/payslips/recalculate-from-settings', isHROrAdmin, managePayroll, p
 router.put('/payslips/:id/publish', isHROrAdmin, managePayroll, uuidParam(), validate, payrollController.publishPayslip);
 router.put('/payslips/:id/approve', isHROrAdmin, managePayroll, uuidParam(), validate, payrollController.approvePayslip);
 router.post('/payslips/approve-month', isHROrAdmin, managePayroll, payrollController.approveMonth);
+router.post('/payslips/publish-month', isHROrAdmin, managePayroll, payrollController.publishMonth);
 router.get('/payslips', isEmployee, managePayrollUnlessOwn(ownPayslips), payrollListQueryRules, validate, payrollController.listPayslips);
 router.get('/payslips/:id/download', uuidParam(), validate, payrollController.downloadPayslip);
 router.get('/salary-preview/:employeeId', isEmployee, managePayrollUnlessOwn(ownEmployeeId), uuidParam('employeeId'), validate, payrollController.salaryPreview);
@@ -54,6 +55,7 @@ router.get('/tds/statement/me', isEmployee, payrollController.annualTaxStatement
 router.get('/tds/statement/:employeeId', isHROrAdmin, managePayroll, uuidParam('employeeId'), validate, payrollController.annualTaxStatement);
 router.get('/bank-file', isHROrAdmin, managePayroll, payrollMonthQueryRules, validate, payrollController.bankFile);
 router.post('/payments/mark-paid', isHROrAdmin, managePayroll, payrollController.markPaid);
+router.post('/payments/mark-paid-month', isHROrAdmin, managePayroll, payrollController.markPaidMonth);
 router.get('/statutory/ecr', isHROrAdmin, managePayroll, payrollMonthQueryRules, validate, payrollController.ecrFile);
 router.get('/statutory/esi', isHROrAdmin, managePayroll, payrollMonthQueryRules, validate, payrollController.esiFile);
 router.get('/reports/register', isHROrAdmin, managePayroll, payrollMonthQueryRules, validate, payrollController.salaryRegister);

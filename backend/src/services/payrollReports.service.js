@@ -14,7 +14,7 @@ const { BadRequestError } = require('../utils/errors');
 const { TIMEZONE } = require('../utils/constants');
 const { toPaise, toRupees } = require('../payroll/money');
 const { csvCell } = require('./tdsRegister.service');
-const { selectIn } = require('../utils/selectIn');
+const { selectIn, selectAllPages } = require('../utils/selectIn');
 
 const checkMonth = (month, year) => {
   const m = Number(month);
@@ -25,13 +25,14 @@ const checkMonth = (month, year) => {
 
 const loadPublished = async (companyId, m, y) => {
   if (!companyId) throw new BadRequestError('companyId is required');
-  const { data: slips, error } = await supabaseAdmin
+  // Every published payslip of the month, a page at a time (one select stops at ~1,000 rows).
+  const { data: slips, error } = await selectAllPages(() => supabaseAdmin
     .from('payroll')
     .select('id, employee_id, month, year, gross_salary, total_deductions, net_salary, payslip_status, breakdown_json, company_id')
     .eq('company_id', companyId)
     .eq('month', m)
     .eq('year', y)
-    .eq('payslip_status', 'PUBLISHED');
+    .eq('payslip_status', 'PUBLISHED'));
   if (error) throw new BadRequestError(error.message);
   const ids = [...new Set((slips || []).map((s) => String(s.employee_id)))];
   let employees = [];

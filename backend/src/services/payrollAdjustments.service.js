@@ -49,13 +49,14 @@ const findAdjustments = async (companyId, month, year) => {
   const prevLabel = labelOf(prev.month, prev.year);
   const payroll = require('./payroll.service');
   const attendance = require('./attendance.service');
-  const { data: slips, error } = await supabaseAdmin
+  // Every published payslip of last month, a page at a time (one select stops at ~1,000 rows).
+  const { data: slips, error } = await require('../utils/selectIn').selectAllPages(() => supabaseAdmin
     .from('payroll')
     .select('id, employee_id, month, year, payslip_status, breakdown_json, company_id')
     .eq('company_id', companyId)
     .eq('month', prev.month)
     .eq('year', prev.year)
-    .eq('payslip_status', 'PUBLISHED');
+    .eq('payslip_status', 'PUBLISHED'));
   if (error) throw new BadRequestError(error.message);
   const published = (slips || []).filter((r) => String(r.payslip_status || '').toUpperCase() === 'PUBLISHED'
     && String(r.company_id) === String(companyId) && r.breakdown_json?.config?.engine === 2);
@@ -147,7 +148,7 @@ const applyAdjustments = async ({
           recalculate: false,
         });
       }
-      oneTime.recalculateDrafts(a.employeeId, companyId);
+      oneTime.recalculateDrafts(a.employeeId, companyId, { by: actor?.id || null, month: found.month, year: found.year });
       done.push({ employeeId: a.employeeId, difference: a.difference });
     } catch (err) {
       skipped.push({ employeeId: a.employeeId, reason: err.message });

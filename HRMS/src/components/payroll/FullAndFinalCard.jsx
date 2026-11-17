@@ -18,7 +18,18 @@ const inputClass = 'h-9 w-full rounded-xl border border-border bg-card px-2 text
 export function FullAndFinalCard({ employeeId, employeeName, canEdit }) {
   const qc = useQueryClient();
   const [form, setForm] = useState({
-    leaveDays: 0, noticeAction: 'none', requiredDays: 30, servedDays: 30, noticeBase: 'gross', divisor: 30, fixedTerm: false, includeBonus: true,
+    leaveDays: 0,
+    noticeAction: 'none',
+    requiredDays: 30,
+    servedDays: 30,
+    noticeBase: 'gross',
+    divisor: 30,
+    fixedTerm: false,
+    includeBonus: true,
+    // Tax: covered by the Payment of Gratuity Act, and exemptions already used (a previous employer).
+    gratuityActCovered: true,
+    usedGratuity: 0,
+    usedEncashment: 0,
   });
   const [result, setResult] = useState(null);
   // The inputs the shown result was worked out with: "Add" sends exactly those.
@@ -34,6 +45,8 @@ export function FullAndFinalCard({ employeeId, employeeName, canEdit }) {
     leaveDays: Number(form.leaveDays) || 0,
     fixedTerm: Boolean(form.fixedTerm),
     includeBonus: Boolean(form.includeBonus),
+    gratuityActCovered: Boolean(form.gratuityActCovered),
+    exemptionUsed: { gratuity: Number(form.usedGratuity) || 0, leaveEncashment: Number(form.usedEncashment) || 0 },
     notice: form.noticeAction === 'none' ? null : {
       action: form.noticeAction,
       requiredDays: Number(form.requiredDays) || 0,
@@ -119,6 +132,21 @@ export function FullAndFinalCard({ employeeId, employeeName, canEdit }) {
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-fg-muted sm:col-span-2">
             <label className="flex items-center gap-2"><input type="checkbox" checked={form.includeBonus} onChange={set('includeBonus')} />Statutory bonus for this year so far</label>
             <label className="flex items-center gap-2"><input type="checkbox" checked={form.fixedTerm} onChange={set('fixedTerm')} />Fixed-term employee (gratuity after 1 year)</label>
+            <label className="flex items-center gap-2"><input type="checkbox" checked={form.gratuityActCovered} onChange={set('gratuityActCovered')} />Covered by the Payment of Gratuity Act</label>
+          </div>
+          <div className="grid grid-cols-1 gap-2 sm:col-span-2 sm:grid-cols-2">
+            <p className="text-[11px] text-fg-subtle sm:col-span-2">
+              Gratuity is tax-free up to ₹20 lakh and leave encashment on leaving up to ₹25 lakh — for a whole working life, across employers.
+              If this person received a gratuity or leave encashment exemption from a previous employer, enter it here: it reduces the exemption.
+            </p>
+            <label className="text-xs text-fg-muted">
+              <span className="mb-1 block font-semibold text-fg">Gratuity exemption already used (₹)</span>
+              <input type="number" min={0} step={1} value={form.usedGratuity} onChange={set('usedGratuity')} className={inputClass} />
+            </label>
+            <label className="text-xs text-fg-muted">
+              <span className="mb-1 block font-semibold text-fg">Leave encashment exemption already used (₹)</span>
+              <input type="number" min={0} step={1} value={form.usedEncashment} onChange={set('usedEncashment')} className={inputClass} />
+            </label>
           </div>
           <div className="flex flex-wrap justify-end gap-2 sm:col-span-2">
             <Button size="sm" variant="outline" icon={Calculator} loading={busy === 'preview'} disabled={Boolean(busy)} onClick={() => run('preview')}>Work it out</Button>
@@ -135,9 +163,18 @@ export function FullAndFinalCard({ employeeId, employeeName, canEdit }) {
           </p>
           {result.items.length === 0 && <p className="text-sm text-fg-subtle">Nothing to pay or recover besides the month&apos;s pay.</p>}
           {result.items.map((i) => (
-            <div key={i.code} className="flex items-center justify-between rounded-xl border border-border p-2.5 text-sm">
-              <span className="font-semibold text-fg">{i.name}</span>
-              <span className={cn('font-semibold tabular-nums', i.earning ? 'text-success' : 'text-danger')}>{i.earning ? '+' : '−'}{formatCurrency(i.amount)}</span>
+            <div key={i.code} className="rounded-xl border border-border p-2.5 text-sm">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-fg">{i.name}</span>
+                <span className={cn('font-semibold tabular-nums', i.earning ? 'text-success' : 'text-danger')}>{i.earning ? '+' : '−'}{formatCurrency(i.amount)}</span>
+              </div>
+              {i.exempt != null && (
+                // Gratuity and leave encashment: only the taxable part is taxed.
+                <div className="mt-1 space-y-0.5 pl-3 text-xs text-fg-muted">
+                  <p className="flex justify-between"><span>Exempt (tax-free)</span><span className="tabular-nums">{formatCurrency(i.exempt)}</span></p>
+                  <p className="flex justify-between"><span>Taxable</span><span className="tabular-nums">{formatCurrency(i.taxable)}</span></p>
+                </div>
+              )}
             </div>
           ))}
           {result.items.length > 0 && (
@@ -163,7 +200,9 @@ export function FullAndFinalCard({ employeeId, employeeName, canEdit }) {
             </div>
           )}
           <p className="text-[11px] text-fg-subtle">
-            Income tax on the settlement is worked out by the difference method. Gratuity and leave encashment are taxed in full until your CA confirms their exemptions.
+            Income tax on the settlement is worked out by the difference method, on the taxable part only.
+            {result.tax && ` The tax-free parts use an average Basic + DA of ${formatCurrency(result.tax.averageBasicDa)} a month over the ${result.tax.monthsAveraged} month${result.tax.monthsAveraged === 1 ? '' : 's'} before leaving.`}
+            {' '}Check the exemptions with your CA.
           </p>
         </div>
       )}

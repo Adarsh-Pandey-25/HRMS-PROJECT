@@ -12,7 +12,8 @@ import { useCompanyStore } from '../../store/companyStore';
 import { cn, formatCurrency, formatCompactINR, formatDate } from '../../lib/utils';
 import { ExportButton } from '../../components/shared/ExportButton';
 import {
-  applyAdjustmentsApi, approveMonthApi, downloadBankFileApi, downloadStatutoryFileApi, fetchAdjustmentsApi, fetchReconciliationApi, markPayslipsPaidApi,
+  applyAdjustmentsApi, approveMonthApi, downloadBankFileApi, downloadStatutoryFileApi, fetchAdjustmentsApi, fetchReconciliationApi,
+  generatePayslipsBatchApi, markMonthPaidApi, publishMonthApi, runInBatches,
 } from '../../api/payroll.api';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSettingsStore } from '../../store/settingsStore';
@@ -108,12 +109,16 @@ function PaymentsCard({
     }
   };
 
+  // Every published, unpaid payslip of the month — the server picks them, not this list.
   const markPaid = async () => {
     setBusy(true);
     try {
-      const r = await markPayslipsPaidApi({ payslipIds: unpaid.map((p) => p.id), paidOn, reference: reference.trim() });
-      if (r?.referenceStored === false) toast.success(`${r.updated} marked paid. The date and reference will be kept once the payment SQL file is run.`);
-      else toast.success(`${r?.updated ?? unpaid.length} payslip${unpaid.length === 1 ? '' : 's'} marked paid`);
+      const r = await markMonthPaidApi({ month, year, paidOn, reference: reference.trim() });
+      const n = r?.updated ?? 0;
+      if (r?.referenceStored === false) toast.success(`${n} marked paid. The date and reference will be kept once the payment SQL file is run.`);
+      else toast.success(`${n} payslip${n === 1 ? '' : 's'} marked paid`);
+      const own = (r?.skipped || []).find((x) => x.own);
+      if (own) toast(own.reason);
       setMarking(false);
       setReference('');
       await onPaid();
@@ -156,7 +161,7 @@ function PaymentsCard({
             <input value={reference} maxLength={64} onChange={(e) => setReference(e.target.value)} className="h-9 w-full rounded-xl border border-border bg-card px-2 text-sm text-fg" placeholder="e.g. HDFCN26103012345" />
           </label>
           <Button size="sm" onClick={markPaid} loading={busy} disabled={reference.trim().length < 3 || !paidOn}>
-            Mark {unpaid.length} paid
+            Mark all unpaid as paid ({unpaid.length})
           </Button>
         </div>
       )}
@@ -298,6 +303,38 @@ function StatutoryFilesCard({ month, year, monthLabel }) {
   );
 }
 
+const BULK_VERB = { approve: 'approved', publish: 'published' };
+
+/** What the last month-wide action left out, and why (an own payslip first). */
+function BulkResult({ result, employeeMap }) {
+  if (!result) return null;
+  const own = result.skipped.find((r) => r.own);
+  const others = result.skipped.filter((r) => !r.own);
+  if (!own && !others.length) return null;
+  return (
+    <div className="space-y-2">
+      {own && (
+        <p className="flex items-start gap-2 rounded-xl bg-warning/10 px-4 py-3 text-sm text-fg">
+          <Info className="mt-0.5 h-4 w-4 shrink-0" />{own.reason}
+        </p>
+      )}
+      {others.length > 0 && (
+        <div className="rounded-xl bg-danger/10 px-4 py-3 text-sm text-danger">
+          <p className="font-semibold">{others.length} not {BULK_VERB[result.action] || 'done'}:</p>
+          <ul className="mt-1 space-y-0.5 text-xs">
+            {others.slice(0, 200).map((r) => (
+              <li key={r.payslipId || r.employeeId}>
+                <EmployeeLink employeeId={r.employeeId} tab="payroll">{employeeMap[r.employeeId]?.name || 'Employee'}</EmployeeLink> — {r.reason}
+              </li>
+            ))}
+            {others.length > 200 && <li>…and {others.length - 200} more</li>}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function RunPayroll() {
   const options = useMemo(() => monthOptions(), []);
   // Last month by default: a month's payroll runs once the month is over.
@@ -309,12 +346,22 @@ export default function RunPayroll() {
   const { data: payrollMonth, isLoading: loadingMonth, refetch: refetchMonth } = usePayrollMonth(month, year);
   const { data: payslips = [], isLoading: loadingPayslips, refetch: refetchPayslips } = useMonthPayslips(month, year);
   const { data: checks, isLoading: loadingChecks } = usePayrollChecks(month, year);
-  const { initMonth, generate, publish } = usePayrollMutations();
+  const { initMonth } = usePayrollMutations();
+  const qc = useQueryClient();
+  // After a month-wide action: the payslips, the month, the checks and the dashboard.
+  const refreshAll = async () => {
+    await qc.invalidateQueries({ queryKey: ['payroll'] });
+    await qc.invalidateQueries({ queryKey: ['dashboard'] });
+  };
   const employeeMap = useEmployeeMap();
   const company = useCompanyStore((s) => s.company);
   const [processing, setProcessing] = useState(false);
   const [viewing, setViewing] = useState(null);
   const [lastRun, setLastRun] = useState(null);
+  // The last approve / publish of the whole month: { action, skipped }.
+  const [lastBulk, setLastBulk] = useState(null);
+  // While a month-wide action runs batch by batch: "Publishing 120 of 2,000…".
+  const [progress, setProgress] = useState(null);
   const blocked = checks ? !checks.canGenerate : false;
   // Approval before publishing (Settings → Payroll → Calculation).
   const approvalRequired = useSettingsStore((s) => s.payrollConfig?.calc?.approval?.required === true);
@@ -339,18 +386,23 @@ export default function RunPayroll() {
     }
   };
 
+  const count = (n) => Number(n || 0).toLocaleString('en-IN');
+
+  // Everyone employed in the month, a batch at a time (any headcount).
   const handleGenerate = async () => {
     setProcessing(true);
     setLastRun(null);
+    setLastBulk(null);
     try {
       let pm = payrollMonth;
       if (!pm?.id) {
         pm = await initMonth.mutateAsync({ month, year });
       }
-      const results = await generate.mutateAsync({ payrollMonthId: pm.id });
-      await refetchPayslips();
-      await refetchMonth();
-      const list = Array.isArray(results) ? results : [];
+      const replies = await runInBatches(
+        (after) => generatePayslipsBatchApi(pm.id, after),
+        (r) => setProgress(r?.total ? `Generating ${count(r.done)} of ${count(r.total)}…` : 'Generating…'),
+      );
+      const list = replies.flatMap((r) => (Array.isArray(r?.results) ? r.results : []));
       const skipped = list.filter((r) => r.status === 'skipped');
       const generated = list.length - skipped.length;
       setLastRun({ generated, skipped });
@@ -359,53 +411,66 @@ export default function RunPayroll() {
     } catch (err) {
       toast.error(err.message || 'Failed to generate payslips');
     } finally {
+      setProgress(null);
       setProcessing(false);
+      await refreshAll();
     }
   };
 
+  // Every draft of the month — the server picks them, not the list on screen.
   const handlePublishAll = async () => {
     setProcessing(true);
+    setLastBulk(null);
+    let published = 0;
+    const skipped = [];
     try {
-      const drafts = payslips.filter((p) => {
-        const st = String(p.payslipStatus || p.status || '').toLowerCase();
-        return st !== 'published';
-      });
-      let published = 0;
-      const errors = [];
-      for (const p of drafts) {
-        try {
-          await publish.mutateAsync(p.id);
-          published += 1;
-        } catch (err) {
-          errors.push(err.message || 'Publish failed');
-        }
-      }
-      await refetchPayslips();
-      if (errors.length && published === 0) {
-        toast.error(errors[0]);
-      } else if (errors.length) {
-        toast.error(`Published ${published}; ${errors.length} failed: ${errors[0]}`);
-      } else {
-        toast.success(`All ${published} payslips published`);
-      }
+      await runInBatches(
+        (after) => publishMonthApi(month, year, after),
+        (r) => {
+          published += r?.published || 0;
+          skipped.push(...(r?.skipped || []));
+          setProgress(r?.total ? `Publishing… ${count(r.total - r.remaining)} of ${count(r.total)} drafts done` : 'Publishing…');
+        },
+      );
+      const failed = skipped.filter((r) => !r.own);
+      if (failed.length && published === 0) toast.error(failed[0].reason);
+      else if (failed.length) toast.error(`Published ${published}; ${failed.length} not published — see below`);
+      else toast.success(`${published} payslip${published === 1 ? '' : 's'} published`);
+    } catch (err) {
+      toast.error(err.message || 'Could not publish the payslips');
     } finally {
+      setLastBulk({ action: 'publish', skipped });
+      setProgress(null);
       setProcessing(false);
+      await refreshAll();
     }
   };
 
   const handleApproveAll = async () => {
     setProcessing(true);
+    setLastBulk(null);
+    let approved = 0;
+    const skipped = [];
     try {
-      const res = await approveMonthApi(month, year);
-      await refetchPayslips();
-      const skipped = res?.skipped || [];
-      if (skipped.length && !res.approved) toast.error(skipped[0].reason || 'Nothing could be approved');
-      else if (skipped.length) toast.error(`Approved ${res.approved}; ${skipped.length} not approved: ${skipped[0].reason}`);
-      else toast.success(`${res.approved} payslip${res.approved === 1 ? '' : 's'} approved — someone else can publish them now`);
+      await runInBatches(
+        (after) => approveMonthApi(month, year, after),
+        (r) => {
+          approved += r?.approved || 0;
+          skipped.push(...(r?.skipped || []));
+          setProgress(r?.total ? `Approving… ${count(r.total - r.remaining)} of ${count(r.total)} drafts done` : 'Approving…');
+        },
+      );
+      const failed = skipped.filter((r) => !r.own);
+      if (failed.length && !approved) toast.error(failed[0].reason || 'Nothing could be approved');
+      else if (failed.length) toast.error(`Approved ${approved}; ${failed.length} not approved — see below`);
+      else toast.success(`${approved} payslip${approved === 1 ? '' : 's'} approved — someone else can publish them now`);
     } catch (err) {
       toast.error(err.message || 'Could not approve the payslips');
     } finally {
+      setLastBulk({ action: 'approve', skipped });
+      setProgress(null);
       setProcessing(false);
+      await refreshAll();
     }
   };
 
@@ -525,7 +590,7 @@ export default function RunPayroll() {
           <select
             value={periodKey}
             aria-label="Payroll month"
-            onChange={(e) => { setPeriodKey(e.target.value); setLastRun(null); }}
+            onChange={(e) => { setPeriodKey(e.target.value); setLastRun(null); setLastBulk(null); }}
             className="h-10 rounded-input border border-border bg-card px-3 text-sm text-fg outline-none focus:ring-2 focus:ring-primary"
           >
             {options.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
@@ -541,8 +606,8 @@ export default function RunPayroll() {
             <p className="font-semibold">{lastRun.skipped.length} not generated:</p>
             <ul className="mt-1 space-y-0.5 text-xs">
               {lastRun.skipped.map((r) => (
-                <li key={r.user_id}>
-                  <EmployeeLink employeeId={r.user_id} tab="payroll">{employeeMap[r.user_id]?.name || 'Employee'}</EmployeeLink> — {r.reason}
+                <li key={r.userId}>
+                  <EmployeeLink employeeId={r.userId} tab="payroll">{employeeMap[r.userId]?.name || 'Employee'}</EmployeeLink> — {r.reason}
                 </li>
               ))}
             </ul>
@@ -584,7 +649,7 @@ export default function RunPayroll() {
             icon={Play}
             size="sm"
             onClick={handleGenerate}
-            disabled={processing || generate.isPending || blocked}
+            disabled={processing || blocked}
             title={blocked ? 'Sort out the red items above first' : undefined}
           >
             Generate Payslips
@@ -599,8 +664,11 @@ export default function RunPayroll() {
               Publish All
             </Button>
           )}
+          {progress && <p className="text-[11px] text-fg-subtle" aria-live="polite">{progress}</p>}
         </Card>
       </div>
+
+      <BulkResult result={lastBulk} employeeMap={employeeMap} />
 
       <Card>
         <CardHeader

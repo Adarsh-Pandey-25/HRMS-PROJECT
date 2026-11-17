@@ -9,12 +9,13 @@
  */
 const moment = require('moment-timezone');
 const { supabaseAdmin } = require('../config/supabase');
-const { BadRequestError } = require('../utils/errors');
+const { BadRequestError, ForbiddenError } = require('../utils/errors');
 const { TIMEZONE } = require('../utils/constants');
 const { isMissingColumnError } = require('../utils/helpers');
 const { toPaise, toRupees } = require('../payroll/money');
 const { csvCell } = require('./tdsRegister.service');
-const { selectIn } = require('../utils/selectIn');
+const { selectIn, selectAllPages } = require('../utils/selectIn');
+const ownPay = require('./ownPayslip');
 
 const PUBLISHED = 'PUBLISHED';
 const MAX_MARK_PAID = 500;
@@ -54,13 +55,14 @@ const checkMonth = (month, year) => {
 const getBankFile = async (companyId, month, year) => {
   if (!companyId) throw new BadRequestError('companyId is required');
   const { m, y } = checkMonth(month, year);
-  const { data: slips, error } = await supabaseAdmin
+  // Every published payslip of the month, a page at a time (one select stops at ~1,000 rows).
+  const { data: slips, error } = await selectAllPages(() => supabaseAdmin
     .from('payroll')
     .select('id, employee_id, month, year, net_salary, payslip_status, breakdown_json, company_id')
     .eq('company_id', companyId)
     .eq('month', m)
     .eq('year', y)
-    .eq('payslip_status', PUBLISHED);
+    .eq('payslip_status', PUBLISHED));
   if (error) throw new BadRequestError(error.message);
   const ids = [...new Set((slips || []).map((s) => String(s.employee_id)))];
   let employees = [];
@@ -113,14 +115,8 @@ const getBankFile = async (companyId, month, year) => {
  * bank's reference (UTR or batch reference). Until the SQL file
  * 20261103_payroll_payment_reference.sql is run, only the status is saved.
  */
-const markPaid = async ({
-  companyId, payslipIds, paidOn, reference, actor, ipAddress = null,
-}) => {
-  if (!companyId) throw new BadRequestError('companyId is required');
-  const ids = [...new Set((Array.isArray(payslipIds) ? payslipIds : []).map(String))];
-  if (!ids.length) throw new BadRequestError('Choose the payslips that were paid');
-  if (ids.length > MAX_MARK_PAID) throw new BadRequestError(`At most ${MAX_MARK_PAID} payslips at a time`);
-  if (ids.some((id) => !UUID.test(id))) throw new BadRequestError('Unknown payslip in the list — reload and try again');
+/** The payment date and the bank's reference, checked. */
+const checkPayment = (paidOn, reference) => {
   const day = moment.tz(String(paidOn || ''), 'YYYY-MM-DD', true, TIMEZONE);
   if (!day.isValid()) throw new BadRequestError('Enter the date the bank paid');
   if (day.isAfter(moment.tz(TIMEZONE), 'day')) throw new BadRequestError('The payment date can\'t be in the future');
@@ -128,21 +124,18 @@ const markPaid = async ({
   if (!/^[A-Za-z0-9][A-Za-z0-9 /_-]{2,63}$/.test(ref)) {
     throw new BadRequestError('Enter the bank reference (UTR): 3–64 letters or digits');
   }
+  return { day, ref };
+};
 
-  const { data: rows, error } = await selectIn(supabaseAdmin, 'payroll', 'id, company_id, payslip_status, month, year', 'id', ids);
-  if (error) throw new BadRequestError(error.message);
-  const wanted = new Set(ids);
-  const mine = (rows || []).filter((r) => wanted.has(String(r.id)) && String(r.company_id) === String(companyId));
-  if (mine.length !== ids.length) throw new BadRequestError('Some payslips weren\'t found — reload and try again');
-  const notPublished = mine.filter((r) => String(r.payslip_status || '').toUpperCase() !== PUBLISHED);
-  if (notPublished.length) throw new BadRequestError('Only published payslips can be marked paid — publish them first');
-  const monthStart = moment.tz({ year: mine[0].year, month: mine[0].month - 1, day: 1 }, TIMEZONE);
-  if (mine.some((r) => day.isBefore(moment.tz({ year: r.year, month: r.month - 1, day: 1 }, TIMEZONE), 'day'))) {
-    throw new BadRequestError(`The payment date can't be before the payslip's month (${monthStart.format('MMMM YYYY')})`);
-  }
+const OWN_SKIPPED = 'Your payslip was skipped — an Admin has to mark it paid.';
 
+/**
+ * Saves the payment on these payslips (ids of the company's published ones),
+ * a batch at a time: hundreds of ids in one IN filter can pass the URL length
+ * limit. Until 20261103_payroll_payment_reference.sql is run, only the status.
+ */
+const writePaid = async (companyId, ids, day, ref) => {
   const patch = { payment_status: 'paid', paid_on: day.format('YYYY-MM-DD'), payment_reference: ref };
-  // A batch at a time: hundreds of ids in one IN filter can pass the URL length limit.
   const write = async (fields) => {
     const done = [];
     for (let i = 0; i < ids.length; i += 100) {
@@ -166,7 +159,12 @@ const markPaid = async ({
     ({ data: updated, error: updErr } = await write({ payment_status: 'paid' }));
   }
   if (updErr) throw new BadRequestError(updErr.message);
+  return { updated: (updated || []).length, referenceStored, paidOn: patch.paid_on };
+};
 
+const auditPaid = ({
+  companyId, actor, ipAddress, result, ref, month = null, year = null,
+}) => {
   require('./auditLog.service').logAudit({
     companyId,
     actorId: actor?.id || null,
@@ -175,14 +173,121 @@ const markPaid = async ({
     targetType: 'payroll',
     targetId: null,
     afterState: {
-      payslips: (updated || []).length, paid_on: patch.paid_on, reference: ref, reference_stored: referenceStored,
+      payslips: result.updated,
+      paid_on: result.paidOn,
+      reference: ref,
+      reference_stored: result.referenceStored,
+      ...(month ? { month, year } : {}),
     },
     ipAddress,
   }).catch(() => {});
+};
 
-  return { updated: (updated || []).length, referenceStored };
+const markPaid = async ({
+  companyId, payslipIds, paidOn, reference, actor, ipAddress = null,
+}) => {
+  if (!companyId) throw new BadRequestError('companyId is required');
+  let ids = [...new Set((Array.isArray(payslipIds) ? payslipIds : []).map(String))];
+  if (!ids.length) throw new BadRequestError('Choose the payslips that were paid');
+  if (ids.length > MAX_MARK_PAID) throw new BadRequestError(`At most ${MAX_MARK_PAID} payslips at a time`);
+  if (ids.some((id) => !UUID.test(id))) throw new BadRequestError('Unknown payslip in the list — reload and try again');
+  const { day, ref } = checkPayment(paidOn, reference);
+
+  const { data: rows, error } = await selectIn(supabaseAdmin, 'payroll', 'id, company_id, employee_id, payslip_status, month, year', 'id', ids);
+  if (error) throw new BadRequestError(error.message);
+  const wanted = new Set(ids);
+  let mine = (rows || []).filter((r) => wanted.has(String(r.id)) && String(r.company_id) === String(companyId));
+  if (mine.length !== ids.length) throw new BadRequestError('Some payslips weren\'t found — reload and try again');
+  const notPublished = mine.filter((r) => String(r.payslip_status || '').toUpperCase() !== PUBLISHED);
+  if (notPublished.length) throw new BadRequestError('Only published payslips can be marked paid — publish them first');
+  // HR never marks their own payslip paid — an Admin must: one on its own is
+  // refused, one among others is left out and reported.
+  const own = mine.filter((r) => ownPay.isOwnPay(actor, r.employee_id));
+  if (own.length && !ownPay.isAdmin(actor)) {
+    if (own.length === mine.length) throw new ForbiddenError(ownPay.OWN_PAYSLIP_MESSAGE);
+    mine = mine.filter((r) => !own.includes(r));
+    ids = mine.map((r) => String(r.id));
+  }
+  const monthStart = moment.tz({ year: mine[0].year, month: mine[0].month - 1, day: 1 }, TIMEZONE);
+  if (mine.some((r) => day.isBefore(moment.tz({ year: r.year, month: r.month - 1, day: 1 }, TIMEZONE), 'day'))) {
+    throw new BadRequestError(`The payment date can't be before the payslip's month (${monthStart.format('MMMM YYYY')})`);
+  }
+
+  const result = await writePaid(companyId, ids, day, ref);
+  auditPaid({
+    companyId, actor, ipAddress, result, ref,
+  });
+  if (own.length && ownPay.isAdmin(actor)) ownPay.logOwnPayAction(actor, 'mark_paid', { payslip_ids: own.map((r) => r.id), paid_on: result.paidOn }, ipAddress);
+
+  return {
+    updated: result.updated,
+    referenceStored: result.referenceStored,
+    ...(own.length && !ownPay.isAdmin(actor) ? {
+      skipped: own.map((r) => ({ payslipId: r.id, employeeId: r.employee_id, reason: OWN_SKIPPED, own: true })),
+      ownSkipped: true,
+    } : {}),
+  };
+};
+
+/**
+ * Mark every published, unpaid payslip of the company's month paid, chosen
+ * here on the server (not a list from the screen, which may hold only part
+ * of the month). Someone who isn't an Admin never marks their own payslip
+ * paid — it is left out and reported.
+ * → { updated, alreadyPaid, skipped: [{ payslipId, employeeId, reason, own }], ownSkipped, referenceStored }
+ */
+const markPaidMonth = async ({
+  companyId, month, year, paidOn, reference, actor, ipAddress = null,
+}) => {
+  if (!companyId) throw new BadRequestError('companyId is required');
+  const { m, y } = checkMonth(month, year);
+  const { day, ref } = checkPayment(paidOn, reference);
+  if (day.isBefore(moment.tz({ year: y, month: m - 1, day: 1 }, TIMEZONE), 'day')) {
+    throw new BadRequestError(`The payment date can't be before the payslip's month (${moment.tz({ year: y, month: m - 1, day: 1 }, TIMEZONE).format('MMMM YYYY')})`);
+  }
+  const { data: rows, error } = await selectAllPages(() => supabaseAdmin
+    .from('payroll')
+    .select('id, company_id, employee_id, payslip_status, payment_status, month, year')
+    .eq('company_id', companyId)
+    .eq('month', m)
+    .eq('year', y)
+    .eq('payslip_status', PUBLISHED));
+  if (error) throw new BadRequestError(error.message);
+  const published = (rows || []).filter((r) => String(r.payslip_status || '').toUpperCase() === PUBLISHED
+    && String(r.company_id) === String(companyId));
+  const unpaid = published.filter((r) => String(r.payment_status || '').toLowerCase() !== 'paid');
+  const skipped = [];
+  const toMark = [];
+  let adminOwn = null;
+  for (const r of unpaid) {
+    if (ownPay.skipsOwnPay(actor, r.employee_id)) {
+      skipped.push({
+        payslipId: r.id, employeeId: r.employee_id, reason: OWN_SKIPPED, own: true,
+      });
+    } else {
+      if (ownPay.isOwnPay(actor, r.employee_id)) adminOwn = r;
+      toMark.push(String(r.id));
+    }
+  }
+  if (!toMark.length) {
+    return {
+      updated: 0, alreadyPaid: published.length - unpaid.length, skipped, ownSkipped: skipped.length > 0, referenceStored: true,
+    };
+  }
+  const result = await writePaid(companyId, toMark, day, ref);
+  auditPaid({
+    companyId, actor, ipAddress, result, ref, month: m, year: y,
+  });
+  if (adminOwn) ownPay.logOwnPayAction(actor, 'mark_paid', { payslip_ids: [adminOwn.id], paid_on: result.paidOn }, ipAddress);
+  return {
+    updated: result.updated,
+    alreadyPaid: published.length - unpaid.length,
+    skipped,
+    ownSkipped: skipped.length > 0,
+    referenceStored: result.referenceStored,
+  };
 };
 
 module.exports = {
-  getBankFile, markPaid, bankOf, netPayable,
+  getBankFile, markPaid, markPaidMonth, bankOf, netPayable,
 };

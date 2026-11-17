@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '../store/authStore';
 import {
-  fetchAllPayslipsForYearApi, fetchPayrollMonthApi, fetchPayslipsApi,
+  fetchAllPayslipsForYearApi, fetchPayrollMonthApi, fetchMonthPayslipsApi,
   initializePayrollMonthApi, generatePayslipsApi, publishPayslipApi,
   payslipDownloadUrl, downloadPayslipApi, fetchPayrollChecksApi,
 } from '../api/payroll.api';
@@ -34,14 +34,14 @@ export function useMyPayslips(year) {
   });
 }
 
-/** All employees' payslips for a year (HR/Admin — e.g. employee profile). */
-export function useAllPayslipsForYear(year) {
+/** Payslips for a year (HR/Admin): one employee's when employeeId is given (their profile), else everyone's. */
+export function useAllPayslipsForYear(year, { employeeId, enabled = true } = {}) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const y = year || new Date().getFullYear();
   return useQuery({
-    queryKey: ['payroll', 'payslips', 'all', y],
-    queryFn: () => fetchAllPayslipsForYearApi(y, { mine: false }),
-    enabled: isAuthenticated,
+    queryKey: ['payroll', 'payslips', 'all', y, employeeId || 'everyone'],
+    queryFn: () => fetchAllPayslipsForYearApi(y, { mine: false, employeeId }),
+    enabled: isAuthenticated && enabled,
   });
 }
 
@@ -54,11 +54,12 @@ export function usePayrollMonth(month, year) {
   });
 }
 
+/** Every payslip of the month (all pages), so totals and bulk actions cover the whole company. */
 export function useMonthPayslips(month, year) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   return useQuery({
     queryKey: ['payroll', 'payslips', month, year],
-    queryFn: () => fetchPayslipsApi({ month, year }),
+    queryFn: () => fetchMonthPayslipsApi(month, year),
     enabled: isAuthenticated && Boolean(month && year),
   });
 }

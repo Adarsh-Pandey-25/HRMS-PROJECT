@@ -3,6 +3,7 @@ const { BadRequestError } = require('../utils/errors');
 const attendanceService = require('./attendance.service');
 const leaveService = require('./leave.service');
 const { mapWithConcurrency } = require('../utils/concurrency');
+const { selectIn } = require('../utils/selectIn');
 
 const EMPLOYEE_SELECT = 'id, employee_code, first_name, last_name, department, designation';
 
@@ -36,18 +37,15 @@ const getAttendanceSummaryReport = async (employeeIds, from, to) => {
 const getPayrollSummaryReport = async (employeeIds, month, year, groupBy = 'employee') => {
   if (!employeeIds.length) return [];
 
-  const { data, error } = await supabaseAdmin
-    .from('payroll')
-    .select(`
+  // A hundred employees at a time: one IN filter with every id of a big
+  // company overflows the URL, and one select stops at ~1,000 rows.
+  const { data, error } = await selectIn(supabaseAdmin, 'payroll', `
       employee_id, basic_salary, hra, special_allowance, transport_allowance, medical_allowance,
       bonus, overtime_pay, gross_salary, pf_deduction, esi_deduction, tds, professional_tax,
       leave_deduction, other_deductions, lop_deduction, unpaid_leave_days, total_deductions, net_salary,
       payslip_status, payment_status,
       employee:employee_id(${EMPLOYEE_SELECT})
-    `)
-    .eq('month', month)
-    .eq('year', year)
-    .in('employee_id', employeeIds);
+    `, 'employee_id', employeeIds, { filter: (q) => q.eq('month', month).eq('year', year) });
 
   if (error) throw new BadRequestError(error.message);
   const rows = data || [];

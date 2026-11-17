@@ -19,4 +19,27 @@ const selectIn = async (supabase, table, columns, column, values, options = 100)
   return { data, error: null };
 };
 
-module.exports = { selectIn };
+/**
+ * Every row a query matches, a page at a time. PostgREST returns at most
+ * about 1,000 rows per request (Supabase's default), so a single select
+ * silently drops the rest for a big company. build() makes the query afresh
+ * for each page, filters included; pages are ordered by `order` (default
+ * 'id') so none overlap or are skipped. Returns { data, error } like a
+ * single query.
+ */
+const selectAllPages = async (build, { pageSize = 1000, order = 'id' } = {}) => {
+  const data = [];
+  // 1,000 pages of 1,000 rows: far beyond any company; only a safety stop.
+  for (let page = 0; page < 1000; page += 1) {
+    let query = build();
+    if (order) query = query.order(order, { ascending: true });
+    // eslint-disable-next-line no-await-in-loop
+    const { data: rows, error } = await query.range(page * pageSize, (page + 1) * pageSize - 1);
+    if (error) return { data: null, error };
+    data.push(...(rows || []));
+    if (!rows || rows.length < pageSize) break;
+  }
+  return { data, error: null };
+};
+
+module.exports = { selectIn, selectAllPages };

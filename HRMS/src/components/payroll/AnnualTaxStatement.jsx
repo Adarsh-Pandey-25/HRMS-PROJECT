@@ -26,7 +26,16 @@ export function AnnualTaxStatement({ s }) {
       </p>
       <table className="w-full">
         <tbody>
-          <Row label="Salary paid here" value={s.salary.paidHere} />
+          {s.salary.exemptOneTime > 0 ? (
+            <>
+              {/* Gratuity and leave encashment on leaving: tax-free up to their limits. */}
+              <Row label="Salary paid here (gross)" value={s.salary.grossPaidHere} />
+              {(s.salary.exemptItems || []).map((i) => <Row key={i.name} label={`Tax-free: ${i.name}`} value={i.amount} minus />)}
+              <Row label="Salary paid here (taxable)" value={s.salary.paidHere} />
+            </>
+          ) : (
+            <Row label="Salary paid here" value={s.salary.paidHere} />
+          )}
           {s.salary.previousEmployer > 0 && <Row label="Salary from a previous employer" value={s.salary.previousEmployer} />}
           {s.salary.outsideSpaxSync > 0 && <Row label="Salary paid outside SpaxSync" value={s.salary.outsideSpaxSync} />}
           <Row label="Gross salary" value={s.salary.total} strong />

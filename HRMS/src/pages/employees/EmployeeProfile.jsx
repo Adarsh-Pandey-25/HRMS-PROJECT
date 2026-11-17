@@ -228,7 +228,7 @@ export default function EmployeeProfile() {
     staleTime: 30_000,
   });
   const { upload, verify, remove } = useDocumentMutations();
-  const { data: payslips = [] } = useAllPayslipsForYear(now.getFullYear());
+  const { data: payslips = [] } = useAllPayslipsForYear(now.getFullYear(), { employeeId: resolvedId, enabled: Boolean(resolvedId) });
   const { data: careerEvents = [], isLoading: careerLoading } = useCareerEvents(resolvedId);
   const { addNote } = useCareerEventMutations(resolvedId);
   const { update: updateEmployee, uploadPhoto } = useEmployeeMutations();
