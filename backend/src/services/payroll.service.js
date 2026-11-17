@@ -3842,6 +3842,12 @@ const downloadPayslip = async (payslipId, user) => {
     throw new NotFoundError('Payslip not found');
   }
   if (!isOwn && !isHrAdmin) throw new ForbiddenError('Not authorized');
+  // Audit #9: someone else's payslip needs Payroll → Manage in Settings →
+  // User & Role Management (the Admin always passes; your own never needs it).
+  if (!isOwn && user.role !== 'admin'
+    && !(await require('./rolePermissions.service').can(user, 'payroll', 'manage'))) {
+    throw new ForbiddenError('You don\'t have permission to open other people\'s payslips. Ask an Admin.');
+  }
 
   if (String(payslip.payslip_status || '').toUpperCase() === PAYSLIP_STATUS.DRAFT) {
     throw new ForbiddenError('Payslip is not published yet');

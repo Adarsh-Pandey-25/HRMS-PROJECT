@@ -320,6 +320,24 @@ describe('downloading a payslip', () => {
   });
 });
 
+describe('downloading someone else\'s payslip needs Payroll → Manage (#9)', () => {
+  test('refused for HR once an Admin unticks it; their own is still fine', async () => {
+    const rolePermissions = require('../../src/services/rolePermissions.service');
+    const spy = jest.spyOn(rolePermissions, 'can').mockResolvedValue(false);
+    try {
+      global.__db.payroll = [
+        slip(id(1), 'e1', { payslip_status: 'PUBLISHED', payroll_month_id: 'pm-c1', employee: person('e1') }),
+        slip(id(2), hr.id, { payslip_status: 'PUBLISHED', payroll_month_id: 'pm-c1', employee: person(hr.id) }),
+      ];
+      global.__db.payroll_months = [{ id: 'pm-c1', month: 10, year: 2026, company_id: 'c1' }];
+      await expect(payroll.downloadPayslip(id(1), hr)).rejects.toThrow(/permission to open other people/);
+      await expect(payroll.downloadPayslip(id(2), hr)).resolves.toBeDefined();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
 describe('the screens\' requests: HR acting on their own pay', () => {
   const call = async (handler, req) => {
     let error = null;
