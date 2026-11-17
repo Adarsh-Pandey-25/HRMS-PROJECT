@@ -1,11 +1,11 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import {
   ArrowLeft, Mail, Phone, MapPin, Calendar, Pencil, User, Briefcase, Clock,
   CalendarOff, DollarSign, Monitor, FileText, GitBranch, Download, Building2,
-  CreditCard, Shield, Phone as PhoneIcon, Upload, CheckCircle2, Trash2, Eye, Plus,
+  CreditCard, Shield, Phone as PhoneIcon, Upload, CheckCircle2, Trash2, Eye, Plus, ShieldOff,
 } from 'lucide-react';
 import {
   Card, CardHeader, Button, Avatar, StatusBadge, Badge, Tabs, EmptyState, Skeleton,
@@ -29,6 +29,7 @@ import { LoansCard } from '../../components/payroll/LoansCard';
 import { OneTimePayCard } from '../../components/payroll/OneTimePayCard';
 import { FullAndFinalCard } from '../../components/payroll/FullAndFinalCard';
 import { fetchSalaryPreviewApi } from '../../api/payroll.api';
+import { resetEmployeeTwoFactorApi } from '../../api/auth.api';
 import { useSettingsStore } from '../../store/settingsStore';
 import { useCan } from '../../hooks/useCan';
 import { formatDate, formatCurrency, humanize } from '../../lib/utils';
@@ -257,6 +258,9 @@ export default function EmployeeProfile() {
   const [photoUploading, setPhotoUploading] = useState(false);
   const { resetSelfEditLock } = useEmployeeMutations();
   const [resettingLock, setResettingLock] = useState(false);
+  const queryClient = useQueryClient();
+  const [resetTwoFaOpen, setResetTwoFaOpen] = useState(false);
+  const [resettingTwoFa, setResettingTwoFa] = useState(false);
 
   // Documents inside "Edit my info" — upload immediately on file selection
   // (the employee id already exists here). Product decision: gated by the
@@ -417,6 +421,20 @@ export default function EmployeeProfile() {
     }
   };
 
+  const doResetTwoFactor = async () => {
+    setResettingTwoFa(true);
+    try {
+      await resetEmployeeTwoFactorApi(resolvedId);
+      toast.success('Two-step login reset — they have been signed out everywhere');
+      setResetTwoFaOpen(false);
+      await queryClient.invalidateQueries({ queryKey: ['employees', id] });
+    } catch (err) {
+      toast.error(err.message || 'Reset failed');
+    } finally {
+      setResettingTwoFa(false);
+    }
+  };
+
   const confirmDeleteDoc = async () => {
     setDeletingDoc(true);
     try {
@@ -509,6 +527,13 @@ export default function EmployeeProfile() {
   const bank = emp.bank || { name: '', account: '', ifsc: '' };
   const ec = emp.emergencyContact || { name: '', phone: '', relation: '' };
   const isAdminAccount = emp.role === 'admin';
+  // Same rule the server enforces: Admin may reset anyone but themselves; HR
+  // only employees and managers; never during impersonation. Shown only
+  // while two-step login is on.
+  const isSelf = isOwnProfile
+    || Boolean(user?.id && emp.id && String(user.id).toLowerCase() === String(emp.id).toLowerCase());
+  const canResetTwoFactor = Boolean(emp.twoFaEnabled) && !isSelf && !user?.impersonation
+    && (role === 'admin' || (role === 'hr' && ['employee', 'manager'].includes(emp.role)));
   const backPath = isAdminAccount || !canViewDirectory ? '/dashboard' : '/employees';
   const backLabel = isAdminAccount || !canViewDirectory ? 'Back to Dashboard' : 'Back to Employees';
 
@@ -565,6 +590,11 @@ export default function EmployeeProfile() {
             {canManage && editLocked && (
               <Button variant="outline" loading={resettingLock} onClick={doResetSelfEditLock}>
                 Reset self-edit lock
+              </Button>
+            )}
+            {canResetTwoFactor && (
+              <Button variant="outline" icon={ShieldOff} onClick={() => setResetTwoFaOpen(true)}>
+                Reset two-step login
               </Button>
             )}
             {canManage && (
@@ -1232,6 +1262,16 @@ export default function EmployeeProfile() {
         loading={deletingDoc}
         title={`Delete "${deleteDocTarget?.name}"?`}
         confirmLabel="Delete"
+      />
+
+      <ConfirmDialog
+        open={resetTwoFaOpen}
+        onClose={() => setResetTwoFaOpen(false)}
+        onConfirm={doResetTwoFactor}
+        loading={resettingTwoFa}
+        title={`Reset ${emp.name}'s two-step login?`}
+        message="Their two-step login will be turned off and they'll be signed out on every device. They can sign in with just their password and turn it on again. We'll email them that you did this."
+        confirmLabel="Reset two-step login"
       />
     </div>
   );

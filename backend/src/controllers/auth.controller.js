@@ -2,7 +2,7 @@ const { validatePassword } = require('../utils/passwordStrength');
 const authService = require('../services/auth.service');
 const impersonationService = require('../services/impersonation.service');
 const { successResponse } = require('../utils/helpers');
-const { BadRequestError, UnauthorizedError, ForbiddenError } = require('../utils/errors');
+const { BadRequestError, ForbiddenError } = require('../utils/errors');
 const employee2faService = require('../services/employee2fa.service');
 
 /**
@@ -60,16 +60,19 @@ const issueSessionCookies = (req, res, accessToken, refreshToken) => {
   );
 };
 
+/**
+ * Two-step login pending: only what the code screen needs. Nothing about the
+ * account (and no session) goes out until the code is verified.
+ */
+const twoFactorRequired = (res, result) => successResponse(res, 'Two-factor authentication required', {
+  requires2FA: true,
+  twoFaToken: result.twoFaToken,
+});
+
 const login = async (req, res, next) => {
   try {
     const result = await authService.login(req.body.email, req.body.password, req.tenantCompany?.id || null);
-    if (result.requires2FA) {
-      return successResponse(res, 'Two-factor authentication required', {
-        requires2FA: true,
-        twoFaToken: result.twoFaToken,
-        employee: result.employee,
-      });
-    }
+    if (result.requires2FA) return twoFactorRequired(res, result);
     issueSessionCookies(req, res, result.accessToken, result.refreshToken);
     successResponse(res, 'Login successful', { employee: result.employee });
   } catch (err) { next(err); }
@@ -81,13 +84,7 @@ const loginToPortal = (portal) => async (req, res, next) => {
     const result = await authService.loginToPortal(
       portal, req.body.email, req.body.password, req.tenantCompany?.id || null
     );
-    if (result.requires2FA) {
-      return successResponse(res, 'Two-factor authentication required', {
-        requires2FA: true,
-        twoFaToken: result.twoFaToken,
-        employee: result.employee,
-      });
-    }
+    if (result.requires2FA) return twoFactorRequired(res, result);
     issueSessionCookies(req, res, result.accessToken, result.refreshToken);
     successResponse(res, 'Login successful', { employee: result.employee });
   } catch (err) { next(err); }
@@ -125,28 +122,32 @@ const disableEmployeeTwoFactor = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+/**
+ * Second login step. The pending token is checked (signature, purpose,
+ * expiry, single use, 5 tries) in auth.service.js — this used to call an
+ * un-imported `jwt` here, so every employee with 2FA on was locked out (#28).
+ */
 const verifyTwoFaAndLogin = async (req, res, next) => {
   try {
-    const { twoFaToken } = req.body;
+    const { twoFaToken, code } = req.body || {};
     if (!twoFaToken) throw new BadRequestError('twoFaToken is required');
-
-    let decoded;
-    try {
-      decoded = jwt.verify(twoFaToken, process.env.JWT_SECRET);
-    } catch {
-      throw new BadRequestError('Invalid or expired twoFaToken');
-    }
-    if (decoded.scope !== 'two_fa_pending') throw new BadRequestError('Invalid token scope');
-    if (req.tenantCompany && String(decoded.company_id) !== String(req.tenantCompany.id)) {
-      throw new BadRequestError('Invalid or expired twoFaToken');
-    }
-
-    const isValid = await employee2faService.verifyTotpCode(decoded.id, req.body.code);
-    if (!isValid) throw new UnauthorizedError('Invalid authentication code');
-
-    const result = await authService.completeTwoFaLogin(decoded.id);
+    const result = await authService.verifyTwoFaLogin(twoFaToken, code, req.tenantCompany?.id || null);
     issueSessionCookies(req, res, result.accessToken, result.refreshToken);
     successResponse(res, 'Login successful', { employee: result.employee });
+  } catch (err) { next(err); }
+};
+
+/**
+ * Admin/HR: turn off an employee's two-step login (lost phone) and sign them
+ * out everywhere. Who may reset whom is enforced in auth.service.js.
+ */
+const resetEmployeeTwoFactor = async (req, res, next) => {
+  try {
+    if (req.impersonation) {
+      throw new ForbiddenError("Two-step login can't be reset during impersonation. Ask the company's Admin to do it.");
+    }
+    const result = await authService.resetEmployeeTwoFactor(req.user, req.params.employeeId, { ipAddress: req.ip });
+    successResponse(res, 'Two-step login reset. They have been signed out everywhere.', result);
   } catch (err) { next(err); }
 };
 
@@ -192,7 +193,7 @@ const workspaceInfo = async (req, res, next) => {
 
 const logout = async (req, res, next) => {
   try {
-    await authService.logout(req.user.id, req.cookies?.refreshToken);
+    await authService.logout(req.user.id);
     res.clearCookie('accessToken', cookieOptions(req, 0));
     res.clearCookie('refreshToken', cookieOptions(req, 0, '/api/auth'));
     successResponse(res, 'Logged out successfully');
@@ -416,4 +417,5 @@ module.exports = {
   sendOnboardingOtp, verifyOnboardingOtp, bootstrapAdmin, peekOnboardingInvite, onboardingSlugAvailability,
   markInstallPromptSeen, startImpersonationHandoff, endImpersonation,
   startEmployeeTwoFactor, confirmEmployeeTwoFactor, disableEmployeeTwoFactor, verifyTwoFaAndLogin,
+  resetEmployeeTwoFactor,
 };

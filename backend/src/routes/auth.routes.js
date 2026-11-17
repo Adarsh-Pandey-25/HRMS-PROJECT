@@ -1,7 +1,8 @@
 const express = require('express');
-const { body, query } = require('express-validator');
+const { body, param, query } = require('express-validator');
 const authController = require('../controllers/auth.controller');
 const { authenticate } = require('../middleware/auth.middleware');
+const { isHROrAdmin } = require('../middleware/role.middleware');
 const { validate } = require('../middleware/validation.middleware');
 const { authLimiter, bootstrapLimiter, onboardingOtpLimiter, twoFaLimiter } = require('../middleware/rateLimiter.middleware');
 const { optionalLogoUpload } = require('../middleware/upload.middleware');
@@ -88,8 +89,8 @@ router.post('/forgot-password', authLimiter, forgotPasswordRules, validate, auth
 router.post('/reset-password', authLimiter, resetPasswordRules, validate, authController.resetPassword);
 
 // ── Employee self-service 2FA (opt-in) ──────────────────────────────────────
-// Step 1: after password login — server returns requires2FA=true with a
-// short-lived twoFaToken; client redirects to TOTP input screen.
+// Step 1: after password login — server returns { requires2FA, twoFaToken }
+// only (5 minutes, single use, 5 tries); client shows the TOTP code screen.
 router.post('/2fa/verify-login', authLimiter,
   body('twoFaToken').notEmpty(),
   body('code').isLength({ min: 6, max: 6 }),
@@ -109,6 +110,14 @@ router.post('/2fa/disable', authenticate, twoFaLimiter,
   body('code').isLength({ min: 6, max: 6 }),
   validate,
   authController.disableEmployeeTwoFactor,
+);
+// Admin/HR reset of someone else's 2FA (lost phone): turns it off and signs
+// them out everywhere. Admin: anyone in the company but themselves. HR:
+// employees and managers only. Enforced in auth.service.js.
+router.post('/2fa/reset/:employeeId', authenticate, isHROrAdmin,
+  param('employeeId').isUUID(),
+  validate,
+  authController.resetEmployeeTwoFactor,
 );
 
 module.exports = router;

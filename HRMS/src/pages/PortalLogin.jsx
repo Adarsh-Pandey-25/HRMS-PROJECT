@@ -122,6 +122,10 @@ export default function PortalLogin({ portal, portalLabel, placeholderEmail }) {
       finish(user);
     } catch (err) {
       toast.error(err.message || 'Invalid code');
+      setCode('');
+      // The pending sign-in is over (expired, used, or out of tries): the
+      // server wants the password again.
+      if (err.details?.restartLogin) setTwoFaToken(null);
     }
   };
 
