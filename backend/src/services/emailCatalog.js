@@ -147,6 +147,7 @@ const EMAIL_TYPES = [
   { key: 'beacon_first_ping', label: 'Office beacon first ping', audience: 'hr_admin', trigger: 'A new office IP beacon reports in for the first time.', preference: null, lock: 'security', companyScoped: true },
   { key: 'beacon_compromise_alert', label: 'Office beacon compromise alert', audience: 'hr_admin', trigger: 'A beacon changes IP suspiciously often.', preference: null, lock: 'security', companyScoped: true },
   { key: 'beacon_geo_mismatch', label: 'Office beacon location mismatch', audience: 'hr_admin', trigger: 'A beacon reports from an unexpected region.', preference: null, lock: 'security', companyScoped: true },
+  { key: 'adms_device_new_ip', label: 'Biometric device reporting from a new IP', audience: 'company_admin', trigger: "A registered biometric device (or someone using its serial) calls from an IP other than the one it is pinned to; its punches are refused until an Admin allows the IP. At most one per device per hour.", preference: null, lock: 'security', companyScoped: true },
 
   // ── Subscription & billing (always sent) ─────────────────────────────────
   { key: 'subscription_welcome', label: 'Subscription started', audience: 'company_admin', trigger: 'A subscription is activated.', preference: null, lock: 'billing', companyScoped: true },

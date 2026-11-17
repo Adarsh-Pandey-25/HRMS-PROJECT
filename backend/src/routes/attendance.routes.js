@@ -39,6 +39,9 @@ router.get('/monthly-summary', isEmployee, attendanceController.monthlySummary);
 router.get('/adms/test', isHROrAdmin, requireFeature('biometric_adms'), admsController.testStatus);
 router.put('/adms/devices/:serial', isHROrAdmin, requireFeature('biometric_adms'), admsController.registerDevice);
 router.delete('/adms/devices/:serial', isHROrAdmin, requireFeature('biometric_adms'), admsController.releaseDevice);
+// Device IP pinning (adms.service.js): accept the IP a device now reports from, or forget its IP so its next request pins one.
+router.post('/adms/devices/:serial/allow-new-ip', isHROrAdmin, requireFeature('biometric_adms'), admsController.allowDeviceNewIp);
+router.post('/adms/devices/:serial/relearn-ip', isHROrAdmin, requireFeature('biometric_adms'), admsController.relearnDeviceIp);
 router.get('/device-punches/today', isEmployee, admsController.todayPunches);
 
 const wfhRequestController = require('../controllers/wfhRequest.controller');

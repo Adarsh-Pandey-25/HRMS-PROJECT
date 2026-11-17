@@ -1,5 +1,6 @@
 const express = require('express');
 const admsController = require('../controllers/adms.controller');
+const { admsIpLimiter } = require('../middleware/rateLimiter.middleware');
 
 // eSSL ADMS push protocol: the device sends plain HTTP with no auth headers
 // and a raw tab-separated text body (not JSON, not form-urlencoded). This
@@ -8,6 +9,10 @@ const admsController = require('../controllers/adms.controller');
 const router = express.Router();
 
 const rawText = express.text({ type: () => true, limit: '256kb' });
+
+// Per source IP, on top of app.js's per-serial admsLimiter (which a caller
+// can dodge by changing SN on every request).
+router.use(admsIpLimiter);
 
 // Some firmware/relay clients (e.g. "iClock Proxy") use .aspx-suffixed paths
 // instead of the plain ones — same protocol, just a different URL convention.

@@ -7,6 +7,7 @@ import {
   requestWfhDayApi, cancelWfhDayApi, fetchPendingWfhRequestsApi, reviewWfhRequestApi,
   fetchMyWfhRequestsApi,
   manualAttendanceEntryApi, fetchDevicePunchesTodayApi, fetchAdmsStatusApi, updateAdmsDeviceApi,
+  allowAdmsDeviceNewIpApi, relearnAdmsDeviceIpApi,
 } from '../api/attendance.api';
 import { fetchTeamEmployeesApi } from '../api/employees.api';
 import { invalidateAndRefetch } from '../lib/queryCache';
@@ -129,6 +130,24 @@ export function useUpdateAdmsDevice() {
   return useMutation({
     mutationFn: ({ serial, name, location }) => updateAdmsDeviceApi(serial, { name, location }),
     onSuccess: () => invalidateAndRefetch(qc, ['attendance', 'adms']),
+  });
+}
+
+/** Device IP pinning: accept a device's pending IP. */
+export function useAllowAdmsDeviceNewIp() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ serial, ip }) => allowAdmsDeviceNewIpApi(serial, ip),
+    onSettled: () => invalidateAndRefetch(qc, ['attendance', 'adms']),
+  });
+}
+
+/** Device IP pinning: forget a device's IP so its next request pins a new one. */
+export function useRelearnAdmsDeviceIp() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ serial }) => relearnAdmsDeviceIpApi(serial),
+    onSettled: () => invalidateAndRefetch(qc, ['attendance', 'adms']),
   });
 }
 

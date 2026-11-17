@@ -72,46 +72,6 @@ const isLoopbackIp = (ip) => {
  return v === '127.0.0.1' || v === '::1' || v === '0:0:0:0:0:0:0:1';
 };
 
-/** Collect client IPs. Forwarded headers are trusted only from a loopback peer (Vite/ngrok hop). */
-const getClientIps = (req) => {
- const candidates = [];
- const push = (raw) => {
- if (!raw) return;
- String(raw).split(',').forEach((part) => {
- const v = normalizeIp(part);
- if (v && looksLikeIp(v) && !candidates.includes(v)) candidates.push(v);
- });
- };
-
- push(req.ip);
- push(req.socket?.remoteAddress);
- push(req.connection?.remoteAddress);
-
- const peer = normalizeIp(req.socket?.remoteAddress || req.connection?.remoteAddress || '');
- if (isLoopbackIp(peer)) {
- push(req.headers['x-forwarded-for']);
- push(req.headers['x-real-ip']);
- push(req.headers['cf-connecting-ip']);
- push(req.headers['true-client-ip']);
- push(req.headers['x-client-ip']);
- }
-
- return candidates;
-};
-
-/** Pick the best client IP for display / primary checks. */
-const getClientIp = (req) => {
- const ips = getClientIps(req);
- const remote = ips.filter((ip) => !isLoopbackIp(ip));
- const pool = remote.length ? remote : ips;
-
- const v4 = pool.find((ip) => isIP(ip) === 4);
- if (v4) return v4;
- const v6 = pool.find((ip) => isIP(ip) === 6);
- if (v6) return v6;
- return pool[0] || '';
-};
-
 const ipInCidr = (ip, cidr) => {
  if (!cidr) return false;
  const normalizedIp = normalizeIp(ip);
@@ -149,6 +109,59 @@ const ipInCidr = (ip, cidr) => {
  return false;
  }
  });
+};
+
+/**
+ * Cloudflare's published edge ranges (https://www.cloudflare.com/ips/).
+ * Cloudflare always overwrites CF-Connecting-IP with the address that
+ * connected to it, so that header is believable only when the request
+ * reached us from one of these ranges.
+ */
+const CLOUDFLARE_CIDRS = [
+ '173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22',
+ '141.101.64.0/18', '108.162.192.0/18', '190.93.240.0/20', '188.114.96.0/20',
+ '197.234.240.0/22', '198.41.128.0/17', '162.158.0.0/15', '104.16.0.0/13',
+ '104.24.0.0/14', '172.64.0.0/13', '131.0.72.0/22',
+ '2400:cb00::/32', '2606:4700::/32', '2803:f800::/32', '2405:b500::/32',
+ '2405:8100::/32', '2a06:98c0::/29', '2c0f:f248::/32',
+];
+
+/** Cloudflare's ranges plus any in TRUSTED_PROXY_CIDRS (comma-separated, optional). */
+const trustedProxyCidrs = () => [
+ ...CLOUDFLARE_CIDRS,
+ ...String(process.env.TRUSTED_PROXY_CIDRS || '').split(/[,;\s]+/).filter(Boolean),
+].join(',');
+
+const isTrustedProxyIp = (ip) => looksLikeIp(ip) && ipInCidr(ip, trustedProxyCidrs());
+
+/**
+ * The visitor's IP, for every decision that matters (office network,
+ * beacons, biometric device pinning, rate limits).
+ *
+ * req.ip is the address nginx saw (app.js trusts exactly one proxy hop):
+ * a Cloudflare edge when the site is proxied by Cloudflare, otherwise the
+ * visitor. Only in the first case is CF-Connecting-IP used. X-Forwarded-For,
+ * X-Real-IP, True-Client-IP, X-Client-IP — and CF-Connecting-IP from anyone
+ * else — are typed by the client and never trusted: an employee at home could
+ * otherwise send "X-Client-IP: <office IP>" and check in as in the office.
+ */
+const getTrustedClientIp = (req) => {
+ const peer = normalizeIp(req?.ip || req?.socket?.remoteAddress || '');
+ if (!looksLikeIp(peer)) return '';
+ if (isTrustedProxyIp(peer)) {
+ const viaCloudflare = normalizeIp(req.headers?.['cf-connecting-ip']);
+ if (looksLikeIp(viaCloudflare)) return viaCloudflare;
+ }
+ return peer;
+};
+
+/** @deprecated Same as getTrustedClientIp — kept so older callers stay safe. */
+const getClientIp = (req) => getTrustedClientIp(req);
+
+/** @deprecated The trusted IP as a one-item list — forwarded headers are never added. */
+const getClientIps = (req) => {
+ const ip = getTrustedClientIp(req);
+ return ip ? [ip] : [];
 };
 
 /** True if any observed client IP matches the office whitelist. */
@@ -322,6 +335,14 @@ const generateDefaultPassword = () => {
  return chars.join('');
 };
 
+/** Escape text for an HTML email body (device- or user-supplied values). */
+const escapeHtml = (value) => String(value ?? '')
+ .replace(/&/g, '&amp;')
+ .replace(/</g, '&lt;')
+ .replace(/>/g, '&gt;')
+ .replace(/"/g, '&quot;')
+ .replace(/'/g, '&#39;');
+
 /** Escape user text for PostgREST filter strings. */
 const escapePostgrestFilter = (value) => String(value || '')
  .replace(/\\/g, '\\\\')
@@ -351,6 +372,9 @@ module.exports = {
  isMissingColumnError,
  getClientIp,
  getClientIps,
+ getTrustedClientIp,
+ isTrustedProxyIp,
+ CLOUDFLARE_CIDRS,
  anyIpInCidr,
  normalizeIp,
  ipInCidr,
@@ -371,4 +395,5 @@ module.exports = {
  generateEmployeeCode,
  generateDefaultPassword,
  escapePostgrestFilter,
+ escapeHtml,
 };

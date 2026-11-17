@@ -1,6 +1,14 @@
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
 const config = require('../config/database');
+const { getTrustedClientIp } = require('../utils/helpers');
+
+/**
+ * The visitor's IP for limiter keys. Behind Cloudflare req.ip is the edge
+ * node, shared by everyone routed through it; getTrustedClientIp swaps in
+ * CF-Connecting-IP only when the request really came from Cloudflare.
+ */
+const clientIp = (req) => getTrustedClientIp(req) || req.ip;
 
 /* TODO: Replace with a Redis-backed store (e.g. rate-limit-redis) before
  horizontal scaling — every limiter below uses express-rate-limit's default
@@ -15,10 +23,10 @@ const authKeyGenerator = (req) => {
  const email = req.body?.email
  ? String(req.body.email).toLowerCase().trim()
  : 'none';
- return `ip:${req.ip}:email:${email}`;
+ return `ip:${clientIp(req)}:email:${email}`;
 };
 
-const ipKeyGenerator = (req) => `ip:${req.ip}`;
+const ipKeyGenerator = (req) => `ip:${clientIp(req)}`;
 
 const limiterOptions = {
   windowMs: config.rateLimit.windowMs,
@@ -60,7 +68,7 @@ const generalKeyGenerator = (req) => {
  }
 
  const ua = String(req.get('user-agent') || 'unknown').slice(0, 80);
- return `anon:${req.ip}:${ua}`;
+ return `anon:${clientIp(req)}:${ua}`;
 };
 
 const generalLimiter = rateLimit({
@@ -96,7 +104,7 @@ const settingsKeyGenerator = (req) => {
  }
  }
 
- return `settings:${req.ip}`;
+ return `settings:${clientIp(req)}`;
 };
 
 const settingsLimiter = rateLimit({
@@ -164,7 +172,7 @@ const twoFaLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   max: 10,
-  keyGenerator: (req) => (req.user?.id ? `2fa:${req.user.id}` : `2fa:ip:${req.ip}`),
+  keyGenerator: (req) => (req.user?.id ? `2fa:${req.user.id}` : `2fa:ip:${clientIp(req)}`),
   message: {
     success: false,
     error: { code: 'RATE_LIMIT', message: 'Too many verification attempts. Please wait 15 minutes and try again.' },
@@ -186,6 +194,24 @@ const admsLimiter = rateLimit({
  ...limiterOptions,
  max: config.rateLimit.admsMax,
  keyGenerator: (req) => `adms:${req.query.SN || 'unknown'}`,
+ message: {
+ success: false,
+ error: { code: 'RATE_LIMIT', message: 'Too many requests, please try again later' },
+ timestamp: new Date().toISOString(),
+ },
+});
+
+/**
+ * Second budget for the device endpoints, per source IP. The per-serial one
+ * above can be dodged by changing SN on every request (each new serial gets a
+ * fresh bucket); this caps what one address can send in total. Generous
+ * enough for many devices behind one office connection (each sends a
+ * heartbeat every ~30 seconds plus punch uploads).
+ */
+const admsIpLimiter = rateLimit({
+ ...limiterOptions,
+ max: parseInt(process.env.ADMS_IP_RATE_LIMIT_MAX, 10) || 300,
+ keyGenerator: (req) => `adms-ip:${clientIp(req)}`,
  message: {
  success: false,
  error: { code: 'RATE_LIMIT', message: 'Too many requests, please try again later' },
@@ -251,7 +277,7 @@ const publicLeadLimiter = rateLimit({
 });
 
 module.exports = {
- generalLimiter, authLimiter, bootstrapLimiter, onboardingOtpLimiter, settingsLimiter, admsLimiter, beaconPingLimiter,
+ generalLimiter, authLimiter, bootstrapLimiter, onboardingOtpLimiter, settingsLimiter, admsLimiter, admsIpLimiter, beaconPingLimiter,
  twoFaLimiter,
  webhookTestLimiter, publicLeadLimiter,
 };
