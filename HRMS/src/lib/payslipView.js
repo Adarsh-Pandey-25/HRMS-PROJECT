@@ -159,7 +159,38 @@ export function buildPayslipView(payslip, { company = {}, employee = {} } = {}) 
     leave: (Array.isArray(payslip.breakdown?.meta?.leave) ? payslip.breakdown.meta.leave : []).map((l) => `${l.code} ${l.available}`).join(' · ') || null,
     tax: showTax ? taxSummary(payslip.breakdown?.config?.tax) : null,
     employer: showEmployer ? employerSummary(payslip.breakdown?.employerContributions) : null,
+    // Deductions held back by the 50% limit, TDS at 20% without a PAN, … (printed whatever the display choices).
+    notes: payslipNotes(payslip),
   };
+}
+
+/** The plain-words lines payroll wrote for this payslip. */
+export function payslipNotes(payslip) {
+  const cfg = payslip?.breakdown?.config || {};
+  const list = cfg.payslipNotes ?? cfg.payslip_notes;
+  return Array.isArray(list) ? list.filter((n) => typeof n === 'string' && n.trim()) : [];
+}
+
+/**
+ * Short flags for a salary sheet row: deductions held back by the limit on
+ * total deductions (or a final payslip over it), and TDS at 20% without a PAN.
+ */
+export function payslipFlags(payslip) {
+  const cfg = payslip?.breakdown?.config || {};
+  const cap = cfg.deductionCap || cfg.deduction_cap || {};
+  const tax = cfg.tax || {};
+  const flags = [];
+  const held = Number(cap.heldBack ?? cap.held_back ?? 0);
+  const over = Number(cap.overLimit ?? cap.over_limit ?? 0);
+  if (held > 0) {
+    flags.push({ key: 'held', tone: 'warning', label: `Held back ${fmt(held)}`, title: payslipNotes(payslip).join(' ') || `Deductions above the ${cap.percent}% limit were held back.` });
+  }
+  if (over > 0) {
+    flags.push({ key: 'over', tone: 'danger', label: `Over ${cap.percent}% limit`, title: `Final settlement: deductions are ${fmt(over)} over the ${cap.percent}% deduction limit (not reduced — nothing can be carried past a final payslip).` });
+  }
+  const noPan = (tax.noPan ?? tax.no_pan) && (tax.higherRateApplied ?? tax.higher_rate_applied) && tax.applied !== false;
+  if (noPan) flags.push({ key: 'pan', tone: 'warning', label: 'No PAN · TDS 20%', title: 'No valid PAN on file: TDS at 20% of the taxable income (Income-tax Act 2025 s.397(2)).' });
+  return flags;
 }
 
 /** What the company pays on top of the salary (not deducted from it). */
@@ -175,11 +206,17 @@ function employerSummary(list) {
 /** The tax working behind this month's TDS, when payroll worked it out from the slabs. */
 function taxSummary(t) {
   if (!t || t.applied === false) return null;
+  // No PAN on file: the year's TDS is 20% of the taxable income when that is more than the tax.
+  const noPan = (t.noPan ?? t.no_pan) && (t.higherRateApplied ?? t.higher_rate_applied);
   return {
     heading: `INCOME TAX (TDS) — ${t.regime === 'old' ? 'old' : 'new'} regime, tax year ${t.taxYear || t.tax_year || ''}`,
     rows: [
       { label: 'Taxable income for the year (projected)', amount: fmt(t.taxableIncome ?? t.taxable_income) },
       { label: 'Tax for the year, with cess', amount: fmt(t.annualTax ?? t.annual_tax) },
+      ...(noPan ? [
+        { label: 'TDS at 20% — no PAN on file', amount: fmt(t.noPanTds ?? t.no_pan_tds) },
+        { label: 'TDS for the year (the higher)', amount: fmt(t.tdsTarget ?? t.tds_target) },
+      ] : []),
       { label: 'TDS deducted before this month', amount: fmt(t.tdsBefore ?? t.tds_before) },
       { label: 'TDS this month', amount: fmt(t.tds) },
     ],

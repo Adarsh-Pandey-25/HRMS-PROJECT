@@ -321,9 +321,10 @@ const cancelSource = async ({
 
 /**
  * The active items of a month, as payroll uses them (paise). [] when the
- * table doesn't exist yet.
+ * table doesn't exist yet. `exceptSource`: leave out the items a source added
+ * (a settlement being previewed replaces its earlier one).
  */
-const itemsDue = async (employeeId, month, year) => {
+const itemsDue = async (employeeId, month, year, { exceptSource = null } = {}) => {
   if (!employeeId || !month || !year) return [];
   const { data, error } = await supabaseAdmin
     .from(TABLE).select('*').eq('employee_id', employeeId).eq('month', month).eq('year', year).eq('status', 'active');
@@ -332,7 +333,7 @@ const itemsDue = async (employeeId, month, year) => {
     throw new BadRequestError(error.message);
   }
   return (data || [])
-    .filter((r) => KINDS[r.kind] && toPaise(r.amount) > 0)
+    .filter((r) => KINDS[r.kind] && toPaise(r.amount) > 0 && !(exceptSource && r.source === exceptSource))
     .map((r) => {
       // The tax-free part of a taxable earning (paise): TDS is worked out on the rest.
       const exempt = toPaise(exemptOf(r));
@@ -348,6 +349,89 @@ const itemsDue = async (employeeId, month, year) => {
         esiWage: KINDS[r.kind].earning && r.esi_wage === true,
       };
     });
+};
+
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const CARRIED_SUFFIX = / \(carried from [A-Z][a-z]{2} \d{4}\)$/;
+
+/**
+ * On publishing a payslip whose one-time recoveries the limit on total
+ * deductions held back (Code on Wages s.18): the rest of each goes on the
+ * next month's payslip that isn't published yet, as a recovery of the same
+ * kind named "… (carried from Oct 2026)" whose note names the original item.
+ * Added by the system (no maker), so the next draft's maker-checker isn't
+ * affected. `items` are the payslip's config.one_time recoveries with a
+ * `carry_forward` (rupees). Returns { original item id: { item_id, month, year } }.
+ */
+const carryForwardRecoveries = async ({
+  companyId, employeeId, month, year, items, percent = 50,
+}) => {
+  const lines = (Array.isArray(items) ? items : []).filter((i) => i && !i.earning && toPaise(i.carry_forward) > 0 && KINDS[i.kind]);
+  if (!lines.length) return {};
+  // The next month whose payslip isn't published (usually simply the next one).
+  let m = Number(month);
+  let y = Number(year);
+  let target = null;
+  for (let tries = 0; tries < 12 && !target; tries += 1) {
+    m += 1;
+    if (m === 13) { m = 1; y += 1; }
+    // eslint-disable-next-line no-await-in-loop
+    const { data, error } = await supabaseAdmin
+      .from('payroll').select('id, payslip_status').eq('company_id', companyId).eq('employee_id', employeeId).eq('month', m).eq('year', y);
+    if (error) throw new BadRequestError(error.message);
+    if (!(data || []).some((r) => String(r.payslip_status || '').toUpperCase() === 'PUBLISHED')) target = { month: m, year: y };
+  }
+  if (!target) throw new ConflictError('No month in the next year is open for the rest of the recovery — add it by hand.');
+  const fromLabel = `${MONTH_NAMES[Number(month) - 1]} ${year}`;
+  const made = {};
+  for (const i of lines) {
+    const rest = Math.round(toPaise(i.carry_forward)) / 100;
+    const base = String(i.name || KINDS[i.kind].label).replace(CARRIED_SUFFIX, '');
+    const suffix = ` (carried from ${fromLabel})`;
+    const row = {
+      company_id: companyId,
+      employee_id: employeeId,
+      month: target.month,
+      year: target.year,
+      kind: i.kind,
+      name: `${base.slice(0, 80 - suffix.length)}${suffix}`,
+      amount: rest,
+      taxable: false,
+      pf_wage: false,
+      esi_wage: false,
+      source: 'manual',
+      note: `Carried forward: ₹${rest.toLocaleString('en-IN')} of "${i.name}" (item ${i.id}) on the ${fromLabel} payslip couldn't be deducted under the ${percent}% limit on total deductions (Code on Wages s.18).`,
+      created_by: null,
+    };
+    // eslint-disable-next-line no-await-in-loop
+    let { data, error } = await supabaseAdmin.from(TABLE).insert(row).select('*').maybeSingle();
+    if (error && /duplicate|unique/i.test(error.message || '')) {
+      // Already carried (a publish retried): the item that is there.
+      // eslint-disable-next-line no-await-in-loop
+      ({ data, error } = await supabaseAdmin.from(TABLE).select('*')
+        .eq('company_id', companyId).eq('employee_id', employeeId).eq('month', target.month).eq('year', target.year)
+        .eq('kind', row.kind).eq('name', row.name).eq('amount', rest).eq('status', 'active')
+        .maybeSingle());
+    }
+    check(error);
+    made[i.id] = { item_id: data?.id || null, month: target.month, year: target.year, amount: rest };
+  }
+  require('./auditLog.service').logAudit({
+    companyId,
+    actorId: null,
+    actorRole: 'system',
+    actionType: 'payroll.one_time.carry_forward',
+    targetType: 'employee',
+    targetId: employeeId,
+    afterState: {
+      from: `${year}-${String(month).padStart(2, '0')}`,
+      to: `${target.year}-${String(target.month).padStart(2, '0')}`,
+      items: lines.map((i) => ({ item: i.id, amount: Number(i.carry_forward) })),
+    },
+  }).catch(() => {});
+  // Their open draft for that month takes it in (drafts only; nothing is sent).
+  recalculateDrafts(employeeId, companyId);
+  return made;
 };
 
 /**
@@ -367,5 +451,5 @@ const itemMakers = async (employeeId, month, year) => {
 };
 
 module.exports = {
-  KINDS, listItems, createItem, cancelItem, cancelSource, itemsDue, itemMakers, recalculateDrafts,
+  KINDS, listItems, createItem, cancelItem, cancelSource, itemsDue, itemMakers, recalculateDrafts, carryForwardRecoveries,
 };

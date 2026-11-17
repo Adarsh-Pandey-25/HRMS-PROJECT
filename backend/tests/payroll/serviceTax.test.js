@@ -40,8 +40,10 @@ const ctxWith = (overrides = {}) => ({
   ...overrides.ctx,
 });
 
+// A PAN on file: TDS at the normal rate (without one it is at least 20% — tests/payroll/noPanTds.test.js).
+const WITH_PAN = { statutory_ids: { pan: 'ABCDE1234F' } };
 const slip = (ctx, salary, summary = {}, extra = {}) => payroll.computePayslip(ctx, {
-  employee: { id: 'e1', gender: 'male', salary_details: salary },
+  employee: { id: 'e1', gender: 'male', salary_details: { ...WITH_PAN, ...salary } },
   summary,
   records: [],
   month: 10,
@@ -195,7 +197,7 @@ describe('TDS worked out from the tax slabs (company policy "projected")', () =>
       tax_profile: { years: { '2026-27': { regime: 'old', chapter8_deductions: 150000, hra_exemption: 100000 } } },
     };
     const out = payroll.computePayslip(projected, {
-      employee: { id: 'e1', gender: 'male', date_of_birth: '1990-05-05', salary_details: salary },
+      employee: { id: 'e1', gender: 'male', date_of_birth: '1990-05-05', salary_details: { ...WITH_PAN, ...salary } },
       summary: {},
       records: [],
       month: 4,
@@ -211,7 +213,7 @@ describe('TDS worked out from the tax slabs (company policy "projected")', () =>
     // 10,000 + 1,00,000 + 30% × 1,48,700 (44,610) = 1,54,610 + cess 6,184.40 = 1,60,794.40 → ₹10: 1,60,790 ÷ 6 = 26,798.33 → 26,798
     const salary = { ...twoLakh, tax_profile: { years: { '2026-27': { regime: 'old' } } } };
     const out = payroll.computePayslip(projected, {
-      employee: { id: 'e1', date_of_birth: '1962-08-01', salary_details: salary }, summary: {}, records: [], month: 10, year: 2026, history: taxHistory({}),
+      employee: { id: 'e1', date_of_birth: '1962-08-01', salary_details: { ...WITH_PAN, ...salary } }, summary: {}, records: [], month: 10, year: 2026, history: taxHistory({}),
     });
     expect(out.breakdown_json.config.blockers).toEqual([]);
     expect(out.breakdown_json.config.tax).toMatchObject({
@@ -511,7 +513,7 @@ describe('split months and projections (independent reviews, 3 Nov)', () => {
     // 20,000 + 40,000 + 60,000 + 20% × 21,770 (4,354) = 1,24,354 + cess 4,974.16 = 1,29,328.16 → 1,29,330
     // − 1,00,000 deducted = 29,330 ÷ 3 = 9,776.67 → 9,777 (counting all of December it would be 16,933)
     const leaver = (extra) => payroll.computePayslip(projected, {
-      employee: { id: 'e1', gender: 'male', salary_details: { basic: 200000 }, last_working_day: '2026-12-15' },
+      employee: { id: 'e1', gender: 'male', salary_details: { ...WITH_PAN, basic: 200000 }, last_working_day: '2026-12-15' },
       summary: {},
       records: [],
       month: 8,

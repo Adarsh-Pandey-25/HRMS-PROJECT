@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react';
 import { Download, Eye } from 'lucide-react';
 import { PageHeader, Card, CardHeader, Button, Avatar, Badge, Skeleton, DataTable } from '../../components/ui';
 import { PayslipPreviewModal } from '../../components/payroll/PayslipPreviewModal';
+import { PayslipFlags } from '../../components/payroll/PayslipFlags';
+import { payslipFlags } from '../../lib/payslipView';
 import { useMonthPayslips, downloadPayslipApi } from '../../hooks/usePayroll';
 import { useEmployeeMap } from '../../hooks/useEmployees';
 import { useCompanyStore } from '../../store/companyStore';
@@ -56,9 +58,18 @@ export default function SalarySheet() {
     { accessorKey: 'netPay', header: 'Net Pay', cell: ({ getValue }) => <span className="font-semibold">{formatCurrency(getValue() || 0)}</span> },
     {
       accessorKey: 'unpaidLeaveDays', header: 'Flags',
-      cell: ({ row }) => (row.original.unpaidLeaveDays > 0
-        ? <Badge tone="warning">LOP · {row.original.unpaidLeaveDays}d</Badge>
-        : <span className="text-fg-subtle text-xs">—</span>),
+      cell: ({ row }) => {
+        const p = row.original;
+        // Deductions held back by the 50% limit, TDS at 20% without a PAN.
+        const others = payslipFlags(p);
+        if (!(p.unpaidLeaveDays > 0) && !others.length) return <span className="text-fg-subtle text-xs">—</span>;
+        return (
+          <span className="flex flex-wrap gap-1">
+            {p.unpaidLeaveDays > 0 && <Badge tone="warning">LOP · {p.unpaidLeaveDays}d</Badge>}
+            <PayslipFlags payslip={p} />
+          </span>
+        );
+      },
     },
     {
       id: 'actions',
@@ -87,6 +98,8 @@ export default function SalarySheet() {
       net: p.netPay || 0,
       lopDays: p.unpaidLeaveDays || 0,
       status: p.payslipStatus || p.status,
+      // Deductions held back by the 50% limit, TDS at 20% without a PAN.
+      notes: payslipFlags(p).map((f) => f.label).join('; '),
     })),
     [payrollSheet, employeeMap]
   );
@@ -104,7 +117,7 @@ export default function SalarySheet() {
               rows={exportRows}
               filename={`salary-sheet-${year}-${String(month).padStart(2, '0')}`}
               title={`${monthLabel} Salary Sheet`}
-              columns={['employee', 'department', 'basic', 'gross', 'deductions', 'net', 'lopDays', 'status']}
+              columns={['employee', 'department', 'basic', 'gross', 'deductions', 'net', 'lopDays', 'status', 'notes']}
             />
           }
         />

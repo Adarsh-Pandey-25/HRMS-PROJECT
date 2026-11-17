@@ -12,6 +12,7 @@ const { BadRequestError } = require('../utils/errors');
 const { TIMEZONE } = require('../utils/constants');
 const { toPaise, toRupees } = require('../payroll/money');
 const { selectIn } = require('../utils/selectIn');
+const { hasValidPan } = require('../payroll/tds');
 
 const PAGE = 1000;
 
@@ -69,6 +70,8 @@ const loadEmployees = async (ids) => {
 
 const nameOf = (e) => `${e?.first_name || ''} ${e?.last_name || ''}`.trim() || e?.employee_code || 'Employee';
 const panOf = (e) => String(e?.salary_details?.statutory_ids?.pan || '').toUpperCase();
+/** The PAN for the TDS statement: a valid one, else '' — payroll treats any other as no PAN (TDS at 20%). */
+const validPanOf = (e) => (hasValidPan(panOf(e)) ? panOf(e).trim() : '');
 const monthLabel = (month, year) => moment.tz({ year, month: month - 1, day: 1 }, TIMEZONE).format('MMM YYYY');
 
 /**
@@ -135,6 +138,9 @@ const getTdsRegister = async (companyId, taxYear) => {
       byMonth: Object.fromEntries(rows.map((r) => [`${r.year}-${String(r.month).padStart(2, '0')}`, Number(r.tds || 0)])),
       // The latest projection of the year's tax, if TDS is worked out from the slabs.
       projectedAnnualTax: tax ? Number(tax.annual_tax || 0) : null,
+      // No valid PAN: TDS at 20% (s.397(2)) on the latest payslip.
+      panValid: hasValidPan(panOf(e)),
+      higherRateNoPan: Boolean(tax?.no_pan && tax?.higher_rate_applied),
     };
   }).sort((a, b) => a.name.localeCompare(b.name));
 
@@ -148,7 +154,7 @@ const getTdsRegister = async (companyId, taxYear) => {
       tds: toRupees(published.reduce((s, r) => s + toPaise(r.tds), 0)),
     },
     draftsNotCounted: slips.length - published.length,
-    withoutPan: people.filter((p) => !p.pan && p.tds > 0).length,
+    withoutPan: people.filter((p) => !p.panValid && p.tds > 0).length,
   };
 };
 
@@ -182,7 +188,7 @@ const getForm138Csv = async (companyId, taxYear, quarterKey) => {
       return [
         e?.employee_code || '',
         nameOf(e),
-        panOf(e) || 'PANNOTAVBL', // the return utility's placeholder for a missing PAN
+        validPanOf(e) || 'PANNOTAVBL', // the return utility's placeholder for a missing (or invalid) PAN
         monthLabel(Number(r.month), Number(r.year)),
         paidOn,
         Number(r.gross_salary || 0).toFixed(2),

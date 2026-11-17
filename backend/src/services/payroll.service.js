@@ -45,9 +45,21 @@ const { exemptOneTimePaise } = require('../payroll/retirementExemption');
 // The company's own calculation values, laid over the law (Settings → Payroll → Calculation).
 const companyRules = require('../payroll/companyRules');
 const { taxYearOf } = require('../payroll/taxRules');
+const { applyDeductionCap } = require('../payroll/deductionCap');
 const {
-  toPaise, toRupees, percentRate, mulDiv, roundRupees,
+  toPaise, toRupees, percentRate, mulDiv, roundRupees, rateRupees,
 } = require('../payroll/money');
+
+/**
+ * The engine's deduction lines the limit on total deductions never reduces:
+ * employee PF, ESI, Professional Tax, LWF and TDS — and VPF, the employee's
+ * own PF contribution (it goes in the PF return as chosen).
+ */
+const STATUTORY_DEDUCTION_CODES = new Set(['PF', 'VPF', 'ESI', 'PT', 'LWF', 'TDS']);
+const statutoryDeductionsOf = (o) => o.deductions
+  .filter((d) => STATUTORY_DEDUCTION_CODES.has(d.code)).reduce((a, d) => a + d.amount, 0);
+/** ₹1,23,456.5 as the payslip writes it. */
+const rupeeText = (paise) => `₹${toRupees(paise).toLocaleString('en-IN')}`;
 
 /**
  * The six salary fields HR types per employee, as engine components. Basic
@@ -540,7 +552,7 @@ const TAX_WORKSHEET_AMOUNTS = [
   'salary_paid_before', 'outside_income', 'this_month', 'future_monthly', 'projected_salary', 'other_income',
   'standard_deduction', 'professional_tax', 'exemptions_and_deductions', 'taxable_income', 'slab_tax', 'rebate',
   'surcharge', 'cess', 'annual_tax', 'tds_before', 'remaining', 'tds_due', 'tds', 'shortfall',
-  'one_time', 'one_time_tax', 'annual_tax_regular', 'tds_regular',
+  'one_time', 'one_time_tax', 'annual_tax_regular', 'tds_regular', 'no_pan_tds', 'tds_target',
 ];
 /** The tax worksheet (tds.js, paise) in rupees, as stored on the payslip. */
 const taxWorksheetInRupees = (w) => {
@@ -932,6 +944,19 @@ const computePayslip = (ctx, {
     return result;
   };
 
+  // ── The limit on total deductions (Code on Wages s.18) ───────────────────
+  // A leaver's final payslip (and a settlement payslip after it) settles
+  // their dues: nothing can be carried past it, so it isn't held to the
+  // limit — it is reported when over it (payroll/deductionCap.js).
+  const leaverLastDay = lastWorkingDayOf(employee) || lastWorkingDay;
+  const finalPay = Boolean(leaverLastDay) && monthsUntil(payslipMonth, payslipYear, leaverLastDay) === 0;
+  const deductionCap = companyRules.companyDeductionCap(ctx.calc);
+  const capHolds = deductionCap.on && !finalPay;
+  // ── No PAN (Income-tax Act 2025 s.397(2), was s.206AA; payroll/tds.js) ──
+  // A missing PAN, or one not shaped like a PAN, is no PAN. A sample salary or
+  // a form not saved yet (no employee on record) is worked out as if it had one.
+  const noPan = calc.tds.noPanHigherTds && Boolean(employee?.id) && !tdsProjection.hasValidPan(setup.statutoryIds.pan);
+
   // ── Income tax by projection (company TDS policy "projected") ───────────
   // Worked out on the month's pay without TDS, then charged as this
   // month's amount. A fixed amount or "none" set for the employee still
@@ -992,6 +1017,7 @@ const computePayslip = (ctx, {
       dateOfBirth: employee?.date_of_birth,
       monthly: fullMonthly,
       ptMonthly: futureFull.pt.amount,
+      noPan,
     });
     tax = tdsProjection.projectMonthlyTds({
       month: payslipMonth,
@@ -1016,7 +1042,12 @@ const computePayslip = (ctx, {
         return total;
       })(),
       history: taxHistory,
-      payAfterDeductions: out.gross + toPaise(legacyNow.earningsTotal) - out.totalDeductions - toPaise(legacyNow.deductionsTotal),
+      // Within the limit on total deductions TDS, being statutory, comes before
+      // the company's own deductions (the limit reduces those instead).
+      payAfterDeductions: out.gross + toPaise(legacyNow.earningsTotal) - (capHolds
+        ? statutoryDeductionsOf(out)
+        : out.totalDeductions + toPaise(legacyNow.deductionsTotal)),
+      noPan,
     });
     if (tdsByProjection && tax.tds > 0) {
       engineInput.setup.tdsFixed = tax.tds;
@@ -1038,50 +1069,85 @@ const computePayslip = (ctx, {
       ];
     });
   if (out.overtimePay > 0) earnings.push({ name: 'Overtime', amount: R(out.overtimePay) });
-  const deductions = out.deductions.map((d) => ({ name: d.name, amount: R(d.amount) }));
   const earnedOf = (code) => R(out.earnings.find((e) => e.code === code)?.earned || 0);
 
   const legacy = legacyComponents(out);
   earnings.push(...legacy.earnings);
-  deductions.push(...legacy.deductions);
   const legacyEarnings = legacy.earningsTotal;
-  const legacyDeductions = legacy.deductionsTotal;
 
-  // Loans and salary advances (Employee → Payroll): each instalment due this
-  // month comes off after every other deduction, never more than the pay left;
-  // what can't be recovered now stays on the loan for the months to come. The
-  // recovery is recorded against the loan when the payslip is published.
-  let room = Math.max(0, out.gross + toPaise(legacyEarnings) - out.totalDeductions - toPaise(legacyDeductions));
-  // One-time recoveries first (notice not served, …), then loans.
-  const oneTimeRecovered = [];
-  let recoveryShort = 0;
-  for (const r of oneTimeRecoveryItems) {
-    const due = Math.max(0, Math.round(Number(r.amount) || 0));
-    const take = Math.min(due, room);
-    recoveryShort += due - take;
-    room -= take;
-    if (take > 0) oneTimeRecovered.push({ id: r.id, kind: r.kind, name: r.name, amount: R(take), due: R(due) });
-  }
-  deductions.push(...oneTimeRecovered.map((r) => ({ name: r.name, amount: r.amount })));
-  const deductionsBeforeLoans = out.totalDeductions + toPaise(legacyDeductions)
-    + oneTimeRecovered.reduce((s, r) => s + toPaise(r.amount), 0);
-  const loanRecoveries = [];
-  let loanShort = 0;
-  for (const l of Array.isArray(loans) ? loans : []) {
-    const due = Math.max(0, Math.round(Number(l.amount) || 0));
-    const take = Math.min(due, room);
-    loanShort += due - take;
-    room -= take;
-    if (take > 0) loanRecoveries.push({ loan_id: l.loanId, kind: l.kind, name: l.name, amount: R(take), due: R(due) });
-  }
+  // Every deduction besides the statutory ones, within the limit on total
+  // deductions and the pay left (payroll/deductionCap.js): the company's own
+  // deductions, one-time recoveries (notice not served, …) and loan and
+  // salary-advance instalments (Employee → Payroll). A loan instalment not
+  // recovered stays on the loan for the months to come; a one-time recovery's
+  // rest goes on next month's payslip once this one is published, which is
+  // also when loan recoveries are recorded against the loan.
+  const payPaise = out.gross + toPaise(legacyEarnings);
+  const capBase = deductionCap.base === 'code_wages' ? out.pf.wages : payPaise;
+  const capped = applyDeductionCap({
+    pay: payPaise,
+    base: capBase,
+    rate: deductionCap.on ? deductionCap.rate : null,
+    statutory: statutoryDeductionsOf(out),
+    configured: [
+      ...out.deductions.filter((d) => !STATUTORY_DEDUCTION_CODES.has(d.code)).map((d) => ({ key: d.code, name: d.name, amount: d.amount })),
+      ...legacy.deductions.map((d, i) => ({ key: `LEGACY:${i}`, name: d.name, amount: toPaise(d.amount) })),
+    ],
+    oneTime: oneTimeRecoveryItems.map((r) => ({ key: r.id, name: r.name, amount: r.amount, item: r })),
+    loans: (Array.isArray(loans) ? loans : []).map((l) => ({ key: l.loanId, name: l.name, amount: l.amount, loan: l })),
+    finalPay,
+  });
+  const configuredTaken = new Map(capped.configured.map((d) => [d.key, d.amount]));
+  const deductions = [
+    ...out.deductions.map((d) => ({ name: d.name, amount: STATUTORY_DEDUCTION_CODES.has(d.code) ? d.amount : configuredTaken.get(d.code) })),
+    ...capped.configured.filter((d) => d.key.startsWith('LEGACY:')).map((d) => ({ name: d.name, amount: d.amount })),
+  ].filter((d) => d.amount > 0).map((d) => ({ name: d.name, amount: R(d.amount) }));
+  // One-time recoveries taken — and any held back by the limit (carried to next month).
+  const oneTimeRecovered = capped.oneTime
+    .filter((r) => r.amount > 0 || r.reason === 'limit')
+    .map((r) => ({
+      id: r.item.id,
+      kind: r.item.kind,
+      name: r.name,
+      amount: R(r.amount),
+      due: R(r.due),
+      ...(r.reason === 'limit' ? { carry_forward: R(r.held) } : {}),
+    }));
+  deductions.push(...oneTimeRecovered.filter((r) => r.amount > 0).map((r) => ({ name: r.name, amount: r.amount })));
+  const loanRecoveries = capped.loans
+    .filter((l) => l.amount > 0)
+    .map((l) => ({
+      loan_id: l.loan.loanId, kind: l.loan.kind, name: l.name, amount: R(l.amount), due: R(l.due),
+    }));
   deductions.push(...loanRecoveries.map((l) => ({ name: l.name, amount: l.amount })));
-  const loanTotal = loanRecoveries.reduce((s, l) => s + toPaise(l.amount), 0);
+  const heldBy = (reason, list) => list.filter((l) => l.reason === reason).reduce((s, l) => s + l.held, 0);
+  const recoveryShort = heldBy('pay', capped.oneTime);
+  const loanShort = heldBy('pay', capped.loans);
+
+  // What the payslip says about it, in plain words (printed on it).
+  const payslipNotes = [];
+  const capLabel = `${deductionCap.percent}% deduction limit`;
+  const heldLines = [...capped.loans, ...capped.oneTime, ...capped.configured].filter((l) => l.reason === 'limit');
+  for (const l of heldLines) {
+    let rest = 'not carried forward';
+    if (capped.loans.includes(l)) rest = 'the rest stays on the loan for the coming months';
+    else if (capped.oneTime.includes(l)) rest = 'carried to next month';
+    payslipNotes.push(`${l.name} reduced by ${rupeeText(l.held)} (${capLabel}); ${rest}.`);
+  }
+  if (capped.overLimit > 0) {
+    payslipNotes.push(`Deductions on this final payslip (${rupeeText(capped.total)}) are more than the ${capLabel} (${rupeeText(capped.limit)}). As a final settlement nothing can be carried to a later month, so they were not reduced.`);
+  }
 
   // In paise, then rupees: parts kept to the paisa must not pick up float error.
-  const grossFinal = R(out.gross + toPaise(legacyEarnings));
-  const totalDeductions = R(deductionsBeforeLoans + loanTotal);
+  const grossFinal = R(payPaise);
+  const totalDeductions = R(capped.total);
   const net = R(toPaise(grossFinal) - toPaise(totalDeductions));
-  const blockers = [...out.blockers, ...(tdsByProjection && tax ? tax.blockers : [])];
+  // The engine refuses deductions above the pay; within the limit the company's
+  // own deductions were reduced instead, so only the final net decides.
+  const blockers = [
+    ...out.blockers.filter((b) => !(capped.applies && b.code === 'negative_net')),
+    ...(tdsByProjection && tax ? tax.blockers : []),
+  ];
   if (ptEarlierDrafts.length) {
     blockers.push({ code: 'pt_earlier_draft', message: `An earlier payslip of this half-year is still a draft (${ptEarlierDrafts.map((d) => `${d.month}/${d.year}`).join(', ')}) — publish it first, so this month's Professional Tax counts it.` });
   }
@@ -1102,8 +1168,47 @@ const computePayslip = (ctx, {
     blockers.push({ code: 'pt_state_unconfirmed', message: 'Confirm the company\'s Professional Tax state in Settings → Payroll (the earlier settings screen filled in Karnataka by itself).' });
   }
   const warnings = [...out.warnings, ...(tdsByProjection && tax ? tax.warnings : [])];
+  // A company limit looser than the law's 50%, on a payslip it let through.
+  if (deductionCap.percent > companyRules.LEGAL_DEDUCTION_CAP_PERCENT && !finalPay
+    && capped.total > rateRupees(capBase, percentRate(String(companyRules.LEGAL_DEDUCTION_CAP_PERCENT)), 'down')) {
+    companyValues.push({
+      key: 'deductionCap.percent',
+      label: 'Limit on total deductions',
+      law: `${companyRules.LEGAL_DEDUCTION_CAP_PERCENT}% of wages`,
+      company: deductionCap.on ? `${deductionCap.percent}% of wages` : 'none',
+    });
+  }
+  // No PAN, and the company switched the higher rate off: on the payslips it changes.
+  const noPanLawTds = tdsByProjection && !calc.tds.noPanHigherTds && Boolean(employee?.id)
+    && !tdsProjection.hasValidPan(setup.statutoryIds.pan) && (tax?.worksheet?.annual_tax || 0) > 0;
+  if (noPanLawTds) {
+    companyValues.push({ key: 'tds.noPanHigherTds', label: 'TDS without a PAN', law: 'at least 20%', company: 'the normal rate' });
+  }
   const companyWarning = companyRules.companyValuesWarning(companyValues);
   if (companyWarning) warnings.push(companyWarning);
+  if (capped.heldByLimit > 0) {
+    warnings.push({
+      code: 'deduction_cap',
+      message: `Deductions were held to ${deductionCap.percent}% of ${deductionCap.base === 'code_wages' ? 'Labour Code wages' : 'gross pay'} (${rupeeText(capped.limit)}, Code on Wages s.18): ${rupeeText(capped.heldByLimit)} held back. ${payslipNotes.filter((n) => !n.startsWith('Deductions on this final')).join(' ')}`,
+    });
+  }
+  if (capped.overLimit > 0) {
+    warnings.push({
+      code: 'deduction_cap_final_pay',
+      message: `This final payslip's deductions (${rupeeText(capped.total)}) are ${rupeeText(capped.overLimit)} over the ${capLabel} (${rupeeText(capped.limit)}). A full and final settlement isn't held to the limit, because nothing can be carried past it — check the recoveries with the employee before publishing.`,
+    });
+  }
+  // No PAN on file: TDS at 20%, or the normal rate when that is higher (payroll/tds.js).
+  const taxSheet = tdsByProjection && tax?.worksheet;
+  if (taxSheet && taxSheet.no_pan && taxSheet.tds_target > 0) {
+    payslipNotes.push(taxSheet.higher_rate_applied
+      ? 'TDS at 20% — no PAN on file (Income-tax Act 2025 s.397(2)). Once a PAN is recorded, TDS goes back to the normal rate from that month.'
+      : 'No PAN on file: TDS is at the normal rate, which is above 20% (Income-tax Act 2025 s.397(2)).');
+    warnings.push({
+      code: 'tds_no_pan',
+      message: `No valid PAN on file, so TDS for the year is ${rupeeText(taxSheet.tds_target)}: the higher of the tax (${rupeeText(taxSheet.annual_tax)}) and 20% of the taxable income (${rupeeText(taxSheet.no_pan_tds)}). Record the PAN in Employee → Payroll setup to bring it back to normal. The 20% working for salary follows the CBDT's practice under the old Act; your CA is confirming it for the new Act.`,
+    });
+  }
   if (recoveryShort > 0) {
     warnings.push({ code: 'recovery_short', message: `₹${R(recoveryShort).toLocaleString('en-IN')} of this month's recoveries couldn't be taken (not enough pay left) — recover it from the employee another way.` });
   }
@@ -1249,6 +1354,31 @@ const computePayslip = (ctx, {
       one_time_pay: R(out.oneTimePay || 0),
       // Loan and advance instalments recovered on this payslip (recorded when it is published).
       loans: loanRecoveries.length ? loanRecoveries : null,
+      // The limit on total deductions (Code on Wages s.18): what it was, and
+      // what it held back (lines) — or, on a final payslip, how far over it is.
+      deduction_cap: {
+        base: deductionCap.base,
+        percent: deductionCap.percent,
+        wages: R(capBase),
+        limit: capped.limit == null ? null : R(capped.limit),
+        applied: capped.applies,
+        final_pay: finalPay,
+        statutory: R(capped.statutory),
+        due: R(capped.due),
+        total: R(capped.total),
+        held_back: R(capped.heldByLimit),
+        over_limit: R(capped.overLimit),
+        lines: heldLines.map((l) => {
+          let carried = 'no';
+          if (capped.loans.includes(l)) carried = 'loan';
+          else if (capped.oneTime.includes(l)) carried = 'next_month';
+          return {
+            name: l.name, due: R(l.due), taken: R(l.amount), held_back: R(l.held), carried,
+          };
+        }),
+      },
+      // Plain-words lines printed on the payslip (deductions held back, TDS without a PAN).
+      payslip_notes: payslipNotes.length ? payslipNotes : null,
       // What the payslip shows, as the company chose when it was worked out.
       payslip_display: {
         show_rates: calc.payslip.showRates,
@@ -1454,9 +1584,11 @@ const calculateContractPayslip = async (employee, attendanceSummary, month = nul
     history = { ...(history || {}), tax };
   }
   // One-time pay and recoveries for the month (real runs; none before the SQL is run).
-  const oneTime = opts.withHistory && employee?.id && Number(month) && !opts.published
-    ? await require('./oneTimePay.service').itemsDue(employee.id, Number(month), year)
-    : null;
+  // `opts.oneTime`: the items to work it out with instead (a settlement being previewed).
+  let oneTime = Array.isArray(opts.oneTime) ? opts.oneTime : null;
+  if (!oneTime && opts.withHistory && employee?.id && Number(month) && !opts.published) {
+    oneTime = await require('./oneTimePay.service').itemsDue(employee.id, Number(month), year);
+  }
   // Loan and advance instalments due this month (real runs; none before the SQL is run).
   // A leaver's final payslip (or settlement payslip) recovers what is left of each loan.
   const leftOn = lastWorkingDayOf(employee);
@@ -1653,7 +1785,7 @@ const describeSetup = (setup, options, taxYears = [taxYearOf(moment.tz(TIMEZONE)
 
 /** Legal reminders shown next to a switch that is off — warnings, never blocks. */
 const setupWarnings = (setup, {
-  pfWages, contractGross, pfCeiling, esiThreshold, pfPolicy, esiApplicable, tdsPolicy,
+  pfWages, contractGross, pfCeiling, esiThreshold, pfPolicy, esiApplicable, tdsPolicy, noPanHigherTds = true,
 }) => {
   const w = [];
   if (!setup.pf && pfPolicy !== 'not_applicable' && pfCeiling != null && pfWages <= pfCeiling) {
@@ -1668,10 +1800,18 @@ const setupWarnings = (setup, {
   if (setup.tdsMode === 'none') {
     w.push({ key: 'tds', message: 'No TDS will be deducted. Make sure the employee\'s tax declarations support this.' });
   }
-  if (tdsPolicy === 'projected' && setup.tdsMode === 'company' && !setup.statutoryIds?.pan) {
-    w.push({ key: 'pan', message: 'No PAN recorded. Without a PAN the law can require TDS at a higher rate — check with your CA.' });
+  if (tdsPolicy === 'projected' && setup.tdsMode === 'company' && !tdsProjection.hasValidPan(setup.statutoryIds?.pan)) {
+    w.push({ key: 'pan', message: noPanText(Boolean(setup.statutoryIds?.pan), noPanHigherTds) });
   }
   return w;
+};
+
+/** Why no PAN matters (Income-tax Act 2025 s.397(2)), as the company has chosen to apply it. */
+const noPanText = (invalid, higherTds) => {
+  const what = invalid ? 'The PAN recorded isn\'t a valid PAN (5 letters, 4 digits, 1 letter), so it counts as no PAN.' : 'No PAN recorded.';
+  return higherTds
+    ? `${what} Until one is recorded, TDS is at 20% of the taxable income, or the normal rate if higher (nothing when no tax is due) — Income-tax Act 2025 s.397(2).`
+    : `${what} The law requires TDS of at least 20% without a PAN, but your Settings → Payroll → Calculation has "Higher TDS without a PAN" off — check with your CA.`;
 };
 
 const loadEmployeeForPayroll = async (employeeId) => {
@@ -1764,6 +1904,7 @@ const getPayrollSetup = async (employeeId) => {
       pfPolicy: ctx.pfPolicy,
       esiApplicable: ctx.esiApplicable,
       tdsPolicy: ctx.tdsPolicy,
+      noPanHigherTds: companyRules.resolveCompanyCalc(ctx.calc).tds.noPanHigherTds,
     }),
     updatedAt: sd.payroll_setup_updated_at || null,
   };
@@ -1820,7 +1961,7 @@ const notifyPayrollSetupChange = async ({ employee, beforeSalary, afterSalary, a
 // 1.1 × 100 is 110.00000000000001 in floating point, so compare with a tolerance.
 const hasAtMostTwoDecimals = (n) => Math.abs(n * 100 - Math.round(n * 100)) < 1e-6;
 
-const PAN_PATTERN = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
+const { PAN_PATTERN } = tdsProjection;
 /** PAN, UAN and ESIC number as typed by HR: checked for shape, '' clears one. */
 const validateStatutoryIds = (input, current) => {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new BadRequestError('Statutory numbers must be sent as an object');
@@ -2868,9 +3009,18 @@ const getPayrollChecks = async (month, year, companyId) => {
     const taxYear = taxYearOf(m, y);
     const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
     const projectedFor = employees.filter((e) => resolvePayrollSetup(e.salary_details).tdsMode === 'company');
-    const noPan = projectedFor.filter((e) => !resolvePayrollSetup(e.salary_details).statutoryIds.pan).map((e) => e.id);
+    // A missing PAN, or one not shaped like a PAN, is no PAN (Income-tax Act 2025 s.397(2)).
+    const noPan = projectedFor.filter((e) => !tdsProjection.hasValidPan(resolvePayrollSetup(e.salary_details).statutoryIds.pan)).map((e) => e.id);
     if (noPan.length) {
-      items.push({ key: 'tax_no_pan', level: 'warn', title: `${plural(noPan.length, 'person has', 'people have')} no PAN recorded (Employee → Payroll setup). Without a PAN the law can require TDS at a higher rate — check with your CA.`, people: people(noPan) });
+      const higherTds = companyRules.resolveCompanyCalc(ctx.calc).tds.noPanHigherTds;
+      items.push({
+        key: 'tax_no_pan',
+        level: 'warn',
+        title: higherTds
+          ? `${plural(noPan.length, 'person has', 'people have')} no valid PAN recorded (Employee → Payroll setup), so their TDS is at 20% of the taxable income — or the normal rate, if higher — until it is recorded (Income-tax Act 2025 s.397(2)). Nothing is deducted where no tax is due.`
+          : `${plural(noPan.length, 'person has', 'people have')} no valid PAN recorded (Employee → Payroll setup). The law requires TDS of at least 20% without a PAN, but "Higher TDS without a PAN" is off in Settings → Payroll → Calculation — check with your CA.`,
+        people: people(noPan),
+      });
     }
     const defaultRegime = companyRules.resolveCompanyCalc(ctx.calc).tds.defaultRegime;
     const oldNoBirthDate = projectedFor.filter((e) => tdsProjection.resolveTaxProfile(e.salary_details, taxYear, defaultRegime).regime === 'old'
@@ -2999,6 +3149,28 @@ const applyPublishEffects = async (payslip, publisher) => {
     } catch (err) {
       logger.error('Payslip published but the loan recovery could not be recorded', { payslipId: payslip.id, error: err.message });
       config.loans_error = err.message;
+    }
+  }
+
+  // One-time recoveries the limit on total deductions held back: the rest goes
+  // on next month's payslip, linked both ways (carried_to here, the original
+  // item's id in the new item's note).
+  const carry = (Array.isArray(config.one_time) ? config.one_time : []).filter((i) => i && !i.earning && Number(i.carry_forward) > 0);
+  if (carry.length && !config.one_time_carried_at) {
+    try {
+      const made = await require('./oneTimePay.service').carryForwardRecoveries({
+        companyId,
+        employeeId: payslip.employee_id,
+        month: payslip.month,
+        year: payslip.year,
+        items: carry,
+        percent: config.deduction_cap?.percent,
+      });
+      config.one_time = config.one_time.map((i) => (i && made[i.id] ? { ...i, carried_to: made[i.id] } : i));
+      config.one_time_carried_at = nowIso;
+    } catch (err) {
+      logger.error('Payslip published but the rest of a recovery could not be carried to next month', { payslipId: payslip.id, error: err.message });
+      config.one_time_carry_error = err.message;
     }
   }
 

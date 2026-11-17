@@ -187,7 +187,8 @@ describe('TDS on the final payslip counts only the taxable part', () => {
     id: 'g1', kind: 'gratuity', name: 'Gratuity', earning: true, amount: R(288000), taxable: true, pfWage: false, esiWage: false, ...extra,
   });
   const slip = (oneTime) => payroll.computePayslip(ctx, {
-    employee: { id: 'e1', gender: 'male', salary_details: salary, last_working_day: '2027-03-31' },
+    // A PAN on file: TDS at the normal rate (without one it is at least 20%).
+    employee: { id: 'e1', gender: 'male', salary_details: { ...salary, statutory_ids: { pan: 'ABCDE1234F' } }, last_working_day: '2027-03-31' },
     summary: {},
     records: [],
     month: 3,

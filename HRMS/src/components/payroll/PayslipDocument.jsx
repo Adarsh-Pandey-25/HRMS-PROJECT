@@ -50,7 +50,8 @@ function PairRows({ rows, keyPrefix }) {
 /**
  * Classic bordered Indian payslip sheet (matches the downloaded PDF):
  * earnings with their monthly rate and the amount earned, deductions,
- * reimbursements, net pay, and — when they apply — the income-tax working
+ * reimbursements, net pay, and — when they apply — notes (deductions held
+ * back by the 50% limit, TDS at 20% without a PAN), the income-tax working
  * and what the employer pays on top (report D15).
  */
 export function PayslipDocument({ payslip, company, employee }) {
@@ -177,6 +178,16 @@ export function PayslipDocument({ payslip, company, employee }) {
               </p>
             </td>
           </tr>
+          {v.notes.length > 0 && (
+            <>
+              <Band>NOTES</Band>
+              {v.notes.map((note) => (
+                <tr key={note}>
+                  <Cell colSpan={5}>{note}</Cell>
+                </tr>
+              ))}
+            </>
+          )}
           {v.tax && (
             <>
               <Band>{v.tax.heading}</Band>
