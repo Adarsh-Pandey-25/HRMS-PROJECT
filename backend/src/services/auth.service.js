@@ -9,9 +9,10 @@ const {
 const { omitSensitive, generateDefaultPassword, isMissingColumnError } = require('../utils/helpers');
 const { checkSlugAvailability } = require('../utils/slug');
 const { allocateNextEmployeeCode } = require('./employeeCode.service');
-const { welcomeEmail, passwordResetEmail, onboardingOtpEmail } = require('./email.service');
+const { welcomeEmail, passwordResetEmail, onboardingOtpEmail, sendEmail } = require('./email.service');
 const settingsService = require('./settings.service');
 const logger = require('../utils/logger');
+const totp = require('../utils/totp');
 const { getCompanyId, newCompanyId, companyIdFields } = require('../utils/tenant');
 const tenantService = require('./tenant.service');
 const { uploadCompanyLogo, getSignedUrl, STORAGE_BUCKETS } = require('./storage.service');
@@ -206,10 +207,23 @@ const generateTokens = (employee) => {
     token_version: employee.token_version ?? 0,
   };
   const accessToken = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: config.jwt.expire });
+  // A unique id, so two refresh tokens issued in the same second never share a hash.
   const refreshToken = jwt.sign(payload, process.env.JWT_REFRESH_SECRET, {
     expiresIn: config.jwt.refreshExpire,
+    jwtid: crypto.randomUUID(),
   });
   return { accessToken, refreshToken };
+};
+
+const hashToken = (token) => crypto.createHash('sha256').update(String(token)).digest('hex');
+
+/** UUIDs can arrive upper- or lower-case; compare them the way Postgres does. */
+const sameId = (a, b) => Boolean(a && b) && String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
+
+/** Deletes every refresh token the employee holds, so no device can mint a new session. */
+const revokeRefreshTokens = async (employeeId) => {
+  const { error } = await supabaseAdmin.from('refresh_tokens').delete().eq('employee_id', employeeId);
+  if (error) logger.error('Failed to revoke refresh tokens', { employeeId, error: error.message });
 };
 
 const generateOnboardingToken = (employee) => {
@@ -222,13 +236,159 @@ const generateOnboardingToken = (employee) => {
 };
 
 const storeRefreshToken = async (employeeId, refreshToken) => {
-  const tokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
+  const tokenHash = hashToken(refreshToken);
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
   await supabaseAdmin.from('refresh_tokens').insert({
     employee_id: employeeId,
     token_hash: tokenHash,
     expires_at: expiresAt.toISOString(),
   });
+};
+
+// ── Two-step login (employee TOTP) ──────────────────────────────────────────
+// After the password, the client gets a pending token (5 minutes) and must
+// send it back with a code from the authenticator app. Each pending token is
+// a row in two_fa_login_challenges: that row makes it single-use and caps it
+// at 5 tries, in the database, so it holds across every backend process.
+
+const TWO_FA_PENDING_PURPOSE = '2fa_pending';
+const TWO_FA_PENDING_TTL_SECONDS = 5 * 60;
+const TWO_FA_MAX_ATTEMPTS = 5;
+const TWO_FA_CHALLENGES = 'two_fa_login_challenges';
+/** Tells the login screen to go back to the password step. */
+const TWO_FA_RESTART = { restartLogin: true };
+const TWO_FA_EXPIRED_MESSAGE = 'Your sign-in has expired. Please sign in again.';
+const TWO_FA_USED_MESSAGE = 'This sign-in has already been used. Please sign in again.';
+const TWO_FA_TOO_MANY_MESSAGE = 'Too many wrong codes. Please sign in again.';
+
+/**
+ * The pending token is signed with its own key, derived from JWT_SECRET, so
+ * it can never pass as an access token (auth.middleware.js verifies with
+ * JWT_SECRET itself) and an access token can never pass as a pending token.
+ */
+const twoFaPendingKey = () => {
+  if (!process.env.JWT_SECRET) throw new Error('JWT_SECRET is not set');
+  return crypto.createHmac('sha256', process.env.JWT_SECRET).update('spaxsync:employee-2fa-pending:v1').digest();
+};
+
+const restartTwoFa = (message = TWO_FA_EXPIRED_MESSAGE) => new BadRequestError(message, { ...TWO_FA_RESTART });
+const tooManyTwoFaTries = () => new TooManyRequestsError(TWO_FA_TOO_MANY_MESSAGE, { ...TWO_FA_RESTART, attemptsRemaining: 0 });
+
+const issueTwoFaPendingToken = async (employee) => {
+  const jti = crypto.randomUUID();
+  const companyId = getCompanyId(employee);
+  const now = Date.now();
+  // Housekeeping: this employee's expired challenges are of no further use.
+  await supabaseAdmin.from(TWO_FA_CHALLENGES).delete()
+    .eq('employee_id', employee.id)
+    .lt('expires_at', new Date(now).toISOString());
+  const { error } = await supabaseAdmin.from(TWO_FA_CHALLENGES).insert({
+    jti,
+    employee_id: employee.id,
+    company_id: companyId,
+    attempts: 0,
+    expires_at: new Date(now + TWO_FA_PENDING_TTL_SECONDS * 1000).toISOString(),
+  });
+  if (error) {
+    logger.error('[2FA] Could not start two-step sign-in — is migration 20261117_two_step_login.sql applied?', {
+      employeeId: employee.id, error: error.message,
+    });
+    throw new Error('Two-step sign-in is unavailable');
+  }
+  return jwt.sign(
+    {
+      id: employee.id,
+      company_id: companyId,
+      token_version: employee.token_version ?? 0,
+      purpose: TWO_FA_PENDING_PURPOSE,
+      // Also refused by auth.middleware.js, should this ever reach it.
+      scope: 'two_fa_pending',
+    },
+    twoFaPendingKey(),
+    { algorithm: 'HS256', expiresIn: TWO_FA_PENDING_TTL_SECONDS, jwtid: jti },
+  );
+};
+
+/** Verifies a pending token's signature, expiry and purpose. Never accepts an access token. */
+const readTwoFaPendingToken = (token) => {
+  let claims;
+  try {
+    claims = jwt.verify(String(token || ''), twoFaPendingKey(), { algorithms: ['HS256'] });
+  } catch {
+    throw restartTwoFa();
+  }
+  if (claims?.purpose !== TWO_FA_PENDING_PURPOSE || !claims.jti || !claims.id) throw restartTwoFa();
+  return claims;
+};
+
+/**
+ * Uses up one of the challenge's tries BEFORE the code is checked, with a
+ * compare-and-set, so parallel guesses can't get past the limit. Returns how
+ * many tries are now used.
+ */
+const reserveTwoFaAttempt = async (jti, seenAttempts) => {
+  let attempts = Number(seenAttempts) || 0;
+  while (attempts < TWO_FA_MAX_ATTEMPTS) {
+    const { data, error } = await supabaseAdmin.from(TWO_FA_CHALLENGES)
+      .update({ attempts: attempts + 1 })
+      .eq('jti', jti)
+      .eq('attempts', attempts)
+      .is('used_at', null)
+      .select('jti');
+    if (error) {
+      logger.error('[2FA] Could not record a sign-in attempt', { error: error.message });
+      throw restartTwoFa('Something went wrong. Please sign in again.');
+    }
+    if (data?.length) return attempts + 1;
+    // Another try landed at the same moment: read the count again.
+    const { data: fresh } = await supabaseAdmin.from(TWO_FA_CHALLENGES)
+      .select('attempts, used_at')
+      .eq('jti', jti)
+      .maybeSingle();
+    if (!fresh) throw restartTwoFa();
+    if (fresh.used_at) throw restartTwoFa(TWO_FA_USED_MESSAGE);
+    attempts = Number(fresh.attempts) || 0;
+  }
+  throw tooManyTwoFaTries();
+};
+
+/** The TOTP step the code matches, or null. A secret that can't be decrypted is logged, never shown. */
+const matchEmployeeTotpStep = (employee, code) => {
+  try {
+    return totp.matchTotpStep(totp.decryptSecret(employee.totp_secret), code);
+  } catch (err) {
+    // Not a wrong code: the stored seed can't be read, almost always because
+    // SUPER_ADMIN_2FA_ENC_KEY changed since enrollment. Without this log every
+    // 2FA user is locked out and nothing says why.
+    logger.error(
+      '[Employee2FA] TOTP secret decryption failed — SUPER_ADMIN_2FA_ENC_KEY may have changed since enrollment. '
+      + 'This employee cannot finish signing in until the original key is restored or their two-step login is reset.',
+      { employeeId: employee.id, error: err.message },
+    );
+    return null;
+  }
+};
+
+/**
+ * Replay protection: a code is accepted only if its step is later than the
+ * last one this account signed in with, so a code someone watched being
+ * typed can't be used again in the same 90 seconds.
+ */
+const claimTotpStep = async (employeeId, step) => {
+  const { data, error } = await supabaseAdmin.from('employees')
+    .update({ totp_last_used_step: step })
+    .eq('id', employeeId)
+    .or(`totp_last_used_step.is.null,totp_last_used_step.lt.${Number(step)}`)
+    .select('id');
+  if (error) {
+    if (isMissingColumnError(error.message, 'totp_last_used_step')) {
+      logger.warn('[2FA] Code replay check skipped — run migration 20261117_two_step_login.sql');
+      return true;
+    }
+    logger.error('[2FA] Could not record the code step', { employeeId, error: error.message });
+    throw restartTwoFa('Something went wrong. Please sign in again.');
+  }
+  return Boolean(data?.length);
 };
 
 /** Roles allowed to sign in through each subdomain portal path. Manager rides on the employee portal — it isn't a separate administrative surface. */
@@ -381,23 +541,6 @@ const authenticateEmployee = async (email, password, { tenantCompanyId = null, a
     await assertCompanyInGoodStanding(companyId, employee.role);
   }
 
-  // Self-service employee 2FA: after password, before session issuance.
-  // The client receives a short-lived twoFaToken (5 min) and must present
-  // it alongside a TOTP code at /api/auth/2fa/verify-login.
-  if (employee.two_fa_enabled) {
-    const { issueTwoFaPendingToken } = require('./employee2fa.service');
-    const twoFaToken = issueTwoFaPendingToken(employee);
-    return {
-      requires2FA: true,
-      twoFaToken,
-      employee: {
-        ...omitSensitive(employee, ['password_hash', 'totp_secret']),
-        company_id: companyId,
-        must_change_password: Boolean(employee.must_change_password),
-      },
-    };
-  }
-
   // A temp password (single-create, bulk import) is time-boxed — checked
   // here, not just stated in the welcome/bulk-import email copy. `select('*')`
   // above means this is simply `undefined` pre-migration, so this is
@@ -415,6 +558,15 @@ const authenticateEmployee = async (email, password, { tenantCompanyId = null, a
   if (allowedRoles && !allowedRoles.includes(employee.role)) {
     recordLoginFailure(email);
     throw new UnauthorizedError('Invalid email or password');
+  }
+
+  // Two-step login: only after every check above (temp-password expiry and
+  // the portal's role included), and nothing about the account goes back
+  // until the code is verified — just the pending token for the code screen.
+  // The lockout counter is cleared only once the code passes, so wrong codes
+  // add to the same per-email lockout as wrong passwords.
+  if (employee.two_fa_enabled) {
+    return { requires2FA: true, twoFaToken: await issueTwoFaPendingToken(employee) };
   }
 
   // Successful authentication — clear any prior lockout for this email.
@@ -444,56 +596,74 @@ const loginToPortal = async (portal, email, password, tenantCompanyId = null) =>
   return authenticateEmployee(email, password, { tenantCompanyId, allowedRoles });
 };
 
+const SESSION_ENDED_MESSAGE = 'Your session has ended. Please sign in again.';
+
+/**
+ * Audit #6: a refresh token is only as good as the session it belongs to.
+ * The employee's current token_version is checked on every refresh, so a
+ * password change/reset, logout, deactivation or two-step reset ends it —
+ * including a refresh cookie someone copied earlier.
+ */
 const refreshAccessToken = async (refreshToken, tenantCompanyId = null) => {
   if (!refreshToken) throw new UnauthorizedError('Refresh token required');
 
   let decoded;
   try {
-    decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+    decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET, { algorithms: ['HS256'] });
   } catch {
     throw new UnauthorizedError('Invalid refresh token');
   }
+  if (!decoded?.id) throw new UnauthorizedError('Invalid refresh token');
 
-  const tokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
-
-  // Reuse detection: look up by hash alone (no employee_id filter) so we
-  // can detect a token that was already consumed by a prior refresh.
-  const { data: stored } = await supabaseAdmin
-    .from('refresh_tokens')
-    .select('id, employee_id')
-    .eq('token_hash', tokenHash)
-    .gt('expires_at', new Date().toISOString())
-    .maybeSingle();
-
-  if (!stored) {
-    // Token already rotated or fully expired — force re-login for ALL of
-    // this employee's sessions by bumping token_version (every outstanding
-    // access token dies immediately on its next auth.middleware.js check).
-    try {
-      await supabaseAdmin
-        .from('employees')
-        .update({ token_version: (decoded.token_version ?? 0) + 1 })
-        .eq('id', decoded.id);
-    } catch {
-      // Best-effort: rejecting the replay already succeeded; if the DB
-      // update fails the user simply has to re-login manually.
-    }
-    throw new UnauthorizedError('Session invalidated due to token reuse');
-  }
-
-  // Delete the consumed token row — prevents replay.
-  await supabaseAdmin.from('refresh_tokens').delete().eq('id', stored.id);
+  const tokenHash = hashToken(refreshToken);
 
   const { data: employee } = await supabaseAdmin
     .from('employees')
     .select('*')
-    .eq('id', stored.employee_id)
-    .eq('is_active', true)
-    .single();
+    .eq('id', decoded.id)
+    .maybeSingle();
 
-  if (!employee) throw new UnauthorizedError('User not found');
-  if (tenantCompanyId && String(getCompanyId(employee)) !== String(tenantCompanyId)) {
+  if (!employee || !employee.is_active) {
+    if (employee) await revokeRefreshTokens(employee.id);
+    throw new UnauthorizedError(SESSION_ENDED_MESSAGE);
+  }
+  if (tenantCompanyId && !sameId(getCompanyId(employee), tenantCompanyId)) {
     throw new UnauthorizedError('Invalid refresh token');
+  }
+
+  // Issued before the last sign-out-everywhere: this session is over. That
+  // is not reuse, so the session that is still valid (say, the one that
+  // just changed the password) is left alone.
+  if ((decoded.token_version ?? 0) !== (employee.token_version ?? 0)) {
+    await supabaseAdmin.from('refresh_tokens').delete()
+      .eq('employee_id', employee.id)
+      .eq('token_hash', tokenHash);
+    throw new UnauthorizedError(SESSION_ENDED_MESSAGE);
+  }
+
+  // Claim the token: delete its row and get it back in one statement, so two
+  // requests with the same token can't both get a new session.
+  const { data: claimed, error: claimError } = await supabaseAdmin
+    .from('refresh_tokens')
+    .delete()
+    .eq('employee_id', employee.id)
+    .eq('token_hash', tokenHash)
+    .select('id, expires_at');
+  if (claimError) {
+    // A database hiccup is not token reuse — don't sign the person out everywhere for it.
+    logger.error('Refresh token claim failed', { employeeId: employee.id, error: claimError.message });
+    throw new UnauthorizedError(SESSION_ENDED_MESSAGE);
+  }
+
+  if (!claimed?.length) {
+    // A current-version token with no row was already used (rotated): a copy
+    // exists somewhere. Sign out everywhere. The version is raised from the
+    // database's value, never from the token's, so it can only go up.
+    await bumpTokenVersion(employee.id);
+    throw new UnauthorizedError('Session invalidated due to token reuse');
+  }
+  if (!claimed.some((row) => new Date(row.expires_at).getTime() > Date.now())) {
+    throw new UnauthorizedError(SESSION_ENDED_MESSAGE);
   }
 
   // Item 4: same fail-closed check as login, run again here so "blocked on
@@ -508,7 +678,7 @@ const refreshAccessToken = async (refreshToken, tenantCompanyId = null) => {
   return {
     accessToken,
     refreshToken: newRefresh,
-    employee: omitSensitive(employee, ['password_hash']),
+    employee: omitSensitive(employee, ['password_hash', 'totp_secret']),
   };
 };
 
@@ -543,48 +713,141 @@ const completeTwoFaLogin = async (employeeId) => {
 };
 
 /**
- * Audit finding N-12: bump employees.token_version so every access token
- * already issued to this employee — cookie or Bearer, regardless of which
- * refresh token (if any) it's paired with — stops passing auth.middleware.js's
- * check immediately, instead of remaining valid until its own natural
- * expiry (up to 24h). Best-effort: a failure here must never block the
+ * Second login step: the pending token from the password step plus a code
+ * from the authenticator app. Wrong codes count against the challenge (5,
+ * then sign in again) and against the per-email login lockout. On success
+ * the challenge is spent, so the same pending token can never sign in twice.
+ */
+const verifyTwoFaLogin = async (twoFaToken, code, tenantCompanyId = null) => {
+  const claims = readTwoFaPendingToken(twoFaToken);
+  if (tenantCompanyId && !sameId(claims.company_id, tenantCompanyId)) throw restartTwoFa();
+
+  const { data: challenge, error } = await supabaseAdmin
+    .from(TWO_FA_CHALLENGES)
+    .select('jti, employee_id, company_id, attempts, expires_at, used_at')
+    .eq('jti', claims.jti)
+    .maybeSingle();
+  if (error) logger.error('[2FA] Could not read the sign-in challenge', { error: error.message });
+  if (!challenge || !sameId(challenge.employee_id, claims.id) || !sameId(challenge.company_id, claims.company_id)) {
+    throw restartTwoFa();
+  }
+  if (challenge.used_at) throw restartTwoFa(TWO_FA_USED_MESSAGE);
+  if (new Date(challenge.expires_at).getTime() <= Date.now()) throw restartTwoFa();
+  if (challenge.attempts >= TWO_FA_MAX_ATTEMPTS) throw tooManyTwoFaTries();
+
+  const { data: employee } = await supabaseAdmin
+    .from('employees')
+    .select('*')
+    .eq('id', challenge.employee_id)
+    .eq('company_id', challenge.company_id)
+    .maybeSingle();
+  // Signed out everywhere, deactivated or two-step reset since the password step.
+  if (!employee || !employee.is_active || !employee.two_fa_enabled || !employee.totp_secret
+    || (employee.token_version ?? 0) !== (claims.token_version ?? 0)) {
+    throw restartTwoFa();
+  }
+
+  try {
+    assertEmailNotLoginLocked(employee.email);
+  } catch (err) {
+    throw new TooManyRequestsError(err.message, { ...TWO_FA_RESTART });
+  }
+
+  const used = await reserveTwoFaAttempt(challenge.jti, challenge.attempts);
+  const left = TWO_FA_MAX_ATTEMPTS - used;
+
+  const step = matchEmployeeTotpStep(employee, code);
+  const accepted = step !== null && await claimTotpStep(employee.id, step);
+  if (!accepted) {
+    recordLoginFailure(employee.email);
+    if (left <= 0) throw tooManyTwoFaTries();
+    const reason = step === null
+      ? "That code didn't work."
+      : 'That code has already been used. Wait for the next code in your app.';
+    throw new BadRequestError(`${reason} ${left} attempt${left === 1 ? '' : 's'} left.`, { attemptsRemaining: left });
+  }
+
+  // Single use: only one request can ever turn this challenge into a session.
+  const { data: spent } = await supabaseAdmin
+    .from(TWO_FA_CHALLENGES)
+    .update({ used_at: new Date().toISOString() })
+    .eq('jti', challenge.jti)
+    .is('used_at', null)
+    .select('jti');
+  if (!spent?.length) throw restartTwoFa(TWO_FA_USED_MESSAGE);
+
+  resetLoginAttempts(employee.email);
+  return completeTwoFaLogin(employee.id);
+};
+
+/**
+ * Audit finding N-12 / #6: sign the employee out everywhere. Raises
+ * employees.token_version so every access token already issued stops
+ * passing auth.middleware.js at once, and deletes every refresh token so no
+ * device can mint a new one.
+ *
+ * The raise is a compare-and-set on the database's own value (never a value
+ * taken from a token), retried if another raise lands first, so the version
+ * only ever goes up. Best-effort: a failure is logged and never blocks the
  * action that triggered it (logout/password change/deactivation itself
  * already succeeded by the time this runs).
  */
 const bumpTokenVersion = async (employeeId) => {
-  const { data } = await supabaseAdmin.from('employees').select('token_version').eq('id', employeeId).maybeSingle();
-  const next = (data?.token_version ?? 0) + 1;
-  const { error } = await supabaseAdmin.from('employees').update({ token_version: next }).eq('id', employeeId);
-  if (error && !/column .*token_version.* does not exist/i.test(error.message || '')) {
-    logger.warn('Failed to bump token_version', { employeeId, error: error.message });
+  let bumped = false;
+  for (let round = 0; round < 5 && !bumped; round += 1) {
+    const { data: row, error: readError } = await supabaseAdmin
+      .from('employees')
+      .select('token_version')
+      .eq('id', employeeId)
+      .maybeSingle();
+    if (readError || !row) {
+      if (readError && !isMissingColumnError(readError.message, 'token_version')) {
+        logger.warn('Failed to read token_version', { employeeId, error: readError.message });
+      }
+      break;
+    }
+    const current = row.token_version ?? 0;
+    const { data: updated, error } = await supabaseAdmin
+      .from('employees')
+      .update({ token_version: current + 1 })
+      .eq('id', employeeId)
+      .eq('token_version', current)
+      .select('id');
+    if (error) {
+      logger.warn('Failed to bump token_version', { employeeId, error: error.message });
+      break;
+    }
+    bumped = Boolean(updated?.length);
   }
+  await revokeRefreshTokens(employeeId);
+  return bumped;
 };
 
 /**
  * A new session for the person who just changed their password. The change
- * bumps token_version, which revokes every session including the one they
- * are using; without this the next request after "Password updated" was a
- * 401 and they were silently signed out. Every other session stays revoked.
+ * signs out everywhere (token_version raised, refresh tokens deleted),
+ * including the session they are using; without this the next request after
+ * "Password updated" was a 401. Issued from the new version, so only this
+ * session comes back — every other one stays signed out.
  */
 const issueSessionFor = async (employeeId) => {
-  const { data: employee, error } = await supabaseAdmin.from('employees').select('*').eq('id', employeeId).maybeSingle();
+  const { data: employee, error } = await supabaseAdmin
+    .from('employees')
+    .select('*')
+    .eq('id', employeeId)
+    .eq('is_active', true)
+    .maybeSingle();
   if (error || !employee) throw new NotFoundError('Employee not found');
   const tokens = generateTokens(employee);
   await storeRefreshToken(employee.id, tokens.refreshToken);
   return tokens;
 };
 
-const logout = async (employeeId, refreshToken) => {
-  if (refreshToken) {
-    const tokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
-    await supabaseAdmin
-      .from('refresh_tokens')
-      .delete()
-      .eq('employee_id', employeeId)
-      .eq('token_hash', tokenHash);
-  } else {
-    await supabaseAdmin.from('refresh_tokens').delete().eq('employee_id', employeeId);
-  }
+/**
+ * token_version is per employee, so signing out ends every session they have
+ * (access and refresh tokens), not just this browser's.
+ */
+const logout = async (employeeId) => {
   await bumpTokenVersion(employeeId);
 };
 
@@ -622,9 +885,114 @@ const changePassword = async (employeeId, currentPassword, newPassword) => {
         .eq('id', employeeId);
     }
   }
-  // Audit finding N-12: a changed password should kill any already-issued
-  // access token, not just future logins.
+  // Audit findings N-12 / #6: a changed password signs out every session —
+  // access and refresh tokens. auth.controller.js then issues a fresh
+  // session for the one that made the change.
   await bumpTokenVersion(employeeId);
+};
+
+// ── Resetting someone's two-step login (lost phone) ─────────────────────────
+
+/** Which roles each role may reset. Nobody resets their own. */
+const TWO_FA_RESETTABLE_ROLES = {
+  admin: ['admin', 'hr', 'manager', 'employee'],
+  hr: ['manager', 'employee'],
+};
+
+/** Throws unless `actor` may reset `target`'s two-step login. Both carry { id, role }. */
+const assertCanResetTwoFactor = (actor, target) => {
+  const allowed = TWO_FA_RESETTABLE_ROLES[actor?.role];
+  if (!allowed) throw new ForbiddenError('Only an Admin or HR can reset two-step login.');
+  if (sameId(actor.id, target?.id)) {
+    throw new ForbiddenError("You can't reset your own two-step login. Ask another Admin to do it.");
+  }
+  if (!allowed.includes(target?.role)) {
+    throw new ForbiddenError(actor.role === 'hr'
+      ? 'HR can reset two-step login for employees and managers only. Ask an Admin.'
+      : "You can't reset this person's two-step login.");
+  }
+};
+
+const escapeHtml = (value) => String(value ?? '')
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+const displayName = (person) => `${person?.first_name || ''} ${person?.last_name || ''}`.trim();
+
+const sendTwoFactorResetEmail = (target, actorName) => {
+  const name = escapeHtml(target.first_name || 'there');
+  const by = escapeHtml(actorName);
+  return sendEmail({
+    to: target.email,
+    subject: 'Your two-step login was reset',
+    type: 'two_step_login_reset',
+    html: `<p>Hi ${name},</p>`
+      + `<p>Your two-step login was reset by ${by}. You have been signed out on every device.</p>`
+      + '<p>Next time you sign in you will only need your password. You can turn two-step login on again from Account security.</p>'
+      + '<p>If you did not ask for this, contact your HR or Admin straight away.</p>',
+  });
+};
+
+/**
+ * Admin/HR turns off someone's two-step login (they lost their phone): the
+ * secret is cleared, two-step login is turned off, and they are signed out
+ * everywhere. Recorded in the audit log and emailed to them.
+ * Scoped to the actor's company and its child companies, like every other
+ * HR/Admin employee action.
+ */
+const resetEmployeeTwoFactor = async (actor, targetId, { ipAddress = null } = {}) => {
+  if (!TWO_FA_RESETTABLE_ROLES[actor?.role]) throw new ForbiddenError('Only an Admin or HR can reset two-step login.');
+  if (sameId(actor.id, targetId)) {
+    throw new ForbiddenError("You can't reset your own two-step login. Ask another Admin to do it.");
+  }
+  const homeCompanyId = actor.company_id;
+  if (!homeCompanyId) throw new ForbiddenError('Only an Admin or HR can reset two-step login.');
+  const scopeIds = [...new Set((await tenantService.getOrgCompanyIds(homeCompanyId)).map(String))];
+
+  const { data: target, error } = await supabaseAdmin
+    .from('employees')
+    .select('id, email, first_name, last_name, role, company_id, two_fa_enabled, totp_secret')
+    .eq('id', String(targetId).toLowerCase())
+    .in('company_id', scopeIds)
+    .maybeSingle();
+  if (error) throw new BadRequestError(error.message);
+  if (!target) throw new NotFoundError('Employee not found');
+
+  assertCanResetTwoFactor(actor, target);
+  if (!target.two_fa_enabled && !target.totp_secret) {
+    throw new BadRequestError("Two-step login isn't turned on for this person.");
+  }
+
+  const { error: updateError } = await supabaseAdmin
+    .from('employees')
+    .update({ two_fa_enabled: false, totp_secret: null, updated_at: new Date().toISOString() })
+    .eq('id', target.id)
+    .eq('company_id', target.company_id);
+  if (updateError) throw new BadRequestError(updateError.message);
+
+  await bumpTokenVersion(target.id);
+
+  const actorName = displayName(actor) || 'your Admin';
+  Promise.resolve().then(() => require('./auditLog.service').logAudit({
+    companyId: actor.company_id,
+    actorId: actor.id,
+    actorRole: actor.role,
+    actionType: 'employee.two_step_reset',
+    targetType: 'employee',
+    targetId: target.id,
+    beforeState: { twoFaEnabled: Boolean(target.two_fa_enabled) },
+    afterState: { twoFaEnabled: false, signedOutEverywhere: true },
+    ipAddress,
+  })).catch(() => {});
+
+  // Never awaited, never fails the reset (it has already happened).
+  if (target.email) {
+    Promise.resolve()
+      .then(() => sendTwoFactorResetEmail(target, actorName))
+      .catch((err) => logger.error('Two-step reset email failed', { employeeId: target.id, error: err.message }));
+  }
+
+  return { employeeId: target.id, twoFaEnabled: false };
 };
 
 /**
@@ -790,8 +1158,9 @@ const resetPassword = async (email, otp, newPassword, tenantCompanyId = null) =>
     .from('employees')
     .update({ password_hash: passwordHash, must_change_password: false })
     .eq('id', resetRecord.employee_id);
-  // Audit finding N-12: OTP-based reset is still a password change — a
-  // stolen access token shouldn't survive the legitimate user resetting it.
+  // Audit findings N-12 / #6: OTP-based reset is still a password change — a
+  // stolen access or refresh token shouldn't survive the legitimate user
+  // resetting it. Signs out everywhere.
   await bumpTokenVersion(resetRecord.employee_id);
 
   clearOtpGuard(email, tenantCompanyId);
@@ -1171,6 +1540,9 @@ module.exports = {
   login,
   loginToPortal,
   completeTwoFaLogin,
+  verifyTwoFaLogin,
+  resetEmployeeTwoFactor,
+  assertCanResetTwoFactor,
   refreshAccessToken,
   logout,
   changePassword,

@@ -62,17 +62,26 @@ const generateTotp = (base32Secret, atMs = Date.now()) => {
   return hotp(base32Decode(base32Secret), counter);
 };
 
-/** Accepts a ±1 step window (90s total) to absorb normal clock drift. */
-const verifyTotp = (base32Secret, token, atMs = Date.now()) => {
+const sameCode = (a, b) => a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+
+/**
+ * The 30-second step a code belongs to, or null when it matches none.
+ * Accepts a ±1 step window (90s total) to absorb normal clock drift. The
+ * step lets a caller refuse a code that was already used (replay): store
+ * the last step accepted and only take a later one.
+ */
+const matchTotpStep = (base32Secret, token, atMs = Date.now()) => {
   const cleanToken = String(token || '').trim();
-  if (!/^\d{6}$/.test(cleanToken)) return false;
+  if (!/^\d{6}$/.test(cleanToken)) return null;
   const counter = Math.floor(atMs / 1000 / STEP_SECONDS);
   const secretBuffer = base32Decode(base32Secret);
-  for (let drift = -1; drift <= 1; drift += 1) {
-    if (hotp(secretBuffer, counter + drift) === cleanToken) return true;
+  for (let drift = 1; drift >= -1; drift -= 1) {
+    if (sameCode(hotp(secretBuffer, counter + drift), cleanToken)) return counter + drift;
   }
-  return false;
+  return null;
 };
+
+const verifyTotp = (base32Secret, token, atMs = Date.now()) => matchTotpStep(base32Secret, token, atMs) !== null;
 
 const buildOtpauthUri = (base32Secret, accountLabel, issuer = 'HRMS Super Admin') => {
   const label = encodeURIComponent(`${issuer}:${accountLabel}`);
@@ -142,6 +151,7 @@ module.exports = {
   generateSecret,
   generateTotp,
   verifyTotp,
+  matchTotpStep,
   buildOtpauthUri,
   encryptSecret,
   decryptSecret,

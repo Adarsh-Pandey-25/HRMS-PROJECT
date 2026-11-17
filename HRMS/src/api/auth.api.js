@@ -19,6 +19,8 @@ export async function loginApi(email, password, portal) {
     data: { email, password },
   });
 
+  // Two-step login: the server sends only the pending token here — the
+  // account itself comes back from the code step.
   if (data?.requires2FA) {
     return { requires2FA: true, twoFaToken: data.twoFaToken };
   }
@@ -187,4 +189,9 @@ export async function confirmTwoFactorApi(code) {
 
 export async function disableTwoFactorApi(code) {
   return apiRequest({ method: 'POST', url: '/auth/2fa/disable', data: { code } });
+}
+
+/** Admin/HR: turn off someone else's two-step login (lost phone) and sign them out everywhere. */
+export async function resetEmployeeTwoFactorApi(employeeId) {
+  return apiRequest({ method: 'POST', url: `/auth/2fa/reset/${encodeURIComponent(employeeId)}` });
 }
