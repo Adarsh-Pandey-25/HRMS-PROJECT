@@ -418,7 +418,7 @@ function SalaryPreview({ basic, hra, da, special, transport, medical, overrides,
   );
 }
 
-function PersonalStep({ register, errors, photoFile, setPhotoFile, watch, setValue, isAdd = false, detailsOptional = isAdd, detailsPending = false }) {
+function PersonalStep({ register, errors, photoFile, setPhotoFile, watch, setValue, isAdd = false, detailsOptional = isAdd, detailsPending = false, payLock = null }) {
   const firstNameReg = register('firstName', {
     onChange: (e) => {
       const cleaned = e.target.value.replace(/[^A-Za-z\s.'-]/g, '');
@@ -557,12 +557,12 @@ function PersonalStep({ register, errors, photoFile, setPhotoFile, watch, setVal
         <div>
           <h3 className="text-sm font-semibold text-fg">Bank Details</h3>
           <p className="text-xs text-fg-subtle mt-0.5">
-            {detailsOptional
+            {payLock || (detailsOptional
               ? 'Used for payroll disbursement. Optional here — the employee adds it on first sign-in if you leave it blank.'
-              : 'Used for payroll disbursement.'}
+              : 'Used for payroll disbursement.')}
           </p>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <fieldset disabled={Boolean(payLock)} className="grid grid-cols-1 sm:grid-cols-2 gap-4 disabled:opacity-60">
           <Input
             label="Bank name"
             required={required}
@@ -593,7 +593,7 @@ function PersonalStep({ register, errors, photoFile, setPhotoFile, watch, setVal
             })}
             error={errors.bankIfsc?.message}
           />
-        </div>
+        </fieldset>
       </div>
     </div>
   );
@@ -745,7 +745,7 @@ function CtcFill({ onFill, disabled }) {
   );
 }
 
-function SalaryStep({ register, errors, watch, setValue, payrollConfig, isAdd = false }) {
+function SalaryStep({ register, errors, watch, setValue, payrollConfig, isAdd = false, payLock = null }) {
   const components = payrollConfig?.components;
   const showHra = isSalaryComponentEnabled(components, 'hra');
   const showDa = isSalaryComponentEnabled(components, 'da');
@@ -808,7 +808,8 @@ function SalaryStep({ register, errors, watch, setValue, payrollConfig, isAdd = 
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <fieldset disabled={Boolean(payLock)} className="grid grid-cols-1 lg:grid-cols-2 gap-6 disabled:opacity-60">
+      {payLock && <p className="lg:col-span-2 text-sm text-fg-muted">{payLock}</p>}
       <div className="space-y-5">
         <CtcFill onFill={fillFromCtc} disabled={!showSpecial} />
         <Select
@@ -929,7 +930,7 @@ function SalaryStep({ register, errors, watch, setValue, payrollConfig, isAdd = 
         salaryPeriod={period}
         gender={gender}
       />
-    </div>
+    </fieldset>
   );
 }
 
@@ -948,6 +949,21 @@ function roleChoices(actorRole, actorId, target) {
     return { options: [current], locked: true, hint: 'Only an Admin can change an HR or Admin user\'s role.' };
   }
   return { options: assignable, locked: false, hint: undefined };
+}
+
+/**
+ * Owner's rule: only an Admin changes an HR or Admin user's salary or bank
+ * details (the server refuses the rest). Returns the note to show when the
+ * signed-in user may not, else null. Your own record has its own rules.
+ */
+function payLockHint(actorRole, actorId, target) {
+  if (!target || actorRole === 'admin') return null;
+  const isSelf = Boolean(actorId && target.id) && String(actorId).toLowerCase() === String(target.id).toLowerCase();
+  if (isSelf) return null;
+  const current = target.role || 'employee';
+  return current === 'admin' || current === 'hr'
+    ? 'Only an Admin can change the pay or bank details of HR and Admin users.'
+    : null;
 }
 
 function AccessStep({ register, errors, autoEmail, isEdit = false, roles = { options: ROLES } }) {
@@ -1445,7 +1461,7 @@ function EditEmployeeForm({ navigate, existing }) {
 
       <form onSubmit={handleSubmit(onSubmit, onInvalid)}>
         <Card className="p-6">
-          {step === 0 && <PersonalStep register={register} errors={errors} watch={watch} setValue={setValue} detailsOptional detailsPending={detailsPending} />}
+          {step === 0 && <PersonalStep register={register} errors={errors} watch={watch} setValue={setValue} detailsOptional detailsPending={detailsPending} payLock={payLockHint(role, userId, existing)} />}
           {step === 1 && (
             <JobStep
               register={register}
@@ -1466,6 +1482,7 @@ function EditEmployeeForm({ navigate, existing }) {
               watch={watch}
               setValue={setValue}
               payrollConfig={payrollConfig}
+              payLock={payLockHint(role, userId, existing)}
             />
           )}
           {step === 3 && <AccessStep register={register} errors={errors} autoEmail={autoEmail} isEdit roles={roleChoices(role, userId, existing)} />}

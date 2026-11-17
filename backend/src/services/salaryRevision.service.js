@@ -133,6 +133,7 @@ const applyRevision = async (revisionId, { actorId = null, actorRole = 'system',
     ipAddress,
     details: { revision_id: rev.id },
   });
+  await require('./ownPayslip').assertMayChangePayOf({ id: actorId, role: actorRole }, rev.employee_id, undefined, ipAddress);
 
   const { data: employee, error: empError } = await supabaseAdmin
     .from('employees')
@@ -233,6 +234,7 @@ const createRevision = async ({ scopeIds, actor, ipAddress, employeeId, componen
     ipAddress,
     details: { components: components ?? null, effective_date: effectiveDate ?? null },
   });
+  await require('./ownPayslip').assertMayChangePayOf(actor, employee.id, undefined, ipAddress);
   // An Admin may revise their own salary; the audit entry says so.
   const selfRevision = sameId(employee.id, actor.id);
   if (employee.is_active === false) throw new BadRequestError('Salary can only be revised for active employees');
@@ -316,6 +318,7 @@ const cancelRevision = async ({ scopeIds, actor, ipAddress, id }) => {
       ipAddress,
       details: { revision_id: id },
     });
+    await require('./ownPayslip').assertMayChangePayOf(actor, found.employee_id, undefined, ipAddress);
   }
   const { data, error } = await supabaseAdmin
     .from('salary_revisions')

@@ -351,6 +351,7 @@ const applyFullAndFinal = async ({
 }) => {
   // HR can't settle their own pay — an Admin must (an Admin's own is audit-logged).
   const adminOwn = ownPay.assertNotOwnPay(actor, employeeId, `You can't settle your own pay. ${ownPay.OWN_PAYSLIP_MESSAGE}`);
+  await ownPay.assertMayChangePayOf(actor, employeeId, undefined, ipAddress);
   const preview = await previewFullAndFinal({ companyId, employeeId, inputs });
   const oneTime = require('./oneTimePay.service');
   await oneTime.cancelSource({

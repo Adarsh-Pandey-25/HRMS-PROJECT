@@ -185,9 +185,11 @@ const loadForReview = async (id, companyId, actor) => {
   const { data: row, error } = await supabaseAdmin.from(TABLE).select('*').eq('id', id).maybeSingle();
   check(error);
   if (!row || String(row.company_id) !== String(companyId)) throw new NotFoundError('Declaration not found');
-  if (String(row.employee_id) === String(actor?.id)) {
-    throw new ForbiddenError('You cannot review your own tax declaration — another HR person or an admin has to.');
+  if (String(row.employee_id).toLowerCase() === String(actor?.id).toLowerCase()) {
+    throw new ForbiddenError('You cannot review your own tax declaration — an Admin has to.');
   }
+  // An HR or Admin user's declaration sets their tax, so only an Admin reviews it.
+  await require('./ownPayslip').assertMayChangePayOf(actor, row.employee_id);
   if (row.status !== 'submitted') throw new ConflictError('Only a declaration sent for checking can be reviewed');
   return row;
 };

@@ -162,9 +162,10 @@ const updatePayrollSetup = async (req, res, next) => {
   try {
     const employeeId = req.params.employeeId;
     await assertInOrg(req, employeeId);
-    if (req.user.role === 'hr' && String(employeeId) === String(req.user.id)) {
+    if (req.user.role === 'hr' && ownPay.sameId(employeeId, req.user.id)) {
       throw new (require('../utils/errors').ForbiddenError)('You cannot change your own payroll setup — an admin has to.');
     }
+    await ownPay.assertMayChangePayOf(req.user, employeeId, undefined, req.ip);
     const b = req.body || {};
     const result = await payrollService.updatePayrollSetup({
       employeeId,
@@ -465,6 +466,7 @@ const generateFinalPayslip = async (req, res, next) => {
     if (ownPay.assertNotOwnPay(req.user, req.params.employeeId, `You can't make your own final payslip. ${ownPay.OWN_PAYSLIP_MESSAGE}`)) {
       ownPay.logOwnPayAction(req.user, 'fnf.generate', {}, req.ip);
     }
+    await ownPay.assertMayChangePayOf(req.user, req.params.employeeId, undefined, req.ip);
     successResponse(res, 'Final payslip drafted', await fnf().generateFinalPayslip({
       companyId: req.user.company_id, employeeId: req.params.employeeId, actor: req.user,
     }), null, 201);

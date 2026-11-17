@@ -261,6 +261,26 @@ const SELF_EDITABLE_ADDRESS_KEYS = [
   'personal_email',
 ];
 
+/**
+ * Same JSON value for "did this actually change?": key order, blank values
+ * and number-vs-text ("50000" / 50000) don't count. Numbers are compared as
+ * text, so long account numbers never lose digits.
+ */
+const canonicalValue = (v) => {
+  if (v === null || v === undefined || v === '') return null;
+  if (Array.isArray(v)) return v.map(canonicalValue);
+  if (typeof v === 'object') {
+    const out = {};
+    for (const k of Object.keys(v).sort()) {
+      const c = canonicalValue(v[k]);
+      if (c !== null) out[k] = c;
+    }
+    return Object.keys(out).length ? out : null;
+  }
+  return String(v).trim();
+};
+const sameStoredValue = (a, b) => JSON.stringify(canonicalValue(a)) === JSON.stringify(canonicalValue(b));
+
 /** HR-controlled address keys that HR may not change on their own record (Admin only). */
 const HR_SET_ADDRESS_KEYS = ['attendance_mode', 'shift', 'shift_id', 'work_location'];
 
@@ -814,6 +834,25 @@ const update = async (req, res, next) => {
         else delete merged[k];
       }
       allowedFields.salary_details = merged;
+    }
+
+    // Owner's rule (17 Nov 2026): only an Admin changes an HR or Admin
+    // user's salary or bank details. The edit form sends both on every save,
+    // so they are refused only when they actually change.
+    if (!isSelf && req.user.role !== 'admin' && ['hr', 'admin'].includes(existing.role)) {
+      for (const field of ['salary_details', 'bank_details']) {
+        if (allowedFields[field] === undefined) continue;
+        if (sameStoredValue(allowedFields[field], existing[field])) {
+          delete allowedFields[field];
+          continue;
+        }
+        throw refusal(req, {
+          target: existing,
+          action: 'update',
+          attempted: { [field]: 'changed' },
+          message: 'Only an Admin can change the pay or bank details of HR and Admin users.',
+        });
+      }
     }
 
     // Item 3: the attempt itself consumes the one-time self-edit allowance,

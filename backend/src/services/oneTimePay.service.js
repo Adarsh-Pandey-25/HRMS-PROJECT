@@ -162,6 +162,7 @@ const createItem = async ({
   await employeeInCompany(employeeId, companyId);
   // HR can't add pay for themselves — an Admin must (an Admin's own is audit-logged).
   const adminOwn = ownPay.assertNotOwnPay(actor, employeeId, `You can't add pay for yourself. ${ownPay.OWN_PAYSLIP_MESSAGE}`);
+  await ownPay.assertMayChangePayOf(actor, employeeId, undefined, ipAddress);
   const def = KINDS[kind];
   if (!def) throw new BadRequestError('Choose what kind of pay or recovery this is');
   const { m, y } = monthYear(month, year);
@@ -266,6 +267,7 @@ const cancelItem = async ({
 }) => {
   await employeeInCompany(employeeId, companyId);
   const adminOwn = ownPay.assertNotOwnPay(actor, employeeId, `You can't change your own pay. ${ownPay.OWN_PAYSLIP_MESSAGE}`);
+  await ownPay.assertMayChangePayOf(actor, employeeId, undefined, ipAddress);
   const { data: row, error } = await supabaseAdmin.from(TABLE).select('*').eq('id', itemId).maybeSingle();
   check(error);
   if (!row || String(row.employee_id) !== String(employeeId)) throw new NotFoundError('Item not found');

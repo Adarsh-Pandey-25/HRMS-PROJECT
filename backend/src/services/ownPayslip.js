@@ -29,6 +29,44 @@ const assertNotOwnPay = (actor, employeeId, message = OWN_PAYSLIP_MESSAGE) => {
   return true;
 };
 
+const PRIVILEGED_PAY_MESSAGE = 'Only an Admin can change the pay of HR and Admin users.';
+const PRIVILEGED_ROLES = ['hr', 'admin'];
+
+/**
+ * Owner's rule (17 Nov 2026): the pay of an HR or Admin user — salary and
+ * bank details, revisions, one-time pay, loans, payroll setup, tax
+ * declarations, full and final — is changed only by an Admin, so HR users
+ * can't change each other's pay. Your own pay is assertNotOwnPay's job.
+ * Pass `targetRole` when the caller already has the row; otherwise it is
+ * looked up. A refusal is audit-logged.
+ */
+const assertMayChangePayOf = async (actor, employeeId, targetRole, ipAddress = null) => {
+  if (!actor || actor.role === 'system' || isAdmin(actor)) return;
+  if (!employeeId || isOwnPay(actor, employeeId)) return;
+  let role = targetRole;
+  if (role === undefined) {
+    const { supabaseAdmin } = require('../config/supabase');
+    const { data, error } = await supabaseAdmin
+      .from('employees').select('role').eq('id', employeeId).maybeSingle();
+    if (error) throw new ForbiddenError('Could not check whose pay this is. Please try again.');
+    role = data?.role;
+  }
+  if (!PRIVILEGED_ROLES.includes(String(role || '').toLowerCase())) return;
+  Promise.resolve()
+    .then(() => require('./auditLog.service').logAudit({
+      companyId: actor.company_id || null,
+      actorId: actor.id || null,
+      actorRole: actor.role || null,
+      actionType: 'payroll.privileged_pay_refused',
+      targetType: 'employee',
+      targetId: employeeId,
+      afterState: { targetRole: role },
+      ipAddress,
+    }))
+    .catch(() => {});
+  throw new ForbiddenError(PRIVILEGED_PAY_MESSAGE);
+};
+
 /** Writes an Admin's action on their own pay to the audit log. Never throws. */
 const logOwnPayAction = (actor, action, details = {}, ipAddress = null) => {
   Promise.resolve()
@@ -46,5 +84,6 @@ const logOwnPayAction = (actor, action, details = {}, ipAddress = null) => {
 };
 
 module.exports = {
-  OWN_PAYSLIP_MESSAGE, sameId, isAdmin, isOwnPay, skipsOwnPay, assertNotOwnPay, logOwnPayAction,
+  OWN_PAYSLIP_MESSAGE, PRIVILEGED_PAY_MESSAGE, sameId, isAdmin, isOwnPay, skipsOwnPay, assertNotOwnPay,
+  assertMayChangePayOf, logOwnPayAction,
 };

@@ -130,6 +130,7 @@ const createLoan = async ({
     ipAddress,
     details: { kind, principal: principal ?? null },
   });
+  await require('./ownPayslip').assertMayChangePayOf(actor, employee.id, undefined, ipAddress);
   if (!['loan', 'advance'].includes(kind)) throw new BadRequestError('Kind must be loan or advance');
   const p = amount(principal, 'The amount');
   const i = amount(instalment, 'The monthly instalment');
@@ -186,6 +187,7 @@ const cancelLoan = async ({
       details: { loan: loanId },
     });
   }
+  await require('./ownPayslip').assertMayChangePayOf(actor, employee.id, undefined, ipAddress);
   const { data: row, error } = await supabaseAdmin.from(LOANS).select('*').eq('id', loanId).maybeSingle();
   check(error);
   if (!row || String(row.employee_id) !== String(employeeId)) throw new NotFoundError('Loan not found');
