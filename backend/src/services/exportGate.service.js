@@ -46,10 +46,13 @@ const getExportAuthorization = async (companyId) => {
     return { allowed: true, reason: 'override', status: null };
   }
 
+  // A subsidiary is billed through its parent (audit #10): exports follow
+  // the paying company's standing.
+  const { billingCompanyId } = await require('./subscription.service').getBillingAccount(companyId);
   const { data: subscription } = await supabaseAdmin
     .from('company_billing_subscriptions')
     .select('status')
-    .eq('company_id', companyId)
+    .eq('company_id', billingCompanyId || companyId)
     .in('status', ['trialing', 'active', 'past_due', 'grace_period', 'suspended', 'cancelled', 'expired'])
     .order('created_at', { ascending: false })
     .limit(1)

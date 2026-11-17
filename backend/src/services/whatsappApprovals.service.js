@@ -266,17 +266,11 @@ const DECIDE = {
 
 // ── Handling a tap ────────────────────────────────────────────────────────
 
-/** Same check as sign-in (auth.middleware.js): a suspended company's people are locked out. */
-const isCompanySuspended = async (companyId) => {
-  const { data } = await supabaseAdmin
-    .from('company_billing_subscriptions')
-    .select('id')
-    .eq('company_id', companyId)
-    .eq('status', 'suspended')
-    .limit(1)
-    .maybeSingle();
-  return Boolean(data);
-};
+/**
+ * Same check as sign-in (auth.middleware.js): a suspended company's people
+ * are locked out, and so are a suspended parent's subsidiaries (audit #10).
+ */
+const isCompanySuspended = (companyId) => require('./subscription.service').isBillingSuspended(companyId);
 
 /** Did the tap come from the WhatsApp the approver connected? */
 const fromApprover = async (action, identity) => {
