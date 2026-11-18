@@ -15,6 +15,8 @@ const logger = require('../utils/logger');
  *   people already connected, people who stopped or disconnected before,
  *   and people without a valid mobile — someone whose number is added
  *   later is connected at the next check.
+ * - first messages Meta held back under its marketing limits go again,
+ *   once, as the current message (resendHeldBackFirstMessages).
  * New employees are connected when HR adds them (whatsappLink.service).
  * At most CONNECT_AT_ONCE first messages a day: until the business is
  * verified, Meta limits how many people it can message in a day.
@@ -65,9 +67,13 @@ const connectExisting = async (cfg) => {
   if (!(await approvals.isApprovedAtMeta(linkService.FIRST_MESSAGE.existing))) return 0;
   let room = linkService.CONNECT_AT_ONCE - (await firstMessagesToday(cfg.environment));
   if (room <= 0) return 0;
+  // First messages Meta held back under its marketing limits go again, once.
+  const resent = await linkService.resendHeldBackFirstMessages({ limit: room });
+  if (resent) logger.info(`[WhatsApp] ${resent} held-back first messages sent again`);
+  room -= resent;
+  let total = resent;
   const { data: companies, error } = await supabaseAdmin.from('companies').select('id, is_active');
   if (error) throw new Error(error.message);
-  let total = 0;
   for (const company of companies || []) {
     if (room <= 0) break;
     if (company.is_active === false) continue;

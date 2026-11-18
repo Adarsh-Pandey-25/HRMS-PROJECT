@@ -277,7 +277,13 @@ const closeLink = async (subjectType, subjectId) => {
 const HR_ADDED = 'hr_added';
 // The first message (owner's wording, 2 Nov 2026): a welcome for someone HR
 // has just added; an announcement for people who already work there.
-const FIRST_MESSAGE = { new: 'welcome_new_employee', existing: 'hr_updates_on_whatsapp' };
+// The existing-employee message was hr_updates_on_whatsapp until 18 Nov 2026,
+// when Meta's marketing limits held it back from some people
+// (resendHeldBackFirstMessages).
+const FIRST_MESSAGE = { new: 'welcome_new_employee', existing: 'whatsapp_number_linked' };
+// Meta's answers when it holds a marketing message back from one person: its
+// per-person marketing limit (131049) and its marketing experiment (130472).
+const HELD_BACK_CODES = ['131049', '130472'];
 // One "Connect everyone" press reaches at most this many people: until the
 // business is verified, Meta allows about 250 different people a day.
 const CONNECT_AT_ONCE = 200;
@@ -472,6 +478,43 @@ const connectExistingEmployees = async (companyId, { limit = CONNECT_AT_ONCE, so
   return { connected: linked.length, remaining: reachable.length - batch.length };
 };
 
+/**
+ * First messages Meta held back under its marketing limits go again, once,
+ * as the current existing-employee message (a utility one): to people still
+ * connected who haven't had a first message since. A number that isn't on
+ * WhatsApp (131026) is left to HR: fixing it moves the connection, and the
+ * new number gets the message. At most `limit` people.
+ */
+const resendHeldBackFirstMessages = async ({ limit = CONNECT_AT_ONCE } = {}) => {
+  const cfg = getConfig();
+  if (!canSend(cfg) || !(limit > 0)) return 0;
+  const { data: heldBack, error } = await supabaseAdmin
+    .from('whatsapp_messages')
+    .select('subject_id')
+    .eq('environment', cfg.environment)
+    .eq('subject_type', 'employee')
+    .eq('event_key', 'whatsapp_connected')
+    .eq('status', 'failed')
+    .in('error_code', HELD_BACK_CODES);
+  if (error) throw new BadRequestError(error.message);
+  const ids = [...new Set((heldBack || []).map((r) => r.subject_id))];
+  if (!ids.length) return 0;
+  const [firsts, links] = await Promise.all([
+    inSlices(ids, (slice) => supabaseAdmin.from('whatsapp_messages').select('subject_id')
+      .eq('environment', cfg.environment).eq('subject_type', 'employee').eq('event_key', 'whatsapp_connected')
+      .in('status', ['queued', 'sending', 'sent', 'delivered', 'read']).in('subject_id', slice)),
+    inSlices(ids, (slice) => supabaseAdmin.from('whatsapp_links').select('subject_id')
+      .eq('subject_type', 'employee').eq('status', 'active').in('subject_id', slice)),
+  ]);
+  const hadOne = new Set(firsts.map((m) => m.subject_id));
+  const connected = new Set(links.map((l) => l.subject_id));
+  const due = ids.filter((id) => connected.has(id) && !hadOne.has(id)).slice(0, limit);
+  if (!due.length) return 0;
+  return queueFirstMessage({
+    employeeIds: due, kind: 'existing', source: 'auto:resend_first_message', recordKey: 'held_back_resend',
+  });
+};
+
 module.exports = {
   CONSENT_VERSION,
   CODE_ALPHABET,
@@ -500,4 +543,6 @@ module.exports = {
   connectCandidates,
   connectExistingEmployees,
   companyWhatsappOn,
+  HELD_BACK_CODES,
+  resendHeldBackFirstMessages,
 };

@@ -92,14 +92,12 @@ Database update: `20261102_wfh_approval_flow.sql`. It's needed for **Manager →
   > ✅ Leave approvals · 🕘 Attendance alerts · 💰 Payslips · 📢 Company news
   >
   > Your sign-in details are in your email.
-- **Existing employees** get the **announcement** instead (`hr_updates_on_whatsapp`). This covers people added by Bulk import (usually staff who already work there) and anyone whose number HR changes:
-  > **HR updates are now on WhatsApp** 📲
+- **Existing employees** get the **account message** instead (`whatsapp_number_linked`, since 18 Nov 2026). This covers "Connect everyone", people added by Bulk import (usually staff who already work there) and anyone whose number HR changes:
+  > Hi Priya, your mobile number is now linked to your SpaxSync account at Spaxads Digital Media.
   >
-  > Hi Priya, Spaxads Digital Media now sends your HR updates here:
-  > ✅ Leave approvals · 🕘 Attendance alerts · 💰 Payslips · 📢 Company news
-  >
-  > You'll still get them by email as before.
-- **Neither message has a "Reply STOP" line** (your decision). Replying STOP still works.
+  > Your leave approvals, attendance alerts and payslip notices will come here on WhatsApp, and by email as before.
+- **Why it changed (18 Nov 2026):** the first version (`hr_updates_on_whatsapp`, "HR updates are now on WhatsApp") read like an announcement, so Meta filed it as **marketing**. Meta limits how many marketing messages one person gets, and it held the message back from 4 of the 31 people (errors 131049 and 130472). The account message is a utility message, which those limits don't cover. The 4 get it once, by themselves, as soon as Meta approves it.
+- **No first message has a "Reply STOP" line** (your decision). Replying STOP still works.
 - **Only for companies with WhatsApp switched on.** Nothing happens for other companies.
 - **If HR changes the number later** (or the employee uses their one-time profile edit), the connection moves to the new number. A connection the employee made themselves, or stopped, is never touched.
 - **Ask HR to double-check numbers:** with a wrong number, a stranger gets that person's updates.

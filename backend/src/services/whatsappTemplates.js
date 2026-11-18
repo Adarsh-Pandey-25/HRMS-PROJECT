@@ -17,9 +17,9 @@
  * shows the approver the requester's own reason, shortened, and is hidden
  * from the message log once sent (privateParams).
  *
- * Every template ends with the "Reply STOP" footer except the two first
- * messages, welcome_new_employee and hr_updates_on_whatsapp (footer: false,
- * owner's decision, 2 Nov 2026).
+ * Every template ends with the "Reply STOP" footer except the first
+ * messages, welcome_new_employee, whatsapp_number_linked and the earlier
+ * hr_updates_on_whatsapp (footer: false, owner's decision, 2 Nov 2026).
  */
 
 const LANGUAGE = 'en';
@@ -134,6 +134,17 @@ const TEMPLATES = [
   {
     ...utility('hr_updates_on_whatsapp',
       '*HR updates are now on WhatsApp* 📲\n\nHi {{1}}, {{2}} now sends your HR updates here:\n✅ Leave approvals\n🕘 Attendance alerts\n💰 Payslips\n📢 Company news\n\nYou\'ll still get them by email as before.',
+      ['Priya', COMPANY]),
+    footer: false,
+    holdUntilApproved: true,
+  },
+  // For people who already work there, since 18 Nov 2026. Meta filed
+  // hr_updates_on_whatsapp (above) as marketing, an announcement, and its
+  // marketing limits held it back from some people (errors 131049 and
+  // 130472). This is a plain account update, so it goes as utility.
+  {
+    ...utility('whatsapp_number_linked',
+      'Hi {{1}}, your mobile number is now linked to your SpaxSync account at {{2}}.\n\nYour leave approvals, attendance alerts and payslip notices will come here on WhatsApp, and by email as before.',
       ['Priya', COMPANY]),
     footer: false,
     holdUntilApproved: true,
