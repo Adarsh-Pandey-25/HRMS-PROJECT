@@ -5,6 +5,7 @@ const {
   ANNOUNCEMENT_AUDIENCE, HOLIDAY_TYPES, EMPLOYMENT_TYPES, GENDERS,
 } = require('./constants');
 const { isUuid, normalizeId } = require('./sameId');
+const { phoneProblem, normalizePhone } = require('./phone');
 
 const registerRules = [
   body('email').isEmail().normalizeEmail(),
@@ -74,8 +75,14 @@ const employeeCreateRules = [
   body('first_name').trim().notEmpty(),
   body('last_name').trim().notEmpty(),
   body('role').isIn(Object.values(ROLES)),
-  // Compulsory when adding someone: WhatsApp updates go to this number.
-  body('phone').trim().matches(/^\d{10}$/).withMessage('Mobile number is required (10 digits)'),
+  // Compulsory when adding someone: WhatsApp updates go to this number. An
+  // Indian number is 10 digits; any other starts with + and its country code
+  // (utils/phone.js), and is stored that way.
+  body('phone').trim().custom((value) => {
+    const problem = phoneProblem(value, 'Mobile number');
+    if (problem) throw new Error(problem);
+    return true;
+  }).customSanitizer((value) => normalizePhone(value) ?? value),
   body('date_of_birth').optional().isISO8601(),
   body('gender').optional().isIn(GENDERS),
   body('department').optional().trim(),

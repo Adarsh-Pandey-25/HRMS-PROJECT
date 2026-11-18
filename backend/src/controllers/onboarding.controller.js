@@ -3,6 +3,14 @@ const authService = require('../services/auth.service');
 const { successResponse } = require('../utils/helpers');
 const { BadRequestError, ForbiddenError, NotFoundError } = require('../utils/errors');
 const { uploadProfilePicture, getSignedUrl, STORAGE_BUCKETS } = require('../services/storage.service');
+const { normalizePhone } = require('../utils/phone');
+
+// Stored the way utils/phone.js keeps numbers ("9876543210", "+971501234567");
+// anything it can't read is kept as typed, as before.
+const storedPhone = (value) => {
+  const typed = String(value || '').trim();
+  return normalizePhone(typed) ?? typed;
+};
 
 const getCompanyName = async (companyId) => {
   const settingsService = require('../services/settings.service');
@@ -59,7 +67,7 @@ const complete = async (req, res, next) => {
     const body = req.body || {};
     const updates = {};
 
-    if (body.phone_number) updates.phone = String(body.phone_number).trim();
+    if (body.phone_number) updates.phone = storedPhone(body.phone_number);
     if (body.date_of_birth) updates.date_of_birth = body.date_of_birth;
     if (body.gender) updates.gender = body.gender;
     if (body.address) {
@@ -82,7 +90,7 @@ const complete = async (req, res, next) => {
     if (body.emergency_contact) {
       updates.emergency_contact = {
         name: String(body.emergency_contact.name || '').trim(),
-        phone: String(body.emergency_contact.phone || '').trim(),
+        phone: storedPhone(body.emergency_contact.phone),
       };
     }
     if (body.bank_details) {

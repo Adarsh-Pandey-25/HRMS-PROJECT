@@ -7,6 +7,7 @@ import { createEmployeeApi, fetchAllEmployeesApi } from '../../api/employees.api
 import { createDeviceMappingApi } from '../../api/deviceMapping.api';
 import { useAdmsStatus } from '../../hooks/useAttendance';
 import { cn } from '../../lib/utils';
+import { normalizePhone, phoneProblem } from '../../lib/phone';
 
 const TEMPLATE_HEADERS = [
   'First Name',
@@ -273,8 +274,9 @@ function validateRows(rows, existingEmails, managerDirectory) {
     else if (seen.has(email)) errors.push('Duplicate email in file');
     else seen.add(email);
     if (personalEmail && !personalEmail.includes('@')) errors.push('Personal email is invalid');
+    // 10 digits for India; any other country with + and its code, e.g. +971 50 123 4567 (lib/phone.js).
     if (!phone) errors.push('Phone missing');
-    else if (!/^\d{10}$/.test(phone.replace(/\D/g, ''))) errors.push('Phone must be 10 digits');
+    else if (phoneProblem(phone, 'Phone')) errors.push(phoneProblem(phone, 'Phone'));
     if (dobRaw !== '' && dobRaw != null && !dobIso) errors.push('Date of birth must be DD-MM-YYYY');
     if (joinRaw !== '' && joinRaw != null && !joinIso) errors.push('Join date must be DD-MM-YYYY');
     if (!designation) errors.push('Designation missing');
@@ -363,7 +365,7 @@ export function BulkImportPanel({ onSkip, onImported }) {
           designation: row.Designation || row.designation,
           department: row.Department || row.department,
           gender: normalizeGender(row.Gender),
-          phone: String(row.Phone || row.phone || '').replace(/\D/g, '') || undefined,
+          phone: normalizePhone(row.Phone || row.phone) || undefined,
           dateOfBirth: row._dateOfBirth,
           dateOfJoining: row._dateOfJoining,
           employmentType: normalizeEmploymentType(row['Employment Type']),
@@ -382,7 +384,8 @@ export function BulkImportPanel({ onSkip, onImported }) {
           },
           emergencyContact: {
             name: row['Emergency Contact Name'] || '',
-            phone: String(row['Emergency Contact Phone'] || '').replace(/\D/g, ''),
+            phone: normalizePhone(row['Emergency Contact Phone'])
+              || String(row['Emergency Contact Phone'] || '').replace(/\D/g, ''),
             relation: row['Emergency Contact Relation'] || '',
           },
           bankDetails: {

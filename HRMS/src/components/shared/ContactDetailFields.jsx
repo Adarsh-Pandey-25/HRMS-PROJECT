@@ -1,4 +1,5 @@
 import { Input } from '../ui';
+import { FormPhoneInput } from '../ui/PhoneInput';
 
 /** Shared address + emergency contact fields — used by company onboarding and employee Personal. */
 export function AddressFields({
@@ -64,8 +65,13 @@ export function AddressFields({
   );
 }
 
+/**
+ * With the form's `control`, the phone has a country code picker (any
+ * country, components/ui/PhoneInput.jsx); without it, 10 digits as before.
+ */
 export function EmergencyContactFields({
   register,
+  control,
   errors = {},
   required = true,
   onPhoneInput,
@@ -86,16 +92,26 @@ export function EmergencyContactFields({
           onInput={onNameInput}
           error={errors.emergencyName?.message}
         />
-        <Input
-          label="Emergency contact phone"
-          required={required}
-          placeholder="e.g. 9876543210"
-          inputMode="numeric"
-          maxLength={10}
-          {...register('emergencyPhone')}
-          onInput={onPhoneInput}
-          error={errors.emergencyPhone?.message}
-        />
+        {control ? (
+          <FormPhoneInput
+            control={control}
+            name="emergencyPhone"
+            label="Emergency contact phone"
+            required={required}
+            error={errors.emergencyPhone?.message}
+          />
+        ) : (
+          <Input
+            label="Emergency contact phone"
+            required={required}
+            placeholder="e.g. 9876543210"
+            inputMode="numeric"
+            maxLength={10}
+            {...register('emergencyPhone')}
+            onInput={onPhoneInput}
+            error={errors.emergencyPhone?.message}
+          />
+        )}
         <Input
           label="Relation"
           required={required}

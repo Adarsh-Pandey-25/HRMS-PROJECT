@@ -83,7 +83,7 @@ Managers only come into it when employees have **Reporting to** set and that per
 Database update: `20261102_wfh_approval_flow.sql`. It's needed for **Manager → HR** on work from home; the other choices work without it.
 
 ### Automatic connection (added 2 Nov 2026)
-- **The mobile number is compulsory** in Add employee and in Bulk import: 10 digits. The numbers are Indian; SpaxSync adds +91.
+- **The mobile number is compulsory** in Add employee and in Bulk import. An Indian number is 10 digits, and SpaxSync adds +91. **Since 18 Nov 2026 a number from another country works too:** choose its country code in the picker next to the number (in Bulk import, write it with + and the code, e.g. +971 50 123 4567). It is kept with its code and WhatsApp sends to it. Meta charges more for each message to a number outside India.
 - **As soon as HR saves the employee** with Add employee, their WhatsApp is connected to that number, and they get the **welcome** (`welcome_new_employee`):
   > **Welcome to Spaxads Digital Media, Priya!** 🎉
   > We're glad to have you on the team.

@@ -1,4 +1,5 @@
 const moment = require('moment-timezone');
+const { countryForDigits } = require('../utils/phone');
 
 /**
  * Small, pure helpers that turn records into the short values WhatsApp
@@ -93,11 +94,12 @@ const formatYears = (years) => {
   return `${n} year${n === 1 ? '' : 's'}`;
 };
 
-/** +91•••••43210 — enough to recognise your own number, nothing more. */
+/** +91•••••43210, +971•••••34567 — enough to recognise your own number, nothing more. */
 const maskPhone = (digits) => {
   const d = String(digits || '').replace(/\D/g, '');
   if (d.length < 6) return d ? '•••' : '';
-  return `+${d.slice(0, 2)}•••••${d.slice(-5)}`;
+  const code = countryForDigits(d)?.dial || d.slice(0, 2);
+  return `+${code}•••••${d.slice(-5)}`;
 };
 
 /** approved / not approved — for decisions passed as status codes. */

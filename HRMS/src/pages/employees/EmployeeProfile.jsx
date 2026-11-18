@@ -35,6 +35,8 @@ import { useCan } from '../../hooks/useCan';
 import { formatDate, formatCurrency, humanize } from '../../lib/utils';
 import { employeeEditPath, employeeProfilePath, isOwnEmployeeProfileSlug, isUuid, resolveEmployeeId } from '../../lib/employeeRoutes';
 import { mapWizardDocType } from '../../lib/documentTypeMap';
+import { PhoneInput } from '../../components/ui/PhoneInput';
+import { phoneProblem } from '../../lib/phone';
 import { WhatsAppUpdatesCard } from '../../components/whatsapp/WhatsAppUpdatesCard';
 import { MY_WHATSAPP_API } from '../../api/whatsapp.api';
 
@@ -656,7 +658,7 @@ export default function EmployeeProfile() {
               <Input label="Last name" value={editForm.lastName} onChange={(e) => setEditForm((f) => ({ ...f, lastName: e.target.value.replace(/[^A-Za-z\s.'-]/g, '') }))} />
               <Input label="Date of birth" type="date" value={editForm.dob} onChange={(e) => setEditForm((f) => ({ ...f, dob: e.target.value }))} max={new Date().toISOString().slice(0, 10)} />
               <Select label="Gender" value={editForm.gender} onChange={(e) => setEditForm((f) => ({ ...f, gender: e.target.value }))} placeholder="Select gender" options={['male', 'female', 'other']} />
-              <Input label="Phone" value={editForm.phone} onChange={(e) => setEditForm((f) => ({ ...f, phone: e.target.value.replace(/\D/g, '').slice(0, 10) }))} />
+              <PhoneInput label="Phone" value={editForm.phone} onChange={(phone) => setEditForm((f) => ({ ...f, phone }))} error={editForm.phone ? phoneProblem(editForm.phone) : undefined} />
               <Input label="Personal email" type="email" value={editForm.personalEmail} onChange={(e) => setEditForm((f) => ({ ...f, personalEmail: e.target.value }))} />
             </div>
             <div className="pt-2 border-t border-border/60 space-y-4">
@@ -679,7 +681,7 @@ export default function EmployeeProfile() {
               <p className="text-xs font-medium text-fg-muted mb-3">Emergency contact</p>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <Input label="Name" value={editForm.emergencyName} onChange={(e) => setEditForm((f) => ({ ...f, emergencyName: e.target.value }))} />
-                <Input label="Phone" value={editForm.emergencyPhone} onChange={(e) => setEditForm((f) => ({ ...f, emergencyPhone: e.target.value }))} />
+                <PhoneInput label="Phone" value={editForm.emergencyPhone} onChange={(emergencyPhone) => setEditForm((f) => ({ ...f, emergencyPhone }))} error={editForm.emergencyPhone ? phoneProblem(editForm.emergencyPhone) : undefined} />
                 <Input label="Relation" value={editForm.emergencyRelation} onChange={(e) => setEditForm((f) => ({ ...f, emergencyRelation: e.target.value }))} />
               </div>
             </div>

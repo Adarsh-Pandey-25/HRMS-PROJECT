@@ -23,6 +23,8 @@ import { StepEducation } from './wizard/StepEducation';
 import { StepAdditionalDocuments } from './wizard/StepAdditionalDocuments';
 import { PhotoUpload } from './wizard/StepBasicInfo';
 import { AddressFields, EmergencyContactFields } from '../../components/shared/ContactDetailFields';
+import { FormPhoneInput } from '../../components/ui/PhoneInput';
+import { phoneProblem } from '../../lib/phone';
 import toast from 'react-hot-toast';
 import { employeeEditPath, employeeProfilePath, resolveEmployeeId } from '../../lib/employeeRoutes';
 import {
@@ -92,10 +94,14 @@ const nameField = z
   .min(1, 'Required')
   .regex(/^[A-Za-z][A-Za-z\s.'-]*$/, 'Must contain letters only (no numbers)');
 
+// 10 digits for India, or + and the country code for anywhere else (lib/phone.js).
 const phoneField = z
   .string()
   .trim()
-  .regex(/^\d{10}$/, 'Phone number must be exactly 10 digits');
+  .superRefine((value, ctx) => {
+    const problem = phoneProblem(value);
+    if (problem) ctx.addIssue({ code: 'custom', message: problem });
+  });
 
 const emailField = z
   .string()
@@ -418,7 +424,7 @@ function SalaryPreview({ basic, hra, da, special, transport, medical, overrides,
   );
 }
 
-function PersonalStep({ register, errors, photoFile, setPhotoFile, watch, setValue, isAdd = false, detailsOptional = isAdd, detailsPending = false, payLock = null }) {
+function PersonalStep({ register, control, errors, photoFile, setPhotoFile, watch, setValue, isAdd = false, detailsOptional = isAdd, detailsPending = false, payLock = null }) {
   const firstNameReg = register('firstName', {
     onChange: (e) => {
       const cleaned = e.target.value.replace(/[^A-Za-z\s.'-]/g, '');
@@ -433,23 +439,12 @@ function PersonalStep({ register, errors, photoFile, setPhotoFile, watch, setVal
     },
   });
 
-  const phoneReg = register('phone', {
-    onChange: (e) => {
-      const digits = e.target.value.replace(/\D/g, '').slice(0, 10);
-      if (digits !== e.target.value) setValue('phone', digits, { shouldValidate: true });
-    },
-  });
-
   const bankAccountReg = register('bankAccount', {
     onChange: (e) => {
       const digits = e.target.value.replace(/\D/g, '');
       if (digits !== e.target.value) setValue('bankAccount', digits, { shouldValidate: true });
     },
   });
-
-  const handleEmergencyPhoneInput = (e) => {
-    e.target.value = e.target.value.replace(/\D/g, '').slice(0, 10);
-  };
 
   const handleNameInput = (e) => {
     e.target.value = e.target.value.replace(/[^A-Za-z\s.'-]/g, '');
@@ -517,14 +512,12 @@ function PersonalStep({ register, errors, photoFile, setPhotoFile, watch, setVal
           {...register('personalEmail')}
           error={errors.personalEmail?.message}
         />
-        <Input
+        <FormPhoneInput
+          control={control}
+          name="phone"
           label="Phone"
           required={required || isAdd}
-          placeholder="e.g. 9876543210"
-          inputMode="numeric"
-          pattern="[0-9]*"
-          maxLength={10}
-          {...phoneReg}
+          hint={isAdd ? 'Choose the country code for a number outside India.' : undefined}
           error={errors.phone?.message}
         />
       </div>
@@ -546,9 +539,9 @@ function PersonalStep({ register, errors, photoFile, setPhotoFile, watch, setVal
       <div className="pt-2 border-t border-border/60">
         <EmergencyContactFields
           register={register}
+          control={control}
           errors={errors}
           required={required}
-          onPhoneInput={handleEmergencyPhoneInput}
           onNameInput={handleNameInput}
         />
       </div>
@@ -1058,7 +1051,7 @@ function AddEmployeeForm({ navigate }) {
     [employees, defaultCompanyId],
   );
 
-  const { register, handleSubmit, trigger, watch, setValue, formState: { errors } } = useForm({
+  const { register, control, handleSubmit, trigger, watch, setValue, formState: { errors } } = useForm({
     resolver: zodResolver(addEmployeeSchema),
     mode: 'onChange',
     reValidateMode: 'onChange',
@@ -1246,6 +1239,7 @@ function AddEmployeeForm({ navigate }) {
           {step === 0 && (
             <PersonalStep
               register={register}
+              control={control}
               errors={errors}
               photoFile={photoFile}
               setPhotoFile={setPhotoFile}
@@ -1338,7 +1332,7 @@ function EditEmployeeForm({ navigate, existing }) {
     .map((s) => ({ value: s.name, label: `${s.name} (${s.start}–${s.end})` }));
 
   const {
-    register, handleSubmit, trigger, watch, setValue, formState: { errors },
+    register, control, handleSubmit, trigger, watch, setValue, formState: { errors },
   } = useForm({
     resolver: zodResolver(employeeSchema.omit({ employeeId: true }).extend({
       employeeId: z.string().optional(),
@@ -1461,7 +1455,7 @@ function EditEmployeeForm({ navigate, existing }) {
 
       <form onSubmit={handleSubmit(onSubmit, onInvalid)}>
         <Card className="p-6">
-          {step === 0 && <PersonalStep register={register} errors={errors} watch={watch} setValue={setValue} detailsOptional detailsPending={detailsPending} payLock={payLockHint(role, userId, existing)} />}
+          {step === 0 && <PersonalStep register={register} control={control} errors={errors} watch={watch} setValue={setValue} detailsOptional detailsPending={detailsPending} payLock={payLockHint(role, userId, existing)} />}
           {step === 1 && (
             <JobStep
               register={register}

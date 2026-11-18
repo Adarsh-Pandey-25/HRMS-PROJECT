@@ -7,6 +7,8 @@ import { ArrowRight, Banknote, HeartPulse, LogOut, MapPin, ShieldCheck, UserRoun
 import toast from 'react-hot-toast';
 import { Button, Card, Input, Select } from '../components/ui';
 import { AddressFields, EmergencyContactFields } from '../components/shared/ContactDetailFields';
+import { FormPhoneInput } from '../components/ui/PhoneInput';
+import { normalizePhone, phoneProblem } from '../lib/phone';
 import { ForcePasswordChangeModal } from '../components/auth/ForcePasswordChangeModal';
 import { completeProfileApi } from '../api/auth.api';
 import { useAuthStore } from '../store/authStore';
@@ -25,7 +27,13 @@ const todayISO = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 const letters = (label) => z.string().trim().min(1, 'Required').regex(NAME_RE, `${label} must contain letters only`);
-const tenDigits = (label) => z.string().trim().regex(/^\d{10}$/, `${label} must be exactly 10 digits`);
+// 10 digits for India, or + and the country code for anywhere else (lib/phone.js).
+const phoneNumber = (label) => z.string().trim().superRefine((value, ctx) => {
+  const problem = phoneProblem(value, label);
+  if (problem) ctx.addIssue({ code: 'custom', message: problem });
+});
+// A number already on file, as the picker shows it ("+91 98765 43210" → "9876543210").
+const storedPhone = (value) => normalizePhone(value) ?? String(value || '').trim();
 
 const schema = z.object({
   dob: z.string().min(1, 'Required')
@@ -34,7 +42,7 @@ const schema = z.object({
     .refine((v) => v >= '1900-01-01', 'Enter a valid date'),
   gender: z.string().min(1, 'Required'),
   personalEmail: z.string().trim().min(1, 'Required').email('Enter a valid email (e.g. name@gmail.com)'),
-  phone: tenDigits('Phone number'),
+  phone: phoneNumber('Phone number'),
 
   addressLine1: z.string().trim().min(1, 'Required'),
   addressLine2: z.string().trim().min(1, 'Required'),
@@ -44,7 +52,7 @@ const schema = z.object({
   country: letters('Country'),
 
   emergencyName: letters('Name'),
-  emergencyPhone: tenDigits('Phone number'),
+  emergencyPhone: phoneNumber('Phone number'),
   emergencyRelation: letters('Relation'),
 
   bankName: z.string().trim().min(1, 'Required').regex(/^[A-Za-z][A-Za-z\s.'&-]*$/, 'Bank name must contain letters only'),
@@ -69,7 +77,7 @@ function defaultsFrom(user = {}) {
     dob: (user.dob || '').slice(0, 10),
     gender: user.gender || '',
     personalEmail: addr.personalEmail || addr.personal_email || '',
-    phone: String(user.phone || '').replace(/\D/g, '').slice(-10),
+    phone: storedPhone(user.phone),
     addressLine1: addr.line1 || addr.street || '',
     addressLine2: addr.line2 || '',
     city: addr.city || '',
@@ -77,7 +85,7 @@ function defaultsFrom(user = {}) {
     pincode: addr.pincode || '',
     country: addr.country || 'India',
     emergencyName: ec.name || '',
-    emergencyPhone: String(ec.phone || '').replace(/\D/g, '').slice(-10),
+    emergencyPhone: storedPhone(ec.phone),
     emergencyRelation: ec.relation || '',
     bankName: bank.name || '',
     bankAccount: bank.account || '',
@@ -114,7 +122,7 @@ export default function CompleteProfile() {
   const [saving, setSaving] = useState(false);
 
   const {
-    register, handleSubmit, watch, formState: { errors },
+    register, control, handleSubmit, watch, formState: { errors },
   } = useForm({ resolver: zodResolver(schema), defaultValues: defaultsFrom(user), mode: 'onTouched' });
 
   const values = watch();
@@ -199,7 +207,7 @@ export default function CompleteProfile() {
                 error={errors.gender?.message}
               />
               <Input label="Personal email" type="email" required autoComplete="email" placeholder="e.g. name@gmail.com" {...register('personalEmail')} error={errors.personalEmail?.message} />
-              <Input label="Mobile number" required inputMode="numeric" autoComplete="tel-national" maxLength={10} placeholder="e.g. 9876543210" {...register('phone')} onInput={onlyDigits(10)} error={errors.phone?.message} />
+              <FormPhoneInput control={control} name="phone" label="Mobile number" required error={errors.phone?.message} />
             </div>
           </Section>
 
@@ -210,7 +218,7 @@ export default function CompleteProfile() {
           <Section icon={HeartPulse} title="Emergency contact" done={sectionDone(SECTIONS[2])}>
             {/* The shared component brings its own heading; this card already has one. */}
             <div className="[&>div>div:first-child]:hidden">
-              <EmergencyContactFields register={register} errors={errors} onPhoneInput={onlyDigits(10)} onNameInput={onlyLetters} />
+              <EmergencyContactFields register={register} control={control} errors={errors} onNameInput={onlyLetters} />
             </div>
           </Section>
 

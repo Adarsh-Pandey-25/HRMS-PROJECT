@@ -10,6 +10,11 @@ import {
   completeEmployeeOnboardingApi,
 } from '../api/auth.api';
 import { INDIAN_STATES } from '../lib/indianStates';
+import { PhoneInput } from '../components/ui/PhoneInput';
+import { phoneProblem } from '../lib/phone';
+
+// A number typed in, checked as the server keeps it (lib/phone.js); blank is allowed here.
+const typedPhoneProblem = (value, label) => (String(value || '').trim() ? phoneProblem(value, label) : null);
 
 const PASSWORD_RULES = [
   { label: 'At least 8 characters', test: (p) => p.length >= 8 },
@@ -107,6 +112,12 @@ export default function EmployeeOnboarding() {
       toast.error('Passwords do not match');
       return;
     }
+    const phoneIssue = typedPhoneProblem(form.phone_number, 'Mobile number')
+      || typedPhoneProblem(form.emergency_contact.phone, 'Emergency contact phone');
+    if (phoneIssue) {
+      toast.error(phoneIssue);
+      return;
+    }
     setSaving(true);
     try {
       const { confirm_password: _confirmPassword, ...payload } = form;
@@ -167,7 +178,7 @@ export default function EmployeeOnboarding() {
               </label>
             </div>
             <div className="grid gap-4 sm:grid-cols-2">
-              <Input label="Mobile number" type="tel" inputMode="tel" autoComplete="tel" value={form.phone_number} onChange={(e) => set('phone_number', e.target.value)} />
+              <PhoneInput label="Mobile number" value={form.phone_number} onChange={(phone) => set('phone_number', phone)} error={typedPhoneProblem(form.phone_number, 'Mobile number')} />
               <Input label="Date of birth" type="date" value={form.date_of_birth} onChange={(e) => set('date_of_birth', e.target.value)} />
               <Select label="Gender" placeholder="Select" options={GENDER_OPTIONS} value={form.gender} onChange={(e) => set('gender', e.target.value)} />
             </div>
@@ -187,7 +198,7 @@ export default function EmployeeOnboarding() {
             <h2 className="text-base font-semibold text-fg">Emergency contact</h2>
             <div className="grid gap-4 sm:grid-cols-2">
               <Input label="Name" value={form.emergency_contact.name} onChange={(e) => setNested('emergency_contact', 'name', e.target.value)} />
-              <Input label="Phone" type="tel" inputMode="tel" value={form.emergency_contact.phone} onChange={(e) => setNested('emergency_contact', 'phone', e.target.value)} />
+              <PhoneInput label="Phone" value={form.emergency_contact.phone} onChange={(phone) => setNested('emergency_contact', 'phone', phone)} error={typedPhoneProblem(form.emergency_contact.phone, 'Phone number')} />
             </div>
           </Card>
 

@@ -6,6 +6,7 @@ const { MARKETING_GROUPS, groupsForRole, sanitizeGroups, describeGroups } = requ
 const { maskPhone, firstName } = require('./whatsappFormat');
 const settings = require('./whatsappSettings.service');
 const { companyName } = require('./whatsappLookup');
+const { whatsappNumber } = require('../utils/phone');
 
 /**
  * Connecting a person's WhatsApp. A person can do it themselves: SpaxSync
@@ -288,12 +289,12 @@ const HELD_BACK_CODES = ['131049', '130472'];
 // business is verified, Meta allows about 250 different people a day.
 const CONNECT_AT_ONCE = 200;
 
-/** A mobile as the employee forms take it ("9876543210", "+91 98765 43210") → "919876543210"; anything else null. */
-const indianMobile = (value) => {
-  const digits = String(value || '').replace(/\D/g, '');
-  const local = digits.length === 12 && digits.startsWith('91') ? digits.slice(2) : digits;
-  return /^[6-9]\d{9}$/.test(local) ? `91${local}` : null;
-};
+/**
+ * The mobile number on file, as WhatsApp takes it: "9876543210" →
+ * "919876543210", and since 18 Nov 2026 any country's ("+971501234567" →
+ * "971501234567"); null if it can't be a mobile (utils/phone.js).
+ */
+const mobileForWhatsapp = (value) => whatsappNumber(value);
 
 /** Is WhatsApp on for this company: the paid add-on, and the company's own switch? */
 const companyWhatsappOn = async (companyId) => Boolean(companyId)
@@ -336,7 +337,7 @@ const queueFirstMessage = ({ employeeIds, kind, source, recordKey }) => {
  */
 const connectAddedEmployee = async ({ employeeId, phone: rawPhone, companyId, existingStaff = false }) => {
   const cfg = getConfig();
-  const phone = indianMobile(rawPhone);
+  const phone = mobileForWhatsapp(rawPhone);
   if (!canSend(cfg) || !employeeId || !phone || !isRecipientAllowed(phone, cfg)) return false;
   if (!(await companyWhatsappOn(companyId))) return false;
 
@@ -361,7 +362,7 @@ const connectAddedEmployee = async ({ employeeId, phone: rawPhone, companyId, ex
  */
 const followNumberChange = async ({ employeeId, phone: rawPhone }) => {
   if (!canSend(getConfig()) || !employeeId) return false;
-  const phone = indianMobile(rawPhone);
+  const phone = mobileForWhatsapp(rawPhone);
   if (!phone) {
     // The number was cleared, or isn't a mobile any more: a connection
     // SpaxSync made from the old one stops — that number isn't theirs now.
@@ -431,7 +432,7 @@ const connectCandidates = async (companyId) => {
 
   const result = { employees: ids.length, connected: 0, leftAlone: 0, noMobile: 0, ready: [] };
   for (const employee of employees || []) {
-    const phone = indianMobile(employee.phone);
+    const phone = mobileForWhatsapp(employee.phone);
     if (linkStatus.get(employee.id) === 'active') result.connected += 1;
     else if (linkStatus.has(employee.id) || connectedBefore.has(employee.id)) result.leftAlone += 1;
     else if (!phone) result.noMobile += 1;
@@ -537,7 +538,7 @@ module.exports = {
   HR_ADDED,
   FIRST_MESSAGE,
   CONNECT_AT_ONCE,
-  indianMobile,
+  mobileForWhatsapp,
   connectAddedEmployee,
   followNumberChange,
   connectCandidates,

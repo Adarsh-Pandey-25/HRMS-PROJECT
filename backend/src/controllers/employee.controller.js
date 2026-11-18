@@ -16,6 +16,7 @@ const { uploadProfilePicture, getSignedUrl, getSignedUrls, STORAGE_BUCKETS, dele
 const logger = require('../utils/logger');
 const profileCompletion = require('../services/profileCompletion.service');
 const { runInBackground } = require('../utils/background');
+const { normalizePhone, phoneProblem, samePhone } = require('../utils/phone');
 
 /** Employee fields that auto-log a career event when HR/Admin changes them via update(). */
 const CAREER_TRACKED_FIELDS = {
@@ -124,8 +125,6 @@ const sentBoolean = (value, field) => {
   if (value === false || value === 'false') return false;
   throw new BadRequestError(`${field} must be true or false`);
 };
-
-const digitsOnly = (value) => String(value ?? '').replace(/\D/g, '');
 
 /**
  * Write a refusal to the audit log and return the error for the caller to
@@ -680,7 +679,7 @@ const update = async (req, res, next) => {
       newRole,
       removesAccess: requestedActive === false && wasActive,
       restoresAccess: requestedActive === true && !wasActive,
-      changesPhone: req.body.phone !== undefined && digitsOnly(req.body.phone) !== digitsOnly(existing.phone),
+      changesPhone: req.body.phone !== undefined && !samePhone(req.body.phone, existing.phone),
       changesCompany: isPrivileged && Boolean(requestedCompanyId) && !sameId(requestedCompanyId, getCompanyId(existing)),
     });
 
@@ -751,6 +750,16 @@ const update = async (req, res, next) => {
     delete allowedFields.password_hash;
     delete allowedFields.email;
     delete allowedFields.companyId;
+
+    // The mobile number is stored the way utils/phone.js keeps numbers: 10
+    // digits for India, + and the country code for anywhere else (18 Nov
+    // 2026). An invalid number is refused only when it is a change, so an
+    // old value sent back as it was never blocks saving anything else.
+    if (allowedFields.phone != null && String(allowedFields.phone).trim() !== '') {
+      const storedPhone = normalizePhone(allowedFields.phone);
+      if (storedPhone) allowedFields.phone = storedPhone;
+      else if (!samePhone(allowedFields.phone, existing.phone)) throw new BadRequestError(phoneProblem(allowedFields.phone));
+    }
 
     // Audit finding N-01: isPrivileged alone unlocked the full field
     // whitelist even when the target IS the caller — an HR/Admin editing

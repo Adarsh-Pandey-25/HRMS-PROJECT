@@ -3,6 +3,7 @@ const logger = require('../utils/logger');
 const { GENDERS } = require('../utils/constants');
 const { BadRequestError, ConflictError } = require('../utils/errors');
 const { isMissingColumnError } = require('../utils/helpers');
+const { phoneProblem, normalizePhone } = require('../utils/phone');
 
 /**
  * Personal details an employee fills in themselves.
@@ -19,7 +20,7 @@ const { isMissingColumnError } = require('../utils/helpers');
 
 const NAME_RE = /^[A-Za-z][A-Za-z\s.'-]*$/;
 const BANK_NAME_RE = /^[A-Za-z][A-Za-z\s.'&-]*$/;
-const PHONE_RE = /^\d{10}$/;
+// Phone numbers: 10 digits for India, or + and the country code (utils/phone.js).
 const PINCODE_RE = /^\d{6}$/;
 const ACCOUNT_RE = /^\d{9,18}$/;
 const IFSC_RE = /^[A-Za-z]{4}0[A-Za-z0-9]{6}$/;
@@ -38,7 +39,7 @@ const validDob = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v)
 const FIELDS = [
   { key: 'date_of_birth', label: 'Date of birth', get: (r) => str(r.date_of_birth).slice(0, 10), ok: validDob, bad: 'Date of birth must be a real date, not in the future' },
   { key: 'gender', label: 'Gender', get: (r) => str(r.gender).toLowerCase(), ok: (v) => GENDERS.includes(v), bad: 'Gender must be male, female or other' },
-  { key: 'phone', label: 'Phone', get: (r) => str(r.phone), ok: (v) => PHONE_RE.test(v), bad: 'Phone number must be exactly 10 digits' },
+  { key: 'phone', label: 'Phone', get: (r) => str(r.phone), ok: (v) => !phoneProblem(v), bad: (v) => phoneProblem(v) },
   { key: 'personal_email', label: 'Personal email', get: (r) => str(obj(r.address).personal_email).toLowerCase(), ok: (v) => EMAIL_RE.test(v), bad: 'Enter a valid personal email' },
   { key: 'address.line1', label: 'Address line 1', get: (r) => str(obj(r.address).line1), ok: Boolean },
   { key: 'address.line2', label: 'Address line 2', get: (r) => str(obj(r.address).line2), ok: Boolean },
@@ -47,7 +48,7 @@ const FIELDS = [
   { key: 'address.pincode', label: 'Pincode', get: (r) => str(obj(r.address).pincode), ok: (v) => PINCODE_RE.test(v), bad: 'Pincode must be exactly 6 digits' },
   { key: 'address.country', label: 'Country', get: (r) => str(obj(r.address).country), ok: (v) => NAME_RE.test(v), bad: 'Country must contain letters only' },
   { key: 'emergency_contact.name', label: 'Emergency contact name', get: (r) => str(obj(r.emergency_contact).name), ok: (v) => NAME_RE.test(v), bad: 'Emergency contact name must contain letters only' },
-  { key: 'emergency_contact.phone', label: 'Emergency contact phone', get: (r) => str(obj(r.emergency_contact).phone), ok: (v) => PHONE_RE.test(v), bad: 'Emergency contact phone must be exactly 10 digits' },
+  { key: 'emergency_contact.phone', label: 'Emergency contact phone', get: (r) => str(obj(r.emergency_contact).phone), ok: (v) => !phoneProblem(v), bad: (v) => phoneProblem(v, 'Emergency contact phone') },
   { key: 'emergency_contact.relation', label: 'Relation', get: (r) => str(obj(r.emergency_contact).relation || obj(r.emergency_contact).relationship), ok: (v) => NAME_RE.test(v), bad: 'Relation must contain letters only' },
   { key: 'bank_details.bank_name', label: 'Bank name', get: (r) => str(obj(r.bank_details).bank_name), ok: (v) => BANK_NAME_RE.test(v), bad: 'Bank name must contain letters only' },
   { key: 'bank_details.account_number', label: 'Account number', get: (r) => str(obj(r.bank_details).account_number), ok: (v) => ACCOUNT_RE.test(v), bad: 'Account number must be 9–18 digits' },
@@ -60,7 +61,7 @@ const profileProblems = (row = {}) => {
   for (const f of FIELDS) {
     const value = f.get(row);
     if (!value) problems.push({ field: f.key, message: `${f.label} is required` });
-    else if (!f.ok(value)) problems.push({ field: f.key, message: f.bad });
+    else if (!f.ok(value)) problems.push({ field: f.key, message: typeof f.bad === 'function' ? f.bad(value) : f.bad });
   }
   return problems;
 };
@@ -81,7 +82,9 @@ const buildProfileUpdate = (existing, body = {}) => {
   return {
     date_of_birth: str(body.date_of_birth),
     gender: str(body.gender).toLowerCase(),
-    phone: str(body.phone).replace(/\D/g, ''),
+    // Stored as utils/phone.js keeps numbers; as typed if not valid, so the
+    // problem is reported in its own terms.
+    phone: normalizePhone(body.phone) ?? str(body.phone),
     address: {
       ...obj(existing.address),
       line1: str(address.line1),
@@ -95,7 +98,7 @@ const buildProfileUpdate = (existing, body = {}) => {
     emergency_contact: {
       ...prevEmergency,
       name: str(emergency.name),
-      phone: str(emergency.phone).replace(/\D/g, ''),
+      phone: normalizePhone(emergency.phone) ?? str(emergency.phone),
       relation: str(emergency.relation),
     },
     bank_details: {
