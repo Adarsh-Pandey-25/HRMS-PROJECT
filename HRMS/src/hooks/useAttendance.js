@@ -7,7 +7,8 @@ import {
   requestWfhDayApi, cancelWfhDayApi, fetchPendingWfhRequestsApi, reviewWfhRequestApi,
   fetchMyWfhRequestsApi,
   manualAttendanceEntryApi, fetchDevicePunchesTodayApi, fetchAdmsStatusApi, updateAdmsDeviceApi,
-  allowAdmsDeviceNewIpApi, relearnAdmsDeviceIpApi,
+  allowAdmsDeviceNewIpApi, relearnAdmsDeviceIpApi, rejectAdmsDeviceNewIpApi,
+  fetchDeviceIpApproversApi, saveDeviceIpApproversApi,
 } from '../api/attendance.api';
 import { fetchTeamEmployeesApi } from '../api/employees.api';
 import { invalidateAndRefetch } from '../lib/queryCache';
@@ -148,6 +149,35 @@ export function useRelearnAdmsDeviceIp() {
   return useMutation({
     mutationFn: ({ serial }) => relearnAdmsDeviceIpApi(serial),
     onSettled: () => invalidateAndRefetch(qc, ['attendance', 'adms']),
+  });
+}
+
+/** Device IP pinning: reject a device's pending IP; its kept punches are never counted. */
+export function useRejectAdmsDeviceNewIp() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ serial, ip }) => rejectAdmsDeviceNewIpApi(serial, ip),
+    onSettled: () => invalidateAndRefetch(qc, ['attendance', 'adms']),
+  });
+}
+
+/** Who is asked to approve a device's new IP (HR and Admins by default, plus anyone ticked). */
+export function useDeviceIpApprovers() {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const role = useAuthStore((s) => s.role);
+  return useQuery({
+    queryKey: ['attendance', 'adms', 'ip-approvers'],
+    queryFn: fetchDeviceIpApproversApi,
+    enabled: isAuthenticated && (role === 'admin' || role === 'hr'),
+    staleTime: 60_000,
+  });
+}
+
+export function useSaveDeviceIpApprovers() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (value) => saveDeviceIpApproversApi(value),
+    onSuccess: (saved) => qc.setQueryData(['attendance', 'adms', 'ip-approvers'], saved),
   });
 }
 

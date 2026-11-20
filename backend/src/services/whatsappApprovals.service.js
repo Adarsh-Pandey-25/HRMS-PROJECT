@@ -29,7 +29,8 @@ const ACTION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const APPROVED_CHECK_MS = 10 * 60 * 1000;
 const PAYLOAD = /^wa_(approve|reject):([A-Za-z0-9_-]{22})$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const KINDS = new Set(['leave', 'wfh', 'expense', 'regularization']);
+// device_ip: a biometric machine's new internet address (admsIpApproval.service.js, 20 Nov 2026).
+const KINDS = new Set(['leave', 'wfh', 'expense', 'regularization', 'device_ip']);
 const REJECT_NOTE = 'Rejected on WhatsApp. Please contact your approver for details.';
 const HIDDEN = '(hidden)';
 // The columns the website's sign-in loads (auth.middleware.js), so each
@@ -262,6 +263,25 @@ const DECIDE = {
       return runHandler(helpdesk.updateStatus, approver, { id: ticketId }, { status: 'resolved' });
     },
   },
+  // A biometric machine's new internet address: the people chosen in
+  // Settings → Attendance → Biometric Devices decide (HR and Admins by
+  // default, plus any tech team member ticked there), checked again at the tap.
+  device_ip: {
+    feature: 'biometric_adms',
+    mayDecide: (approver) => require('./admsIpApproval.service').isApprover(approver),
+    notAllowed: 'you are no longer one of the people chosen to approve a new IP for biometric machines',
+    run: (decision, approver, requestId) => require('./admsIpApproval.service')
+      .decide(requestId, decision, { companyId: approver.company_id, decidedBy: approver.id, via: 'whatsapp' }),
+    done: (decision, result) => {
+      if (decision !== 'approve') {
+        return `❌ Rejected — ${result.device} stays allowed only from its old IP. Punches from ${result.ip} are kept but not counted.`;
+      }
+      const kept = result.kept
+        ? ` ${result.kept === 1 ? 'The punch' : `The ${result.kept} punches`} kept since ${result.since} now count${result.kept === 1 ? 's' : ''} too.`
+        : '';
+      return `✅ Approved — ${result.device} is now allowed from ${result.ip}.${kept}`;
+    },
+  },
 };
 
 // ── Handling a tap ────────────────────────────────────────────────────────
@@ -346,7 +366,9 @@ const handleTap = async ({ decision, code, identity }) => {
     const rule = DECIDE[action.kind];
     let result;
     try {
-      if (!rule.roles.includes(approver.role)) {
+      if (rule.mayDecide) {
+        if (!(await rule.mayDecide(approver))) throw new ForbiddenError(rule.notAllowed);
+      } else if (!rule.roles.includes(approver.role)) {
         throw new ForbiddenError(rule.roles.includes('manager')
           ? 'only managers, HR and admins can decide this request'
           : 'only HR and admins can decide attendance corrections');
@@ -378,6 +400,7 @@ const handleTap = async ({ decision, code, identity }) => {
       targetId: action.record_id,
       afterState: { via: 'whatsapp' },
     }).catch((err) => logger.warn('[WhatsApp] audit log failed', { error: err.message }));
+    if (rule.done) return rule.done(decision, result);
     const subject = await subjectOf(action);
     return sentToHr ? REPLIES.sentToHr(subject) : REPLIES.done(decision, subject);
   } catch (err) {

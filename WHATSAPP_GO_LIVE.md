@@ -28,7 +28,7 @@ Only people whose **WhatsApp is connected** get anything. Employees HR adds from
 - **New helpdesk tickets** and replies; **documents uploaded** for checking.
 - **Summaries:** daily attendance summary, daily pending-approvals count, weekly joiners & exits.
 - **Recruitment:** a candidate accepted or declined an offer.
-- **Security:** API key created or revoked, office beacon alerts.
+- **Security:** API key created or revoked, office beacon alerts, and a biometric machine's new internet address with **Approve** / **Reject** (see "Approving on WhatsApp" below).
 
 ### Company admins, in addition
 - **Admin copies:** an employee's leave balance changed; payroll setup changed (PF/ESI on or off — never amounts).
@@ -61,6 +61,7 @@ Leave, work-from-home, expense and attendance-correction requests reach the appr
 - **A tap does exactly what the button on the website does**, with the same rules: right role and team, the company's approval steps, nobody approves their own request, and the request must still be pending. The employee is told as usual.
 - **Reject is one tap.** The employee sees the reason "Rejected on WhatsApp. Please contact your approver for details."
 - **Attendance corrections:** Approve saves the times the employee asked for, then closes the request, like "Save attendance" on the website. To change the times, use the website.
+- **A biometric machine's new internet address (added 20 Nov 2026):** when the office internet changes (new connection, router restart), the machine reports from a new IP. Its punches are now **kept, not lost**, and the people chosen in **Settings → Attendance → Biometric Devices → Who approves a new IP** get the message with **Approve** / **Reject**. By default that is every HR and Admin; anyone else, such as the tech team, can be ticked there. Approve allows the new IP, and every kept punch counts at the time it was made. Reject keeps them uncounted, and nobody is asked about that IP again for 7 days. It uses the same `approval_request` template, so nothing new needs Meta's approval.
 - **Safety:** the buttons only work from the WhatsApp number connected to the approver. Each set works once and stops working after 7 days. They don't work if the approver's account is switched off or the company is suspended. Every decision is recorded with who made it and when.
 - **Known gap (audit 4 Nov 2026, #11 and #12):** a number connected automatically is the number HR typed in, not one the approver proved they own, and if HR edits the approver's number the buttons move to the new number with no check. So a mistyped, old or recycled number can approve requests. Until approvers re-verify their number, keep WhatsApp approvals off (see "To stop everything" below).
 - **Live since 30 Oct 2026:** Meta approved `approval_request`, and the first leave and work-from-home requests were approved from WhatsApp that afternoon.

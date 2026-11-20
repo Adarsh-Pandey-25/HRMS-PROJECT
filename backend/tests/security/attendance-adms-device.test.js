@@ -3,12 +3,17 @@
  * POST /iclock/cdata) were accepted on the device serial alone — and the
  * serial is printed on the device. The protocol can't carry a login or a
  * custom header, so each registered device is now pinned to the public IP it
- * reports from: the first request pins it, a request from any other IP is
- * refused ("NOK", which the device treats as a failed upload — it keeps the
- * punches and resends them) and held for an Admin to allow.
+ * reports from: the first request pins it, and a request from any other IP
+ * is held for someone to approve.
+ *
+ * Since 20 Nov 2026 (owner's request) the punches of such a request are kept,
+ * not refused — the device did not always send refused punches again — and
+ * count once the new IP is approved (admsIpApproval.service.js). Before that
+ * migration runs they are refused with "NOK", as before.
  *
  * Requests go through the real /iclock router on an Express app set up like
- * production (trust proxy 1 behind nginx). No database and no .env.
+ * production (trust proxy 1 behind nginx). No database, no .env, and nothing
+ * is sent on WhatsApp (the outbox is a stand-in).
  */
 jest.mock('dotenv', () => ({ config: () => ({ parsed: {} }) }));
 jest.mock('../../src/config/supabase', () => ({ supabaseAdmin: { from: (...a) => mockDb.current.from(...a) } }));
@@ -33,7 +38,9 @@ jest.mock('../../src/services/attendance.service', () => ({
   getEmployeeShiftStart: async () => '09:30',
   recomputeBiometricWindow: async () => {},
 }));
+jest.mock('../../src/services/whatsappOutbox.service', () => ({ queueEvent: (...a) => mockOutbox.queueEvent(...a) }));
 
+const mockOutbox = { queueEvent: jest.fn(async () => 1) };
 const mockDb = { current: null };
 const mockMail = { sent: [], send: async (m) => { mockMail.sent.push(m); return { success: true }; } };
 const mockAudit = [];
@@ -45,6 +52,7 @@ const { makeFakeSupabase } = require('./helpers/fakeSupabase');
 const logger = require('../../src/utils/logger');
 const settingsService = require('../../src/services/settings.service');
 const admsService = require('../../src/services/adms.service');
+const ipApproval = require('../../src/services/admsIpApproval.service');
 const admsController = require('../../src/controllers/adms.controller');
 const { ConflictError, NotFoundError, BadRequestError } = require('../../src/utils/errors');
 
@@ -153,22 +161,26 @@ describe('a push from a different IP', () => {
     Object.assign(row(), { allowed_ip: OFFICE_IP, ip_pinned_at: '2026-11-01T00:00:00.000Z' });
   });
 
-  test('is refused with NOK, saves nothing, records the pending IP, emails the admins once and logs it', async () => {
+  test('is kept, not counted (the device is told OK), records the pending IP, emails the admins once and logs it', async () => {
     const res = await push(app, { ip: OTHER_IP });
-    expect(res.status).toBe(403);
-    expect(res.text).toBe('NOK');
+    expect(res.status).toBe(200);
+    expect(res.text).toBe('OK');
     expect(tables.device_punches).toHaveLength(0);
+    expect(tables.adms_kept_punches).toHaveLength(1);
+    expect(tables.adms_kept_punches[0]).toMatchObject({ device_serial: SERIAL, company_id: 'c1', source_ip: OTHER_IP, device_user_id: '1' });
     expect(row()).toMatchObject({ allowed_ip: OFFICE_IP, pending_ip: OTHER_IP });
     expect(row().pending_ip_seen_at).toBeTruthy();
 
     expect(mockMail.sent).toHaveLength(1);
     expect(mockMail.sent[0]).toMatchObject({ type: 'adms_device_new_ip', to: 'owner@acme.test' });
     expect(mockMail.sent[0].html).toContain(OTHER_IP);
+    expect(mockMail.sent[0].html).toContain('being kept, not counted');
     expect(warnings().some((w) => w.includes(`pinned to ${OFFICE_IP} but called from ${OTHER_IP}`))).toBe(true);
 
-    // The device retries: still refused, no second email, no platform alert.
+    // The device sends the same punch again: still one kept, no second email, no platform alert.
     const again = await push(app, { ip: OTHER_IP });
-    expect(again.status).toBe(403);
+    expect(again.status).toBe(200);
+    expect(tables.adms_kept_punches).toHaveLength(1);
     expect(mockMail.sent).toHaveLength(1);
     expect(mockMail.sent.some((m) => m.type === 'adms_unauthorized_alert')).toBe(false);
   });
@@ -212,8 +224,11 @@ describe('Allow new IP / Re-learn IP', () => {
     const res = await push(app, { ip: OTHER_IP });
     expect(res.status).toBe(200);
     expect(tables.device_punches).toHaveLength(1);
+    // The old IP is now a new one for this device: its punches are kept, not counted.
     const old = await push(app, { ip: OFFICE_IP, body: punchLine(1, -30) });
-    expect(old.status).toBe(403);
+    expect(old.status).toBe(200);
+    expect(tables.device_punches).toHaveLength(1);
+    expect(tables.adms_kept_punches.filter((k) => k.source_ip === OFFICE_IP)).toHaveLength(1);
   });
 
   test('allowing an IP other than the one waiting changes nothing', async () => {
@@ -253,6 +268,202 @@ describe('Allow new IP / Re-learn IP', () => {
       // Same guards as the register route: authenticate (router-wide), isHROrAdmin, requireFeature('biometric_adms').
       expect(route.stack.length).toBe(register.stack.length);
     }
+  });
+});
+
+describe('punches kept from a new IP (20 Nov 2026)', () => {
+  // A serial per test: the "one alert per device per hour" memory outlives a test.
+  let serialNo = 0;
+  const ADMIN_ID = 'admin1';
+  const admin = { id: ADMIN_ID, company_id: 'c1', role: 'admin', is_active: true, email: 'owner@acme.test', first_name: 'Asha', last_name: 'Admin' };
+  const settle = async () => { for (let i = 0; i < 25; i += 1) await new Promise((r) => setImmediate(r)); };
+
+  const addDevice = (overrides = {}) => {
+    serialNo += 1;
+    const serial = `KEEPTEST${serialNo}`;
+    tables.device_heartbeats.push(device({ device_serial: serial, allowed_ip: OFFICE_IP, ip_pinned_at: '2026-11-01T00:00:00.000Z', ...overrides }));
+    tables.device_employee_mapping.push({ device_serial: serial, device_user_id: '1', employee_id: 'e1', employees: { company_id: 'c1' } });
+    return { serial, dev: () => tables.device_heartbeats.find((d) => d.device_serial === serial) };
+  };
+  const requestFor = (serial) => (tables.adms_ip_requests || []).find((r) => r.device_serial === serial);
+  const callAs = async (handler, { serial, body = {} }) => {
+    const req = { params: { serial }, body, user: { id: ADMIN_ID, role: 'admin', company_id: 'c1' }, ip: '127.0.0.1', headers: {} };
+    let payload = null;
+    const res = { status() { return res; }, json(p) { payload = p; return res; } };
+    const next = jest.fn();
+    await handler(req, res, next);
+    return { payload, error: next.mock.calls[0]?.[0] || null };
+  };
+
+  beforeEach(() => { tables.employees = [{ ...admin }]; });
+  afterEach(() => ipApproval._resetForTests());
+
+  test('Allow new IP: the punches kept from it count, at the times they were made', async () => {
+    const { serial, dev } = addDevice();
+    const line = punchLine(1, -90);
+    expect((await push(app, { serial, ip: OTHER_IP, body: line })).status).toBe(200);
+    expect(tables.device_punches).toHaveLength(0);
+    expect(requestFor(serial)).toMatchObject({ status: 'pending', ip: OTHER_IP, previous_ip: OFFICE_IP, company_id: 'c1' });
+
+    const { payload, error } = await callAs(admsController.allowDeviceNewIp, { serial, body: { ip: OTHER_IP } });
+    expect(error).toBeNull();
+    expect(payload.message).toContain('The punch kept since');
+    await settle();
+    expect(tables.device_punches).toHaveLength(1);
+    expect(tables.device_punches[0]).toMatchObject({ device_serial: serial, device_user_id: '1', employee_id: 'e1', company_id: 'c1' });
+    expect(tables.device_punches[0].punch_time).toBe(admsService.parseAttlogBody(line, serial)[0].punch_time);
+    expect(tables.adms_kept_punches.find((k) => k.device_serial === serial).released_at).toBeTruthy();
+    expect(dev()).toMatchObject({ allowed_ip: OTHER_IP, pending_ip: null });
+    expect(requestFor(serial)).toMatchObject({ status: 'approved', decided_via: 'website', decided_by: ADMIN_ID });
+  });
+
+  test('Reject: the kept punches never count, the IP stops waiting, and nobody is asked again', async () => {
+    const { serial, dev } = addDevice();
+    await push(app, { serial, ip: OTHER_IP });
+    expect(mockMail.sent).toHaveLength(1);
+
+    const { error } = await callAs(admsController.rejectDeviceNewIp, { serial, body: { ip: OTHER_IP } });
+    expect(error).toBeNull();
+    expect(dev()).toMatchObject({ allowed_ip: OFFICE_IP, pending_ip: null });
+    expect(requestFor(serial)).toMatchObject({ status: 'rejected', decided_via: 'website', decided_by: ADMIN_ID });
+    expect(mockAudit.some(([, e]) => e.actionType === 'biometric_device.reject_new_ip')).toBe(true);
+
+    // It keeps sending from there: kept, never counted, nobody asked again for 7 days.
+    const again = await push(app, { serial, ip: OTHER_IP, body: punchLine(1, -10) });
+    expect(again.status).toBe(200);
+    expect(dev().pending_ip).toBeNull();
+    expect(mockMail.sent).toHaveLength(1);
+    expect(tables.device_punches).toHaveLength(0);
+    expect(tables.adms_kept_punches.filter((k) => k.device_serial === serial)).toHaveLength(2);
+
+    // Rejecting an IP other than the one waiting changes nothing.
+    const wrong = await callAs(admsController.rejectDeviceNewIp, { serial, body: { ip: '192.0.2.99' } });
+    expect(wrong.error).toBeInstanceOf(BadRequestError);
+  });
+
+  test('WhatsApp: the approvers are asked with Approve / Reject, and Approve counts the kept punches once', async () => {
+    const { serial, dev } = addDevice();
+    await push(app, { serial, ip: OTHER_IP });
+    const request = requestFor(serial);
+    expect(mockOutbox.queueEvent).toHaveBeenCalledTimes(1);
+    const event = mockOutbox.queueEvent.mock.calls[0][0];
+    expect(event).toMatchObject({
+      eventKey: 'device_ip_approval',
+      template: 'approval_request',
+      group: 'security',
+      recordKey: request.id,
+      action: { kind: 'device_ip', recordId: request.id },
+      recipients: [{ subjectType: 'employee', subjectId: ADMIN_ID }],
+    });
+    const params = await event.params({ person: { first_name: 'Asha' }, company: { name: 'Acme Ltd' } });
+    expect(params).toEqual([
+      'Asha', 'the biometric machine Main Gate', 'Acme Ltd', `a new internet address, ${OTHER_IP}`, ipApproval.KEPT_REASON,
+    ]);
+    expect(ipApproval.KEPT_REASON.length).toBeLessThanOrEqual(200);
+
+    const result = await ipApproval.decide(request.id, 'approve', { companyId: 'c1', decidedBy: ADMIN_ID, via: 'whatsapp' });
+    expect(result).toMatchObject({ ip: OTHER_IP, device: 'Main Gate', kept: 1 });
+    await settle();
+    expect(dev()).toMatchObject({ allowed_ip: OTHER_IP, pending_ip: null });
+    expect(tables.device_punches).toHaveLength(1);
+    expect(requestFor(serial)).toMatchObject({ status: 'approved', decided_via: 'whatsapp', decided_by: ADMIN_ID });
+
+    // A second tap (or the other button) finds it decided; another company never finds it.
+    await expect(ipApproval.decide(request.id, 'reject', { companyId: 'c1', decidedBy: ADMIN_ID, via: 'whatsapp' }))
+      .rejects.toBeInstanceOf(ConflictError);
+    await expect(ipApproval.decide(request.id, 'approve', { companyId: 'c2', decidedBy: 'x', via: 'whatsapp' }))
+      .rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  test('an old approval cannot undo a newer change to the machine', async () => {
+    const { serial, dev } = addDevice();
+    await push(app, { serial, ip: OTHER_IP });
+    const request = requestFor(serial);
+    // Meanwhile the machine was moved to a third IP on the website.
+    Object.assign(dev(), { allowed_ip: '192.0.2.77', pending_ip: null });
+
+    await expect(ipApproval.decide(request.id, 'approve', { companyId: 'c1', decidedBy: ADMIN_ID, via: 'whatsapp' }))
+      .rejects.toBeInstanceOf(ConflictError);
+    expect(dev().allowed_ip).toBe('192.0.2.77');
+    expect(requestFor(serial).status).toBe('pending');
+    await settle();
+    expect(tables.device_punches).toHaveLength(0);
+  });
+
+  test('Re-learn IP: the punches kept from the IP the machine pins next count', async () => {
+    const { serial, dev } = addDevice();
+    await push(app, { serial, ip: OTHER_IP, body: punchLine(1, -45) });
+    const { error } = await callAs(admsController.relearnDeviceIp, { serial });
+    expect(error).toBeNull();
+
+    const res = await push(app, { serial, ip: OTHER_IP, body: punchLine(1, -5) });
+    expect(res.status).toBe(200);
+    await settle();
+    expect(dev().allowed_ip).toBe(OTHER_IP);
+    expect(tables.device_punches.filter((p) => p.device_serial === serial)).toHaveLength(2);
+    expect(requestFor(serial)).toMatchObject({ status: 'approved', decided_via: 'relearn' });
+  });
+
+  test('anything but punches from a new IP is answered OK and ignored, as from the allowed IP', async () => {
+    const { serial } = addDevice();
+    const res = await push(app, { serial, ip: OTHER_IP, query: '&table=OPERLOG', body: 'OPLOG 4\t0\t2026-11-20 09:00:00' });
+    expect(res.status).toBe(200);
+    expect(tables.adms_kept_punches || []).toHaveLength(0);
+  });
+
+  test('before the kept-punches migration runs, a push from a new IP is refused with NOK, as before', async () => {
+    ipApproval._resetForTests();
+    mockDb.current = makeFakeSupabase(tables, { missingTables: ['adms_kept_punches', 'adms_ip_requests'] });
+    const { serial } = addDevice();
+    const res = await push(app, { serial, ip: OTHER_IP });
+    expect(res.status).toBe(403);
+    expect(res.text).toBe('NOK');
+    expect(mockMail.sent[0].html).toContain('being refused until it is allowed');
+    expect(mockOutbox.queueEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe('who approves a new IP (Settings → Attendance → Biometric Devices)', () => {
+  const id = (n) => `e0000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+  const person = (n, role, extra = {}) => ({
+    id: id(n), company_id: 'c1', role, is_active: true, email: `p${n}@acme.test`, first_name: `P${n}`, last_name: 'X', ...extra,
+  });
+
+  beforeEach(() => {
+    tables.employees = [
+      person(1, 'admin'), person(2, 'hr'), person(3, 'employee'), person(4, 'employee', { company_id: 'c2' }),
+      person(5, 'employee', { is_active: false }),
+    ];
+  });
+
+  test('by default every HR and Admin of the company', async () => {
+    expect(await ipApproval.getApprovers('c1')).toEqual({ roles: ['admin', 'hr'], employeeIds: [] });
+    expect((await ipApproval.approverEmployees('c1')).map((e) => e.id).sort()).toEqual([id(1), id(2)]);
+  });
+
+  test('tech team members can be ticked; only active people of the company are kept', async () => {
+    const saved = await ipApproval.saveApprovers('c1', { roles: ['admin'], employeeIds: [id(3), id(4), id(5), 'not-an-id', id(3)] }, id(1));
+    expect(saved).toEqual({ roles: ['admin'], employeeIds: [id(3)] });
+    expect((await ipApproval.approverEmployees('c1')).map((e) => e.id).sort()).toEqual([id(1), id(3)]);
+    expect(await ipApproval.isApprover(person(3, 'employee'))).toBe(true);
+    expect(await ipApproval.isApprover(person(2, 'hr'))).toBe(false);
+    expect(await ipApproval.isApprover(person(3, 'employee', { is_active: false }))).toBe(false);
+  });
+
+  test('someone must be chosen', async () => {
+    await expect(ipApproval.saveApprovers('c1', { roles: [], employeeIds: [] }, id(1))).rejects.toBeInstanceOf(BadRequestError);
+    await expect(ipApproval.saveApprovers('c1', { roles: [], employeeIds: [id(4)] }, id(1))).rejects.toBeInstanceOf(BadRequestError);
+  });
+
+  test('the new routes sit behind HR/Admin and the biometric feature, like device registration', () => {
+    const router = require('../../src/routes/attendance.routes');
+    const routeFor = (path) => router.stack.find((l) => l.route?.path === path)?.route;
+    const register = routeFor('/adms/devices/:serial');
+    expect(routeFor('/adms/devices/:serial/reject-new-ip')?.methods).toEqual({ post: true });
+    expect(routeFor('/adms/devices/:serial/reject-new-ip').stack.length).toBe(register.stack.length);
+    const approvers = router.stack.filter((l) => l.route?.path === '/adms/ip-approvers').map((l) => l.route);
+    expect(approvers.map((r) => Object.keys(r.methods)[0]).sort()).toEqual(['get', 'put']);
+    for (const route of approvers) expect(route.stack.length).toBe(register.stack.length);
   });
 });
 

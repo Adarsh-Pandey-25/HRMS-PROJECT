@@ -46,7 +46,7 @@ const GROUPS = {
   },
   security: {
     label: 'Security', audience: 'hr_admin',
-    description: 'API keys and office beacon alerts',
+    description: 'API keys, office beacon alerts and new IPs for biometric machines',
   },
   billing: {
     label: 'Billing', audience: 'admin',

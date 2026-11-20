@@ -49,7 +49,11 @@ router.put('/adms/devices/:serial', isHROrAdmin, manageDevices, requireFeature('
 router.delete('/adms/devices/:serial', isHROrAdmin, manageDevices, requireFeature('biometric_adms'), admsController.releaseDevice);
 // Device IP pinning (adms.service.js): accept the IP a device now reports from, or forget its IP so its next request pins one.
 router.post('/adms/devices/:serial/allow-new-ip', isHROrAdmin, manageDevices, requireFeature('biometric_adms'), admsController.allowDeviceNewIp);
+router.post('/adms/devices/:serial/reject-new-ip', isHROrAdmin, manageDevices, requireFeature('biometric_adms'), admsController.rejectDeviceNewIp);
 router.post('/adms/devices/:serial/relearn-ip', isHROrAdmin, manageDevices, requireFeature('biometric_adms'), admsController.relearnDeviceIp);
+// Who is asked to approve a device's new IP (admsIpApproval.service.js): HR and Admins by default, plus anyone ticked.
+router.get('/adms/ip-approvers', isHROrAdmin, manageDevices, requireFeature('biometric_adms'), admsController.getIpApprovers);
+router.put('/adms/ip-approvers', isHROrAdmin, manageDevices, requireFeature('biometric_adms'), admsController.saveIpApprovers);
 router.get('/device-punches/today', isEmployee, admsController.todayPunches);
 
 const wfhRequestController = require('../controllers/wfhRequest.controller');

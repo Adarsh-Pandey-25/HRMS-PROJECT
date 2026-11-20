@@ -5,13 +5,18 @@
  * a real database: backend/.env points at production.
  *
  * `missingColumns` makes any select or write naming one of those columns
- * fail the way PostgREST does before a migration has run.
+ * fail the way PostgREST does before a migration has run; `missingTables`
+ * does the same for a whole table. `lt` filters like the database (a row
+ * without the column never matches), and an upsert with `ignoreDuplicates`
+ * skips rows that clash on its `onConflict` columns, as Postgres does.
  */
-const makeFakeSupabase = (tables = {}, { missingColumns = [] } = {}) => {
+const makeFakeSupabase = (tables = {}, { missingColumns = [], missingTables = [] } = {}) => {
   const calls = [];
 
   const from = (table) => {
-    const state = { op: 'select', filters: [], patch: null, rows: null, returning: false, single: false, maybe: false, columns: '' };
+    const state = {
+      op: 'select', filters: [], patch: null, rows: null, options: null, returning: false, single: false, maybe: false, columns: '',
+    };
     const rowsOf = () => {
       if (!tables[table]) tables[table] = [];
       return tables[table];
@@ -20,6 +25,7 @@ const makeFakeSupabase = (tables = {}, { missingColumns = [] } = {}) => {
       if (kind === 'eq') return row[col] === val;
       if (kind === 'is') return (row[col] ?? null) === val;
       if (kind === 'in') return val.includes(row[col]);
+      if (kind === 'lt') return row[col] != null && String(row[col]) < String(val);
       return true;
     });
     const missing = () => {
@@ -35,6 +41,9 @@ const makeFakeSupabase = (tables = {}, { missingColumns = [] } = {}) => {
     };
     const run = () => {
       calls.push({ table, op: state.op, filters: state.filters, patch: state.patch, rows: state.rows });
+      if (missingTables.includes(table)) {
+        return { data: null, error: { message: `Could not find the table 'public.${table}' in the schema cache` } };
+      }
       const col = missing();
       if (col) return { data: null, error: { message: `column ${table}.${col} does not exist` } };
       if (state.op === 'select') return shape(rowsOf().filter(matches));
@@ -44,7 +53,14 @@ const makeFakeSupabase = (tables = {}, { missingColumns = [] } = {}) => {
         return state.returning ? shape(hit) : { data: null, error: null };
       }
       if (state.op === 'insert' || state.op === 'upsert') {
-        const list = (Array.isArray(state.rows) ? state.rows : [state.rows]).map((r) => ({ ...r }));
+        let list = (Array.isArray(state.rows) ? state.rows : [state.rows]).map((r) => ({ ...r }));
+        const conflictColumns = state.op === 'upsert' && state.options?.ignoreDuplicates && state.options.onConflict
+          ? String(state.options.onConflict).split(',').map((c) => c.trim())
+          : null;
+        if (conflictColumns) {
+          const clashes = (a, b) => conflictColumns.every((c) => String(a[c]) === String(b[c]));
+          list = list.filter((r, i) => !rowsOf().some((existing) => clashes(existing, r)) && !list.slice(0, i).some((earlier) => clashes(earlier, r)));
+        }
         rowsOf().push(...list);
         return state.returning ? shape(list) : { data: null, error: null };
       }
@@ -64,14 +80,14 @@ const makeFakeSupabase = (tables = {}, { missingColumns = [] } = {}) => {
       },
       update(patch) { state.op = 'update'; state.patch = patch; return q; },
       insert(rows) { state.op = 'insert'; state.rows = rows; return q; },
-      upsert(rows) { state.op = 'upsert'; state.rows = rows; return q; },
+      upsert(rows, options = null) { state.op = 'upsert'; state.rows = rows; state.options = options; return q; },
       delete() { state.op = 'delete'; return q; },
       eq(col, val) { state.filters.push(['eq', col, val]); return q; },
       is(col, val) { state.filters.push(['is', col, val]); return q; },
       in(col, val) { state.filters.push(['in', col, val]); return q; },
       gte() { return q; },
       lte() { return q; },
-      lt() { return q; },
+      lt(col, val) { state.filters.push(['lt', col, val]); return q; },
       order() { return q; },
       limit() { return q; },
       maybeSingle() { state.maybe = true; return q; },

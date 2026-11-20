@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const moment = require('moment-timezone');
 const { supabaseAdmin } = require('../config/supabase');
 const logger = require('../utils/logger');
+const { runInBackground } = require('../utils/background');
 const { TIMEZONE } = require('../utils/constants');
 const {
   getShiftDayWindow, normalizeIp, ipInCidr, isTrustedProxyIp, isMissingColumnError, escapeHtml,
@@ -84,46 +85,76 @@ const deviceSecretMatches = (expected, provided) => {
 const NEW_IP_ALERT_COOLDOWN_MS = 60 * 60 * 1000;
 const newIpAlertSentAt = new Map();
 
-/** Subject and HTML for the "device reporting from a new IP" email. Every device-supplied value is escaped. */
-const deviceNewIpEmail = ({ deviceSerial, name, location, allowedIp, newIp }) => {
+/**
+ * Subject and HTML for the "device reporting from a new IP" email. Every
+ * device-supplied value is escaped. `kept`: its punches from the new IP are
+ * kept until someone approves it (admsIpApproval.service.js), not refused.
+ */
+const deviceNewIpEmail = ({ deviceSerial, name, location, allowedIp, newIp, kept = false }) => {
   const label = name ? `${name} (${deviceSerial})` : deviceSerial;
+  const whatHappens = kept
+    ? `<p>Its punches from the new IP are being kept, not counted. Once the new IP is approved they count, at the times they were made, so nothing is lost.</p>
+<p>If your office's internet connection changed (new provider, router restart with a new public IP), approve it: tap <strong>Approve</strong> on the WhatsApp message, or open <strong>Settings → Attendance → Biometric Devices</strong> and choose <strong>Allow new IP</strong>.</p>`
+    : `<p>Punches from the new IP are being refused until it is allowed. Most devices keep them and send them again, but not every device does, so please act soon.</p>
+<p>If your office's internet connection changed (new provider, router restart with a new public IP), open <strong>Settings → Attendance → Biometric Devices</strong> and choose <strong>Allow new IP</strong> for this device.</p>`;
   return {
     subject: `Biometric device ${String(name || deviceSerial).slice(0, 60)} is reporting from a new IP`,
     html: `<p>Your biometric device <strong>${escapeHtml(label)}</strong>${location ? ` at ${escapeHtml(location)}` : ''} sent a request from an IP address it is not allowed to use.</p>
 <p>Allowed IP: <code>${escapeHtml(allowedIp || 'none')}</code><br>New IP: <code>${escapeHtml(newIp)}</code></p>
-<p>Punches from the new IP are being refused. The device keeps them and sends them again, so nothing is lost.</p>
-<p>If your office's internet connection changed (new provider, router restart with a new public IP), open <strong>Settings → Attendance → Biometric Devices</strong> and choose <strong>Allow new IP</strong> for this device.</p>
-<p>If nothing changed at your office, do not allow it: someone may be using this device's serial number to send fake attendance. Contact SpaxSync support.</p>`,
+${whatHappens}
+<p>If nothing changed at your office, do not allow it${kept ? ' (on WhatsApp, tap Reject)' : ''}: someone may be using this device's serial number to send fake attendance. Contact SpaxSync support.</p>`,
   };
 };
 
+/**
+ * Tells the people chosen to approve a new IP (Settings → Attendance →
+ * Biometric Devices; every HR and Admin by default) by email, and — once
+ * punches can be kept — on WhatsApp with Approve / Reject
+ * (admsIpApproval.service.js). Nobody chosen has an email: the admins, then
+ * HR, as before.
+ */
 const alertAdminsOfNewDeviceIp = async (device, newIp) => {
   const last = newIpAlertSentAt.get(device.device_serial) || 0;
   if (Date.now() - last < NEW_IP_ALERT_COOLDOWN_MS) return;
   newIpAlertSentAt.set(device.device_serial, Date.now());
 
+  const ipApproval = require('./admsIpApproval.service');
+  const kept = await ipApproval.keepingAvailable().catch(() => false);
+  const approvers = await ipApproval.approverEmployees(device.company_id).catch(() => []);
   const recipientsService = require('./emailRecipients.service');
-  let recipients = await recipientsService.getAdminEmailRecipients(device.company_id).catch(() => []);
+  let recipients = approvers.filter((a) => a.email);
+  if (!recipients.length) recipients = await recipientsService.getAdminEmailRecipients(device.company_id).catch(() => []);
   if (!recipients.length) recipients = await recipientsService.getHrEmailRecipients(device.company_id).catch(() => []);
   if (!recipients.length) {
     logger.warn('[ADMS] No admin to tell about a device reporting from a new IP', { deviceSerial: device.device_serial, companyId: device.company_id });
-    return;
   }
 
   const { sendEmail } = require('./email.service');
   const { subject, html } = deviceNewIpEmail({
-    deviceSerial: device.device_serial, name: device.name, location: device.location, allowedIp: device.allowed_ip, newIp,
+    deviceSerial: device.device_serial, name: device.name, location: device.location, allowedIp: device.allowed_ip, newIp, kept,
   });
   for (const r of recipients) {
     Promise.resolve()
       .then(() => sendEmail({ type: 'adms_device_new_ip', to: r.email, subject, html }))
       .catch((e) => logger.error('[ADMS] Failed to send new-IP email', { deviceSerial: device.device_serial, error: e.message }));
   }
+
+  if (!kept || !approvers.length) return;
+  const opened = await ipApproval.openRequest(device, newIp).catch(() => null);
+  if (!opened) return;
+  ipApproval.askOnWhatsapp(device, opened.request, approvers)
+    .catch((e) => logger.error('[ADMS] Could not ask on WhatsApp about a new device IP', { deviceSerial: device.device_serial, error: e.message }));
 };
 
-/** Writes pending_ip (only when it changed, so a retrying device writes once) and tells the admins. */
+/**
+ * Writes pending_ip (only when it changed, so a retrying device writes once)
+ * and tells the approvers. An IP someone rejected in the last 7 days stays
+ * rejected: its punches are still kept, but nobody is asked again.
+ */
 const recordPendingIp = async (device, ip) => {
   if (normalizeIp(device.pending_ip) === ip) return;
+  const ipApproval = require('./admsIpApproval.service');
+  if (await ipApproval.recentlyRejected(device, ip).catch(() => false)) return;
   const { error } = await supabaseAdmin
     .from('device_heartbeats')
     .update({ pending_ip: ip, pending_ip_seen_at: new Date().toISOString() })
@@ -133,7 +164,8 @@ const recordPendingIp = async (device, ip) => {
     logger.error('[ADMS] Could not record a device\'s new IP', { deviceSerial: device.device_serial, error: error.message });
     return;
   }
-  logger.warn(`[ADMS] Device ${device.device_serial} (company ${device.company_id}) is pinned to ${device.allowed_ip} but called from ${ip}. Its punches are refused; ${ip} is recorded as the pending IP until an Admin chooses "Allow new IP" or "Re-learn IP".`, {
+  const keeping = await ipApproval.keepingAvailable().catch(() => false);
+  logger.warn(`[ADMS] Device ${device.device_serial} (company ${device.company_id}) is pinned to ${device.allowed_ip} but called from ${ip}. Its punches are ${keeping ? 'kept, not counted' : 'refused'}; ${ip} is recorded as the pending IP until someone approves it ("Allow new IP", WhatsApp) or chooses "Re-learn IP".`, {
     deviceSerial: device.device_serial, companyId: device.company_id, allowedIp: device.allowed_ip, newIp: ip,
   });
   await alertAdminsOfNewDeviceIp(device, ip).catch((e) => logger.error('[ADMS] New-IP alert failed', { error: e.message }));
@@ -170,6 +202,9 @@ const assertDeviceIpAllowed = async (device, clientIp) => {
       logger.info(`[ADMS] Device ${current.device_serial} pinned to IP ${ip} on its first contact`, {
         deviceSerial: current.device_serial, companyId: current.company_id, ip,
       });
+      // After "Re-learn IP": punches kept from this IP now count.
+      const pinned = { ...current, allowed_ip: ip };
+      runInBackground('kept punches after a re-learned IP', () => require('./admsIpApproval.service').afterAllowed(pinned, ip, { via: 'relearn' }));
       return;
     }
     // Another request pinned it between our read and our write — check against that.
@@ -184,6 +219,14 @@ const assertDeviceIpAllowed = async (device, clientIp) => {
   await recordPendingIp(current, ip);
   const err = new ForbiddenError('Device is calling from an IP that is not allowed for it');
   err.deviceIpMismatch = true;
+  // What keepPushFromNewIp needs (never the device secret).
+  err.device = {
+    device_serial: current.device_serial,
+    company_id: current.company_id,
+    name: current.name,
+    location: current.location,
+    allowed_ip: current.allowed_ip,
+  };
   throw err;
 };
 
@@ -248,7 +291,7 @@ const getCompanyDevice = async (deviceSerial, companyId) => {
  * (another request arrived from somewhere else), nothing is allowed, so an
  * admin can never approve an IP they didn't see.
  */
-const allowPendingDeviceIp = async (deviceSerial, companyId, expectedIp) => {
+const allowPendingDeviceIp = async (deviceSerial, companyId, expectedIp, { decidedBy = null } = {}) => {
   const expected = normalizeIp(expectedIp);
   if (!expected) throw new BadRequestError('Say which IP to allow');
   const device = await getCompanyDevice(deviceSerial, companyId);
@@ -272,7 +315,97 @@ const allowPendingDeviceIp = async (deviceSerial, companyId, expectedIp) => {
   logger.info(`[ADMS] Device ${device.device_serial} now allowed from ${device.pending_ip} (was ${device.allowed_ip || 'none'})`, {
     deviceSerial: device.device_serial, companyId,
   });
-  return { deviceSerial: device.device_serial, previousIp: device.allowed_ip || null, allowedIp: device.pending_ip };
+  // Its request is approved, and the punches kept from this IP now count.
+  const { kept, since } = await require('./admsIpApproval.service')
+    .afterAllowed({ ...device, allowed_ip: device.pending_ip }, normalizeIp(device.pending_ip), { via: 'website', decidedBy })
+    .catch((e) => {
+      logger.error('[ADMS] Could not save the punches kept from a newly allowed IP', { deviceSerial: device.device_serial, error: e.message });
+      return { kept: 0, since: null };
+    });
+  return {
+    deviceSerial: device.device_serial, previousIp: device.allowed_ip || null, allowedIp: device.pending_ip, keptPunches: kept, keptSince: since,
+  };
+};
+
+/**
+ * Allows a device from `ip` because someone approved its new-IP request
+ * (admsIpApproval.service.js, e.g. on WhatsApp). The IP it was allowed from
+ * must still be the one the request saw (`previousIp`), so an old message
+ * can't undo a newer change. Already allowed from `ip`: nothing changes.
+ */
+const allowDeviceFromIp = async (device, ip, previousIp) => {
+  if (device.allowed_ip && ipInCidr(ip, device.allowed_ip)) return { changed: false };
+  if (String(device.allowed_ip || '') !== String(previousIp || '')) {
+    throw new ConflictError('this machine was allowed from a different IP since this message. Please check it in SpaxSync');
+  }
+  const patch = { allowed_ip: ip, ip_pinned_at: new Date().toISOString() };
+  if (normalizeIp(device.pending_ip) === ip) Object.assign(patch, { pending_ip: null, pending_ip_seen_at: null });
+  let query = supabaseAdmin
+    .from('device_heartbeats')
+    .update(patch)
+    .eq('device_serial', device.device_serial)
+    .eq('company_id', device.company_id);
+  query = device.allowed_ip ? query.eq('allowed_ip', device.allowed_ip) : query.is('allowed_ip', null);
+  const { data, error } = await query.select('device_serial');
+  if (error) throw new BadRequestError(error.message);
+  if (!data || !data.length) {
+    throw new ConflictError('this machine was allowed from a different IP since this message. Please check it in SpaxSync');
+  }
+  newIpAlertSentAt.delete(device.device_serial);
+  logger.info(`[ADMS] Device ${device.device_serial} now allowed from ${ip} (was ${device.allowed_ip || 'none'})`, {
+    deviceSerial: device.device_serial, companyId: device.company_id,
+  });
+  return { changed: true };
+};
+
+/** A rejected new IP stops showing as waiting. Its punches stay kept, not counted. */
+const clearPendingIp = async (device, ip) => {
+  const { error } = await supabaseAdmin
+    .from('device_heartbeats')
+    .update({ pending_ip: null, pending_ip_seen_at: null })
+    .eq('device_serial', device.device_serial)
+    .eq('company_id', device.company_id)
+    .eq('pending_ip', ip);
+  if (error) throw new BadRequestError(error.message);
+};
+
+/**
+ * "Reject" on the website: the device's waiting IP is not allowed. Like
+ * Allow new IP, `expectedIp` is the IP the admin was shown.
+ */
+const rejectPendingDeviceIp = async (deviceSerial, companyId, expectedIp, { decidedBy = null } = {}) => {
+  const expected = normalizeIp(expectedIp);
+  if (!expected) throw new BadRequestError('Say which IP to reject');
+  const device = await getCompanyDevice(deviceSerial, companyId);
+  if (!device.pending_ip) throw new BadRequestError('This device has no new IP waiting for approval');
+  if (normalizeIp(device.pending_ip) !== expected) {
+    throw new ConflictError('The waiting IP has changed since the page loaded. Refresh and check it again.');
+  }
+  const ipApproval = require('./admsIpApproval.service');
+  const opened = await ipApproval.openRequest(device, expected);
+  if (opened) {
+    await ipApproval.decide(opened.request.id, 'reject', { companyId, decidedBy, via: 'website' });
+  } else {
+    await clearPendingIp(device, expected);
+  }
+  logger.info(`[ADMS] New IP ${expected} for device ${device.device_serial} rejected on the website`, { deviceSerial: device.device_serial, companyId });
+  return { deviceSerial: device.device_serial, rejectedIp: expected, allowedIp: device.allowed_ip || null };
+};
+
+/**
+ * A registered device's push from an IP it isn't allowed: its ATTLOG punches
+ * are kept (admsIpApproval.service.js) and count once someone approves the
+ * IP. True when that worked — the device is then told OK; false when it
+ * couldn't (before the migration, or the database failed) — told NOK, as before.
+ */
+const keepPushFromNewIp = async (device, clientIp, table, body) => {
+  const ip = normalizeIp(clientIp);
+  if (!device?.company_id || !device.device_serial || !ip) return false;
+  const ipApproval = require('./admsIpApproval.service');
+  // Anything but punches is ignored, as it is from the allowed IP.
+  if (table !== 'ATTLOG') return ipApproval.keepingAvailable();
+  const punches = dropFuturePunches(parseAttlogBody(body, device.device_serial), device.device_serial);
+  return ipApproval.keepPunches(device, ip, punches);
 };
 
 /** "Re-learn IP": forget the pinned IP; the device's next request pins a new one. */
@@ -626,6 +759,10 @@ module.exports = {
   deviceNewIpEmail,
   getCompanyDevice,
   allowPendingDeviceIp,
+  allowDeviceFromIp,
+  clearPendingIp,
+  rejectPendingDeviceIp,
+  keepPushFromNewIp,
   relearnDeviceIp,
   clearDeviceIpPin,
   isMissingPinColumn,

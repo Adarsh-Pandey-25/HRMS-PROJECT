@@ -183,9 +183,23 @@ export async function allowAdmsDeviceNewIpApi(serial, ip) {
   return apiRequest({ method: 'POST', url: `/attendance/adms/devices/${encodeURIComponent(serial)}/allow-new-ip`, data: { ip } });
 }
 
+/** Reject the IP a device now reports from: its kept punches stay uncounted. `ip` is the pending IP the admin was shown. */
+export async function rejectAdmsDeviceNewIpApi(serial, ip) {
+  return apiRequest({ method: 'POST', url: `/attendance/adms/devices/${encodeURIComponent(serial)}/reject-new-ip`, data: { ip } });
+}
+
 /** Forget a device's IP; its next request pins a new one. */
 export async function relearnAdmsDeviceIpApi(serial) {
   return apiRequest({ method: 'POST', url: `/attendance/adms/devices/${encodeURIComponent(serial)}/relearn-ip` });
+}
+
+/** Who is asked to approve a device's new IP: { roles: ['admin', 'hr'], employeeIds: [] }. */
+export async function fetchDeviceIpApproversApi() {
+  return apiRequest({ method: 'GET', url: '/attendance/adms/ip-approvers' });
+}
+
+export async function saveDeviceIpApproversApi({ roles, employeeIds }) {
+  return apiRequest({ method: 'PUT', url: '/attendance/adms/ip-approvers', data: { roles, employeeIds } });
 }
 
 export async function fetchDevicePunchesTodayApi(employeeId) {

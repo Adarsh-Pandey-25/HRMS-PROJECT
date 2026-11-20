@@ -65,12 +65,16 @@ const deviceinfo = async (req, res) => {
  * Device pushes fingerprint punches here. No protocol-level auth — but
  * unlike benign save failures (which always answer OK to avoid a
  * retry-storm), an authorization rejection (unclaimed serial, wrong/missing
- * device secret, a request from an IP the device isn't pinned to) is a
- * genuine "reject" — 403/401 "NOK" — which the device treats as a failed
- * upload: it keeps the punches and sends them again later, so a device
- * whose IP changed loses nothing while an Admin allows the new IP.
- * Unregistered/secret rejections alert platform admins; a new IP alerts the
- * company's admins instead (adms.service.js recordPendingIp).
+ * device secret) is a genuine "reject" — 403/401 "NOK" — which the device
+ * treats as a failed upload. Unregistered/secret rejections alert platform
+ * admins.
+ *
+ * A registered device calling from an IP it isn't pinned to (the office's
+ * internet address changed) has its punches kept instead — told OK, they
+ * count once someone approves the new IP (admsIpApproval.service.js; the
+ * approvers are told by adms.service.js recordPendingIp). Before that
+ * migration runs, or if they can't be kept, the push is refused with NOK
+ * as before.
  */
 const cdata = async (req, res) => {
   const request = deviceRequest(req);
@@ -81,6 +85,13 @@ const cdata = async (req, res) => {
   try {
     registeredCompanyId = await admsService.assertDeviceAuthorized(deviceSerial, request.providedSecret, clientIp);
   } catch (err) {
+    if (err.deviceIpMismatch) {
+      const kept = await admsService.keepPushFromNewIp(err.device, clientIp, table, req.body).catch((e) => {
+        logger.error('[ADMS] Could not keep a push from a new IP', { deviceSerial: String(deviceSerial || '').slice(0, 64), error: e.message });
+        return false;
+      });
+      if (kept) return res.status(200).type('text/plain').send('OK');
+    }
     const status = err.statusCode || 403;
     logger.warn('[ADMS] Rejected unauthorized cdata push', {
       deviceSerial: String(deviceSerial || '').slice(0, 64), ip: clientIp, status, reason: err.message,
@@ -155,11 +166,19 @@ const testStatus = async (req, res, next) => {
     if (heartbeatsError) throw heartbeatsError;
     if (todayError) throw todayError;
 
+    // Punches kept from a waiting new IP (admsIpApproval.service.js).
+    const ipApproval = require('../services/admsIpApproval.service');
+    const keepsPunches = await ipApproval.keepingAvailable().catch(() => false);
+    const kept = await Promise.all((heartbeats || []).map((h) => (keepsPunches && h.pending_ip
+      ? ipApproval.keptSummary(h.device_serial, companyId, h.pending_ip).catch(() => ({ count: 0, sinceIso: null }))
+      : { count: 0, sinceIso: null })));
+
     successResponse(res, 'ADMS status', {
       supabaseConnected: true,
       recentPunches: recentPunches || [],
       todayPunchCount: todayCount || 0,
-      devices: (heartbeats || []).map((h) => ({
+      keepsPunches,
+      devices: (heartbeats || []).map((h, i) => ({
         deviceSerial: h.device_serial,
         lastSeenAt: h.last_seen_at,
         name: h.name,
@@ -168,6 +187,8 @@ const testStatus = async (req, res, next) => {
         pendingIp: h.pending_ip ?? null,
         pendingIpSeenAt: h.pending_ip_seen_at ?? null,
         ipPinnedAt: h.ip_pinned_at ?? null,
+        keptPunches: kept[i].count,
+        keptSince: kept[i].sinceIso,
       })),
     });
   } catch (err) { next(err); }
@@ -331,7 +352,7 @@ const releaseDevice = async (req, res, next) => {
  */
 const allowDeviceNewIp = async (req, res, next) => {
   try {
-    const result = await admsService.allowPendingDeviceIp(req.params.serial, req.user.company_id, req.body?.ip);
+    const result = await admsService.allowPendingDeviceIp(req.params.serial, req.user.company_id, req.body?.ip, { decidedBy: req.user.id });
     auditFromRequest(req, {
       actionType: 'biometric_device.allow_new_ip',
       targetType: 'biometric_device',
@@ -339,7 +360,52 @@ const allowDeviceNewIp = async (req, res, next) => {
       beforeState: { allowed_ip: result.previousIp },
       afterState: { allowed_ip: result.allowedIp },
     });
-    successResponse(res, `Punches from ${result.allowedIp} will now be accepted for this device`, result);
+    const keptNote = result.keptPunches
+      ? ` ${result.keptPunches === 1 ? 'The punch' : `The ${result.keptPunches} punches`} kept since ${result.keptSince} ${result.keptPunches === 1 ? 'is' : 'are'} being added now.`
+      : '';
+    successResponse(res, `Punches from ${result.allowedIp} will now be accepted for this device.${keptNote}`, result);
+  } catch (err) { next(err); }
+};
+
+/**
+ * Authenticated: HR/Admin rejects the IP a device is reporting from (its
+ * pending_ip). Its punches from there stay kept, never counted; nobody is
+ * asked about it again for 7 days. Same `ip` check as Allow new IP.
+ */
+const rejectDeviceNewIp = async (req, res, next) => {
+  try {
+    const result = await admsService.rejectPendingDeviceIp(req.params.serial, req.user.company_id, req.body?.ip, { decidedBy: req.user.id });
+    auditFromRequest(req, {
+      actionType: 'biometric_device.reject_new_ip',
+      targetType: 'biometric_device',
+      targetId: result.deviceSerial,
+      afterState: { rejected_ip: result.rejectedIp, allowed_ip: result.allowedIp },
+    });
+    successResponse(res, `${result.rejectedIp} was rejected. Its punches stay kept but are not counted.`, result);
+  } catch (err) { next(err); }
+};
+
+/** Authenticated: who is asked to approve a device's new IP (admsIpApproval.service.js). */
+const getIpApprovers = async (req, res, next) => {
+  try {
+    const value = await require('../services/admsIpApproval.service').getApprovers(req.user.company_id);
+    successResponse(res, 'New IP approvers', value);
+  } catch (err) { next(err); }
+};
+
+const saveIpApprovers = async (req, res, next) => {
+  try {
+    const ipApproval = require('../services/admsIpApproval.service');
+    const before = await ipApproval.getApprovers(req.user.company_id);
+    const value = await ipApproval.saveApprovers(req.user.company_id, req.body || {}, req.user.id);
+    auditFromRequest(req, {
+      actionType: 'biometric_device.ip_approvers_changed',
+      targetType: 'setting',
+      targetId: ipApproval.APPROVERS_KEY,
+      beforeState: before,
+      afterState: value,
+    });
+    successResponse(res, 'Saved who approves a new IP', value);
   } catch (err) { next(err); }
 };
 
@@ -405,5 +471,16 @@ const todayPunches = async (req, res, next) => {
 };
 
 module.exports = {
-  getrequest, deviceinfo, cdata, testStatus, registerDevice, releaseDevice, allowDeviceNewIp, relearnDeviceIp, todayPunches,
+  getrequest,
+  deviceinfo,
+  cdata,
+  testStatus,
+  registerDevice,
+  releaseDevice,
+  allowDeviceNewIp,
+  rejectDeviceNewIp,
+  relearnDeviceIp,
+  getIpApprovers,
+  saveIpApprovers,
+  todayPunches,
 };
