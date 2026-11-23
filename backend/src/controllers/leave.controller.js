@@ -168,6 +168,8 @@ const setBalance = async (req, res, next) => {
     if (String(req.user.id) === String(targetId) && req.user.role !== 'admin') {
       throw new ForbiddenError('You cannot change your own leave balance. Ask an admin.');
     }
+    // More leave means less loss of pay: an HR's or Admin's balance only by an Admin (audit, 20 Nov 2026).
+    await require('../services/ownPayslip').assertMayChangePayOf(req.user, targetId, undefined, req.ip);
     const result = await leaveService.setEmployeeAllocations({
       employeeId: targetId,
       year,

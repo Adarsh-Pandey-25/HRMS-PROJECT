@@ -194,12 +194,42 @@ const employeeReport = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+/**
+ * Times a manual entry may set (audit, 20 Nov 2026): a day of attendance is
+ * paid, overtime included, so check-out comes after check-in, a day is at
+ * most 20 hours, nothing is in the future, and breaks are 0–10 hours. A
+ * WhatsApp-approved correction goes through here too.
+ */
+const MAX_DAY_MS = 20 * 60 * 60 * 1000;
+const FUTURE_SLACK_MS = 10 * 60 * 1000;
+const assertSensibleTimes = ({ check_in_time: checkInRaw, check_out_time: checkOutRaw, break_minutes: breakRaw }) => {
+  const { BadRequestError } = require('../utils/errors');
+  const checkIn = new Date(checkInRaw);
+  if (!checkInRaw || Number.isNaN(checkIn.getTime())) throw new BadRequestError('Enter the check-in time');
+  const latest = Date.now() + FUTURE_SLACK_MS;
+  if (checkIn.getTime() > latest) throw new BadRequestError('Check-in can\'t be in the future');
+  if (checkOutRaw) {
+    const checkOut = new Date(checkOutRaw);
+    if (Number.isNaN(checkOut.getTime())) throw new BadRequestError('The check-out time isn\'t a valid time');
+    if (checkOut <= checkIn) throw new BadRequestError('Check-out must be after check-in');
+    if (checkOut - checkIn > MAX_DAY_MS) throw new BadRequestError('A day can\'t be longer than 20 hours. Enter each day separately.');
+    if (checkOut.getTime() > latest) throw new BadRequestError('Check-out can\'t be in the future');
+  }
+  if (breakRaw !== undefined && breakRaw !== null && breakRaw !== '') {
+    const minutes = Number(breakRaw);
+    if (!Number.isFinite(minutes) || minutes < 0 || minutes > 600) throw new BadRequestError('Break must be 0–600 minutes');
+  }
+};
+
 const manualEntry = async (req, res, next) => {
   try {
     const companyIds = await resolveAttendanceEmployeeScope(req);
     if (!companyIds.includes(req.body.employee_id)) {
       throw new (require('../utils/errors').NotFoundError)('Employee not found');
     }
+    assertSensibleTimes(req.body || {});
+    // Attendance is pay (overtime, loss of pay): HR's and Admins' only by an Admin.
+    await require('../services/ownPayslip').assertMayChangePayOf(req.user, req.body.employee_id, undefined, req.ip);
     const record = await attendanceService.manualEntry(req.user.id, req.body);
         auditFromRequest(req, {
       actionType: 'attendance.manual_entry', targetType: 'attendance', targetId: record?.id,
