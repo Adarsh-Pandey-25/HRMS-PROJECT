@@ -449,7 +449,27 @@ const setCompanyActive = async (companyId, isActive) => {
     .maybeSingle();
   if (error) throw new BadRequestError(error.message);
   if (!data) throw new NotFoundError('Company not found');
+  // Switching a company off ends its people's sessions: their refresh tokens
+  // go, so nobody is signed back in (audit #30). Every request is refused
+  // meanwhile (auth.middleware.js, isCompanySwitchedOff).
+  if (!isActive) await endCompanySessions(companyId);
   return data;
+};
+
+/** Deletes the refresh tokens of everyone in a company, in slices. Never throws. */
+const endCompanySessions = async (companyId) => {
+  try {
+    const { data: people, error } = await supabaseAdmin.from('employees').select('id').eq('company_id', companyId);
+    if (error) throw error;
+    const ids = (people || []).map((p) => p.id);
+    for (let i = 0; i < ids.length; i += 200) {
+      // eslint-disable-next-line no-await-in-loop
+      const { error: deleteError } = await supabaseAdmin.from('refresh_tokens').delete().in('employee_id', ids.slice(i, i + 200));
+      if (deleteError) throw deleteError;
+    }
+  } catch (err) {
+    logger.error('[SuperAdmin] Could not end a switched-off company\'s sessions', { companyId, error: err.message });
+  }
 };
 
 /** Live suggestion for the super-admin UI as they type a company name — editable before submit. */

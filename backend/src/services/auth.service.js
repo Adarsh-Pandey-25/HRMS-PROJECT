@@ -469,6 +469,11 @@ const EMPLOYEE_GENERIC_MESSAGE = 'Some problem occurred. Please contact your HR/
 
 const assertCompanyInGoodStanding = async (companyId, role) => {
   if (!companyId) return;
+  // Switched off by a super admin (it, or the company above it): no sign-in,
+  // and no new session from a refresh token either (audit #30).
+  if (await require('./subscription.service').isCompanySwitchedOff(companyId)) {
+    throw new ForbiddenError('Your company\'s account is switched off. Please contact support.');
+  }
   // Audit #10: a subsidiary is billed through its parent, so its staff can
   // sign in exactly when the paying company can (trial, expiry, suspension).
   // Lazy require: subscription.service is loaded after this module.

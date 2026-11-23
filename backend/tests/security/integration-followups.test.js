@@ -23,6 +23,7 @@ jest.mock('../../src/services/apiKey.service', () => ({
 }));
 jest.mock('../../src/services/subscription.service', () => ({
   isBillingSuspended: jest.fn(async () => false),
+  isCompanySwitchedOff: jest.fn(async () => false),
   getBillingAccount: jest.fn(async (id) => ({ billingCompanyId: id === 'child-1' ? 'parent-1' : id })),
 }));
 

@@ -309,6 +309,25 @@ const isBillingSuspended = async (companyId) => {
   return Boolean(data);
 };
 
+/**
+ * Has a super admin switched this company, or a company above it, off
+ * (Super Admin → Companies → Suspend)? Not cached, so it takes effect on the
+ * very next request (audit #30: users of a suspended company kept working,
+ * and refresh kept their sessions alive).
+ */
+const isCompanySwitchedOff = async (companyId) => {
+  if (!companyId) return false;
+  const chain = await getCompanyChain(companyId);
+  const { data } = await supabaseAdmin
+    .from('companies')
+    .select('id')
+    .in('id', chain.map((c) => c.id))
+    .eq('is_active', false)
+    .limit(1)
+    .maybeSingle();
+  return Boolean(data);
+};
+
 /** "Your company's" for the payer itself, "Acme Group's" for a subsidiary. */
 const payerPossessive = (account) => (account.billedThroughParent
   ? `${account.billingCompanyName || 'Your parent company'}'s`
@@ -812,6 +831,7 @@ const assertSeatAvailable = async (companyId, { fromCompanyId = null } = {}) => 
 };
 
 module.exports = {
+  isCompanySwitchedOff,
   computeCyclePrice,
   cyclePeriodEnd,
   getPlanOrThrow,

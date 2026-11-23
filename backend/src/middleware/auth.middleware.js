@@ -137,6 +137,10 @@ const authenticate = async (req, res, next) => {
     if (await isCompanySuspended(employee.company_id)) {
       throw new ForbiddenError('Your company\'s subscription is suspended. Please contact billing.');
     }
+    // Switched off by a super admin (it, or the company above it): out at once (audit #30).
+    if (await subscriptionService.isCompanySwitchedOff(employee.company_id)) {
+      throw new ForbiddenError('Your company\'s account is switched off. Please contact support.');
+    }
 
     req.user = attachTenant(employee);
     req.token = token;
