@@ -253,7 +253,8 @@ const applyLeave = async (employeeId, data) => {
   if (approvalFlow.isTurnOf(firstStage, 'hr')) {
     const tenantService = require('./tenant.service');
     const hrIds = await tenantService.getCompanyHrAdminIds(companyId);
-    for (const id of hrIds) {
+    // Not the person asking: nobody reviews their own leave.
+    for (const id of hrIds.filter((hrId) => String(hrId) !== String(employeeId))) {
       await notificationService.createNotification({
         user_id: id,
         type: 'LEAVE',

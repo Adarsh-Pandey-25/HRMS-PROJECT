@@ -107,7 +107,8 @@ const submit = async (req, res, next) => {
         .in('role', ['hr', 'admin'])
         .eq('is_active', true);
       const ids = await companyEmployeeIds(req);
-      for (const u of (hrs || []).filter((row) => ids.includes(row.id))) {
+      // Not the person claiming: nobody reviews their own expense.
+      for (const u of (hrs || []).filter((row) => ids.includes(row.id) && String(row.id) !== String(req.user.id))) {
         await notificationService.createNotification({
           user_id: u.id,
           type: 'REIMBURSEMENT',
