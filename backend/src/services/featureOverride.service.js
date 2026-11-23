@@ -151,7 +151,7 @@ const setFeatureOverride = async (companyId, featureKey, enabled, reason, setBy)
     if (account.billedThroughParent) {
       const { data: payerOverrides } = await readOverrides([account.billingCompanyId], cleanKey);
       if (!effectiveFor(account, payerOverrides, cleanKey)) {
-        const parent = account.billingCompanyName || 'its parent company';
+        const parent = account.billingCompanyName || 'its primary company';
         throw new ForbiddenError(
           `${account.companyName || 'This company'} is a subsidiary of ${parent} and gets ${parent}'s features. ${parent}'s plan doesn't include this feature — turn it on for ${parent} instead.`,
         );

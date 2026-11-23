@@ -29,7 +29,7 @@ const getCurrentSubscriptionOrNull = async (companyId) => {
 const assertBilledDirectly = async (companyId) => {
   const account = await subscriptionService.getBillingAccount(companyId);
   if (account.billedThroughParent) {
-    const parent = account.billingCompanyName || 'your parent company';
+    const parent = account.billingCompanyName || 'your primary company';
     throw new ForbiddenError(`This company is billed through ${parent}. Its plan, seats and invoices are managed by ${parent}'s admin.`);
   }
 };

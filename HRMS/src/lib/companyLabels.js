@@ -1,7 +1,7 @@
 /** User-facing labels for company hierarchy (API still uses parent/child). */
 
 export function companyTypeLabel(type) {
-  if (type === 'parent') return 'Main company';
+  if (type === 'parent') return 'Primary';
   if (type === 'child') return 'Subsidiary';
   if (type === 'standalone') return 'Standalone';
   return type || 'Company';
@@ -14,12 +14,12 @@ export function companyTypeBadgeTone(type) {
 }
 
 /** Short suffix for selects */
-export function companyOptionLabel(company, { markHomeAs = 'Main company' } = {}) {
+export function companyOptionLabel(company, { markHomeAs = 'Primary' } = {}) {
   if (!company) return '';
   const name = company.name || 'Company';
   if (company.isHome) return `${name} (${markHomeAs})`;
   if (company.companyType === 'child') return `${name} (Subsidiary)`;
-  if (company.companyType === 'parent') return `${name} (Main company)`;
+  if (company.companyType === 'parent') return `${name} (Primary)`;
   return name;
 }
 

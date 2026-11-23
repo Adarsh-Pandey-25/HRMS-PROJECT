@@ -8,7 +8,7 @@ import { useEmployeeMutations } from '../../hooks/useEmployees';
 import { companyOptionLabel } from '../../lib/companyLabels';
 
 /**
- * Quick reassign employee to main company or subsidiary (Admin / HR).
+ * Quick reassign employee to primary company or subsidiary (Admin / HR).
  */
 export function ChangeCompanyModal({ open, onClose, employee, onSuccess }) {
   const qc = useQueryClient();
@@ -90,7 +90,7 @@ export function ChangeCompanyModal({ open, onClose, employee, onSuccess }) {
           onChange={(e) => setCompanyId(e.target.value)}
           options={options}
           placeholder="Select company"
-          hint="Main company and subsidiaries you can manage"
+          hint="Primary and subsidiaries you can manage"
         />
 
         {companiesQ.isLoading && (

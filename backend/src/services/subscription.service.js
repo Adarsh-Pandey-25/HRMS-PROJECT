@@ -192,7 +192,7 @@ const getCompanyChain = async (companyId) => {
     }
     if (chain.length > MAX_PARENT_DEPTH) {
       logger.error('[Billing] Parent-company chain too deep', { companyId: key, chain: chain.map((c) => c.id) });
-      throw new ForbiddenError(`This company is more than ${MAX_PARENT_DEPTH} levels below its top parent company, so its billing can't be worked out. Contact support.`);
+      throw new ForbiddenError(`This company is more than ${MAX_PARENT_DEPTH} levels below its top primary company, so its billing can't be worked out. Contact support.`);
     }
     const row = await readCompanyLink(nextId);
     if (!row) break;
@@ -330,7 +330,7 @@ const isCompanySwitchedOff = async (companyId) => {
 
 /** "Your company's" for the payer itself, "Acme Group's" for a subsidiary. */
 const payerPossessive = (account) => (account.billedThroughParent
-  ? `${account.billingCompanyName || 'Your parent company'}'s`
+  ? `${account.billingCompanyName || 'Your primary company'}'s`
   : 'Your company\'s');
 
 /** Tests only. */
@@ -362,7 +362,7 @@ const createSubscription = async (companyId, planId, billingCycle, seatCount, ac
   if (chain.length > 1) {
     const top = chain[chain.length - 1];
     throw new BadRequestError(
-      `${chain[0].name || 'This company'} is a subsidiary of ${top.name || 'another company'} and uses its plan and seats. Manage billing on ${top.name || 'the parent company'} instead.`,
+      `${chain[0].name || 'This company'} is a subsidiary of ${top.name || 'another company'} and uses its plan and seats. Manage billing on ${top.name || 'the primary company'} instead.`,
     );
   }
   const plan = await getPlanOrThrow(planId);

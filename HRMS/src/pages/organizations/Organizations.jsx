@@ -574,7 +574,7 @@ function AddTab({ canManage, blockedMessage, createChild, uploadLogo, onCreated 
     <Card className="p-6 max-w-xl">
       <h3 className="text-base font-semibold text-fg mb-1">Add subsidiary</h3>
       <p className="text-sm text-fg-muted mb-6">
-        Creates an isolated workspace under your main company. Open it afterwards to add registered address, GSTIN, directors, and other CDD details.
+        Creates an isolated workspace under your primary company. Open it afterwards to add registered address, GSTIN, directors, and other CDD details.
       </p>
       <form onSubmit={submit} className="space-y-5">
         <Input
@@ -746,7 +746,7 @@ export default function Organizations() {
   const canEditLegal = ['admin', 'hr'].includes(String(role || '').toLowerCase()) && canEditCompanies;
   const addBlockedMessage = isParentCompany
     ? 'Your role can\'t add companies. An Admin can allow it in Settings → User & Role Management (Organizations → Create).'
-    : 'Subsidiary admins cannot create further subsidiaries. Ask your main company admin.';
+    : 'Subsidiary admins cannot create further subsidiaries. Ask your primary company admin.';
 
   const onToggle = async (company) => {
     try {
