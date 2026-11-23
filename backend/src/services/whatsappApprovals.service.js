@@ -45,8 +45,8 @@ const REPLIES = {
   used: 'This request was already answered from WhatsApp. Open SpaxSync to see where it stands.',
   expired: 'These buttons have expired. Please open SpaxSync to review the request.',
   notYours: 'These buttons only work from the WhatsApp number connected to the approver\'s SpaxSync account.',
-  // device_ip: buttons only from a WhatsApp the person connected themselves (JOIN).
-  notConfirmed: 'For this request the buttons only work from a WhatsApp you connected yourself in SpaxSync (your profile → WhatsApp). Nothing was changed; please decide it in SpaxSync.',
+  // Buttons only work from a WhatsApp the person confirmed (whatsappVerify.service.js).
+  notConfirmed: 'Nothing was changed: these buttons only work once you confirm this WhatsApp number in SpaxSync (your profile → WhatsApp → enter the code we send you). Please decide this request in SpaxSync.',
   off: 'Approving on WhatsApp is not available for your account right now. Please use SpaxSync.',
   failed: 'Something went wrong and nothing was changed. Please try again, or use SpaxSync.',
   refused: (message) => `Nothing was changed: ${message}`,
@@ -71,13 +71,27 @@ const redactParams = (template, params) => {
 
 /**
  * One set of buttons per approval message just queued (outbox). Without its
- * row a message simply goes without buttons, so a failure here only logs.
+ * row a message simply goes without buttons (approval_waiting), so a failure
+ * here only logs.
+ *
+ * Only an approver whose WhatsApp is confirmed gets buttons (owner's rule,
+ * 23 Nov 2026, whatsappVerify.service.js): connected with JOIN, or confirmed
+ * with a code. The others are sent a code, when the company's setting is on,
+ * so the next approval reaches them with buttons.
  */
 const createActions = async (rows, action) => {
   if (!action || !KINDS.has(action.kind) || !UUID.test(String(action.recordId || ''))) return;
+  const verify = require('./whatsappVerify.service');
+  const toApprovers = (rows || []).filter((row) => row.subject_type === 'employee' && row.company_id);
+  const confirmed = await verify.confirmedEmployeeIds(toApprovers.map((row) => row.subject_id));
+  const unconfirmed = toApprovers.filter((row) => !confirmed.has(String(row.subject_id)));
+  for (const companyId of new Set(unconfirmed.map((row) => row.company_id))) {
+    verify.nudgeUnconfirmed(companyId, unconfirmed.filter((row) => row.company_id === companyId).map((row) => row.subject_id))
+      .catch((err) => logger.warn('[WhatsApp] could not send confirmation codes', { error: err.message }));
+  }
   const expiresAt = new Date(Date.now() + ACTION_TTL_MS).toISOString();
-  const actions = (rows || [])
-    .filter((row) => row.subject_type === 'employee' && row.company_id)
+  const actions = toApprovers
+    .filter((row) => confirmed.has(String(row.subject_id)))
     .map((row) => ({
       message_id: row.id,
       company_id: row.company_id,
@@ -267,12 +281,9 @@ const DECIDE = {
   },
   // A biometric machine's new internet address: the people chosen in
   // Settings → Attendance → Biometric Devices decide (HR and Admins by
-  // default, plus anyone ticked there), checked again at the tap. Approving
-  // makes punches count, so the tap must come from a WhatsApp the person
-  // connected themselves (JOIN), not one HR typed in for them.
+  // default, plus anyone ticked there), checked again at the tap.
   device_ip: {
     feature: 'biometric_adms',
-    confirmedLinkOnly: true,
     mayDecide: (approver) => require('./admsIpApproval.service').isApprover(approver),
     notAllowed: 'you are no longer one of the people chosen to approve a new IP for biometric machines',
     run: (decision, approver, requestId) => require('./admsIpApproval.service')
@@ -307,9 +318,6 @@ const fromApprover = async (action, identity) => {
   const { phone, bsuid } = linkService.normalizeIdentity(identity || {});
   return (phone && link.phone === phone) || (bsuid && link.bsuid === bsuid) ? link : null;
 };
-
-/** whatsapp_links.consent_source of a WhatsApp the person connected themselves with their JOIN code. */
-const CONFIRMED_LINK = 'whatsapp_join';
 
 /** The approver as the website would see them signed in, or null when they could not act there now. */
 const activeApprover = async (action) => {
@@ -362,7 +370,8 @@ const handleTap = async ({ decision, code, identity }) => {
     if (new Date(action.expires_at) <= new Date()) return REPLIES.expired;
     const link = await fromApprover(action, identity);
     if (!link) return REPLIES.notYours;
-    if (DECIDE[action.kind].confirmedLinkOnly && link.consent_source !== CONFIRMED_LINK) return REPLIES.notConfirmed;
+    // Buttons sent before the number was confirmed, or a number HR changed since.
+    if (!require('./whatsappVerify.service').isConfirmedLink(link)) return REPLIES.notConfirmed;
     const approver = await activeApprover(action);
     if (!approver) return REPLIES.off;
 

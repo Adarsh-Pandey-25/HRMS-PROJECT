@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
-import { MessageCircle, Unplug } from 'lucide-react';
-import { Card, CardHeader, Button, Badge, Toggle, ConfirmDialog } from '../ui';
+import { MessageCircle, Unplug, ShieldCheck } from 'lucide-react';
+import { Card, CardHeader, Button, Badge, Toggle, ConfirmDialog, Input } from '../ui';
 import { formatDate } from '../../lib/utils';
 
 const STATUS_BADGE = {
@@ -10,6 +10,77 @@ const STATUS_BADGE = {
   opted_out: { label: 'Stopped', tone: 'warning' },
   not_connected: { label: 'Not connected', tone: 'neutral' },
 };
+
+/**
+ * Approve / Reject buttons on WhatsApp only reach a number the person
+ * confirmed (owner's rule, 23 Nov 2026): connected with JOIN, or confirmed
+ * here with a 6-digit code SpaxSync sends to it on WhatsApp. A number HR typed
+ * in gets approvals without buttons until then.
+ */
+function ConfirmNumber({ api, waitingUntil, onConfirmed }) {
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(null);
+  const [sentUntil, setSentUntil] = useState(waitingUntil || null);
+  const waiting = Boolean(sentUntil && new Date(sentUntil) > new Date());
+
+  const send = async () => {
+    setBusy('send');
+    try {
+      const result = await api.sendCode();
+      if (result?.alreadyConfirmed) {
+        toast.success('Your number is already confirmed');
+        onConfirmed();
+      } else {
+        setSentUntil(result?.expiresAt || null);
+        toast.success('Code sent on WhatsApp');
+      }
+    } catch (err) {
+      toast.error(err.message || 'Could not send the code');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const confirm = async () => {
+    setBusy('confirm');
+    try {
+      await api.confirm(code);
+      setCode('');
+      toast.success('Number confirmed. Approvals now come with Approve / Reject buttons.');
+      onConfirmed();
+    } catch (err) {
+      toast.error(err.message || 'Could not confirm the number');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="rounded-lg border border-warning/40 bg-warning/5 p-3 space-y-2">
+      <p className="text-sm font-medium text-fg">Confirm this number to approve on WhatsApp</p>
+      <p className="text-xs text-fg-subtle">
+        Approval requests reach you on WhatsApp without Approve / Reject buttons until you confirm this number is yours.
+        We send a 6-digit code to it on WhatsApp; type it in here. Anyone else can't use it, so never share it.
+      </p>
+      {waiting ? (
+        <div className="flex flex-wrap items-end gap-2">
+          <Input
+            label="Code from WhatsApp"
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            value={code}
+            onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+            containerClass="w-40"
+          />
+          <Button size="sm" onClick={confirm} loading={busy === 'confirm'} disabled={code.length !== 6 || Boolean(busy)}>Confirm</Button>
+          <Button size="sm" variant="ghost" onClick={send} disabled={Boolean(busy)}>Send a new code</Button>
+        </div>
+      ) : (
+        <Button size="sm" icon={ShieldCheck} onClick={send} loading={busy === 'send'} disabled={Boolean(busy)}>Send code on WhatsApp</Button>
+      )}
+    </div>
+  );
+}
 
 /**
  * "WhatsApp updates": connect your own WhatsApp (one tap — WhatsApp opens
@@ -20,7 +91,8 @@ const STATUS_BADGE = {
  * unless WhatsApp is available for the company or the person already
  * connected — companies without the add-on see no change at all.
  *
- * `api` = { get, start, updateGroups, disconnect } (see whatsapp.api.js).
+ * `api` = { get, start, updateGroups, disconnect } (see whatsapp.api.js), plus
+ * { sendCode, confirm } where approvals apply (an employee's own profile).
  */
 export function WhatsAppUpdatesCard({ api, queryKey, hideWhenUnavailable = true, title = 'WhatsApp updates' }) {
   const qc = useQueryClient();
@@ -108,6 +180,14 @@ export function WhatsAppUpdatesCard({ api, queryKey, hideWhenUnavailable = true,
               Connected to <span className="font-medium text-fg">{data.number}</span>
               {data.connectedAt ? ` since ${formatDate(data.connectedAt)}` : ''}. Reply STOP on WhatsApp at any time to stop.
             </p>
+            {api.sendCode && data.confirmedForApprovals === false && (
+              <ConfirmNumber api={api} waitingUntil={data.codeWaitingUntil} onConfirmed={refresh} />
+            )}
+            {api.sendCode && data.confirmedForApprovals === true && (
+              <p className="inline-flex items-center gap-1.5 text-xs text-success">
+                <ShieldCheck className="h-3.5 w-3.5" /> Number confirmed: approvals come with Approve / Reject buttons.
+              </p>
+            )}
             {data.groups?.length > 0 && (
               <div className="space-y-3">
                 <p className="text-xs font-semibold uppercase tracking-wide text-fg-subtle">What you get</p>
@@ -169,7 +249,7 @@ export function WhatsAppUpdatesCard({ api, queryKey, hideWhenUnavailable = true,
               <>
                 <p className="text-xs text-fg-subtle rounded-lg bg-muted/50 p-3">
                   By connecting, you agree to receive HR updates on WhatsApp, sent by SpaxSync through Meta.
-                  You can stop at any time by replying STOP or switching it off here. Salary amounts, passwords and codes are never sent on WhatsApp.
+                  You can stop at any time by replying STOP or switching it off here. Salary amounts and passwords are never sent on WhatsApp; the only code is the one that confirms your number.
                 </p>
                 <Button icon={MessageCircle} onClick={connect} loading={busy === 'connect'} disabled={Boolean(busy)}>
                   Connect WhatsApp

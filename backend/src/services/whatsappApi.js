@@ -93,13 +93,22 @@ const addressFor = ({ phone, bsuid }) => (phone ? { to: phone } : { recipient: b
  * for a template with several quick replies (Approve / Reject), in order.
  */
 const sendTemplate = async ({
-  phone, bsuid, template, language = 'en', params = [], quickReplyPayload = null, buttonPayloads = null,
+  phone, bsuid, template, language = 'en', params = [], quickReplyPayload = null, buttonPayloads = null, copyCode = null,
 }) => {
   const components = [];
   if (params.length) {
     components.push({
       type: 'body',
       parameters: params.map((text) => ({ type: 'text', text: String(text) })),
+    });
+  }
+  // An authentication template's Copy code button carries the code as well.
+  if (copyCode) {
+    components.push({
+      type: 'button',
+      sub_type: 'url',
+      index: '0',
+      parameters: [{ type: 'text', text: String(copyCode) }],
     });
   }
   const payloads = buttonPayloads || (quickReplyPayload ? [quickReplyPayload] : []);

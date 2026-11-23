@@ -47,13 +47,13 @@ Connect in **Super Admin → WhatsApp → My alerts** to get:
 | Emails | Why |
 |---|---|
 | Welcome & login details, onboarding invite, bulk-import account, day-one welcome | Contain a **password** |
-| Password reset code, workspace set-up code | Contain a **secret code** |
+| Password reset code, workspace set-up code | Contain a **secret code** (the only code sent on WhatsApp is the one that confirms an approver's own number) |
 | Pre-joining reminder | The person can't have connected yet |
 | Offer letter (candidates), workspace invite and enquiry received (new customers) | Not SpaxSync users |
 
 ### Good to know
 - **Scheduled messages only come from the live server:** attendance alerts, daily and weekly summaries, birthdays, billing reminders and auto check-out. Your PC has scheduled jobs switched off.
-- **What's in a message:** it says what happened, plus the person's first name, dates and the company name, and ends with "open SpaxSync for details". It never contains salary or amounts, bank details, passwords or codes. The one exception: approvers see the employee's **reason**, shortened to about 200 characters (your decision, 30 Oct 2026); it's hidden from the Message log once sent.
+- **What's in a message:** it says what happened, plus the person's first name, dates and the company name, and ends with "open SpaxSync for details". It never contains salary or amounts, bank details or passwords. Two exceptions: approvers see the employee's **reason**, shortened to about 200 characters (your decision, 30 Oct 2026), and the code that confirms an approver's number (23 Nov 2026); both are hidden from the Message log once sent.
 - **One event, one WhatsApp:** each event sends one message per person, even where SpaxSync sends two emails for it.
 
 ### Approving on WhatsApp (added 30 Oct 2026)
@@ -64,10 +64,17 @@ Leave, work-from-home, expense and attendance-correction requests reach the appr
 - **A biometric machine's new internet address (added 20 Nov 2026):** when the office internet changes (new connection, router restart), the machine reports from a new IP. Its punches are **kept, not lost**, and the people chosen in **Settings → Attendance → Biometric Devices → Who approves a new IP** are told by email and on WhatsApp. By default that is every HR and Admin; anyone else, such as the tech team, can be ticked there, and only an Admin changes the list.
   - The message shows the new and old IP with their area, how many punches by how many people over which times, and a warning when the machine was still online on its old IP just before (an office change rarely looks like that; a copied serial number does).
   - **Approve** allows the new IP, and the kept punches count at the time they were made, but only from when the machine was last seen on its old IP (at most 7 days back), so an approval never fills old absent days. **Reject** deletes them. If that IP keeps sending, its punches are kept again and shown on the website, but nobody is told again for 7 days.
-  - **The Approve / Reject buttons only go to people who connected WhatsApp themselves** (their profile → WhatsApp, with the JOIN code). Someone whose number HR typed in gets the same message without buttons (`approval_waiting`) and decides on the website; a tap from such a number is refused. Approving here makes punches count, so the person tapping must have proved the number is theirs.
-  - It uses the existing `approval_request` and `approval_waiting` templates, so nothing new needs Meta's approval.
+  - Its buttons, like every approval's, only go to a confirmed number (see "Confirmed numbers" below).
+  - It uses the existing `approval_request` and `approval_waiting` templates.
 - **Safety:** the buttons only work from the WhatsApp number connected to the approver. Each set works once and stops working after 7 days. They don't work if the approver's account is switched off or the company is suspended. Every decision is recorded with who made it and when.
-- **Known gap (audit 4 Nov 2026, #11 and #12):** a number connected automatically is the number HR typed in, not one the approver proved they own, and if HR edits the approver's number the buttons move to the new number with no check. So a mistyped, old or recycled number can approve requests. Until approvers re-verify their number, keep WhatsApp approvals off (see "To stop everything" below).
+- **Confirmed numbers (added 23 Nov 2026; closes audit #11 and #12):** the **Approve / Reject buttons only go to a number the approver confirmed is theirs**, for every kind of approval:
+  - **JOIN:** they connected WhatsApp themselves from their profile, or
+  - **a code:** SpaxSync sends a 6-digit code to the number on WhatsApp, and they type it in **their profile → WhatsApp** while signed in.
+  - A number HR typed in (connected automatically) gets the same approval **without buttons** (`approval_waiting`, "please review it in SpaxSync"), and a tap from it is refused.
+  - **Settings → Integrations → WhatsApp → "Confirm approvers' numbers with a WhatsApp code"** (HR and Admin; on unless switched off): an approver who isn't confirmed is sent the code by itself the first time an approval reaches them, at most once a day. Anyone can also ask for a code from their profile (one a minute, five a day). A code lasts 10 minutes and allows 5 tries.
+  - If HR changes a code-confirmed number, it is no longer confirmed until a new code (or a JOIN) confirms it, so changing someone's number never moves their buttons. A JOIN connection stays as the person made it.
+  - Nobody can connect, confirm or change WhatsApp while a super admin is signed in as them.
+  - The code goes in a new template, **`whatsapp_verify_code`**, an **Authentication** template as Meta requires for codes (Meta writes its text, with a **Copy code** button). Submit it with the others (Super Admin → WhatsApp → Templates, or it is submitted by itself after a deploy). Until Meta approves it, no code goes out and the profile says to connect with JOIN instead.
 - **Live since 30 Oct 2026:** Meta approved `approval_request`, and the first leave and work-from-home requests were approved from WhatsApp that afternoon.
 
 ### Approval Flows (added 2 Nov 2026)

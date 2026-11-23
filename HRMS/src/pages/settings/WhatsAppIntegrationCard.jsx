@@ -81,7 +81,7 @@ export function WhatsAppIntegrationCard() {
     <Card>
       <CardHeader
         title="WhatsApp updates"
-        subtitle="Every SpaxSync notification also goes to employees on WhatsApp — except passwords and codes, which never do."
+        subtitle="Every SpaxSync notification also goes to employees on WhatsApp — except salaries and passwords, which never do."
         action={(
           <Toggle
             checked={data.enabled}
@@ -100,6 +100,15 @@ export function WhatsAppIntegrationCard() {
         {!data.enabled && (
           <p className="text-xs text-warning">WhatsApp updates are off for your company — nobody receives them.</p>
         )}
+        <div className="rounded-lg border border-border p-3 space-y-1">
+          <Toggle
+            label="Confirm approvers' numbers with a WhatsApp code"
+            hint="Approve / Reject buttons only go to a number the person confirmed: connected it themselves, or typed in a 6-digit code we sent to it. With this on, an approver whose number HR added is sent that code on WhatsApp the first time an approval reaches them (at most once a day); they type it in their profile → WhatsApp. Until then they approve in SpaxSync."
+            checked={data.confirmApproversByCode !== false}
+            disabled={Boolean(busy) || !data.enabled}
+            onChange={(next) => save('confirmApproversByCode', { confirmApproversByCode: next }, next ? 'Approvers will be sent a code to confirm their number' : 'Approvers will not be sent codes')}
+          />
+        </div>
         <button
           type="button"
           onClick={() => setShowGroups((v) => !v)}

@@ -6,7 +6,9 @@ const api = require('./whatsappApi');
 const settings = require('./whatsappSettings.service');
 const linkService = require('./whatsappLink.service');
 const approvals = require('./whatsappApprovals.service');
-const { getTemplate, isMarketing, LANGUAGE, STOP_MARKETING_PAYLOAD } = require('./whatsappTemplates');
+const {
+  getTemplate, isMarketing, isAuthentication, LANGUAGE, STOP_MARKETING_PAYLOAD,
+} = require('./whatsappTemplates');
 const { isGroupOn } = require('./whatsappGroups');
 
 /**
@@ -154,6 +156,8 @@ const sendRow = async (row, cfg) => {
       params: send.params,
       quickReplyPayload: isMarketing(template) ? STOP_MARKETING_PAYLOAD : null,
       buttonPayloads: send.buttonPayloads,
+      // The verification code also goes in its Copy code button.
+      copyCode: isAuthentication(template) ? send.params[0] : null,
     });
     const sentAs = getTemplate(send.template);
     await update(row.id, {

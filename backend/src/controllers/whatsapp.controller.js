@@ -6,6 +6,7 @@ const settings = require('../services/whatsappSettings.service');
 const linkService = require('../services/whatsappLink.service');
 const { COMPANY_SWITCHABLE, describeGroups } = require('../services/whatsappGroups');
 const L = require('../services/whatsappLookup');
+const verify = require('../services/whatsappVerify.service');
 
 /**
  * WhatsApp updates for the signed-in employee (connect, choose groups,
@@ -25,6 +26,18 @@ const companyIdOf = (req) => req.user?.company_id || null;
 const requireEmployee = (req) => {
   if (req.authType === 'api_key' || !req.user?.id) {
     throw new ForbiddenError('Sign in as an employee to manage WhatsApp updates');
+  }
+};
+
+/**
+ * Connecting, confirming or changing someone's WhatsApp is theirs alone: not
+ * while a super-admin is signed in as them (audit #38 — a support login could
+ * link its own phone and keep that person's Approve buttons afterwards).
+ */
+const requireOwnSession = (req) => {
+  requireEmployee(req);
+  if (req.impersonation) {
+    throw new ForbiddenError('WhatsApp can only be changed by the person themselves, not while signed in as them.');
   }
 };
 
@@ -51,6 +64,9 @@ const describeMe = async (req) => {
   // Switched off here: nobody can be connected, and the tables may not exist yet.
   const link = state.reason === 'not_set_up' ? null : await linkService.getLink('employee', req.user.id);
   const me = linkService.describeLink(link, req.user.role);
+  // Approve / Reject buttons need a confirmed number (whatsappVerify.service.js).
+  me.confirmedForApprovals = verify.isConfirmedLink(link);
+  me.codeWaitingUntil = me.connected && !me.confirmedForApprovals ? verify.codeWaitingUntil(req.user.id) : null;
   // A group the company switched off for everyone is shown as off and locked.
   me.groups = me.groups.map((g) => ({ ...g, lockedByCompany: state.companyGroups?.[g.key] === false }));
   return { available: state.available, reason: state.reason, message: state.reason ? REASONS[state.reason] : null, ...me };
@@ -65,7 +81,7 @@ const getMine = async (req, res, next) => {
 
 const startLink = async (req, res, next) => {
   try {
-    requireEmployee(req);
+    requireOwnSession(req);
     const companyId = companyIdOf(req);
     const state = await availability(companyId);
     if (!state.available) throw new BadRequestError(REASONS[state.reason] || REASONS.not_set_up);
@@ -82,7 +98,7 @@ const startLink = async (req, res, next) => {
 
 const updateMyGroups = async (req, res, next) => {
   try {
-    requireEmployee(req);
+    requireOwnSession(req);
     const { groups } = req.body || {};
     if (!groups || typeof groups !== 'object' || Array.isArray(groups)) throw new BadRequestError('groups must be an object of true/false switches');
     await linkService.updateGroups('employee', req.user.id, req.user.role, groups);
@@ -92,9 +108,27 @@ const updateMyGroups = async (req, res, next) => {
 
 const disconnect = async (req, res, next) => {
   try {
-    requireEmployee(req);
+    requireOwnSession(req);
     await linkService.disconnect('employee', req.user.id);
     successResponse(res, 'WhatsApp disconnected', await describeMe(req));
+  } catch (err) { next(err); }
+};
+
+/** Profile → WhatsApp: send a 6-digit code to the connected number. */
+const sendConfirmCode = async (req, res, next) => {
+  try {
+    requireOwnSession(req);
+    const result = await verify.sendCode(req.user.id);
+    successResponse(res, result.alreadyConfirmed ? 'Your WhatsApp number is already confirmed' : 'Code sent on WhatsApp', { ...result, me: await describeMe(req) });
+  } catch (err) { next(err); }
+};
+
+/** Profile → WhatsApp: the code from WhatsApp confirms the number for Approve / Reject buttons. */
+const confirmNumber = async (req, res, next) => {
+  try {
+    requireOwnSession(req);
+    await verify.confirmCode(req.user.id, req.body?.code);
+    successResponse(res, 'WhatsApp number confirmed. Approvals now come with Approve / Reject buttons.', await describeMe(req));
   } catch (err) { next(err); }
 };
 
@@ -106,7 +140,7 @@ const describeCompany = async (companyId) => {
   if (state.reason === 'not_set_up') {
     return {
       platformReady: false, addOn: false, enabled: false, available: false, reason: state.reason,
-      message: REASONS.not_set_up, connectedCount: 0, businessNumber: null, groups: [], updatedAt: null,
+      message: REASONS.not_set_up, connectedCount: 0, businessNumber: null, groups: [], updatedAt: null, confirmApproversByCode: true,
     };
   }
   const companySettings = await settings.getCompanySettings(companyId);
@@ -127,6 +161,8 @@ const describeCompany = async (companyId) => {
     businessNumber: cfg.businessNumber ? `+${cfg.businessNumber}` : null,
     groups: describeGroups(COMPANY_SWITCHABLE, companySettings.groups),
     updatedAt: companySettings.updatedAt,
+    // Send a code to approvers whose number isn't confirmed (whatsappVerify.service.js).
+    confirmApproversByCode: await verify.confirmByCodeOn(companyId),
   };
 };
 
@@ -138,16 +174,32 @@ const getCompany = async (req, res, next) => {
 
 const updateCompany = async (req, res, next) => {
   try {
-    const { enabled, groups } = req.body || {};
+    const { enabled, groups, confirmApproversByCode } = req.body || {};
     if (enabled !== undefined && typeof enabled !== 'boolean') throw new BadRequestError('enabled must be true or false');
+    if (confirmApproversByCode !== undefined && typeof confirmApproversByCode !== 'boolean') {
+      throw new BadRequestError('confirmApproversByCode must be true or false');
+    }
     if (groups !== undefined && (!groups || typeof groups !== 'object' || Array.isArray(groups))) {
       throw new BadRequestError('groups must be an object of true/false switches');
     }
-    await settings.updateCompanySettings(companyIdOf(req), { enabled, groups }, req.user?.id || null);
+    if (enabled !== undefined || groups !== undefined) {
+      await settings.updateCompanySettings(companyIdOf(req), { enabled, groups }, req.user?.id || null);
+    }
+    if (confirmApproversByCode !== undefined) {
+      await verify.setConfirmByCode(companyIdOf(req), confirmApproversByCode, req.user?.id || null);
+      require('../services/auditLog.service').auditFromRequest(req, {
+        actionType: 'whatsapp.confirm_approvers_by_code',
+        targetType: 'setting',
+        targetId: verify.SETTING_KEY,
+        afterState: { on: confirmApproversByCode },
+      });
+    }
     successResponse(res, 'WhatsApp settings saved', await describeCompany(companyIdOf(req)));
   } catch (err) { next(err); }
 };
 
 module.exports = {
+  sendConfirmCode,
+  confirmNumber,
   getMine, startLink, updateMyGroups, disconnect, getCompany, updateCompany,
 };

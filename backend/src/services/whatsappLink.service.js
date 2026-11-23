@@ -360,6 +360,15 @@ const connectAddedEmployee = async ({ employeeId, phone: rawPhone, companyId, ex
  * cleared. Its BSUID belonged to the old number's WhatsApp, so it goes. A
  * connection the person made or stopped themselves is left alone.
  */
+/**
+ * Links that follow the number HR keeps on the profile: the ones SpaxSync made
+ * from it, and ones confirmed with a code sent to it (whatsappVerify.service.js).
+ * A new number is not confirmed: it goes back to HR-added until a new code (or
+ * a JOIN) confirms it, so changing someone's number never moves their
+ * Approve / Reject buttons (audit #12). A JOIN link stays as the person made it.
+ */
+const FOLLOWS_HR_NUMBER = [HR_ADDED, 'whatsapp_code'];
+
 const followNumberChange = async ({ employeeId, phone: rawPhone }) => {
   if (!canSend(getConfig()) || !employeeId) return false;
   const phone = mobileForWhatsapp(rawPhone);
@@ -372,18 +381,18 @@ const followNumberChange = async ({ employeeId, phone: rawPhone }) => {
       .eq('subject_type', 'employee')
       .eq('subject_id', employeeId)
       .eq('status', 'active')
-      .eq('consent_source', HR_ADDED);
+      .in('consent_source', FOLLOWS_HR_NUMBER);
     if (dropError) throw new BadRequestError(dropError.message);
     return false;
   }
   const now = new Date().toISOString();
   const { data, error } = await supabaseAdmin
     .from('whatsapp_links')
-    .update({ phone, bsuid: null, consented_at: now, updated_at: now })
+    .update({ phone, bsuid: null, consented_at: now, updated_at: now, consent_source: HR_ADDED })
     .eq('subject_type', 'employee')
     .eq('subject_id', employeeId)
     .eq('status', 'active')
-    .eq('consent_source', HR_ADDED)
+    .in('consent_source', FOLLOWS_HR_NUMBER)
     .neq('phone', phone)
     .select('id');
   if (error) throw new BadRequestError(error.message);

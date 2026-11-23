@@ -14,6 +14,10 @@ router.get('/me', whatsappController.getMine);
 router.post('/me/link', whatsappController.startLink);
 router.put('/me/groups', whatsappController.updateMyGroups);
 router.delete('/me/link', whatsappController.disconnect);
+// Confirm the connected number with a code sent on WhatsApp, so approvals come
+// with Approve / Reject buttons (whatsappVerify.service.js; limits are inside).
+router.post('/me/confirm/send', whatsappController.sendConfirmCode);
+router.post('/me/confirm', whatsappController.confirmNumber);
 
 // The company-wide switch and groups (HR and admins; Settings → Integrations,
 // so Settings → Manage in Settings → User & Role Management).

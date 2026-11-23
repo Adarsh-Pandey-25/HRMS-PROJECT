@@ -13,9 +13,11 @@
  *
  * No template carries a salary, an amount, a password, a code or a sign-in
  * link — the message says what happened and points to SpaxSync for the
- * rest. One exception (owner's decision, 30 Oct 2026): approval_request
- * shows the approver the requester's own reason, shortened, and is hidden
- * from the message log once sent (privateParams).
+ * rest. Two exceptions: approval_request shows the approver the requester's
+ * own reason, shortened (owner's decision, 30 Oct 2026), and
+ * whatsapp_verify_code carries the code that confirms an approver's number
+ * (owner's request, 23 Nov 2026, an AUTHENTICATION template as Meta
+ * requires). Both are hidden from the message log once sent (privateParams).
  *
  * Every template ends with the "Reply STOP" footer except the first
  * messages, welcome_new_employee, whatsapp_number_linked and the earlier
@@ -57,6 +59,24 @@ const TEMPLATES = [
     fallback: 'approval_waiting',
     paramMax: { 5: 200 },
     privateParams: [5],
+  },
+  // The one template with a code (owner's request, 23 Nov 2026): it confirms
+  // that the WhatsApp number on an approver's profile is really theirs before
+  // it gets Approve / Reject buttons (whatsappVerify.service.js). Meta requires
+  // an AUTHENTICATION template for a code and writes its text itself:
+  // "<code> is your verification code. For your security, do not share this
+  // code. This code expires in 10 minutes." with a Copy code button. `body` is
+  // only that text for SpaxSync's own use (the blank count, the message log);
+  // it is not submitted. The code is hidden from the log once sent.
+  {
+    name: 'whatsapp_verify_code',
+    category: 'AUTHENTICATION',
+    body: 'Your SpaxSync verification code is {{1}}. It expires in 10 minutes.',
+    example: ['482913'],
+    footer: false,
+    otp: { expiryMinutes: 10, buttonText: 'Copy code' },
+    privateParams: [1],
+    holdUntilApproved: true,
   },
   utility('leave_approved',
     'Hi {{1}}, your {{2}} for {{3}} has been approved by {{4}} at {{5}}. You can see the details in SpaxSync.',
@@ -220,8 +240,23 @@ const paramCount = (template) => new Set(template.body.match(/\{\{\d+\}\}/g) || 
 
 const isMarketing = (template) => template?.category === 'MARKETING';
 
+const isAuthentication = (template) => template?.category === 'AUTHENTICATION';
+
 /** The request body for POST /{WABA_ID}/message_templates. */
 const toCreatePayload = (template) => {
+  // Meta writes an authentication template's text; it takes only these switches.
+  if (isAuthentication(template)) {
+    return {
+      name: template.name,
+      language: LANGUAGE,
+      category: template.category,
+      components: [
+        { type: 'BODY', add_security_recommendation: true },
+        { type: 'FOOTER', code_expiration_minutes: template.otp.expiryMinutes },
+        { type: 'BUTTONS', buttons: [{ type: 'OTP', otp_type: 'COPY_CODE', text: template.otp.buttonText }] },
+      ],
+    };
+  }
   const components = [
     {
       type: 'BODY',
@@ -249,6 +284,14 @@ const templateProblems = (template) => {
   const numbers = (body.match(/\{\{(\d+)\}\}/g) || []).map((m) => Number(m.slice(2, -2)));
   const distinct = [...new Set(numbers)].sort((a, b) => a - b);
   if (!/^[a-z][a-z0-9_]{0,511}$/.test(template.name)) problems.push('name must be lowercase letters, digits and _');
+  if (isAuthentication(template)) {
+    // Meta writes the text: only the code blank, its expiry and the button matter.
+    if (distinct.length !== 1) problems.push('an authentication template carries exactly one value, the code');
+    const minutes = template.otp?.expiryMinutes;
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 90) problems.push('code expiry must be 1–90 minutes');
+    if (!template.otp?.buttonText || template.otp.buttonText.length > 25) problems.push('copy-code button text missing or over 25 characters');
+    return problems;
+  }
   if (!['UTILITY', 'MARKETING'].includes(template.category)) problems.push('category must be UTILITY or MARKETING');
   if (/^\{\{\d+\}\}/.test(body)) problems.push('body starts with a blank');
   if (/\{\{\d+\}\}[\s.!?…]*$/.test(body)) problems.push('body ends with a blank');
@@ -272,6 +315,7 @@ module.exports = {
   getTemplate,
   paramCount,
   isMarketing,
+  isAuthentication,
   toCreatePayload,
   templateProblems,
 };

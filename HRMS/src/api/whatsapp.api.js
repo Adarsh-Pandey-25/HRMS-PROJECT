@@ -5,6 +5,9 @@ export const getMyWhatsAppApi = () => apiRequest({ method: 'GET', url: '/whatsap
 export const startMyWhatsAppLinkApi = () => apiRequest({ method: 'POST', url: '/whatsapp/me/link' });
 export const updateMyWhatsAppGroupsApi = (groups) => apiRequest({ method: 'PUT', url: '/whatsapp/me/groups', data: { groups } });
 export const disconnectMyWhatsAppApi = () => apiRequest({ method: 'DELETE', url: '/whatsapp/me/link' });
+/** Confirming the connected number with a code sent on WhatsApp, for Approve / Reject buttons. */
+export const sendMyWhatsAppCodeApi = () => apiRequest({ method: 'POST', url: '/whatsapp/me/confirm/send' });
+export const confirmMyWhatsAppApi = (code) => apiRequest({ method: 'POST', url: '/whatsapp/me/confirm', data: { code } });
 
 /** The set WhatsAppUpdatesCard uses on an employee's own profile. */
 export const MY_WHATSAPP_API = {
@@ -12,6 +15,8 @@ export const MY_WHATSAPP_API = {
   start: startMyWhatsAppLinkApi,
   updateGroups: updateMyWhatsAppGroupsApi,
   disconnect: disconnectMyWhatsAppApi,
+  sendCode: sendMyWhatsAppCodeApi,
+  confirm: confirmMyWhatsAppApi,
 };
 
 // ── The company-wide switch (HR and admins) ─────────────────────────────────

@@ -56,9 +56,6 @@ const REJECTED_QUIET_MS = 7 * 24 * 60 * 60 * 1000;
 const KEEP_SAVED_MS = 7 * 24 * 60 * 60 * 1000;
 const KEEP_UNSAVED_MS = 60 * 24 * 60 * 60 * 1000;
 const CHECK_TABLES_AGAIN_MS = 5 * 60 * 1000;
-// whatsapp_links.consent_source of a WhatsApp the person connected themselves
-// with the JOIN code from their own SpaxSync login.
-const VERIFIED_LINK = 'whatsapp_join';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const REQUEST_COLUMNS = 'id, company_id, device_serial, ip, previous_ip, status, created_at, decided_at, decided_by, decided_via, window_start';
 
@@ -160,22 +157,11 @@ const isApprover = async (employee) => {
   return roles.includes(employee.role) || employeeIds.includes(String(employee.id));
 };
 
-/** Of these employees, the ones whose WhatsApp they connected themselves (JOIN): only they get buttons. */
-const verifiedApproverIds = async (employeeIds) => {
-  if (!employeeIds.length) return new Set();
-  const { data, error } = await supabaseAdmin
-    .from('whatsapp_links')
-    .select('subject_id, status, consent_source')
-    .eq('subject_type', 'employee')
-    .in('subject_id', employeeIds);
-  if (error) {
-    logger.warn('[ADMS] Could not check approvers\' WhatsApp; nobody gets buttons this time', { error: error.message });
-    return new Set();
-  }
-  return new Set((data || [])
-    .filter((l) => l.status === 'active' && l.consent_source === VERIFIED_LINK)
-    .map((l) => l.subject_id));
-};
+/**
+ * Of these employees, the ones whose WhatsApp is confirmed (JOIN, or a code):
+ * only they get buttons (whatsappVerify.service.js).
+ */
+const verifiedApproverIds = (employeeIds) => require('./whatsappVerify.service').confirmedEmployeeIds(employeeIds);
 
 // ── Requests ───────────────────────────────────────────────────────────────
 
@@ -501,8 +487,9 @@ const reasonLine = (text) => {
 
 /**
  * Queues the WhatsApp message for the approvers who connected WhatsApp:
- * with Approve / Reject for those who connected it themselves (JOIN), and
- * without buttons (approval_waiting, "review it in SpaxSync") for the rest.
+ * with Approve / Reject for those who confirmed their number (JOIN, or a
+ * code), and without buttons (approval_waiting, "review it in SpaxSync") for
+ * the rest, who are also sent a code when the company's setting is on.
  * Sent only where WhatsApp is on for the company and its Security group.
  */
 const askOnWhatsapp = async (device, request, approvers, text) => {
@@ -547,6 +534,8 @@ const askOnWhatsapp = async (device, request, approvers, text) => {
         `a new internet address ${text.newIp} (before: ${text.previousIp}); so far ${text.punches}`,
       ],
     });
+    require('./whatsappVerify.service').nudgeUnconfirmed(request.company_id, withoutButtons)
+      .catch((e) => logger.warn('[ADMS] Could not send confirmation codes', { error: e.message }));
   }
   return queued;
 };
@@ -708,7 +697,6 @@ module.exports = {
   MAX_OPEN_REQUESTS_PER_DEVICE,
   MAX_KEPT_PER_IP,
   MAX_KEPT_PER_DEVICE,
-  VERIFIED_LINK,
   keepingAvailable,
   normalizeApprovers,
   getApprovers,
