@@ -49,12 +49,14 @@ const DEFAULT_ATTENDANCE_CONFIG = {
     { id: 'IP-001', ip: '192.168.1.0/24', label: 'Bangalore HQ', active: true },
   ],
   biometricDevices: [],
+  // Until the company saves its own, attendance runs on one General Shift
+  // and a 30-minute late-arrival buffer (backend utils/helpers.js
+  // defaultShift / DEFAULT_LATE_GRACE_MINUTES). The server sends these with
+  // the settings; this is only what shows before they load.
   shifts: [
-    { id: 'SHIFT-001', name: 'General Shift', start: '09:00', end: '18:00', active: true },
-    { id: 'SHIFT-002', name: 'Morning Shift', start: '07:00', end: '16:00', active: true },
-    { id: 'SHIFT-003', name: 'Night Shift', start: '22:00', end: '07:00', active: true },
+    { id: 'SHIFT-DEFAULT', name: 'General Shift', start: '09:30', end: '18:30', active: true, isDefault: true },
   ],
-  gracePeriodMinutes: 15,
+  gracePeriodMinutes: 30,
   // Biometric checkout/status lifecycle — separate from the late-arrival
   // grace period above. Defaults match backend's getAttendanceConfig.
   checkoutGracePeriodMinutes: 30,
@@ -420,7 +422,10 @@ export const useSettingsStore = create(
         set((s) => ({
           attendanceConfig: {
             ...s.attendanceConfig,
-            shifts: [...s.attendanceConfig.shifts, { id: `SHIFT-${String(s.attendanceConfig.shifts.length + 1).padStart(3, '0')}`, active: true, ...shift }],
+            // A new id every time: numbering by list length gave a shift the
+            // id of one still in the list after a delete, so editing or
+            // deleting one changed both.
+            shifts: [...s.attendanceConfig.shifts, { id: `SHIFT-${Date.now().toString(36).toUpperCase()}`, active: true, ...shift }],
           },
         })),
       removeShift: (id) =>

@@ -2,7 +2,7 @@ const settingsService = require('../services/settings.service');
 const backupService = require('../services/backup.service');
 const { supabaseAdmin } = require('../config/supabase');
 const { uploadCompanyLogo, uploadCompanyBrandIcon, getSignedUrl, STORAGE_BUCKETS } = require('../services/storage.service');
-const { successResponse, isMissingColumnError } = require('../utils/helpers');
+const { successResponse, isMissingColumnError, withShiftDefaults } = require('../utils/helpers');
 const { BadRequestError, NotFoundError, ForbiddenError } = require('../utils/errors');
 const { LEAVE_CODE_PATTERN, normalizeLeaveCode } = require('../utils/constants');
 const { getCompanyId } = require('../utils/tenant');
@@ -118,9 +118,15 @@ const getAll = async (req, res, next) => {
     const { data, error } = await settingsService.listSettingsForCompany(companyId);
     if (error) throw new BadRequestError(error.message);
     const enriched = await Promise.all((data || []).map(async (row) => {
+      if (row.key === 'attendance_config') return { ...row, value: withShiftDefaults(row.value) };
       if (row.key !== 'company_profile') return row;
       return { ...row, value: await enrichCompanyProfileValue(row.value) };
     }));
+    // Settings shows the shift and late-arrival buffer attendance really
+    // uses, including for a company that has never saved attendance settings.
+    if (!enriched.some((row) => row.key === 'attendance_config')) {
+      enriched.push({ key: 'attendance_config', value: withShiftDefaults(null) });
+    }
     successResponse(res, 'System settings fetched', enriched);
   } catch (err) {
     next(err);
@@ -132,6 +138,7 @@ const getByKey = async (req, res, next) => {
     const key = req.params.key;
     const companyId = req.user.company_id;
     let value = await settingsService.getSetting(key, null, companyId);
+    if (key === 'attendance_config') value = withShiftDefaults(value);
     if (value === null || typeof value === 'undefined') throw new NotFoundError('Setting not found');
     if (key === 'company_profile') {
       value = await enrichCompanyProfileValue(value);

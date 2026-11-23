@@ -254,9 +254,53 @@ const getShiftDayWindowForDate = (dateStr, standardStartTime = '09:30') => {
 const shiftStartOfWindow = (windowStart) => moment(windowStart).tz(TIMEZONE).add(SHIFT_WINDOW_LEAD_HOURS, 'hours');
 
 /**
+ * What a company gets until it saves its own (Settings → Attendance Config →
+ * Shift Timings & Late Buffer): one General Shift from 09:30 for the standard
+ * working day (WORK_HOURS, 9 h → 18:30), and a 30-minute late-arrival buffer —
+ * a check-in up to 30 minutes after the shift starts is on time. Lateness was
+ * a fixed "after 10:00" (09:30 + 30) until Aug 2026; the setting that replaced
+ * it defaulted to 15 minutes instead.
+ */
+const DEFAULT_SHIFT_START = '09:30';
+const DEFAULT_LATE_GRACE_MINUTES = 30;
+
+const defaultShift = () => {
+ const { hour, minute } = parseHm(DEFAULT_SHIFT_START);
+ const endMinutes = (hour * 60 + minute + Math.round(WORK_HOURS * 60)) % (24 * 60);
+ const hm = (n) => String(n).padStart(2, '0');
+ return {
+  id: 'SHIFT-DEFAULT',
+  name: 'General Shift',
+  start: DEFAULT_SHIFT_START,
+  end: `${hm(Math.floor(endMinutes / 60))}:${hm(endMinutes % 60)}`,
+  active: true,
+  isDefault: true,
+ };
+};
+
+/** The company's saved shifts, or the default shift when none are saved. */
+const shiftsOrDefault = (cfg) => (
+ Array.isArray(cfg?.shifts) && cfg.shifts.length ? cfg.shifts : [defaultShift()]
+);
+
+/** The late-arrival buffer in minutes: the saved value (0 = none), or 30 when nothing valid is saved. */
+const lateGraceMinutes = (cfg) => {
+ const raw = cfg?.gracePeriodMinutes ?? cfg?.grace_period_minutes;
+ const n = Number(raw);
+ if (raw === null || raw === undefined || raw === '' || !Number.isFinite(n) || n < 0) return DEFAULT_LATE_GRACE_MINUTES;
+ return n;
+};
+
+/** A saved attendance_config with the shift and buffer defaults filled in — what Settings shows. */
+const withShiftDefaults = (cfg) => {
+ const base = (cfg && typeof cfg === 'object' && !Array.isArray(cfg)) ? cfg : {};
+ return { ...base, shifts: shiftsOrDefault(base), gracePeriodMinutes: lateGraceMinutes(base) };
+};
+
+/**
  * Whether a check-in is late: after the day's shift start plus the grace period.
  */
-const isLateCheckIn = (checkIn, gracePeriodMinutes = 15, standardStartTime = '09:30') => {
+const isLateCheckIn = (checkIn, gracePeriodMinutes = DEFAULT_LATE_GRACE_MINUTES, standardStartTime = DEFAULT_SHIFT_START) => {
  const checkInMoment = moment(checkIn).tz(TIMEZONE);
  const { shiftStart } = getShiftDayWindow(checkInMoment, standardStartTime);
  return checkInMoment.isAfter(shiftStart.clone().add(Number(gracePeriodMinutes) || 0, 'minutes'));
@@ -398,6 +442,12 @@ module.exports = {
  getShiftDayWindow,
  getShiftDayWindowForDate,
  shiftStartOfWindow,
+ DEFAULT_SHIFT_START,
+ DEFAULT_LATE_GRACE_MINUTES,
+ defaultShift,
+ shiftsOrDefault,
+ lateGraceMinutes,
+ withShiftDefaults,
  isLateCheckIn,
  SHIFT_WINDOW_LEAD_HOURS,
  determineAttendanceStatus,

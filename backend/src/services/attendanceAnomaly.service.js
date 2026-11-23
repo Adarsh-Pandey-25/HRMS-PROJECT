@@ -25,9 +25,11 @@ const getAttendanceConfig = async (companyId) => {
   const settingsService = require('./settings.service');
   const raw = await settingsService.getSetting('attendance_config', null, companyId);
   const cfg = (raw && typeof raw === 'object') ? raw : {};
+  // Same defaults as attendance.service.js getAttendanceConfig.
+  const { lateGraceMinutes, shiftsOrDefault } = require('../utils/helpers');
   return {
-    gracePeriodMinutes: Number(cfg.gracePeriodMinutes ?? cfg.grace_period_minutes ?? 15),
-    shifts: Array.isArray(cfg.shifts) ? cfg.shifts : [],
+    gracePeriodMinutes: lateGraceMinutes(cfg),
+    shifts: shiftsOrDefault(cfg),
   };
 };
 

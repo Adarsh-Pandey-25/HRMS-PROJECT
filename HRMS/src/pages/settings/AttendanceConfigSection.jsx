@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, Trash2 } from 'lucide-react';
+import { Plus, Trash2, Pencil } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { Card, CardHeader, Button, Input, Toggle, Badge, Modal, SaveStatusIndicator, SegmentedControl } from '../../components/ui';
 import { useSettingsStore } from '../../store/settingsStore';
@@ -91,18 +91,25 @@ function AddIpModal({ open, onClose, onCreated }) {
   );
 }
 
-function AddShiftModal({ open, onClose, onAdded }) {
+const NEW_SHIFT = { name: '', start: '09:30', end: '18:30' };
+
+/** Add a shift, or edit one (`shift` set). Rendered only while open. onSaved persists the store's shift list. */
+function ShiftModal({ shift, onClose, onSaved }) {
   const addShift = useSettingsStore((s) => s.addShift);
-  const [form, setForm] = useState({ name: '', start: '09:00', end: '18:00' });
+  const updateShift = useSettingsStore((s) => s.updateShift);
+  const [form, setForm] = useState(() => (shift
+    ? { name: shift.name || '', start: shift.start || NEW_SHIFT.start, end: shift.end || NEW_SHIFT.end }
+    : NEW_SHIFT));
   const [saving, setSaving] = useState(false);
   const save = async () => {
     if (!form.name.trim()) return toast.error('Shift name is required');
+    if (!form.start || !form.end) return toast.error('Start and end time are required');
     setSaving(true);
     try {
-      addShift(form);
-      await onAdded();
-      toast.success('Shift added');
-      setForm({ name: '', start: '09:00', end: '18:00' });
+      if (shift) updateShift(shift.id, { ...form, name: form.name.trim() });
+      else addShift({ ...form, name: form.name.trim() });
+      await onSaved();
+      toast.success(shift ? 'Shift updated' : 'Shift added');
       onClose();
     } catch (err) {
       toast.error(err.message || 'Failed to save shift');
@@ -111,7 +118,7 @@ function AddShiftModal({ open, onClose, onAdded }) {
     }
   };
   return (
-    <Modal open={open} onClose={onClose} title="Add Shift" footer={<><Button variant="outline" onClick={onClose}>Cancel</Button><Button onClick={save} loading={saving}>Add Shift</Button></>}>
+    <Modal open onClose={onClose} title={shift ? 'Edit Shift' : 'Add Shift'} footer={<><Button variant="outline" onClick={onClose}>Cancel</Button><Button onClick={save} loading={saving}>{shift ? 'Save changes' : 'Add Shift'}</Button></>}>
       <div className="space-y-4">
         <Input label="Shift name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -122,6 +129,20 @@ function AddShiftModal({ open, onClose, onAdded }) {
     </Modal>
   );
 }
+
+/** The shift staff with none assigned follow — same rule as the server's resolveShift. */
+const defaultShiftOf = (shifts = []) => {
+  const active = shifts.filter((s) => s && s.start && s.active !== false);
+  return active.find((s) => s.isDefault || s.is_default) || active[0] || null;
+};
+
+/** "HH:mm" plus some minutes, as "HH:mm". */
+const addMinutesHm = (hm, minutes) => {
+  const [h, m] = String(hm || '').split(':').map(Number);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  const t = (((h * 60 + m + (Number(minutes) || 0)) % 1440) + 1440) % 1440;
+  return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
+};
 
 function buildPayload(form, cfg) {
   return {
@@ -199,7 +220,8 @@ export function AttendanceConfigSection() {
   const removeShift = useSettingsStore((s) => s.removeShift);
   const [form, setForm] = useState(cfg);
   const [ipModal, setIpModal] = useState(false);
-  const [shiftModal, setShiftModal] = useState(false);
+  // { shift: null } adds a shift, { shift } edits that one; null = closed.
+  const [shiftModal, setShiftModal] = useState(null);
 
   const ipWebEntitled = enabledFeatures ? Boolean(enabledFeatures.ipBasedWeb) : true;
   const gpsEntitled = enabledFeatures ? Boolean(enabledFeatures.gpsGeofence) : true;
@@ -285,12 +307,71 @@ export function AttendanceConfigSection() {
       return next;
     });
   };
-  /** doSave re-reads shifts/ipWhitelist fresh from the store, so this also covers shift add/remove. */
-  const saveNow = () => save(form);
+  /**
+   * doSave re-reads shifts/ipWhitelist fresh from the store, so this also
+   * covers shift add/edit/remove. The shift list rides along only so a shift
+   * change isn't skipped as "nothing changed" (useAutosave skips a save equal
+   * to the last one, and the form alone doesn't change when a shift does).
+   */
+  const saveNow = () => save({ ...form, shifts: useSettingsStore.getState().attendanceConfig.shifts });
+  const defaultShift = defaultShiftOf(cfg.shifts);
+  const onTimeUntil = defaultShift ? addMinutesHm(defaultShift.start, form.gracePeriodMinutes) : null;
 
   return (
     <div className="space-y-5">
       <div className="flex justify-end"><SaveStatusIndicator status={status} onRetry={retry} /></div>
+      <Card>
+        <CardHeader
+          title="Shift Timings & Late Buffer"
+          subtitle="Staff with no shift assigned follow the Default shift. Assign shifts under Attendance → Shifts, or on each employee."
+          action={<Button size="sm" icon={Plus} onClick={() => setShiftModal({ shift: null })}>Add Shift</Button>}
+        />
+        <div className="p-5 pt-3 space-y-5">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="border-b border-border text-left"><th className="py-2 font-semibold text-fg-subtle text-xs uppercase">Shift Name</th><th className="py-2 font-semibold text-fg-subtle text-xs uppercase">Start</th><th className="py-2 font-semibold text-fg-subtle text-xs uppercase">End</th><th className="py-2 font-semibold text-fg-subtle text-xs uppercase">Active</th><th className="py-2"></th></tr></thead>
+              <tbody>
+                {cfg.shifts.map((sh) => (
+                  <tr key={sh.id} className="border-b border-border/50">
+                    <td className="py-2.5 text-fg font-medium">
+                      {sh.name}
+                      {defaultShift?.id === sh.id && <Badge tone="primary" className="ml-2">Default</Badge>}
+                    </td>
+                    <td className="py-2.5 text-fg-muted">{sh.start}</td>
+                    <td className="py-2.5 text-fg-muted">{sh.end}</td>
+                    <td className="py-2.5"><Badge tone={sh.active !== false ? 'success' : 'neutral'}>{sh.active !== false ? 'Active' : 'Inactive'}</Badge></td>
+                    <td className="py-2.5 text-right whitespace-nowrap">
+                      <button type="button" aria-label={`Edit ${sh.name}`} onClick={() => setShiftModal({ shift: sh })} className="p-1.5 rounded-md text-fg-subtle hover:bg-primary/10 hover:text-primary"><Pencil className="h-3.5 w-3.5" /></button>
+                      {/* The last shift stays: with none, attendance falls back to the default 09:30 shift anyway. */}
+                      {cfg.shifts.length > 1 && (
+                        <button type="button" aria-label={`Delete ${sh.name}`} onClick={() => { removeShift(sh.id); saveNow(); }} className="ml-1 p-1.5 rounded-md text-fg-subtle hover:bg-danger/10 hover:text-danger"><Trash2 className="h-3.5 w-3.5" /></button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Input
+              label="Late-arrival buffer (minutes)"
+              hint="A check-in up to this many minutes after the shift starts is on time; later is marked Late. Applies to every shift."
+              type="number"
+              min={0}
+              max={240}
+              value={form.gracePeriodMinutes}
+              onChange={(e) => setForm({ ...form, gracePeriodMinutes: Math.max(0, Number(e.target.value) || 0) })}
+              onBlur={saveNow}
+            />
+          </div>
+          {defaultShift && onTimeUntil && (
+            <p className="text-xs text-fg-subtle -mt-2">
+              Example: on {defaultShift.name} ({defaultShift.start}–{defaultShift.end}), checking in by {onTimeUntil} is on time; after {onTimeUntil} is Late.
+            </p>
+          )}
+        </div>
+      </Card>
+
       <Card>
         <CardHeader title="Check-in Methods" subtitle="Toggle which check-in modes employees can use" />
         <div className="p-5 pt-3 space-y-4">
@@ -386,30 +467,9 @@ export function AttendanceConfigSection() {
       )}
 
       <Card>
-        <CardHeader title="Shift Timings" action={<Button size="sm" icon={Plus} onClick={() => setShiftModal(true)}>Add Shift</Button>} />
-        <div className="p-5 pt-3 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead><tr className="border-b border-border text-left"><th className="py-2 font-semibold text-fg-subtle text-xs uppercase">Shift Name</th><th className="py-2 font-semibold text-fg-subtle text-xs uppercase">Start</th><th className="py-2 font-semibold text-fg-subtle text-xs uppercase">End</th><th className="py-2 font-semibold text-fg-subtle text-xs uppercase">Active</th><th className="py-2"></th></tr></thead>
-            <tbody>
-              {cfg.shifts.map((sh) => (
-                <tr key={sh.id} className="border-b border-border/50">
-                  <td className="py-2.5 text-fg font-medium">{sh.name}</td>
-                  <td className="py-2.5 text-fg-muted">{sh.start}</td>
-                  <td className="py-2.5 text-fg-muted">{sh.end}</td>
-                  <td className="py-2.5"><Badge tone={sh.active ? 'success' : 'neutral'}>{sh.active ? 'Active' : 'Inactive'}</Badge></td>
-                  <td className="py-2.5 text-right"><button type="button" onClick={() => { removeShift(sh.id); saveNow(); }} className="p-1.5 rounded-md text-fg-subtle hover:bg-danger/10 hover:text-danger"><Trash2 className="h-3.5 w-3.5" /></button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Card>
-
-      <Card>
         <CardHeader title="Rules" />
         <div className="p-5 pt-3 space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Input label="Grace period for late arrival (minutes)" type="number" value={form.gracePeriodMinutes} onChange={(e) => setForm({ ...form, gracePeriodMinutes: Number(e.target.value) })} onBlur={saveNow} />
             <Input label="Auto-mark absent if no check-in by" type="time" value={form.autoAbsentTime} onChange={(e) => setForm({ ...form, autoAbsentTime: e.target.value })} onBlur={saveNow} />
             <Input label="Overtime calculation after (hours/day)" type="number" value={form.overtimeAfterHours} onChange={(e) => setForm({ ...form, overtimeAfterHours: Number(e.target.value) })} onBlur={saveNow} />
             {biometricAdmsEnabled && form.methods.biometric && (
@@ -443,7 +503,7 @@ export function AttendanceConfigSection() {
       </Card>
 
       <AddIpModal open={ipModal} onClose={() => setIpModal(false)} onCreated={refetchWhitelist} />
-      <AddShiftModal open={shiftModal} onClose={() => setShiftModal(false)} onAdded={saveNow} />
+      {shiftModal && <ShiftModal shift={shiftModal.shift} onClose={() => setShiftModal(null)} onSaved={saveNow} />}
     </div>
   );
 }

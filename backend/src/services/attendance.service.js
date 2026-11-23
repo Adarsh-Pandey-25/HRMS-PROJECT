@@ -9,6 +9,7 @@ const {
 const {
   calculateWorkingHours, determineAttendanceStatus, getShiftDayWindow, shiftStartOfWindow,
   isLateCheckIn, nowIST, paginate, buildMeta, ipInCidr, normalizeIp, isTrustedProxyIp,
+  DEFAULT_SHIFT_START, shiftsOrDefault, lateGraceMinutes,
 } = require('../utils/helpers');
 const { autoCheckoutEmail } = require('./email.service');
 const logger = require('../utils/logger');
@@ -184,9 +185,9 @@ const getAttendanceConfig = async (companyId = null) => {
   return {
     methods,
     selfieRequired: Boolean(cfg.selfieRequired ?? cfg.selfie_required),
-    // Late-arrival grace (existing, unrelated concept — how late you can
-    // check in before being marked 'late').
-    gracePeriodMinutes: Number(cfg.gracePeriodMinutes ?? cfg.grace_period_minutes ?? 15),
+    // Late-arrival buffer: a check-in up to this many minutes after shift
+    // start is on time; later is 'late'. 30 when the company never saved one.
+    gracePeriodMinutes: lateGraceMinutes(cfg),
     // New, separate concept: how long past shift end to wait before a
     // biometric session's checkout/status becomes visible at all (see
     // recomputeBiometricWindow below). Company-wide — shifts have no edit
@@ -197,7 +198,8 @@ const getAttendanceConfig = async (companyId = null) => {
     // previously-hardcoded WORK_HOURS/2 threshold used elsewhere.
     halfDayThresholdPercent: Number(cfg.halfDayThresholdPercent ?? cfg.half_day_threshold_percent ?? 50),
     overtimeAfterHours: Number(cfg.overtimeAfterHours ?? cfg.overtime_after_hours ?? WORK_HOURS),
-    shifts: Array.isArray(cfg.shifts) ? cfg.shifts : [],
+    // The default General Shift (09:30–18:30) when none are saved.
+    shifts: shiftsOrDefault(cfg),
     // Section E: company-level operational toggles (distinct from platform
     // entitlement, checked separately via featureOverrideService.hasFeature).
     // Default OFF: a company that has never touched geofencing (no explicit
@@ -213,7 +215,7 @@ const getAttendanceConfig = async (companyId = null) => {
 /** The employee's assigned shift start time ("HH:mm"), or the default 09:30 if none is assigned/found. */
 const resolveShiftStart = (employeeAddress, shifts) => {
   const { resolveShift } = require('./attendanceAnomaly.service');
-  return resolveShift(employeeAddress, shifts)?.start || '09:30';
+  return resolveShift(employeeAddress, shifts)?.start || DEFAULT_SHIFT_START;
 };
 
 /**
