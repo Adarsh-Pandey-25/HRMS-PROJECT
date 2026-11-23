@@ -184,7 +184,8 @@ describe('a push from a different IP', () => {
   });
 
   test('is kept, not counted (the device is told OK), opens a request for that IP, emails the admins once and logs it', async () => {
-    const res = await push(app, { ip: OTHER_IP });
+    const line = punchLine(1, -60);
+    const res = await push(app, { ip: OTHER_IP, body: line });
     expect(res.status).toBe(200);
     expect(res.text).toBe('OK');
     expect(tables.device_punches).toHaveLength(0);
@@ -203,7 +204,7 @@ describe('a push from a different IP', () => {
     expect(warnings().some((w) => w.includes(`pinned to ${OFFICE_IP} but called from ${OTHER_IP}`))).toBe(true);
 
     // The device sends the same punch again: still one kept, one request, no second email, no platform alert.
-    const again = await push(app, { ip: OTHER_IP });
+    const again = await push(app, { ip: OTHER_IP, body: line });
     expect(again.status).toBe(200);
     expect(tables.adms_kept_punches).toHaveLength(1);
     expect(tables.adms_ip_requests).toHaveLength(1);

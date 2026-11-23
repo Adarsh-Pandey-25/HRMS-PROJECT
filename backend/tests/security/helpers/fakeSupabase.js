@@ -102,6 +102,7 @@ const makeFakeSupabase = (tables = {}, { missingColumns = [], missingTables = []
       lte(col, val) { state.filters.push(['lte', col, val]); return q; },
       lt(col, val) { state.filters.push(['lt', col, val]); return q; },
       order() { return q; },
+      range() { return q; },
       limit() { return q; },
       maybeSingle() { state.maybe = true; return q; },
       single() { state.single = true; return q; },

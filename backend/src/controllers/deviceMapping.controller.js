@@ -114,10 +114,10 @@ const withEmployeeName = (row) => {
  * the historical days end up with identical grace/finalize semantics
  * (a still-open historical window would come back pending/provisional; a
  * long-closed one finalizes immediately, both correct for their actual age).
- * company_id here is req.user.company_id, already the company both the
- * device (assertOwnsDevice) and the employee (query below) were just
- * validated against — no separate cross-company re-derivation needed,
- * unlike adms.service.js's live-ingestion path which has no such guarantee.
+ * company_id here is the employee's own company — the device's company or
+ * one of its subsidiaries, both just validated in create() (assertOwnsDevice
+ * and the employee query) — so the punches and their attendance land in the
+ * company the employee belongs to.
  */
 const BACKFILL_PAGE_SIZE = 1000;
 
@@ -188,6 +188,14 @@ const backfillPunchesForMapping = async (deviceSerial, deviceUserId, employeeId,
 const fullName = (emp) => `${emp?.first_name || ''} ${emp?.last_name || ''}`.trim() || 'This employee';
 
 /**
+ * The companies whose employees can use this company's machines: itself and
+ * its subsidiaries (a subsidiary's staff often punch on the parent office's
+ * machine). Owner's bug report, 23 Nov 2026: mapping a subsidiary employee
+ * failed with "Employee not found".
+ */
+const companiesUsingDevicesOf = (companyId) => require('../services/tenant.service').getOrgCompanyIds(companyId);
+
+/**
  * One biometric ID per employee. The same ID may be enrolled on several of
  * the company's devices (that is still one person, one ID), but an employee
  * can never hold two different IDs: their punches would split across two
@@ -233,14 +241,16 @@ const create = async (req, res, next) => {
     const serial = deviceSerial;
     const device = await assertOwnsDevice(serial, req.user.company_id);
 
+    // An employee of this company or one of its subsidiaries.
+    const companies = await companiesUsingDevicesOf(req.user.company_id);
     const { data: employee, error: employeeError } = await supabaseAdmin
       .from('employees')
       .select('id, company_id, first_name, last_name')
       .eq('id', employeeId)
-      .eq('company_id', req.user.company_id)
+      .in('company_id', companies)
       .maybeSingle();
     if (employeeError) throw employeeError;
-    if (!employee) throw new NotFoundError('Employee not found');
+    if (!employee) throw new NotFoundError('Employee not found in this company or its subsidiaries');
 
     const conflict = await oneIdPerEmployeeConflict(employee, deviceUserId, serial);
     if (conflict) throw new ConflictError(conflict);
@@ -265,7 +275,8 @@ const create = async (req, res, next) => {
       throw error;
     }
 
-    const backfill = await backfillPunchesForMapping(serial, deviceUserId, employeeId, req.user.company_id, device.claimed_at);
+    // The punches belong to the employee's own company (a subsidiary's, too).
+    const backfill = await backfillPunchesForMapping(serial, deviceUserId, employeeId, employee.company_id, device.claimed_at);
 
         auditFromRequest(req, {
       actionType: 'device_mapping.create', targetType: 'device_mapping', targetId: data?.id,
@@ -292,7 +303,7 @@ const list = async (req, res, next) => {
       .from('device_employee_mapping')
       .select('id, device_user_id, device_serial, employee_id, created_at, employees!inner(first_name, last_name, employee_code, company_id)')
       .in('device_serial', serials)
-      .eq('employees.company_id', req.user.company_id)
+      .in('employees.company_id', await companiesUsingDevicesOf(req.user.company_id))
       .order('created_at', { ascending: false })
       .limit(2000);
     if (error) throw error;
@@ -314,7 +325,8 @@ const remove = async (req, res, next) => {
       .eq('device_serial', deviceSerial)
       .maybeSingle();
     if (findError) throw findError;
-    if (!existing || existing.employees?.company_id !== req.user.company_id) {
+    const companies = await companiesUsingDevicesOf(req.user.company_id);
+    if (!existing || !companies.includes(existing.employees?.company_id)) {
       throw new NotFoundError('Mapping not found');
     }
 
@@ -387,7 +399,7 @@ const deviceUsers = async (req, res, next) => {
         .from('device_employee_mapping')
         .select('device_user_id, employees!inner(company_id)')
         .in('device_serial', serials)
-        .eq('employees.company_id', req.user.company_id),
+        .in('employees.company_id', await companiesUsingDevicesOf(req.user.company_id)),
     ]);
     for (const p of punchPages) if (p.error) throw p.error;
     if (mappingsError) throw mappingsError;

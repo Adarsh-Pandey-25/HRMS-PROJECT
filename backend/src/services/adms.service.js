@@ -549,6 +549,11 @@ const mapPunchesToEmployees = async (punches, deviceSerial, registeredCompanyId)
   const byDeviceUserId = new Map((mappings || []).map((m) => [m.device_user_id, m]));
   const result = [];
   let crossCompanyDropped = 0;
+  // The device's company and its subsidiaries: a subsidiary's staff may punch
+  // on the parent office's machine (owner's bug report, 23 Nov 2026).
+  const companies = registeredCompanyId
+    ? await require('./tenant.service').getOrgCompanyIds(registeredCompanyId).catch(() => [registeredCompanyId])
+    : null;
 
   for (const p of punches) {
     const mapping = byDeviceUserId.get(p.device_user_id);
@@ -559,7 +564,7 @@ const mapPunchesToEmployees = async (punches, deviceSerial, registeredCompanyId)
     }
 
     const mappedCompanyId = mapping.employees?.company_id || null;
-    if (registeredCompanyId && mappedCompanyId && mappedCompanyId !== registeredCompanyId) {
+    if (companies && mappedCompanyId && !companies.includes(mappedCompanyId)) {
       crossCompanyDropped += 1;
       logger.error('[ADMS] Dropped punch: mapped employee belongs to a different company than the registered device', {
         deviceSerial, deviceUserId: p.device_user_id, employeeId: mapping.employee_id,
