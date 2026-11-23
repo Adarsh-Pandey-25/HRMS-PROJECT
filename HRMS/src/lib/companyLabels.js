@@ -31,6 +31,11 @@ export function companyOptionLabel(company, { markHomeAs = 'Main company' } = {}
  */
 export function companyEmailDomain(company) {
   if (!company) return '';
+  // The accessible-companies list keeps website and contact email under `profile`.
+  if (company.profile && typeof company.profile === 'object') {
+    const own = companyEmailDomain({ website: company.profile.website, contactEmail: company.profile.contactEmail });
+    if (own) return own;
+  }
   const fromWebsite = String(company.website || '')
     .trim()
     .replace(/^https?:\/\//i, '')
@@ -40,4 +45,20 @@ export function companyEmailDomain(company) {
   if (fromWebsite && fromWebsite.includes('.')) return fromWebsite;
   const fromEmail = String(company.contactEmail || '').split('@')[1];
   return fromEmail ? fromEmail.trim().toLowerCase() : '';
+}
+
+/**
+ * The email domain for the company an employee is being added to — that
+ * company's own, never another's: a subsidiary's people must not get the main
+ * company's domain (owner's report, 23 Nov 2026). `companyId` is the company
+ * chosen in the form; `accessibleCompanies` is the group's list;
+ * `brandedCompany` is the signed-in company, used only for itself.
+ * '' when that company has no website or contact email yet.
+ */
+export function emailDomainForCompany(companyId, accessibleCompanies, brandedCompany) {
+  const chosen = (accessibleCompanies || []).find((c) => String(c.id) === String(companyId || ''));
+  if (!chosen) return companyEmailDomain(brandedCompany);
+  const own = companyEmailDomain(chosen);
+  if (own) return own;
+  return chosen.isHome ? companyEmailDomain(brandedCompany) : '';
 }

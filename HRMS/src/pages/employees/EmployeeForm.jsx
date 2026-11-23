@@ -9,7 +9,7 @@ import { EMPLOYMENT_TYPES, ROLES } from '../../lib/constants';
 import { useSettingsStore } from '../../store/settingsStore';
 import { useEmployees, useEmployeeMutations, useEmployee, useEmployeeMap } from '../../hooks/useEmployees';
 import { useAccessibleCompanies } from '../../hooks/useCompanies';
-import { companyOptionLabel, companyEmailDomain } from '../../lib/companyLabels';
+import { companyOptionLabel, emailDomainForCompany } from '../../lib/companyLabels';
 import { useAuthStore } from '../../store/authStore';
 import { useCompanyStore } from '../../store/companyStore';
 import { useSaveShortcut } from '../../hooks/useSaveShortcut';
@@ -975,7 +975,7 @@ function AccessStep({ register, errors, autoEmail, isEdit = false, roles = { opt
           error={errors.workEmail?.message}
         />
         {!isEdit && (
-          <Button type="button" variant="outline" icon={Sparkles} onClick={autoEmail} className="shrink-0 mt-[1.375rem]">
+          <Button type="button" variant="outline" icon={Sparkles} onClick={() => autoEmail()} className="shrink-0 mt-[1.375rem]">
             Generate
           </Button>
         )}
@@ -1110,11 +1110,13 @@ function AddEmployeeForm({ navigate }) {
 
   const firstName = watch('firstName');
   const lastName = watch('lastName');
-  const emailDomain = companyEmailDomain(brandedCompany);
-  const autoEmail = () => {
+  // The chosen company's own domain: a subsidiary's people get the subsidiary's.
+  const emailDomain = emailDomainForCompany(watch('companyId') || defaultCompanyId, accessibleCompanies, brandedCompany);
+  /** Fills in name.surname@domain. `quiet`: when moving to the next step, don't nag about a missing domain. */
+  const autoEmail = (quiet = false) => {
     if (!firstName || !lastName) return;
     if (!emailDomain) {
-      toast.error('Add this company’s website or contact email in Settings to auto-generate work emails.');
+      if (quiet !== true) toast.error('Add this company’s website or contact email (Organizations → edit the company) to auto-generate work emails.');
       return;
     }
     setValue('workEmail', `${firstName}.${lastName}`.toLowerCase() + `@${emailDomain}`);
@@ -1219,7 +1221,8 @@ function AddEmployeeForm({ navigate }) {
       : ADD_STEP_FIELDS[step].filter((f) => f !== 'employeeId');
     const valid = await trigger(fields);
     if (valid) {
-      if (step === 1) autoEmail();
+      // Only into an empty box: never over an email someone typed, or an existing employee's sign-in email.
+      if (step === 1 && !String(watch('workEmail') || '').trim()) autoEmail(true);
       setStep((s) => Math.min(s + 1, STEPS.length - 1));
     }
   };
@@ -1376,11 +1379,13 @@ function EditEmployeeForm({ navigate, existing }) {
 
   const firstName = watch('firstName');
   const lastName = watch('lastName');
-  const emailDomain = companyEmailDomain(brandedCompany);
-  const autoEmail = () => {
+  // The chosen company's own domain: a subsidiary's people get the subsidiary's.
+  const emailDomain = emailDomainForCompany(watch('companyId') || existing.companyId, accessibleCompanies, brandedCompany);
+  /** Fills in name.surname@domain. `quiet`: when moving to the next step, don't nag about a missing domain. */
+  const autoEmail = (quiet = false) => {
     if (!firstName || !lastName) return;
     if (!emailDomain) {
-      toast.error('Add this company’s website or contact email in Settings to auto-generate work emails.');
+      if (quiet !== true) toast.error('Add this company’s website or contact email (Organizations → edit the company) to auto-generate work emails.');
       return;
     }
     setValue('workEmail', `${firstName}.${lastName}`.toLowerCase() + `@${emailDomain}`);
@@ -1392,7 +1397,8 @@ function EditEmployeeForm({ navigate, existing }) {
       : STEP_FIELDS[step].filter((f) => f !== 'employeeId');
     const valid = await trigger(fields);
     if (valid) {
-      if (step === 1) autoEmail();
+      // Only into an empty box: never over an email someone typed, or an existing employee's sign-in email.
+      if (step === 1 && !String(watch('workEmail') || '').trim()) autoEmail(true);
       setStep((s) => Math.min(s + 1, STEPS.length - 1));
     }
   };
