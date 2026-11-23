@@ -244,7 +244,7 @@ const all = async (req, res, next) => {
     const { page, limit, offset } = paginate(req.query);
     const { data, error } = await supabaseAdmin
       .from('announcements')
-      .select('*, publisher:published_by(first_name, last_name, address, company_id)')
+      .select('*, publisher:published_by(first_name, last_name)')
       .eq('company_id', companyId)
       .order('published_at', { ascending: false })
       .limit(5000);
@@ -267,7 +267,7 @@ const active = async (req, res, next) => {
     const now = new Date().toISOString();
     let query = supabaseAdmin
       .from('announcements')
-      .select('*, publisher:published_by(first_name, last_name, address, company_id)')
+      .select('*, publisher:published_by(first_name, last_name)')
       .eq('company_id', companyId)
       .eq('is_active', true)
       .or(`expires_at.is.null,expires_at.gt.${now}`)

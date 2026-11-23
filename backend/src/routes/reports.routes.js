@@ -19,7 +19,8 @@ router.get('/team-performance', isManagerOrAbove, viewReports, reportsController
 router.get('/attendance-summary', isManagerOrAbove, viewReports, reportsController.attendanceSummary);
 // Item 7: payroll data specifically also needs the payroll feature, on top
 // of this whole module's existing advanced_reports gate.
-router.get('/payroll-summary', isManagerOrAbove, viewReports, requireFeature('payroll'), reportsController.payrollSummary);
+// Everyone's pay: also needs Payroll → Manage, like every payroll screen (audit, 20 Nov 2026).
+router.get('/payroll-summary', isManagerOrAbove, viewReports, requirePermission('payroll', 'manage'), requireFeature('payroll'), reportsController.payrollSummary);
 router.get('/leave-summary', isManagerOrAbove, viewReports, reportsController.leaveSummary);
 
 module.exports = router;

@@ -123,11 +123,17 @@ const getMyPaymentMethod = async () => ({ configured: false, note: 'Payment gate
 
 // ── Self-serve change requests (pending_payment fallback) ───────────────
 
-const notifySuperAdminOfRequest = async (subject, htmlBody) => {
+/**
+ * Emails the platform's billing admins. `text` is plain text written from a
+ * company's request, so it is escaped: a tenant can't put links or markup in
+ * front of the people who can enter every company (audit, 20 Nov 2026).
+ */
+const notifySuperAdminOfRequest = async (subject, text) => {
   const to = await require('./emailRecipients.service').getPlatformAlertTo(['full_admin', 'billing_admin']).catch(() => '');
   if (!to) return;
   const { sendEmail } = require('./email.service');
-  sendEmail({ to, subject, html: `<p>${htmlBody}</p>`, type: 'billing_alert' }).catch((e) =>
+  const { escapeHtml } = require('../utils/helpers');
+  sendEmail({ to, subject: String(subject).replace(/[\r\n]+/g, ' ').slice(0, 150), html: `<p>${escapeHtml(text)}</p>`, type: 'billing_alert' }).catch((e) =>
     logger.warn('[TenantBilling] Super-admin notification failed', { error: e.message }));
 };
 
@@ -173,6 +179,8 @@ const requestBillingCycleChange = (companyId, billingCycle, requestedBy) => crea
 
 const requestFeature = async (companyId, featureKey, requestedBy) => {
   const meta = getFeatureMeta(featureKey);
+  // Only features SpaxSync has; anything else would just be text in an email.
+  if (!meta) throw new BadRequestError('Unknown feature');
   if (meta?.comingSoon) throw new BadRequestError(`${featureKey} is a "Coming soon" feature and cannot be requested yet.`);
 
   const { data, error } = await supabaseAdmin
@@ -213,7 +221,11 @@ const cancelMySubscription = async (companyId, { reason, confirmCompanyName, imm
     throw new ForbiddenError('Confirmation text does not match your company name.');
   }
 
-  return subscriptionService.cancelSubscription(subscription.id, actorId, reason, Boolean(immediate));
+  // Always at the end of the paid period from here (audit #25: `immediate`
+  // ended it at once, and `Boolean("false")` is true). Ending it now is a
+  // super-admin action.
+  void immediate;
+  return subscriptionService.cancelSubscription(subscription.id, actorId, reason, false);
 };
 
 module.exports = {

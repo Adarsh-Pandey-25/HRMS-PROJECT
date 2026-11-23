@@ -2,7 +2,7 @@ const express = require('express');
 const { body, param } = require('express-validator');
 const tenantBillingController = require('../controllers/tenantBilling.controller');
 const { authenticate } = require('../middleware/auth.middleware');
-const { isHROrAdmin } = require('../middleware/role.middleware');
+const { isHROrAdmin, isAdmin } = require('../middleware/role.middleware');
 const { validate } = require('../middleware/validation.middleware');
 
 const router = express.Router();
@@ -21,6 +21,7 @@ router.post('/change-plan', body('plan_id').isUUID(), validate, tenantBillingCon
 router.post('/change-seats', body('seat_count').isInt({ min: 1 }), validate, tenantBillingController.changeSeats);
 router.post('/change-billing-cycle', body('billing_cycle').isIn(['monthly', 'quarterly', 'annual']), validate, tenantBillingController.changeBillingCycle);
 router.post('/request-feature', body('feature_key').trim().notEmpty(), validate, tenantBillingController.requestFeature);
-router.post('/cancel-subscription', body('confirm_company_name').trim().notEmpty(), validate, tenantBillingController.cancelSubscription);
+// Cancelling the company's subscription is the Admin's call, not HR's (audit #25).
+router.post('/cancel-subscription', isAdmin, body('confirm_company_name').trim().notEmpty(), validate, tenantBillingController.cancelSubscription);
 
 module.exports = router;

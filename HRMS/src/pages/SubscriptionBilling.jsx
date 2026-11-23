@@ -15,6 +15,7 @@ import {
   cancelMySubscriptionApi, downloadMyInvoiceApi, listBillingPlansApi,
 } from '../api/tenantBilling.api';
 import { useCompanyStore } from '../store/companyStore';
+import { useAuthStore } from '../store/authStore';
 
 const daysUntil = (dateStr) => {
   if (!dateStr) return null;
@@ -36,6 +37,8 @@ export default function SubscriptionBilling() {
   const [changeSeatsOpen, setChangeSeatsOpen] = useState(false);
   const [changeCycleOpen, setChangeCycleOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
+  // Cancelling the subscription is the Admin's call (the server refuses HR).
+  const isAdmin = useAuthStore((s) => s.role) === 'admin';
 
   const invalidateSub = () => qc.invalidateQueries({ queryKey: ['billing', 'my-subscription'] });
 
@@ -119,11 +122,13 @@ export default function SubscriptionBilling() {
             <Button variant="outline" icon={Users} onClick={() => setChangeSeatsOpen(true)}>Add/Remove Seats</Button>
             <Button variant="outline" icon={RefreshCw} onClick={() => setChangeCycleOpen(true)}>Change Billing Cycle</Button>
           </div>
-          <div className="px-5 pb-5">
-            <button type="button" onClick={() => setCancelOpen(true)} className="text-xs text-fg-subtle hover:text-danger underline underline-offset-2">
-              Cancel Subscription
-            </button>
-          </div>
+          {isAdmin ? (
+            <div className="px-5 pb-5">
+              <button type="button" onClick={() => setCancelOpen(true)} className="text-xs text-fg-subtle hover:text-danger underline underline-offset-2">
+                Cancel Subscription
+              </button>
+            </div>
+          ) : null}
         </Card>
       )}
 

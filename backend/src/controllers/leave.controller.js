@@ -136,7 +136,10 @@ const calendar = async (req, res, next) => {
     const { getCompanyId } = require('../utils/tenant');
     const companyId = req.user.company_id || getCompanyId(req.user);
     const data = await leaveService.getLeaveCalendar(month, year, companyId);
-    successResponse(res, 'Leave calendar fetched', data);
+    // Everyone sees who is away; why (often medical) only HR and Admins (audit 44.1).
+    const seesReasons = ['admin', 'hr'].includes(req.user.role);
+    const shown = seesReasons ? data : (data || []).map(({ reason, rejection_reason: _r, ...rest }) => rest);
+    successResponse(res, 'Leave calendar fetched', shown);
   } catch (err) { next(err); }
 };
 

@@ -39,8 +39,16 @@ function cellValue(value) {
   return String(value);
 }
 
+/**
+ * A cell starting with = + - @ (or a tab / carriage return) is a formula to
+ * Excel: a leave reason like =HYPERLINK(…) would run when HR opens the file
+ * (audit #34). A leading apostrophe makes it plain text. Numbers, including
+ * negative ones, stay numbers.
+ */
 function escapeCsv(value) {
-  const s = cellValue(value);
+  let s = cellValue(value);
+  const isNumber = typeof value === 'number' || /^[+-]?\d+(\.\d+)?$/.test(s);
+  if (!isNumber && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
