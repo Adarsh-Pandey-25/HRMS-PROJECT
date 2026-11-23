@@ -18,13 +18,24 @@ const clientIp = (req) => getTrustedClientIp(req) || req.ip;
  enforces its own independent counter, effectively multiplying the real
  rate limit by the instance count. See audit finding L-10. */
 
-/** Never trust an unverified JWT for limiter keys. Bind auth attempts to IP + email. */
-const authKeyGenerator = (req) => {
- const email = req.body?.email
- ? String(req.body.email).toLowerCase().trim()
- : 'none';
- return `ip:${clientIp(req)}:email:${email}`;
+/**
+ * The mailbox an address reaches, for limiter keys: "+tag" dropped, and dots
+ * dropped for Gmail, the way the routes' normalizeEmail() treats them before
+ * the account is looked up. Otherwise "a.dmin+1@gmail.com", "ad.min+2@…" each
+ * got a fresh limit for the same account (audit, 20 Nov 2026).
+ */
+const mailboxKey = (value) => {
+  const email = String(value || '').toLowerCase().trim();
+  const at = email.lastIndexOf('@');
+  if (at < 1) return email || 'none';
+  let local = email.slice(0, at).split('+')[0];
+  const domain = email.slice(at + 1);
+  if (domain === 'gmail.com' || domain === 'googlemail.com') local = local.replace(/\./g, '');
+  return `${local}@${domain}`;
 };
+
+/** Never trust an unverified JWT for limiter keys. Bind auth attempts to IP + email. */
+const authKeyGenerator = (req) => `ip:${clientIp(req)}:email:${mailboxKey(req.body?.email)}`;
 
 const ipKeyGenerator = (req) => `ip:${clientIp(req)}`;
 
@@ -278,6 +289,6 @@ const publicLeadLimiter = rateLimit({
 
 module.exports = {
  generalLimiter, authLimiter, bootstrapLimiter, onboardingOtpLimiter, settingsLimiter, admsLimiter, admsIpLimiter, beaconPingLimiter,
- twoFaLimiter,
+ twoFaLimiter, mailboxKey,
  webhookTestLimiter, publicLeadLimiter,
 };

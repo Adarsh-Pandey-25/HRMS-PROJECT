@@ -162,6 +162,31 @@ const assertNotOtpLocked = (email, scopeKey = null) => {
   return guard;
 };
 
+/** Locks the guard for its next wait (1m → 3m → 10m) and returns the error to throw. */
+const lockOtpGuard = (guard) => {
+  const waitSec = OTP_WAIT_SECONDS[Math.min(guard.lockLevel, OTP_WAIT_SECONDS.length - 1)];
+  guard.lockLevel += 1;
+  guard.failedAttempts = 0;
+  guard.lockedUntil = Date.now() + waitSec * 1000;
+  return new TooManyRequestsError(
+    `Too many wrong OTPs. Try again in ${waitLabel(waitSec)}.`,
+    lockDetails(guard, { retryAfterSeconds: waitSec, reason: 'otp_lockout' }),
+  );
+};
+
+/**
+ * Counts a reset-code try before anything is awaited (audit, 20 Nov 2026):
+ * checked after the database calls, tries sent at the same moment all
+ * passed the check, turning 3 guesses into hundreds. Node runs this part in
+ * one go, so at most OTP_MAX_ATTEMPTS tries are ever in play per code.
+ */
+const reserveOtpAttempt = (email, scopeKey = null) => {
+  const guard = assertNotOtpLocked(email, scopeKey);
+  if (guard.failedAttempts >= OTP_MAX_ATTEMPTS) throw lockOtpGuard(guard);
+  guard.failedAttempts += 1;
+  return guard;
+};
+
 const hashPassword = (password) => bcrypt.hash(password, SALT_ROUNDS);
 const comparePassword = (password, hash) => bcrypt.compare(password, hash);
 
@@ -470,7 +495,31 @@ const assertCompanyInGoodStanding = async (companyId, role) => {
   throw new ForbiddenError(EMPLOYEE_GENERIC_MESSAGE);
 };
 
-const authenticateEmployee = async (email, password, { tenantCompanyId = null, allowedRoles = null } = {}) => {
+/**
+ * Sign-ins checked at the same moment for one email (audit, 20 Nov 2026):
+ * the lockout counts failures only after the password check, so a burst of
+ * parallel guesses all passed it. At most this many run at once per email.
+ */
+const MAX_PARALLEL_SIGN_INS = 3;
+const signInsInFlight = new Map();
+
+const authenticateEmployee = async (email, password, options = {}) => {
+  const key = loginEmailKey(email);
+  const busy = signInsInFlight.get(key) || 0;
+  if (busy >= MAX_PARALLEL_SIGN_INS) {
+    throw new TooManyRequestsError('Too many sign-in attempts at once. Please wait a moment and try again.');
+  }
+  signInsInFlight.set(key, busy + 1);
+  try {
+    return await authenticateEmployeeOnce(email, password, options);
+  } finally {
+    const left = (signInsInFlight.get(key) || 1) - 1;
+    if (left > 0) signInsInFlight.set(key, left);
+    else signInsInFlight.delete(key);
+  }
+};
+
+const authenticateEmployeeOnce = async (email, password, { tenantCompanyId = null, allowedRoles = null } = {}) => {
   // Per-email brute-force guard — same generic error as wrong password so
   // attackers cannot distinguish "locked" from "bad credentials".
   assertEmailNotLoginLocked(email);
@@ -1030,14 +1079,15 @@ const forgotPassword = async (email, tenantCompanyId = null) => {
     );
   }
 
-  const employee = await findOneEmployeeByEmail(email, tenantCompanyId);
-
-  // Always apply progressive resend cooldown (even if email unknown) to avoid enumeration timing
+  // Progressive resend cooldown, always (even if the email is unknown, so
+  // timing reveals nothing), and set before anything is awaited: requests
+  // sent at the same moment can't each get a code. A new code does not
+  // reset the wrong-code count (it used to, giving 3 fresh guesses per code).
   const waitIdx = Math.min(guard.resendCount, OTP_WAIT_SECONDS.length - 1);
   guard.resendCount += 1;
   guard.nextResendAt = now + OTP_WAIT_SECONDS[waitIdx] * 1000;
-  // Reset wrong-OTP streak when a new code is issued
-  guard.failedAttempts = 0;
+
+  const employee = await findOneEmployeeByEmail(email, tenantCompanyId);
 
   if (!employee) {
     return {
@@ -1076,32 +1126,44 @@ const forgotPassword = async (email, tenantCompanyId = null) => {
   };
 };
 
+/**
+ * A wrong reset code (the try was already counted by reserveOtpAttempt).
+ * The last allowed try locks the email and burns every live code for it, so
+ * the same code can't be guessed again after the wait.
+ */
+const failOtpAttempt = async (guard, candidateIds) => {
+  // Locked meanwhile by a try sent at the same moment, or this was the last try.
+  const lockedMeanwhile = guard.lockedUntil > Date.now();
+  if (lockedMeanwhile || guard.failedAttempts >= OTP_MAX_ATTEMPTS) {
+    if (candidateIds.length) {
+      await supabaseAdmin
+        .from('password_reset_tokens')
+        .update({ used: true })
+        .in('employee_id', candidateIds)
+        .eq('used', false);
+    }
+    if (!lockedMeanwhile) throw lockOtpGuard(guard);
+    const retryAfterSeconds = Math.ceil((guard.lockedUntil - Date.now()) / 1000);
+    throw new TooManyRequestsError(
+      `Too many wrong OTPs. Try again in ${waitLabel(retryAfterSeconds)}.`,
+      lockDetails(guard, { retryAfterSeconds, reason: 'otp_lockout' }),
+    );
+  }
+  const left = OTP_MAX_ATTEMPTS - guard.failedAttempts;
+  throw new BadRequestError(`Invalid or expired OTP. ${left} attempt(s) left.`, { attemptsRemaining: left });
+};
+
 const resetPassword = async (email, otp, newPassword, tenantCompanyId = null) => {
-  const guard = assertNotOtpLocked(email, tenantCompanyId);
+  // Counted now, before any await (see reserveOtpAttempt).
+  const guard = reserveOtpAttempt(email, tenantCompanyId);
 
   let candidateQuery = supabaseAdmin.from('employees').select('id, company_id, address').eq('email', email);
   if (tenantCompanyId) candidateQuery = candidateQuery.eq('company_id', tenantCompanyId);
   const { data: candidates } = await candidateQuery;
   const candidateIds = (candidates || []).map((e) => e.id);
 
-  if (!candidateIds.length) {
-    // Count as a failed attempt even for unknown emails (same UX)
-    guard.failedAttempts += 1;
-    if (guard.failedAttempts >= OTP_MAX_ATTEMPTS) {
-      const waitIdx = Math.min(guard.lockLevel, OTP_WAIT_SECONDS.length - 1);
-      const waitSec = OTP_WAIT_SECONDS[waitIdx];
-      guard.lockLevel += 1;
-      guard.failedAttempts = 0;
-      guard.lockedUntil = Date.now() + waitSec * 1000;
-      throw new TooManyRequestsError(
-        `Too many wrong OTPs. Try again in ${waitLabel(waitSec)}.`,
-        lockDetails(guard, { retryAfterSeconds: waitSec, reason: 'otp_lockout' }),
-      );
-    }
-    throw new BadRequestError('Invalid or expired OTP', {
-      attemptsRemaining: OTP_MAX_ATTEMPTS - guard.failedAttempts,
-    });
-  }
+  // An unknown email counts as a wrong code too (same answer either way).
+  if (!candidateIds.length) await failOtpAttempt(guard, candidateIds);
 
   const tokenHash = crypto.createHash('sha256').update(String(otp)).digest('hex');
   const { data: resetRecord } = await supabaseAdmin
@@ -1113,28 +1175,17 @@ const resetPassword = async (email, otp, newPassword, tenantCompanyId = null) =>
     .gt('expires_at', new Date().toISOString())
     .maybeSingle();
 
-  if (!resetRecord) {
-    guard.failedAttempts += 1;
-    if (guard.failedAttempts >= OTP_MAX_ATTEMPTS) {
-      const waitIdx = Math.min(guard.lockLevel, OTP_WAIT_SECONDS.length - 1);
-      const waitSec = OTP_WAIT_SECONDS[waitIdx];
-      guard.lockLevel += 1;
-      guard.failedAttempts = 0;
-      guard.lockedUntil = Date.now() + waitSec * 1000;
-      throw new TooManyRequestsError(
-        `Too many wrong OTPs. Try again in ${waitLabel(waitSec)}.`,
-        lockDetails(guard, { retryAfterSeconds: waitSec, reason: 'otp_lockout' }),
-      );
-    }
-    throw new BadRequestError(
-      `Invalid or expired OTP. ${OTP_MAX_ATTEMPTS - guard.failedAttempts} attempt(s) left.`,
-      { attemptsRemaining: OTP_MAX_ATTEMPTS - guard.failedAttempts },
-    );
-  }
+  if (!resetRecord) await failOtpAttempt(guard, candidateIds);
 
   const employee = candidates.find((e) => e.id === resetRecord.employee_id);
   const companyId = getCompanyId(employee);
-  await assertPasswordPolicy(newPassword, companyId);
+  try {
+    await assertPasswordPolicy(newPassword, companyId);
+  } catch (err) {
+    // The code was right; only the new password needs changing. Not a wrong try.
+    guard.failedAttempts = Math.max(0, guard.failedAttempts - 1);
+    throw err;
+  }
 
   // Audit finding N-21: claim the OTP (used:false -> true, conditionally)
   // BEFORE writing the new password, not after — the earlier SELECT above
@@ -1150,7 +1201,10 @@ const resetPassword = async (email, otp, newPassword, tenantCompanyId = null) =>
     .eq('used', false)
     .select('id')
     .maybeSingle();
-  if (claimErr) throw new BadRequestError(claimErr.message);
+  if (claimErr) {
+    logger.error('Password reset: could not use the code', { error: claimErr.message });
+    throw new Error('Could not reset the password. Please try again.');
+  }
   if (!claimed) {
     throw new BadRequestError('Invalid or expired OTP', {
       attemptsRemaining: OTP_MAX_ATTEMPTS - guard.failedAttempts,
