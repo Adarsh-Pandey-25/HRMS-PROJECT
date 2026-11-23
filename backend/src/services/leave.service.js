@@ -508,6 +508,8 @@ const rejectLeave = async (approver, leaveId, rejection_reason) => {
   });
   if (!rejection.ok) throw new ForbiddenError(rejection.message);
 
+  // Still pending at the moment of writing (audit #19): a WhatsApp Reject racing
+  // a website Approve can't leave a "rejected" leave with its days deducted.
   const { data: updated, error } = await supabaseAdmin
     .from('leaves')
     .update({
@@ -517,10 +519,15 @@ const rejectLeave = async (approver, leaveId, rejection_reason) => {
       rejection_reason,
     })
     .eq('id', leaveId)
+    .eq('status', 'pending')
     .select()
-    .single();
+    .maybeSingle();
 
-  if (error) throw new BadRequestError(error.message);
+  if (error) {
+    logger.error('Leave reject failed', { leaveId, error: error.message });
+    throw new Error('Could not reject the leave. Please try again.');
+  }
+  if (!updated) throw new ConflictError('This leave was already decided. Refresh to see where it stands.');
   await notificationService.markReviewNotificationsRead('leave', leave.id);
 
   await notificationService.createNotification({
@@ -552,15 +559,31 @@ const cancelLeave = async (employeeId, leaveId) => {
   if (!['pending', 'approved'].includes(leave.status)) {
     throw new BadRequestError('Leave cannot be cancelled');
   }
+  // An approved leave can be cancelled only before it starts (audit #18): once
+  // it has started or been paid for, HR changes it, so nobody can quietly win
+  // back days for leave already taken.
+  if (leave.status === 'approved') {
+    const today = moment.tz(TIMEZONE).format('YYYY-MM-DD');
+    if (String(leave.from_date).slice(0, 10) <= today) {
+      throw new BadRequestError('This leave has already started, so it can\'t be cancelled here. Please ask HR to change it.');
+    }
+  }
 
+  // Written only if nobody changed it meanwhile, so two cancels at the same
+  // moment can't give the days back twice (audit #18, #19).
   const { data: updated, error } = await supabaseAdmin
     .from('leaves')
     .update({ status: 'cancelled' })
     .eq('id', leaveId)
+    .eq('status', leave.status)
     .select()
-    .single();
+    .maybeSingle();
 
-  if (error) throw new BadRequestError(error.message);
+  if (error) {
+    logger.error('Leave cancel failed', { leaveId, error: error.message });
+    throw new Error('Could not cancel the leave. Please try again.');
+  }
+  if (!updated) throw new ConflictError('This leave was just changed. Refresh to see where it stands.');
   // A cancelled request needs nobody's review.
   await notificationService.markReviewNotificationsRead('leave', leave.id);
 
