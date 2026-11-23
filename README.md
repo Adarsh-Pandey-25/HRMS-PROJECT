@@ -57,9 +57,19 @@ unset unless the backend is somewhere else.
 ### Scripts
 
 ```
-backend  npm run dev · npm start · npm run seed:demo · npm test (no tests yet)
+backend  npm run dev · npm start · npm run seed:demo · npm test
 HRMS     npm run dev · npm run build · npm run build:app · npm run lint · npm run preview
 ```
+
+`npm test` runs the backend's payroll and security tests (no database: Supabase is
+an in-memory stand-in and `.env` is never read); GitHub runs them on every push.
+
+The test and demo seed scripts (`seed-admin`, `seed-assets`, `seed-demo-data`,
+`seed-notifications`, `seed-test-data`) write made-up data, and `seed-test-data`
+deletes employees in every company. They refuse to run unless you name the
+database on purpose: `SEED_TARGET_PROJECT=<project ref> npm run seed:demo`, where
+the ref is the part of `SUPABASE_URL` before `.supabase.co`. Never point them at
+production.
 
 `npm run build` also server-renders the marketing pages and pre-renders them to
 static HTML. `npm run build:app` skips that and builds the SPA only.
@@ -179,7 +189,7 @@ deploy/nginx                     production nginx config + headers snippet
 
 ## Known gaps
 
-- No automated tests on either side; `npm test` is a no-op placeholder.
+- No automated tests for the website (the backend has `npm test`).
 - No payment gateway — subscription payments are recorded manually by a
   super-admin, and plan/seat changes submit a request rather than charging.
 - `siteConfig.js` still needs a real GSTIN, phone and registered address before

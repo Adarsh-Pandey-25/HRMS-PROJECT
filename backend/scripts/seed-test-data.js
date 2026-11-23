@@ -7,6 +7,7 @@
  * Run: node scripts/seed-test-data.js
  */
 require('dotenv').config();
+require('./lib/refuseUnlessTestDatabase')('seed-test-data.js');
 const bcrypt = require('bcryptjs');
 const moment = require('moment-timezone');
 const { createClient } = require('@supabase/supabase-js');

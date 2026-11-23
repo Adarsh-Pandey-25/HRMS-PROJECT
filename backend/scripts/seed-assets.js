@@ -7,6 +7,7 @@
  * Usage: node scripts/seed-assets.js
  */
 require('dotenv').config();
+require('./lib/refuseUnlessTestDatabase')('seed-assets.js');
 const { createClient } = require('@supabase/supabase-js');
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);

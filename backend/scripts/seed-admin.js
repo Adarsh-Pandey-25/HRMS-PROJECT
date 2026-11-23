@@ -1,6 +1,7 @@
 const bcrypt = require('bcryptjs');
 const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
+require('./lib/refuseUnlessTestDatabase')('seed-admin.js');
 
 const { generateDefaultPassword } = require('../src/utils/helpers');
 
