@@ -1,7 +1,7 @@
 -- 20261120_adms_kept_punches.sql
 -- A biometric machine whose office internet address (IP) changed: its
--- punches are now kept, not refused, until someone approves the new IP
--- (owner's request, 20 Nov 2026).
+-- punches are kept, not refused, until someone approves or rejects the new
+-- IP (owner's request, 20 Nov 2026).
 --
 -- Until now a push from an IP the machine isn't pinned to was refused, on
 -- the understanding that the machine keeps the punches and sends them again.
@@ -10,14 +10,19 @@
 --
 -- 1. adms_ip_requests — one per machine and new IP: pending, approved or
 --    rejected. The WhatsApp Approve / Reject buttons point at its id.
--- 2. adms_kept_punches — the punches a machine sent from a new IP. They
---    count only once that IP is allowed (they are then saved into
---    device_punches like any punch); until then nothing reads them.
+--    window_start: punches dated before it (before the machine was last seen
+--    on its allowed IP) never count, so an approval can't fill old absent days.
+-- 2. adms_kept_punches — the punches a machine sent from a new IP. Approve:
+--    they are saved into device_punches like any punch. Reject: deleted.
+--    Until then nothing reads them.
 -- 3. whatsapp_actions.kind may now also be 'device_ip'.
 --
 -- Additive only; no existing row changes. Until this runs, the server keeps
--- refusing punches from a new IP exactly as before.
--- Safe to run more than once.
+-- refusing punches from a new IP exactly as before. Safe to run more than
+-- once, including after the first version of this file (20 Nov) ran: it adds
+-- window_start then.
+
+BEGIN;
 
 CREATE TABLE IF NOT EXISTS adms_ip_requests (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -29,14 +34,19 @@ CREATE TABLE IF NOT EXISTS adms_ip_requests (
   previous_ip TEXT,
   status VARCHAR(10) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
   decided_at TIMESTAMPTZ,
-  -- employees.id of whoever decided; empty when the machine was re-learned.
+  -- employees.id of whoever decided.
   decided_by UUID,
-  decided_via VARCHAR(10) CHECK (decided_via IN ('website', 'whatsapp', 'relearn'))
+  -- 'relearn' only on rows written by the first version of this file.
+  decided_via VARCHAR(10) CHECK (decided_via IN ('website', 'whatsapp', 'relearn')),
+  window_start TIMESTAMPTZ
 );
+ALTER TABLE adms_ip_requests ADD COLUMN IF NOT EXISTS window_start TIMESTAMPTZ;
 -- At most one pending request per machine and IP.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_adms_ip_requests_pending
   ON adms_ip_requests(device_serial, ip) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_adms_ip_requests_device ON adms_ip_requests(device_serial, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_adms_ip_requests_company_pending
+  ON adms_ip_requests(company_id) WHERE status = 'pending';
 
 CREATE TABLE IF NOT EXISTS adms_kept_punches (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -44,14 +54,14 @@ CREATE TABLE IF NOT EXISTS adms_kept_punches (
   company_id UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   device_serial TEXT NOT NULL,
   source_ip TEXT NOT NULL,
-  -- The punch, as device_punches gets it once the IP is allowed.
+  -- The punch, as device_punches gets it once the IP is approved.
   device_user_id TEXT NOT NULL,
   punch_time TIMESTAMPTZ NOT NULL,
   punch_type TEXT NOT NULL,
   verify_mode TEXT,
   raw_data TEXT,
   -- Set once saved into device_punches. Saved rows are removed after 7 days;
-  -- rows whose IP is never allowed, after 60.
+  -- rows whose IP is never decided, after 60.
   released_at TIMESTAMPTZ,
   UNIQUE (device_serial, source_ip, device_user_id, punch_time)
 );
@@ -78,3 +88,9 @@ BEGIN
 END $$;
 ALTER TABLE whatsapp_actions ADD CONSTRAINT whatsapp_actions_kind_check
   CHECK (kind IN ('leave', 'wfh', 'expense', 'regularization', 'device_ip'));
+
+INSERT INTO schema_migrations (filename, verified)
+  VALUES ('20261120_adms_kept_punches.sql', true)
+  ON CONFLICT (filename) DO NOTHING;
+
+COMMIT;

@@ -225,7 +225,7 @@ const changeNumber = async ({ oldPhone, newPhone, previousBsuid, newBsuid }) => 
 const getLink = async (subjectType, subjectId) => {
   const { data } = await supabaseAdmin
     .from('whatsapp_links')
-    .select('id, phone, bsuid, status, groups, consented_at, opted_out_at, created_at')
+    .select('id, phone, bsuid, status, groups, consented_at, opted_out_at, created_at, consent_source')
     .eq('subject_type', subjectType)
     .eq('subject_id', subjectId)
     .maybeSingle();

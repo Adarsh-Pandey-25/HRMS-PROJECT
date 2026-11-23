@@ -6,9 +6,10 @@
  *
  * `missingColumns` makes any select or write naming one of those columns
  * fail the way PostgREST does before a migration has run; `missingTables`
- * does the same for a whole table. `lt` filters like the database (a row
- * without the column never matches), and an upsert with `ignoreDuplicates`
- * skips rows that clash on its `onConflict` columns, as Postgres does.
+ * does the same for a whole table. `lt` / `gte` / `lte` filter like the
+ * database (timestamps as instants; a row without the column never matches),
+ * and an upsert with `ignoreDuplicates` skips rows that clash on its
+ * `onConflict` columns, as Postgres does.
  */
 const makeFakeSupabase = (tables = {}, { missingColumns = [], missingTables = [] } = {}) => {
   const calls = [];
@@ -21,11 +22,22 @@ const makeFakeSupabase = (tables = {}, { missingColumns = [], missingTables = []
       if (!tables[table]) tables[table] = [];
       return tables[table];
     };
+    // Timestamps compare as instants (stored and filter values may be formatted differently).
+    const compare = (a, b) => {
+      const x = Date.parse(a);
+      const y = Date.parse(b);
+      if (Number.isFinite(x) && Number.isFinite(y)) return x - y;
+      return String(a) < String(b) ? -1 : (String(a) > String(b) ? 1 : 0);
+    };
     const matches = (row) => state.filters.every(([kind, col, val]) => {
       if (kind === 'eq') return row[col] === val;
+      if (kind === 'neq') return row[col] !== val;
       if (kind === 'is') return (row[col] ?? null) === val;
       if (kind === 'in') return val.includes(row[col]);
-      if (kind === 'lt') return row[col] != null && String(row[col]) < String(val);
+      if (row[col] == null) return false;
+      if (kind === 'lt') return compare(row[col], val) < 0;
+      if (kind === 'gte') return compare(row[col], val) >= 0;
+      if (kind === 'lte') return compare(row[col], val) <= 0;
       return true;
     });
     const missing = () => {
@@ -83,10 +95,11 @@ const makeFakeSupabase = (tables = {}, { missingColumns = [], missingTables = []
       upsert(rows, options = null) { state.op = 'upsert'; state.rows = rows; state.options = options; return q; },
       delete() { state.op = 'delete'; return q; },
       eq(col, val) { state.filters.push(['eq', col, val]); return q; },
+      neq(col, val) { state.filters.push(['neq', col, val]); return q; },
       is(col, val) { state.filters.push(['is', col, val]); return q; },
       in(col, val) { state.filters.push(['in', col, val]); return q; },
-      gte() { return q; },
-      lte() { return q; },
+      gte(col, val) { state.filters.push(['gte', col, val]); return q; },
+      lte(col, val) { state.filters.push(['lte', col, val]); return q; },
       lt(col, val) { state.filters.push(['lt', col, val]); return q; },
       order() { return q; },
       limit() { return q; },

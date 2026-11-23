@@ -45,6 +45,8 @@ const REPLIES = {
   used: 'This request was already answered from WhatsApp. Open SpaxSync to see where it stands.',
   expired: 'These buttons have expired. Please open SpaxSync to review the request.',
   notYours: 'These buttons only work from the WhatsApp number connected to the approver\'s SpaxSync account.',
+  // device_ip: buttons only from a WhatsApp the person connected themselves (JOIN).
+  notConfirmed: 'For this request the buttons only work from a WhatsApp you connected yourself in SpaxSync (your profile → WhatsApp). Nothing was changed; please decide it in SpaxSync.',
   off: 'Approving on WhatsApp is not available for your account right now. Please use SpaxSync.',
   failed: 'Something went wrong and nothing was changed. Please try again, or use SpaxSync.',
   refused: (message) => `Nothing was changed: ${message}`,
@@ -265,16 +267,22 @@ const DECIDE = {
   },
   // A biometric machine's new internet address: the people chosen in
   // Settings → Attendance → Biometric Devices decide (HR and Admins by
-  // default, plus any tech team member ticked there), checked again at the tap.
+  // default, plus anyone ticked there), checked again at the tap. Approving
+  // makes punches count, so the tap must come from a WhatsApp the person
+  // connected themselves (JOIN), not one HR typed in for them.
   device_ip: {
     feature: 'biometric_adms',
+    confirmedLinkOnly: true,
     mayDecide: (approver) => require('./admsIpApproval.service').isApprover(approver),
     notAllowed: 'you are no longer one of the people chosen to approve a new IP for biometric machines',
     run: (decision, approver, requestId) => require('./admsIpApproval.service')
       .decide(requestId, decision, { companyId: approver.company_id, decidedBy: approver.id, via: 'whatsapp' }),
     done: (decision, result) => {
       if (decision !== 'approve') {
-        return `❌ Rejected — ${result.device} stays allowed only from its old IP. Punches from ${result.ip} are kept but not counted.`;
+        const deleted = result.kept
+          ? ` ${result.kept === 1 ? 'Its punch was' : `Its ${result.kept} punches were`} deleted.`
+          : '';
+        return `❌ Rejected — ${result.device} stays allowed only from its old IP.${deleted}`;
       }
       const kept = result.kept
         ? ` ${result.kept === 1 ? 'The punch' : `The ${result.kept} punches`} kept since ${result.since} now count${result.kept === 1 ? 's' : ''} too.`
@@ -292,13 +300,16 @@ const DECIDE = {
  */
 const isCompanySuspended = (companyId) => require('./subscription.service').isBillingSuspended(companyId);
 
-/** Did the tap come from the WhatsApp the approver connected? */
+/** The approver's WhatsApp link when the tap came from it, otherwise null. */
 const fromApprover = async (action, identity) => {
   const link = await linkService.getLink('employee', action.approver_id);
-  if (!link || link.status !== 'active') return false;
+  if (!link || link.status !== 'active') return null;
   const { phone, bsuid } = linkService.normalizeIdentity(identity || {});
-  return Boolean((phone && link.phone === phone) || (bsuid && link.bsuid === bsuid));
+  return (phone && link.phone === phone) || (bsuid && link.bsuid === bsuid) ? link : null;
 };
+
+/** whatsapp_links.consent_source of a WhatsApp the person connected themselves with their JOIN code. */
+const CONFIRMED_LINK = 'whatsapp_join';
 
 /** The approver as the website would see them signed in, or null when they could not act there now. */
 const activeApprover = async (action) => {
@@ -349,7 +360,9 @@ const handleTap = async ({ decision, code, identity }) => {
     if (!action || !DECIDE[action.kind]) return REPLIES.unknown;
     if (action.used_at) return REPLIES.used;
     if (new Date(action.expires_at) <= new Date()) return REPLIES.expired;
-    if (!(await fromApprover(action, identity))) return REPLIES.notYours;
+    const link = await fromApprover(action, identity);
+    if (!link) return REPLIES.notYours;
+    if (DECIDE[action.kind].confirmedLinkOnly && link.consent_source !== CONFIRMED_LINK) return REPLIES.notConfirmed;
     const approver = await activeApprover(action);
     if (!approver) return REPLIES.off;
 

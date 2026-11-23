@@ -7,7 +7,7 @@ import {
   requestWfhDayApi, cancelWfhDayApi, fetchPendingWfhRequestsApi, reviewWfhRequestApi,
   fetchMyWfhRequestsApi,
   manualAttendanceEntryApi, fetchDevicePunchesTodayApi, fetchAdmsStatusApi, updateAdmsDeviceApi,
-  allowAdmsDeviceNewIpApi, relearnAdmsDeviceIpApi, rejectAdmsDeviceNewIpApi,
+  allowAdmsDeviceNewIpApi, rejectAdmsDeviceNewIpApi, importAdmsPunchesApi,
   fetchDeviceIpApproversApi, saveDeviceIpApproversApi,
 } from '../api/attendance.api';
 import { fetchTeamEmployeesApi } from '../api/employees.api';
@@ -143,16 +143,18 @@ export function useAllowAdmsDeviceNewIp() {
   });
 }
 
-/** Device IP pinning: forget a device's IP so its next request pins a new one. */
-export function useRelearnAdmsDeviceIp() {
+/** Punches from the machine's own file (USB): preview (`dryRun`) or add them. */
+export function useImportAdmsPunches() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ serial }) => relearnAdmsDeviceIpApi(serial),
-    onSettled: () => invalidateAndRefetch(qc, ['attendance', 'adms']),
+    mutationFn: ({ serial, ...payload }) => importAdmsPunchesApi(serial, payload),
+    onSuccess: (_data, variables) => {
+      if (variables.dryRun === false) invalidateAndRefetch(qc, ['attendance']);
+    },
   });
 }
 
-/** Device IP pinning: reject a device's pending IP; its kept punches are never counted. */
+/** Device IP pinning: reject a device's waiting IP; its kept punches are deleted. */
 export function useRejectAdmsDeviceNewIp() {
   const qc = useQueryClient();
   return useMutation({

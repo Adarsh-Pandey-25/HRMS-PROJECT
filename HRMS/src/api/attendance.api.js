@@ -178,19 +178,26 @@ export async function updateAdmsDeviceApi(serial, { name, location }) {
   return apiRequest({ method: 'PUT', url: `/attendance/adms/devices/${serial}`, data: { name, location } });
 }
 
-/** Accept the IP a device now reports from. `ip` is the pending IP the admin was shown. */
+/** Approve a new IP a device reports from: its kept punches count. `ip` is the waiting IP the person was shown. */
 export async function allowAdmsDeviceNewIpApi(serial, ip) {
   return apiRequest({ method: 'POST', url: `/attendance/adms/devices/${encodeURIComponent(serial)}/allow-new-ip`, data: { ip } });
 }
 
-/** Reject the IP a device now reports from: its kept punches stay uncounted. `ip` is the pending IP the admin was shown. */
+/** Reject a new IP a device reports from: its kept punches are deleted. `ip` is the waiting IP the person was shown. */
 export async function rejectAdmsDeviceNewIpApi(serial, ip) {
   return apiRequest({ method: 'POST', url: `/attendance/adms/devices/${encodeURIComponent(serial)}/reject-new-ip`, data: { ip } });
 }
 
-/** Forget a device's IP; its next request pins a new one. */
-export async function relearnAdmsDeviceIpApi(serial) {
-  return apiRequest({ method: 'POST', url: `/attendance/adms/devices/${encodeURIComponent(serial)}/relearn-ip` });
+/**
+ * Punches from the machine's own file (USB download) for dates SpaxSync never
+ * received. `lines` are the file's lines for those dates; `dryRun` previews.
+ */
+export async function importAdmsPunchesApi(serial, { lines, from, to, dryRun }) {
+  return apiRequest({
+    method: 'POST',
+    url: `/attendance/adms/devices/${encodeURIComponent(serial)}/import-punches`,
+    data: { lines, from, to, dryRun },
+  });
 }
 
 /** Who is asked to approve a device's new IP: { roles: ['admin', 'hr'], employeeIds: [] }. */

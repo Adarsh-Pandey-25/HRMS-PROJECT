@@ -2,7 +2,9 @@ const express = require('express');
 const attendanceController = require('../controllers/attendance.controller');
 const admsController = require('../controllers/adms.controller');
 const { authenticate } = require('../middleware/auth.middleware');
-const { isHROrAdmin, isManagerOrAbove, isEmployee } = require('../middleware/role.middleware');
+const {
+  isAdmin, isHROrAdmin, isManagerOrAbove, isEmployee,
+} = require('../middleware/role.middleware');
 const { requireApiScope } = require('../middleware/apiKey.middleware');
 const { attachClientIp } = require('../middleware/ipValidation.middleware');
 const { validate } = require('../middleware/validation.middleware');
@@ -47,13 +49,16 @@ router.get('/monthly-summary', isEmployee, attendanceController.monthlySummary);
 router.get('/adms/test', isHROrAdmin, manageDevices, requireFeature('biometric_adms'), admsController.testStatus);
 router.put('/adms/devices/:serial', isHROrAdmin, manageDevices, requireFeature('biometric_adms'), admsController.registerDevice);
 router.delete('/adms/devices/:serial', isHROrAdmin, manageDevices, requireFeature('biometric_adms'), admsController.releaseDevice);
-// Device IP pinning (adms.service.js): accept the IP a device now reports from, or forget its IP so its next request pins one.
+// Device IP pinning (adms.service.js): approve or reject a new IP a device reports from. The
+// controller also requires an Admin or someone chosen to approve a new IP.
 router.post('/adms/devices/:serial/allow-new-ip', isHROrAdmin, manageDevices, requireFeature('biometric_adms'), admsController.allowDeviceNewIp);
 router.post('/adms/devices/:serial/reject-new-ip', isHROrAdmin, manageDevices, requireFeature('biometric_adms'), admsController.rejectDeviceNewIp);
-router.post('/adms/devices/:serial/relearn-ip', isHROrAdmin, manageDevices, requireFeature('biometric_adms'), admsController.relearnDeviceIp);
-// Who is asked to approve a device's new IP (admsIpApproval.service.js): HR and Admins by default, plus anyone ticked.
+// Punches from a file downloaded from the machine (USB), for dates the server never received. Admin only.
+router.post('/adms/devices/:serial/import-punches', isAdmin, requireFeature('biometric_adms'), admsController.importDevicePunches);
+// Who is asked to approve a device's new IP (admsIpApproval.service.js): HR and Admins by default, plus anyone
+// ticked. Anyone who manages devices can see it; only an Admin changes it.
 router.get('/adms/ip-approvers', isHROrAdmin, manageDevices, requireFeature('biometric_adms'), admsController.getIpApprovers);
-router.put('/adms/ip-approvers', isHROrAdmin, manageDevices, requireFeature('biometric_adms'), admsController.saveIpApprovers);
+router.put('/adms/ip-approvers', isAdmin, requireFeature('biometric_adms'), admsController.saveIpApprovers);
 router.get('/device-punches/today', isEmployee, admsController.todayPunches);
 
 const wfhRequestController = require('../controllers/wfhRequest.controller');

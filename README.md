@@ -112,6 +112,7 @@ function) and must go first on a fresh project; everything in
 39. `20261117_fnf_exemption_used.sql` — `payroll_one_time_items.exempt_amount`: the tax-free part of gratuity and leave encashment on leaving. Until it runs, full and final saves each as two items (exempt and taxable), so tax is still right
 40. `20261117_last_admin_guard.sql` — a database rule that a company always keeps one active Admin, so two Admins demoting each other at the same moment can't leave it with none. Deleting a whole company isn't blocked
 41. `20261117_two_step_login.sql` — **run before deploying the November security fixes.** Single-use two-step login challenges. Until it runs, people with two-step login on can't sign in; everyone else is unaffected
+42. `20261120_adms_kept_punches.sql` — a biometric machine on a new internet address: its punches are kept until someone approves (they count) or rejects (deleted) the new IP, by email, the website and WhatsApp. Until it runs, a push from a new IP is refused as before. Safe to run again after the first version of the file (20 Nov): it adds the `window_start` column then
 
 Migrations are idempotent (`IF NOT EXISTS` / `CREATE OR REPLACE`), so
 re-running one is safe.
