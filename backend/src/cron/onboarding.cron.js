@@ -26,6 +26,23 @@ const getCompanyId = (emp) =>
   emp.company_id ? String(emp.company_id) : DEFAULT_COMPANY_ID;
 
 /**
+ * Each onboarding job sends once a day, whatever restarts and the 12-hour
+ * catch-up timer do (audit, 20 Nov 2026: every restart and deploy re-sent the
+ * pre-joining email and gave that day's joiners a new password, logging them
+ * out). A day the server was down is still caught up at the next start.
+ */
+const lastRunKey = (job) => `onboarding_last_run:${job}`;
+const ranToday = async (job, today) => {
+  const settingsService = require('../services/settings.service');
+  return (await settingsService.getSetting(lastRunKey(job), null, null).catch(() => null)) === today;
+};
+const markRanToday = async (job, today) => {
+  const settingsService = require('../services/settings.service');
+  const result = await settingsService.setSetting(lastRunKey(job), today, null, null).catch((e) => ({ error: e }));
+  if (result?.error) logger.warn('[Onboarding] Could not record today\'s run', { job, error: result.error.message || String(result.error) });
+};
+
+/**
  * FIX 6A — Pre-joining reminder: fires N days before an employee's date_of_joining.
  * Gives new hires their logistics info (report time, location, dress code) in advance.
  */
@@ -34,6 +51,10 @@ const runPrejoiningCheck = withCronLock('onboarding_prejoining', 5 * 60 * 1000, 
   const today = moment().tz(TIMEZONE).format('YYYY-MM-DD');
   const targetDate = moment().tz(TIMEZONE).add(PRE_JOINING_DAYS_BEFORE, 'days').format('YYYY-MM-DD');
   const summary = { reason, date: today, targetDate, sent: 0, errors: 0 };
+  if (await ranToday('prejoining', today)) {
+    logger.info('[Onboarding] Pre-joining emails already sent today', summary);
+    return { ...summary, skipped: 'already_ran_today' };
+  }
 
   try {
     const { data: employees, error } = await supabaseAdmin
@@ -61,11 +82,13 @@ const runPrejoiningCheck = withCronLock('onboarding_prejoining', 5 * 60 * 1000, 
     }
   } catch (err) {
     summary.errors += 1;
+    summary.failed = true;
     logger.error('[Onboarding] Pre-joining check failed', { reason, error: err.message });
     await alertOnCronFailure('onboarding_prejoining', err.message).catch((e) =>
       logger.error('[CRON] alertOnCronFailure failed', { job: 'onboarding_prejoining', error: e.message }));
   }
 
+  if (!summary.failed) await markRanToday('prejoining', today);
   logger.info('[Onboarding] Pre-joining check completed', summary);
   return summary;
 });
@@ -81,11 +104,15 @@ const runPrejoiningCheck = withCronLock('onboarding_prejoining', 5 * 60 * 1000, 
 const runDayOneCheck = withCronLock('onboarding_day_one', 5 * 60 * 1000, async (reason = 'cron') => {
   const today = moment().tz(TIMEZONE).format('YYYY-MM-DD');
   const summary = { reason, date: today, sent: 0, errors: 0 };
+  if (await ranToday('day_one', today)) {
+    logger.info('[Onboarding] Day-one emails already sent today', summary);
+    return { ...summary, skipped: 'already_ran_today' };
+  }
 
   try {
     const { data: employees, error } = await supabaseAdmin
       .from('employees')
-      .select('id, first_name, last_name, email, date_of_joining, company_id, address, must_change_password')
+      .select('id, first_name, last_name, email, date_of_joining, company_id, address, must_change_password, temp_password_expires_at')
       .eq('date_of_joining', today)
       .eq('must_change_password', true)
       .not('email', 'is', null);
@@ -98,6 +125,9 @@ const runDayOneCheck = withCronLock('onboarding_day_one', 5 * 60 * 1000, async (
 
     for (const emp of employees) {
       const companyId = getCompanyId(emp);
+      // Already holds a temporary password that still works (e.g. sent when HR
+      // added them): a new one would only log them out and confuse them.
+      if (emp.temp_password_expires_at && new Date(emp.temp_password_expires_at) > new Date()) continue;
       if (!await emailPreferencesService.isEmailEnabled(companyId, 'day_one_welcome')) continue;
       try {
         const tempPassword = generateTempPassword();
@@ -125,11 +155,13 @@ const runDayOneCheck = withCronLock('onboarding_day_one', 5 * 60 * 1000, async (
     }
   } catch (err) {
     summary.errors += 1;
+    summary.failed = true;
     logger.error('[Onboarding] Day-one check failed', { reason, error: err.message });
     await alertOnCronFailure('onboarding_day_one', err.message).catch((e) =>
       logger.error('[CRON] alertOnCronFailure failed', { job: 'onboarding_day_one', error: e.message }));
   }
 
+  if (!summary.failed) await markRanToday('day_one', today);
   logger.info('[Onboarding] Day-one check completed', summary);
   return summary;
 });

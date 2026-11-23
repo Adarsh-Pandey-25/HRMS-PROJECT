@@ -33,6 +33,7 @@ const makeFakeSupabase = (tables = {}, { missingColumns = [], missingTables = []
       if (kind === 'eq') return row[col] === val;
       if (kind === 'neq') return row[col] !== val;
       if (kind === 'is') return (row[col] ?? null) === val;
+      if (kind === 'not_is') return (row[col] ?? null) !== val;
       if (kind === 'in') return val.includes(row[col]);
       if (row[col] == null) return false;
       if (kind === 'lt') return compare(row[col], val) < 0;
@@ -97,6 +98,7 @@ const makeFakeSupabase = (tables = {}, { missingColumns = [], missingTables = []
       eq(col, val) { state.filters.push(['eq', col, val]); return q; },
       neq(col, val) { state.filters.push(['neq', col, val]); return q; },
       is(col, val) { state.filters.push(['is', col, val]); return q; },
+      not(col, op, val) { if (op === 'is') state.filters.push(['not_is', col, val]); return q; },
       in(col, val) { state.filters.push(['in', col, val]); return q; },
       gte(col, val) { state.filters.push(['gte', col, val]); return q; },
       lte(col, val) { state.filters.push(['lte', col, val]); return q; },
