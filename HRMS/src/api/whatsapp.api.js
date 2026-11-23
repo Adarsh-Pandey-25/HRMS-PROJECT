@@ -21,6 +21,10 @@ export const MY_WHATSAPP_API = {
 
 // ── The company-wide switch (HR and admins) ─────────────────────────────────
 export const getCompanyWhatsAppApi = () => apiRequest({ method: 'GET', url: '/whatsapp/company' });
+/**
+ * Any of: { enabled, groups: { key: bool }, confirmApproversByCode: bool,
+ * approvalRoles: ['manager' | 'hr' | 'admin', ...] } (at least one role).
+ */
 export const updateCompanyWhatsAppApi = (body) => apiRequest({ method: 'PUT', url: '/whatsapp/company', data: body });
 
 // ── Super Admin → WhatsApp ──────────────────────────────────────────────────

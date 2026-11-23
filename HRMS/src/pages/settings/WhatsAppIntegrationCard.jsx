@@ -7,6 +7,8 @@ import { getCompanyWhatsAppApi, updateCompanyWhatsAppApi } from '../../api/whats
 import { invalidateAndRefetch } from '../../lib/queryCache';
 
 const QUERY_KEY = ['whatsapp', 'company'];
+// "Who gets approval requests on WhatsApp": all ticked unless the company changed it.
+const APPROVAL_ROLES = [['manager', 'Managers'], ['hr', 'HR'], ['admin', 'Admins']];
 
 /** Exactly the card this section showed before WhatsApp existed. */
 function ComingSoonCard() {
@@ -29,7 +31,8 @@ function ComingSoonCard() {
  * Settings → Integrations → WhatsApp. Until SpaxSync switches WhatsApp on
  * it is the same "Coming soon" card as before; without the add-on it says
  * so; with it, HR and admins turn WhatsApp on or off for the company and
- * choose which groups of updates go out. Employees HR adds are connected to
+ * choose which groups of updates go out and which roles get approval
+ * requests on WhatsApp. Employees HR adds are connected to
  * their mobile number; anyone can also connect from their profile.
  */
 export function WhatsAppIntegrationCard() {
@@ -77,6 +80,19 @@ export function WhatsAppIntegrationCard() {
     }
   };
 
+  const approvalRoles = Array.isArray(data.approvalRoles) && data.approvalRoles.length
+    ? data.approvalRoles
+    : APPROVAL_ROLES.map(([role]) => role);
+  const toggleApprovalRole = (role) => {
+    const next = approvalRoles.includes(role) ? approvalRoles.filter((r) => r !== role) : [...approvalRoles, role];
+    if (!next.length) {
+      toast.error('Keep at least one ticked');
+      return;
+    }
+    const names = APPROVAL_ROLES.filter(([r]) => next.includes(r)).map(([, label]) => label).join(', ');
+    save('approvalRoles', { approvalRoles: next }, `Approval requests on WhatsApp go to: ${names}`);
+  };
+
   return (
     <Card>
       <CardHeader
@@ -108,6 +124,37 @@ export function WhatsAppIntegrationCard() {
             disabled={Boolean(busy) || !data.enabled}
             onChange={(next) => save('confirmApproversByCode', { confirmApproversByCode: next }, next ? 'Approvers will be sent a code to confirm their number' : 'Approvers will not be sent codes')}
           />
+        </div>
+        <div className="rounded-lg border border-border p-3 space-y-2">
+          <div>
+            <p className="text-sm font-medium text-fg">Who gets approval requests on WhatsApp</p>
+            <p className="text-xs text-fg-subtle mt-0.5">
+              Leave, work from home, expense claims and attendance corrections. Unticked people still get them by email and in SpaxSync, and approve there. HR and Admins count by their role, so an Admin who is also someone&apos;s manager follows the Admins box. A biometric machine&apos;s new IP has its own list (Settings → Attendance → Biometric Devices).
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-x-6 gap-y-2">
+            {APPROVAL_ROLES.map(([role, label]) => {
+              const ticked = approvalRoles.includes(role);
+              const lastOne = ticked && approvalRoles.length === 1;
+              const disabled = Boolean(busy) || !data.enabled || lastOne;
+              return (
+                <label
+                  key={role}
+                  title={lastOne ? 'At least one must stay ticked' : undefined}
+                  className={`inline-flex items-center gap-2 text-sm text-fg ${disabled ? 'opacity-70' : 'cursor-pointer'}`}
+                >
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 accent-primary"
+                    checked={ticked}
+                    disabled={disabled}
+                    onChange={() => toggleApprovalRole(role)}
+                  />
+                  {label}
+                </label>
+              );
+            })}
+          </div>
         </div>
         <button
           type="button"

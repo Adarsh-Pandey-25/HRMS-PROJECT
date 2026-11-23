@@ -7,6 +7,7 @@ const linkService = require('../services/whatsappLink.service');
 const { COMPANY_SWITCHABLE, describeGroups } = require('../services/whatsappGroups');
 const L = require('../services/whatsappLookup');
 const verify = require('../services/whatsappVerify.service');
+const approvals = require('../services/whatsappApprovals.service');
 
 /**
  * WhatsApp updates for the signed-in employee (connect, choose groups,
@@ -141,6 +142,7 @@ const describeCompany = async (companyId) => {
     return {
       platformReady: false, addOn: false, enabled: false, available: false, reason: state.reason,
       message: REASONS.not_set_up, connectedCount: 0, businessNumber: null, groups: [], updatedAt: null, confirmApproversByCode: true,
+      approvalRoles: [...approvals.APPROVAL_ROLES],
     };
   }
   const companySettings = await settings.getCompanySettings(companyId);
@@ -163,6 +165,8 @@ const describeCompany = async (companyId) => {
     updatedAt: companySettings.updatedAt,
     // Send a code to approvers whose number isn't confirmed (whatsappVerify.service.js).
     confirmApproversByCode: await verify.confirmByCodeOn(companyId),
+    // Which roles get leave, WFH, expense and correction requests on WhatsApp.
+    approvalRoles: await approvals.getApprovalRoles(companyId),
   };
 };
 
@@ -174,13 +178,22 @@ const getCompany = async (req, res, next) => {
 
 const updateCompany = async (req, res, next) => {
   try {
-    const { enabled, groups, confirmApproversByCode } = req.body || {};
+    const {
+      enabled, groups, confirmApproversByCode, approvalRoles,
+    } = req.body || {};
     if (enabled !== undefined && typeof enabled !== 'boolean') throw new BadRequestError('enabled must be true or false');
     if (confirmApproversByCode !== undefined && typeof confirmApproversByCode !== 'boolean') {
       throw new BadRequestError('confirmApproversByCode must be true or false');
     }
     if (groups !== undefined && (!groups || typeof groups !== 'object' || Array.isArray(groups))) {
       throw new BadRequestError('groups must be an object of true/false switches');
+    }
+    if (approvalRoles !== undefined) {
+      // Checked before anything is saved, so a refused list changes nothing.
+      if (!Array.isArray(approvalRoles) || approvalRoles.some((role) => !approvals.APPROVAL_ROLES.includes(role))) {
+        throw new BadRequestError('approvalRoles must be a list of manager, hr and admin');
+      }
+      if (!approvalRoles.length) throw new BadRequestError('Tick at least one of Managers, HR or Admins');
     }
     if (enabled !== undefined || groups !== undefined) {
       await settings.updateCompanySettings(companyIdOf(req), { enabled, groups }, req.user?.id || null);
@@ -192,6 +205,17 @@ const updateCompany = async (req, res, next) => {
         targetType: 'setting',
         targetId: verify.SETTING_KEY,
         afterState: { on: confirmApproversByCode },
+      });
+    }
+    if (approvalRoles !== undefined) {
+      const before = await approvals.getApprovalRoles(companyIdOf(req));
+      const roles = await approvals.setApprovalRoles(companyIdOf(req), approvalRoles, req.user?.id || null);
+      require('../services/auditLog.service').auditFromRequest(req, {
+        actionType: 'whatsapp.approval_roles',
+        targetType: 'setting',
+        targetId: approvals.APPROVAL_ROLES_KEY,
+        beforeState: { roles: before },
+        afterState: { roles },
       });
     }
     successResponse(res, 'WhatsApp settings saved', await describeCompany(companyIdOf(req)));

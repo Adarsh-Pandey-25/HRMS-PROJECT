@@ -17,6 +17,8 @@ const approvals = require('./whatsappApprovals.service');
  *   platform   WHATSAPP_ENABLED with a token, and not paused for this environment
  *   company    the paid add-on is on, the company's own switch is on, the group is on
  *   person     connected (active link), the group is on for them, still active
+ *   approvals  a leave, WFH, expense or correction request: their role is ticked
+ *              in "Who gets approval requests on WhatsApp" (all by default)
  *   dev        outside production, the number is on WHATSAPP_ALLOWED_RECIPIENTS
  * and at most one message per event per person is ever queued (dedupe_key).
  */
@@ -116,6 +118,10 @@ const queueEvent = async (event) => {
   const expected = paramCount(template);
   const recordKey = event.recordKey || `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
   const rows = [];
+  // Leave, WFH, expense and correction requests go only to the roles the
+  // company ticked (Settings → Integrations → WhatsApp); read once per company.
+  const roleLimited = approvals.isRoleLimited(event.action);
+  const approvalRoles = new Map();
 
   for (const link of links) {
     const person = people.get(`${link.subject_type}:${link.subject_id}`);
@@ -129,6 +135,11 @@ const queueEvent = async (event) => {
       if (!(await companyAllows(company.id, event.group))) continue;
       if (company.is_active === false && !IGNORES_INACTIVE_COMPANY.has(event.group)) continue;
       if (person.is_active === false && !always) continue;
+      if (roleLimited) {
+        // eslint-disable-next-line no-await-in-loop
+        if (!approvalRoles.has(company.id)) approvalRoles.set(company.id, await approvals.getApprovalRoles(company.id));
+        if (!approvals.approvalRoleAllowed(approvalRoles.get(company.id), person.role)) continue;
+      }
     } else if (person.is_active === false) {
       continue;
     }

@@ -55,6 +55,62 @@ const REPLIES = {
   sentToHr: (subject) => `✅ Approved${subject ? ` — ${subject}` : ''}. It now goes to HR for the final approval.`,
 };
 
+// ── Who gets approval requests on WhatsApp ────────────────────────────────
+
+/**
+ * Settings → Integrations → WhatsApp → "Who gets approval requests on
+ * WhatsApp" (owner's request, 23 Nov 2026): tick boxes Managers, HR, Admins,
+ * all ticked by default. Only the WhatsApp message of a leave, WFH, expense
+ * or attendance-correction request; email, in-app notifications and every
+ * other WhatsApp message are unchanged. A biometric machine's new IP has its
+ * own list (admsIpApproval.service.js), so it is not limited here.
+ */
+const APPROVAL_ROLES_KEY = 'whatsapp_approval_roles';
+const APPROVAL_ROLES = ['manager', 'hr', 'admin'];
+const ROLE_LIMITED_KINDS = new Set(['leave', 'wfh', 'expense', 'regularization']);
+
+/** The ticked roles in a stored value; nothing valid stored means all three. */
+const normalizeApprovalRoles = (value) => {
+  const stored = value && typeof value === 'object' && Array.isArray(value.roles) ? value.roles : [];
+  const roles = APPROVAL_ROLES.filter((role) => stored.includes(role));
+  return roles.length ? roles : [...APPROVAL_ROLES];
+};
+
+/** The company's ticked roles. On a read error, all three, so approvals keep going out. */
+const getApprovalRoles = async (companyId) => {
+  try {
+    return normalizeApprovalRoles(await require('./settings.service').getSetting(APPROVAL_ROLES_KEY, null, companyId));
+  } catch (err) {
+    logger.warn('[WhatsApp] could not read who gets approval requests; sending to everyone as before', { error: err.message });
+    return [...APPROVAL_ROLES];
+  }
+};
+
+/** Saves the ticked roles: only manager, hr and admin, and at least one. */
+const setApprovalRoles = async (companyId, roles, updatedBy) => {
+  if (!Array.isArray(roles) || roles.some((role) => !APPROVAL_ROLES.includes(role))) {
+    throw new BadRequestError('approvalRoles must be a list of manager, hr and admin');
+  }
+  const next = APPROVAL_ROLES.filter((role) => roles.includes(role));
+  if (!next.length) throw new BadRequestError('Tick at least one of Managers, HR or Admins');
+  const { error } = await require('./settings.service').setSetting(APPROVAL_ROLES_KEY, { roles: next }, updatedBy, companyId);
+  if (error) {
+    logger.error('[WhatsApp] Could not save who gets approval requests', { error: error.message });
+    throw new Error('Could not save. Please try again.');
+  }
+  return next;
+};
+
+/** Is this message an approval request the tick boxes apply to? */
+const isRoleLimited = (action) => ROLE_LIMITED_KINDS.has(action?.kind);
+
+/**
+ * Does a person with this role get approval requests on WhatsApp? HR and
+ * Admin go by their role; anyone else is only asked as someone's reporting
+ * manager, so counts as a manager.
+ */
+const approvalRoleAllowed = (roles, personRole) => roles.includes(personRole === 'hr' || personRole === 'admin' ? personRole : 'manager');
+
 const hashCode = (code) => crypto.createHash('sha256').update(String(code)).digest('hex');
 
 /** { decision, code } from a button's payload, or null when it is not one of ours. */
@@ -434,6 +490,12 @@ const handleTap = async ({ decision, code, identity }) => {
 module.exports = {
   REJECT_NOTE,
   REPLIES,
+  APPROVAL_ROLES_KEY,
+  APPROVAL_ROLES,
+  getApprovalRoles,
+  setApprovalRoles,
+  isRoleLimited,
+  approvalRoleAllowed,
   parsePayload,
   redactParams,
   createActions,
