@@ -179,6 +179,8 @@ const updateKey = async (req, res, next) => {
       delete value.logo_url;
       delete value.brandIconUrl;
       delete value.brand_icon_url;
+      // A subsidiary can't blank or break a required detail here either.
+      await require('../services/company.service').assertRequiredDetailsKept(req.user.company_id, existing, value);
     }
     // Weekly offs and pay rules drive attendance and pay — store only what
     // the server can read back (normalized), never a hand-edited shape.

@@ -31,7 +31,8 @@ export function companyOptionLabel(company, { markHomeAs = 'Primary' } = {}) {
  */
 export function companyEmailDomain(company) {
   if (!company) return '';
-  // The accessible-companies list keeps website and contact email under `profile`.
+  // A company's details keep website and contact email under `profile`; the
+  // accessible-companies list has them at the top level.
   if (company.profile && typeof company.profile === 'object') {
     const own = companyEmailDomain({ website: company.profile.website, contactEmail: company.profile.contactEmail });
     if (own) return own;

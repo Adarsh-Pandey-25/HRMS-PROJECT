@@ -3,10 +3,11 @@ import { useSearchParams } from 'react-router-dom';
 import {
   Building2, Plus, Eye, ShieldCheck, ToggleLeft, ToggleRight,
   ImagePlus, ChevronRight, Pencil, Check, X, MapPin, Landmark, FileText, BadgeCheck,
+  AlertTriangle, Globe,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import {
-  PageHeader, Card, Button, Input, Badge, EmptyState, Skeleton,
+  PageHeader, Card, Button, Input, Select, Badge, EmptyState, Skeleton,
   Avatar, Drawer, FileUpload, StatCard,
 } from '../../components/ui';
 import {
@@ -17,7 +18,10 @@ import {
 } from '../../hooks/useCompanies';
 import { cn, formatDate } from '../../lib/utils';
 import { companyTypeLabel } from '../../lib/companyLabels';
-import { mergeLegalProfile, formatRegisteredAddress } from '../../lib/companyLegal';
+import {
+  mergeLegalProfile, formatRegisteredAddress, SUBSIDIARY_REQUIRED_KEYS,
+  subsidiaryDetailErrors, missingDetailLabels, stateOptions,
+} from '../../lib/companyLegal';
 import { CompanyLegalFields } from '../../components/shared/CompanyLegalFields';
 import { useAuthStore } from '../../store/authStore';
 import { useCan } from '../../hooks/useCan';
@@ -62,7 +66,95 @@ function CompanyLogo({ company, size = 'md' }) {
   );
 }
 
-function CompanyCard({ company, selected, onSelect, onToggle, toggling }) {
+const WEBSITE_HINT = 'The company\'s domain, like acme.in. Its employees\' work email addresses are generated from it (name.surname@acme.in).';
+
+/** The details form, filled from a company's saved profile. */
+const detailsFormFrom = (p = {}) => ({
+  ...mergeLegalProfile(p),
+  addressLine1: p.addressLine1 || '',
+  addressLine2: p.addressLine2 || '',
+  city: p.city || '',
+  state: p.state || '',
+  pincode: p.pincode || '',
+  country: p.country || 'India',
+  website: p.website || '',
+  contactName: p.contactName || '',
+  contactEmail: p.contactEmail || '',
+  contactPhone: p.contactPhone || '',
+});
+
+/**
+ * Registered address. `required` (a subsidiary) marks the required fields,
+ * picks the state from the Indian list and keeps the PIN to 6 digits; the
+ * primary company's fields stay free text.
+ */
+function AddressFields({ form, setForm, required = false, errors = {}, withCountry = false }) {
+  const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <Input label="Address line 1" required={required} error={errors.addressLine1} containerClass="sm:col-span-2" value={form.addressLine1 || ''} onChange={set('addressLine1')} />
+      <Input label="Address line 2" containerClass="sm:col-span-2" value={form.addressLine2 || ''} onChange={set('addressLine2')} />
+      <Input label="City" required={required} error={errors.city} value={form.city || ''} onChange={set('city')} />
+      {required ? (
+        <Select label="State" required error={errors.state} placeholder="Select state" options={stateOptions(form.state)} value={form.state || ''} onChange={set('state')} />
+      ) : (
+        <Input label="State" value={form.state || ''} onChange={set('state')} />
+      )}
+      <Input
+        label="PIN code"
+        required={required}
+        error={errors.pincode}
+        {...(required ? { inputMode: 'numeric', maxLength: 6, placeholder: '6 digits' } : {})}
+        value={form.pincode || ''}
+        onChange={(e) => setForm((f) => ({ ...f, pincode: required ? e.target.value.replace(/\D/g, '') : e.target.value }))}
+      />
+      {withCountry && <Input label="Country" value={form.country || ''} onChange={set('country')} />}
+    </div>
+  );
+}
+
+/** Website and contact email (required for a subsidiary); `withOptional` adds contact name and phone. */
+function ContactFields({ form, setForm, required = false, errors = {}, withOptional = false }) {
+  const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <Input label="Website" required={required} error={errors.website} placeholder="e.g. acme.in" hint={WEBSITE_HINT} containerClass="sm:col-span-2" value={form.website || ''} onChange={set('website')} />
+      <Input label="Contact email" type="email" required={required} error={errors.contactEmail} placeholder="e.g. hr@acme.in" containerClass={withOptional ? undefined : 'sm:col-span-2'} value={form.contactEmail || ''} onChange={set('contactEmail')} />
+      {withOptional && (
+        <>
+          <Input label="Contact phone" value={form.contactPhone || ''} onChange={set('contactPhone')} />
+          <Input label="Contact name" containerClass="sm:col-span-2" value={form.contactName || ''} onChange={set('contactName')} />
+        </>
+      )}
+    </div>
+  );
+}
+
+/** "Complete the required details: …" for a subsidiary missing some; `onComplete` opens the form. */
+function MissingDetailsNotice({ keys, onComplete, className }) {
+  return (
+    <div className={cn('rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5 text-sm', className)}>
+      <p className="flex items-start gap-2 text-fg">
+        <AlertTriangle className="w-4 h-4 text-warning shrink-0 mt-0.5" />
+        <span>Complete the required details: {missingDetailLabels(keys).join(', ')}.</span>
+      </p>
+      {onComplete && (
+        // Inside a clickable card: the card mustn't take this click or key press.
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onComplete(); }}
+          onKeyDown={(e) => e.stopPropagation()}
+          className="mt-1.5 ml-6 text-xs font-medium text-primary hover:underline"
+        >
+          Complete details
+        </button>
+      )}
+    </div>
+  );
+}
+
+function CompanyCard({ company, selected, onSelect, onToggle, toggling, onCompleteDetails }) {
+  const missing = company.companyType === 'child' ? company.missingDetails || [] : [];
   return (
     <div
       role="button"
@@ -106,6 +198,13 @@ function CompanyCard({ company, selected, onSelect, onToggle, toggling }) {
           </div>
         </div>
       </div>
+      {missing.length > 0 && (
+        <MissingDetailsNotice
+          className="mt-3"
+          keys={missing}
+          onComplete={onCompleteDetails ? () => onCompleteDetails(company) : undefined}
+        />
+      )}
       {!company.isHome && company.companyType === 'child' && onToggle && (
         <div className="mt-3 pt-3 border-t border-border/60" onClick={(e) => e.stopPropagation()}>
           <Button
@@ -155,7 +254,9 @@ function PeopleList({ people, empty, extra }) {
   );
 }
 
-function CompanyDetailsDrawer({ company, open, onClose, canEdit, uploadLogo, updateChild, updateDetails }) {
+function CompanyDetailsDrawer({
+  company, open, onClose, canEdit, uploadLogo, updateChild, updateDetails, editOnOpen, onEditOpened,
+}) {
   const detailsQ = useCompanyDetails(company?.id, open);
   const updateHomeCompany = useCompanyStore((s) => s.updateCompany);
   const [uploading, setUploading] = useState(false);
@@ -163,30 +264,38 @@ function CompanyDetailsDrawer({ company, open, onClose, canEdit, uploadLogo, upd
   const [nameDraft, setNameDraft] = useState('');
   const [savingName, setSavingName] = useState(false);
   const [editingLegal, setEditingLegal] = useState(false);
-  const [legalForm, setLegalForm] = useState(() => mergeLegalProfile({}));
+  const [legalForm, setLegalForm] = useState(() => detailsFormFrom({}));
   const [savingLegal, setSavingLegal] = useState(false);
+  // Errors show once a save is tried, or straight away for details already missing.
+  const [showErrors, setShowErrors] = useState(false);
 
   const profile = detailsQ.data?.profile || mergeLegalProfile({});
   const canEditName = Boolean(canEdit && company && !company.isHome && company.companyType === 'child');
+  // A subsidiary's important details are required; the primary company's aren't.
+  const isSub = company?.companyType === 'child';
+  const missing = isSub ? (detailsQ.data?.missingDetails ?? company?.missingDetails ?? []) : [];
+  const legalErrors = isSub && showErrors ? subsidiaryDetailErrors(legalForm) : {};
 
   useEffect(() => {
     setEditingName(false);
     setNameDraft('');
     setEditingLegal(false);
+    setShowErrors(false);
   }, [company?.id, open]);
 
   useEffect(() => {
     if (editingLegal) return;
-    setLegalForm({
-      ...mergeLegalProfile(detailsQ.data?.profile || {}),
-      addressLine1: detailsQ.data?.profile?.addressLine1 || '',
-      addressLine2: detailsQ.data?.profile?.addressLine2 || '',
-      city: detailsQ.data?.profile?.city || '',
-      state: detailsQ.data?.profile?.state || '',
-      pincode: detailsQ.data?.profile?.pincode || '',
-      country: detailsQ.data?.profile?.country || 'India',
-    });
+    setLegalForm(detailsFormFrom(detailsQ.data?.profile || {}));
   }, [detailsQ.data, editingLegal]);
+
+  // Opened from a card's "Complete details": straight to the form once the details are in.
+  useEffect(() => {
+    if (!open || !editOnOpen || !canEdit || !detailsQ.data) return;
+    setLegalForm(detailsFormFrom(detailsQ.data.profile || {}));
+    setShowErrors(true);
+    setEditingLegal(true);
+    onEditOpened?.();
+  }, [open, editOnOpen, canEdit, detailsQ.data, onEditOpened]);
 
   const startEditName = () => {
     setNameDraft(company?.name || '');
@@ -235,20 +344,18 @@ function CompanyDetailsDrawer({ company, open, onClose, canEdit, uploadLogo, upd
   };
 
   const startEditLegal = () => {
-    setLegalForm({
-      ...mergeLegalProfile(profile),
-      addressLine1: profile.addressLine1 || '',
-      addressLine2: profile.addressLine2 || '',
-      city: profile.city || '',
-      state: profile.state || '',
-      pincode: profile.pincode || '',
-      country: profile.country || 'India',
-    });
+    setLegalForm(detailsFormFrom(profile));
+    setShowErrors(missing.length > 0);
     setEditingLegal(true);
   };
 
   const saveLegal = async () => {
     if (!company?.id) return;
+    if (isSub && Object.keys(subsidiaryDetailErrors(legalForm)).length) {
+      setShowErrors(true);
+      toast.error('Fill in the required details marked *');
+      return;
+    }
     setSavingLegal(true);
     try {
       const saved = await updateDetails.mutateAsync({
@@ -275,6 +382,7 @@ function CompanyDetailsDrawer({ company, open, onClose, canEdit, uploadLogo, upd
       onClose={() => {
         cancelEditName();
         setEditingLegal(false);
+        setShowErrors(false);
         onClose();
       }}
       width="w-[520px]"
@@ -381,29 +489,53 @@ function CompanyDetailsDrawer({ company, open, onClose, canEdit, uploadLogo, upd
 
           {!detailsQ.isLoading && !detailsQ.isError && editingLegal && (
             <div className="space-y-5">
+              {isSub && (
+                <p className="text-xs text-fg-muted">
+                  Fields marked <span className="text-danger">*</span> are required for a subsidiary.
+                </p>
+              )}
               <div>
                 <p className="text-sm font-semibold text-fg mb-3">Registered address</p>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <Input label="Address line 1" containerClass="sm:col-span-2" value={legalForm.addressLine1 || ''} onChange={(e) => setLegalForm((f) => ({ ...f, addressLine1: e.target.value }))} />
-                  <Input label="Address line 2" containerClass="sm:col-span-2" value={legalForm.addressLine2 || ''} onChange={(e) => setLegalForm((f) => ({ ...f, addressLine2: e.target.value }))} />
-                  <Input label="City" value={legalForm.city || ''} onChange={(e) => setLegalForm((f) => ({ ...f, city: e.target.value }))} />
-                  <Input label="State" value={legalForm.state || ''} onChange={(e) => setLegalForm((f) => ({ ...f, state: e.target.value }))} />
-                  <Input label="PIN code" value={legalForm.pincode || ''} onChange={(e) => setLegalForm((f) => ({ ...f, pincode: e.target.value }))} />
-                  <Input label="Country" value={legalForm.country || ''} onChange={(e) => setLegalForm((f) => ({ ...f, country: e.target.value }))} />
-                </div>
+                <AddressFields form={legalForm} setForm={setLegalForm} required={isSub} errors={legalErrors} withCountry />
               </div>
-              <CompanyLegalFields form={legalForm} setForm={setLegalForm} />
+              <div>
+                <p className="text-sm font-semibold text-fg mb-3">Contact and website</p>
+                <ContactFields form={legalForm} setForm={setLegalForm} required={isSub} errors={legalErrors} withOptional />
+              </div>
+              <CompanyLegalFields
+                form={legalForm}
+                setForm={setLegalForm}
+                requiredKeys={isSub ? SUBSIDIARY_REQUIRED_KEYS : []}
+                errors={legalErrors}
+              />
             </div>
           )}
 
           {!detailsQ.isLoading && !detailsQ.isError && !editingLegal && (
             <div className="space-y-5">
+              {missing.length > 0 && (
+                <MissingDetailsNotice keys={missing} onComplete={canEdit ? startEditLegal : undefined} />
+              )}
+
               <section>
                 <h3 className="text-sm font-semibold text-fg mb-3 flex items-center gap-2">
                   <MapPin className="w-4 h-4" />
                   Registered address
                 </h3>
                 <DetailRow label="Address" value={address} />
+              </section>
+
+              <section>
+                <h3 className="text-sm font-semibold text-fg mb-3 flex items-center gap-2">
+                  <Globe className="w-4 h-4" />
+                  Contact and website
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <DetailRow label="Website" value={profile.website} />
+                  <DetailRow label="Contact email" value={profile.contactEmail} />
+                  <DetailRow label="Contact name" value={profile.contactName} />
+                  <DetailRow label="Contact phone" value={profile.contactPhone} />
+                </div>
               </section>
 
               <section>
@@ -462,7 +594,7 @@ function CompanyDetailsDrawer({ company, open, onClose, canEdit, uploadLogo, upd
 }
 
 function ViewTab({
-  companies, loading, onToggle, toggling, selected, onSelect, stats,
+  companies, loading, onToggle, toggling, selected, onSelect, stats, onCompleteDetails,
 }) {
   if (loading) {
     return (
@@ -511,6 +643,7 @@ function ViewTab({
             onSelect={onSelect}
             onToggle={onToggle}
             toggling={toggling}
+            onCompleteDetails={onCompleteDetails}
           />
         ))}
       </div>
@@ -518,13 +651,21 @@ function ViewTab({
   );
 }
 
+const EMPTY_SUBSIDIARY_DETAILS = {
+  legalName: '', pan: '', addressLine1: '', addressLine2: '', city: '', state: '', pincode: '', website: '', contactEmail: '',
+};
+
 function AddTab({ canManage, blockedMessage, createChild, uploadLogo, onCreated }) {
   const [name, setName] = useState('');
   const [slug, setSlug] = useState('');
+  const [details, setDetails] = useState(EMPTY_SUBSIDIARY_DETAILS);
+  const [showErrors, setShowErrors] = useState(false);
   const [logoFile, setLogoFile] = useState(null);
   const [logoKey, setLogoKey] = useState(0);
   const [saving, setSaving] = useState(false);
   const [createdCompany, setCreatedCompany] = useState(null);
+  const errors = showErrors ? subsidiaryDetailErrors(details) : {};
+  const nameError = showErrors && name.trim().length < 2 ? 'Enter at least 2 characters' : undefined;
 
   if (!canManage) {
     return (
@@ -539,12 +680,18 @@ function AddTab({ canManage, blockedMessage, createChild, uploadLogo, onCreated 
   const submit = async (e) => {
     e.preventDefault();
     if (name.trim().length < 2) {
+      setShowErrors(true);
       toast.error('Enter a company name (at least 2 characters)');
+      return;
+    }
+    if (Object.keys(subsidiaryDetailErrors(details)).length) {
+      setShowErrors(true);
+      toast.error('Fill in the required details marked *');
       return;
     }
     setSaving(true);
     try {
-      const payload = { name: name.trim() };
+      const payload = { name: name.trim(), ...details, country: 'India' };
       if (slug.trim()) payload.slug = slug.trim();
       const created = await createChild.mutateAsync(payload);
 
@@ -560,6 +707,8 @@ function AddTab({ canManage, blockedMessage, createChild, uploadLogo, onCreated 
       setCreatedCompany(created?.slug ? created : null);
       setName('');
       setSlug('');
+      setDetails(EMPTY_SUBSIDIARY_DETAILS);
+      setShowErrors(false);
       setLogoFile(null);
       setLogoKey((k) => k + 1);
       onCreated?.(created);
@@ -574,12 +723,14 @@ function AddTab({ canManage, blockedMessage, createChild, uploadLogo, onCreated 
     <Card className="p-6 max-w-xl">
       <h3 className="text-base font-semibold text-fg mb-1">Add subsidiary</h3>
       <p className="text-sm text-fg-muted mb-6">
-        Creates an isolated workspace under your primary company. Open it afterwards to add registered address, GSTIN, directors, and other CDD details.
+        Creates an isolated workspace under your primary company. Fields marked <span className="text-danger">*</span> are
+        required. GSTIN, CIN, directors and other details can be added later from the company&apos;s page.
       </p>
-      <form onSubmit={submit} className="space-y-5">
+      <form onSubmit={submit} noValidate className="space-y-5">
         <Input
           label="Company name"
           required
+          error={nameError}
           placeholder="e.g. North Branch Pvt Ltd"
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -591,6 +742,37 @@ function AddTab({ canManage, blockedMessage, createChild, uploadLogo, onCreated 
           onChange={(e) => setSlug(e.target.value)}
           hint="URL-safe id; leave blank to auto-generate"
         />
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <Input
+            label="Legal / registered name"
+            required
+            error={errors.legalName}
+            containerClass="sm:col-span-2"
+            placeholder="As on MCA / GST certificate"
+            value={details.legalName}
+            onChange={(e) => setDetails((d) => ({ ...d, legalName: e.target.value }))}
+          />
+          <Input
+            label="PAN"
+            required
+            error={errors.pan}
+            placeholder="e.g. AAAAA0000A"
+            maxLength={10}
+            value={details.pan}
+            onChange={(e) => setDetails((d) => ({ ...d, pan: e.target.value.toUpperCase() }))}
+          />
+        </div>
+
+        <div>
+          <p className="text-sm font-semibold text-fg mb-3">Registered address</p>
+          <AddressFields form={details} setForm={setDetails} required errors={errors} />
+        </div>
+
+        <div>
+          <p className="text-sm font-semibold text-fg mb-3">Contact and website</p>
+          <ContactFields form={details} setForm={setDetails} required errors={errors} />
+        </div>
 
         <div>
           <div className="text-sm font-medium text-fg mb-1.5">Company logo (optional)</div>
@@ -708,6 +890,8 @@ export default function Organizations() {
     }, { replace: true });
   };
   const [selected, setSelected] = useState(null);
+  // Set by a card's "Complete details": the drawer opens on its form.
+  const [editOnOpen, setEditOnOpen] = useState(false);
   const role = useAuthStore((s) => s.role);
   const myCompanyQ = useMyCompany(true);
   const accessibleQ = useAccessibleCompanies(true);
@@ -795,6 +979,7 @@ export default function Organizations() {
           selected={selectedLive}
           onSelect={setSelected}
           stats={stats}
+          onCompleteDetails={canEditLegal ? (company) => { setSelected(company); setEditOnOpen(true); } : undefined}
         />
       )}
       {tab === 'add' && (
@@ -821,11 +1006,13 @@ export default function Organizations() {
       <CompanyDetailsDrawer
         company={selectedLive}
         open={Boolean(selectedLive)}
-        onClose={() => setSelected(null)}
+        onClose={() => { setSelected(null); setEditOnOpen(false); }}
         canEdit={canEditLegal}
         uploadLogo={uploadLogo}
         updateChild={updateChild}
         updateDetails={updateDetails}
+        editOnOpen={editOnOpen}
+        onEditOpened={() => setEditOnOpen(false)}
       />
     </div>
   );

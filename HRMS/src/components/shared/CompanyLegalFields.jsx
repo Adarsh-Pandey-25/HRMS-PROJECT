@@ -2,7 +2,8 @@ import { Plus, Trash2 } from 'lucide-react';
 import { Input, Textarea, Button } from '../ui';
 import { newDirector, newFounder } from '../../lib/companyLegal';
 
-export function CompanyLegalFields({ form, setForm }) {
+/** `requiredKeys` marks fields required (red *); `errors` is { key: message }. */
+export function CompanyLegalFields({ form, setForm, requiredKeys = [], errors = {} }) {
   const patch = (partial) => setForm((f) => ({ ...f, ...partial }));
 
   const updatePerson = (key, id, field, value) => {
@@ -22,6 +23,8 @@ export function CompanyLegalFields({ form, setForm }) {
         <Input
           label="Legal / registered name"
           placeholder="As on MCA / GST certificate"
+          required={requiredKeys.includes('legalName')}
+          error={errors.legalName}
           value={form.legalName || ''}
           onChange={(e) => patch({ legalName: e.target.value })}
         />
@@ -34,6 +37,8 @@ export function CompanyLegalFields({ form, setForm }) {
         <Input
           label="PAN"
           placeholder="e.g. AAAAA0000A"
+          required={requiredKeys.includes('pan')}
+          error={errors.pan}
           value={form.pan || ''}
           onChange={(e) => patch({ pan: e.target.value.toUpperCase() })}
         />

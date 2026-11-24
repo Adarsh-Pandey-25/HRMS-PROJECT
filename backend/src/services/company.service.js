@@ -15,6 +15,8 @@ const {
 } = require('../utils/errors');
 
 const { suggestUniqueSlug, checkSlugAvailability } = require('../utils/slug');
+const { PAN_PATTERN } = require('../payroll/tds');
+const { findState } = require('../payroll/statutory');
 
 const countEmployees = async (companyId) => {
   const { count, error } = await supabaseAdmin
@@ -31,6 +33,98 @@ const LEGAL_STR_KEYS = [
   'addressLine1', 'addressLine2', 'city', 'state', 'pincode', 'country',
   'website', 'tagline', 'contactName', 'contactEmail', 'contactPhone',
 ];
+
+/**
+ * What a subsidiary must have on record (owner, 24 Nov 2026): its legal name,
+ * registered address, PAN, a contact email and its website — the website's
+ * domain is what its employees' work emails are made from. GSTIN, CIN, TAN,
+ * directors and the rest stay optional. The primary company isn't held to it.
+ */
+const SUBSIDIARY_REQUIRED = [
+  { key: 'legalName', label: 'Legal name' },
+  { key: 'addressLine1', label: 'Address line 1' },
+  { key: 'city', label: 'City' },
+  { key: 'state', label: 'State' },
+  { key: 'pincode', label: 'PIN code' },
+  { key: 'pan', label: 'PAN' },
+  { key: 'contactEmail', label: 'Contact email' },
+  { key: 'website', label: 'Website' },
+];
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const DOMAIN_PATTERN = /^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/;
+// The domain in a website as typed: "https://www.acme.in/about" → "acme.in".
+const websiteDomain = (value) => String(value || '').trim().toLowerCase()
+  .replace(/^https?:\/\//, '')
+  .replace(/^www\./, '')
+  .split(/[/?#]/)[0];
+
+// Why a filled-in required value can't be used (null when it can).
+const FORMAT_PROBLEM = {
+  state: (v) => (findState(v) ? null : 'State must be an Indian state'),
+  pincode: (v) => (/^\d{6}$/.test(v) ? null : 'PIN code must be 6 digits'),
+  pan: (v) => (PAN_PATTERN.test(v.toUpperCase()) ? null : 'PAN must be 5 letters, 4 digits and a letter (like ABCDE1234F)'),
+  contactEmail: (v) => (EMAIL_PATTERN.test(v) ? null : 'Contact email is not a valid email address'),
+  website: (v) => (DOMAIN_PATTERN.test(websiteDomain(v)) ? null : 'Website must be the company\'s domain, like acme.in'),
+};
+
+/**
+ * The required subsidiary details in `profile` that are blank or malformed,
+ * as [{ key, label, message }] — `message` is null for a blank one. `only`
+ * limits the check to those keys.
+ */
+const subsidiaryDetailProblems = (profile, only = null) => SUBSIDIARY_REQUIRED
+  .filter(({ key }) => !only || only.includes(key))
+  .map(({ key, label }) => {
+    const value = String(profile?.[key] ?? '').trim();
+    if (!value) return { key, label, message: null };
+    const message = FORMAT_PROBLEM[key]?.(value) || null;
+    return message ? { key, label, message } : null;
+  })
+  .filter(Boolean);
+
+/** A 400 naming every problem; `details.fields` lists their keys for the form. */
+const subsidiaryDetailsError = (problems) => {
+  const missing = problems.filter((p) => !p.message).map((p) => p.label);
+  const parts = [];
+  if (missing.length) parts.push(`A subsidiary needs these details: ${missing.join(', ')}.`);
+  problems.filter((p) => p.message).forEach((p) => parts.push(`${p.message}.`));
+  return new BadRequestError(parts.join(' '), { fields: problems.map((p) => p.key) });
+};
+
+const isSubsidiary = (row) => row?.company_type === 'child';
+
+/**
+ * Copies the profile fields in `body` onto `profile` (trimmed, IDs in
+ * capitals). A subsidiary's state is stored by its full name.
+ */
+const applyProfileFields = (profile, body, { subsidiary = false } = {}) => {
+  for (const key of LEGAL_STR_KEYS) {
+    if (body[key] !== undefined && body[key] !== null) {
+      let val = String(body[key]).trim();
+      if (['gstin', 'pan', 'cin', 'tan'].includes(key)) val = val.toUpperCase();
+      if (key === 'state' && subsidiary) val = findState(val)?.name || val;
+      profile[key] = val.slice(0, key === 'natureOfBusiness' ? 500 : 200);
+    }
+  }
+
+  if (Array.isArray(body.directors)) {
+    profile.directors = body.directors.slice(0, 20).map((row, i) => ({
+      id: row?.id || `dir-${i}`,
+      name: String(row?.name || '').trim().slice(0, 120),
+      din: String(row?.din || '').trim().slice(0, 20),
+      designation: String(row?.designation || '').trim().slice(0, 80),
+    })).filter((row) => row.name);
+  }
+  if (Array.isArray(body.founders)) {
+    profile.founders = body.founders.slice(0, 20).map((row, i) => ({
+      id: row?.id || `fnd-${i}`,
+      name: String(row?.name || '').trim().slice(0, 120),
+      role: String(row?.role || '').trim().slice(0, 80),
+    })).filter((row) => row.name);
+  }
+  return profile;
+};
 
 const publicLegalProfile = (profile = {}) => {
   const p = profile && typeof profile === 'object' ? profile : {};
@@ -92,6 +186,9 @@ const loadProfileBits = async (companyId) => {
       gstin: profile.gstin || '',
       city: profile.city || '',
       state: profile.state || '',
+      website: profile.website || '',
+      contactEmail: profile.contactEmail || '',
+      missingDetails: subsidiaryDetailProblems(profile).map((p) => p.key),
       profile: publicLegalProfile(profile),
     };
   } catch {
@@ -103,6 +200,9 @@ const loadProfileBits = async (companyId) => {
       gstin: '',
       city: '',
       state: '',
+      website: '',
+      contactEmail: '',
+      missingDetails: [],
       profile: publicLegalProfile({}),
     };
   }
@@ -131,6 +231,11 @@ const enrichCompany = async (row, { isHome = false, withProfile = false } = {}) 
     gstin: bits.gstin,
     city: bits.city,
     state: bits.state,
+    // Its own domain, for its employees' work emails.
+    website: bits.website,
+    contactEmail: bits.contactEmail,
+    // Required details a subsidiary is still missing (keys); never for the primary company.
+    missingDetails: isSubsidiary(row) ? bits.missingDetails : [],
     isHome,
     ...(withProfile ? { profile: bits.profile } : {}),
   };
@@ -187,10 +292,11 @@ const listChildren = async (actorCompanyId) => {
 };
 
 /**
- * Create a child under the admin's company.
+ * Create a child under the admin's company, with its required details
+ * (SUBSIDIARY_REQUIRED) saved to its company profile.
  * Promotes standalone → parent on first child.
  */
-const createChild = async (actorCompanyId, actorUserId, { name, slug } = {}) => {
+const createChild = async (actorCompanyId, actorUserId, { name, slug, details } = {}) => {
   // Probe DB; assertHierarchyReady throws if migration missing after probe
   await getCompanyById(actorCompanyId);
   assertHierarchyReady();
@@ -206,6 +312,11 @@ const createChild = async (actorCompanyId, actorUserId, { name, slug } = {}) => 
   if (self.is_active === false) {
     throw new ForbiddenError('Your company is inactive');
   }
+
+  const profile = applyProfileFields({}, details && typeof details === 'object' ? details : {}, { subsidiary: true });
+  const problems = subsidiaryDetailProblems(profile);
+  if (problems.length) throw subsidiaryDetailsError(problems);
+  if (!profile.country) profile.country = 'India';
 
   await promoteToParentIfNeeded(actorCompanyId);
 
@@ -241,7 +352,7 @@ const createChild = async (actorCompanyId, actorUserId, { name, slug } = {}) => 
 
   await settingsService.seedCompanySettings(
     childId,
-    { name: trimmed },
+    { ...profile, name: trimmed },
     actorUserId,
     actorCompanyId,
   );
@@ -374,37 +485,36 @@ const getCompanyDetails = async (actorCompanyId, targetCompanyId) => {
 };
 
 const updateCompanyDetails = async (actorCompanyId, targetCompanyId, patch, actorUserId) => {
-  await assertOrgCompany(actorCompanyId, targetCompanyId);
+  const row = await assertOrgCompany(actorCompanyId, targetCompanyId);
+  const subsidiary = isSubsidiary(row);
   const existing = await settingsService.getSetting('company_profile', {}, targetCompanyId) || {};
   const next = { ...(existing && typeof existing === 'object' ? existing : {}) };
   const body = patch && typeof patch === 'object' ? patch : {};
 
-  for (const key of LEGAL_STR_KEYS) {
-    if (body[key] !== undefined && body[key] !== null) {
-      let val = String(body[key]).trim();
-      if (['gstin', 'pan', 'cin', 'tan'].includes(key)) val = val.toUpperCase();
-      next[key] = val.slice(0, key === 'natureOfBusiness' ? 500 : 200);
-    }
-  }
+  applyProfileFields(next, body, { subsidiary });
 
-  if (Array.isArray(body.directors)) {
-    next.directors = body.directors.slice(0, 20).map((row, i) => ({
-      id: row?.id || `dir-${i}`,
-      name: String(row?.name || '').trim().slice(0, 120),
-      din: String(row?.din || '').trim().slice(0, 20),
-      designation: String(row?.designation || '').trim().slice(0, 80),
-    })).filter((row) => row.name);
-  }
-  if (Array.isArray(body.founders)) {
-    next.founders = body.founders.slice(0, 20).map((row, i) => ({
-      id: row?.id || `fnd-${i}`,
-      name: String(row?.name || '').trim().slice(0, 120),
-      role: String(row?.role || '').trim().slice(0, 80),
-    })).filter((row) => row.name);
+  // A subsidiary's details are saved only with every required one filled in.
+  if (subsidiary) {
+    const problems = subsidiaryDetailProblems(next);
+    if (problems.length) throw subsidiaryDetailsError(problems);
   }
 
   await settingsService.setSetting('company_profile', next, actorUserId, targetCompanyId);
   return getCompanyDetails(actorCompanyId, targetCompanyId);
+};
+
+/**
+ * Settings → Company Profile, signed in to a subsidiary: a required detail it
+ * changes must still be filled in and valid. Details it leaves as they are
+ * are not checked, so a subsidiary still missing some can save other settings.
+ */
+const assertRequiredDetailsKept = async (companyId, before, after) => {
+  const changed = SUBSIDIARY_REQUIRED
+    .map(({ key }) => key)
+    .filter((key) => String(after?.[key] ?? '').trim() !== String(before?.[key] ?? '').trim());
+  if (!changed.length || !isSubsidiary(await getCompanyById(companyId))) return;
+  const problems = subsidiaryDetailProblems(after, changed);
+  if (problems.length) throw subsidiaryDetailsError(problems);
 };
 
 module.exports = {
@@ -417,4 +527,5 @@ module.exports = {
   uploadOrgCompanyLogo,
   getCompanyDetails,
   updateCompanyDetails,
+  assertRequiredDetailsKept,
 };

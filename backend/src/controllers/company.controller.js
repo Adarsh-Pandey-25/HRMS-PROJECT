@@ -87,6 +87,8 @@ const createChild = async (req, res, next) => {
       {
         name: req.body.name,
         slug: req.body.slug,
+        // Legal name, address, PAN, contact email, website, … for its profile.
+        details: req.body,
       },
     );
     successResponse(res, 'Child company created', data, null, 201);
