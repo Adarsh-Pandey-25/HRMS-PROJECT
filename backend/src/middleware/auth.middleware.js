@@ -54,8 +54,16 @@ const fetchEmployeeForAuth = async (id) => {
 const isCompanySuspended = (companyId) => subscriptionService.isBillingSuspended(companyId);
 
 /** True unless the request is on a tenant host that belongs to another company. */
-const belongsToTenant = (req, companyId) => !req.tenantCompany
-  || String(companyId || '') === String(req.tenantCompany.id);
+/**
+ * True unless the request is on a tenant host that belongs to another
+ * company. A subsidiary's people may also use the primary company's address
+ * (owner's report, 24 Nov 2026); a subsidiary's address is only for its own.
+ */
+const belongsToTenant = async (req, companyId) => {
+  if (!req.tenantCompany || String(companyId || '') === String(req.tenantCompany.id)) return true;
+  const group = await require('../services/tenant.service').getOrgCompanyIds(req.tenantCompany.id).catch(() => []);
+  return (group || []).map(String).includes(String(companyId || ''));
+};
 
 const attachTenant = (employee) => {
   if (!employee) return employee;
@@ -79,7 +87,7 @@ const authenticate = async (req, res, next) => {
       if (!keyRow) {
         throw new UnauthorizedError('Invalid or revoked API key');
       }
-      if (!belongsToTenant(req, keyRow.company_id)) {
+      if (!(await belongsToTenant(req, keyRow.company_id))) {
         throw new UnauthorizedError('Invalid or revoked API key');
       }
       // Audit #17: keys work only on the machine endpoints (each also checks
@@ -124,7 +132,7 @@ const authenticate = async (req, res, next) => {
 
     // A session is only valid on its own company's subdomain. Same generic
     // message as a bad token so it can't be used to probe other workspaces.
-    if (!belongsToTenant(req, getCompanyId(employee))) {
+    if (!(await belongsToTenant(req, getCompanyId(employee)))) {
       throw new UnauthorizedError('Invalid or expired token');
     }
 
@@ -207,7 +215,7 @@ const optionalAuth = async (req, res, next) => {
       employee
       && decoded.scope !== 'two_fa_pending'
       && (!tokenVersionAvailable || (decoded.token_version ?? 0) === (employee.token_version ?? 0))
-      && belongsToTenant(req, getCompanyId(employee))
+      && (await belongsToTenant(req, getCompanyId(employee)))
       && !(await isCompanySuspended(employee.company_id))
     ) {
       req.user = attachTenant(employee);

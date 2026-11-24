@@ -524,13 +524,33 @@ const authenticateEmployee = async (email, password, options = {}) => {
   }
 };
 
+/**
+ * The companies whose people can sign in on a company's own web address: the
+ * company and its subsidiaries (owner's report, 24 Nov 2026 — a subsidiary's
+ * staff couldn't sign in on the primary company's address). A subsidiary's
+ * address is only for its own people. null when no address scopes it.
+ */
+const signInCompanyIds = async (tenantCompanyId) => {
+  if (!tenantCompanyId) return null;
+  const group = await require('./tenant.service').getOrgCompanyIds(tenantCompanyId).catch(() => [tenantCompanyId]);
+  return [...new Set([String(tenantCompanyId), ...(group || []).map(String)])];
+};
+
+/** May someone of `companyId` use the web address of `tenantCompanyId`? */
+const inSignInGroup = async (companyId, tenantCompanyId) => {
+  if (!tenantCompanyId || sameId(companyId, tenantCompanyId)) return true;
+  const ids = await signInCompanyIds(tenantCompanyId);
+  return ids.some((id) => sameId(id, companyId));
+};
+
 const authenticateEmployeeOnce = async (email, password, { tenantCompanyId = null, allowedRoles = null } = {}) => {
   // Per-email brute-force guard — same generic error as wrong password so
   // attackers cannot distinguish "locked" from "bad credentials".
   assertEmailNotLoginLocked(email);
 
   let query = supabaseAdmin.from('employees').select('*').eq('email', email);
-  if (tenantCompanyId) query = query.eq('company_id', tenantCompanyId);
+  const scope = await signInCompanyIds(tenantCompanyId);
+  if (scope) query = query.in('company_id', scope);
   const { data: candidates, error } = await query;
 
   if (error || !candidates?.length) {
@@ -552,8 +572,13 @@ const authenticateEmployeeOnce = async (email, password, { tenantCompanyId = nul
       candidates.map(async (c) => ((await comparePassword(password, c.password_hash)) ? c : null))
     );
     const matches = results.filter(Boolean);
+    // The same email and password at the address's own company and one of
+    // its subsidiaries: the address's own company's account.
+    const own = tenantCompanyId ? matches.find((m) => sameId(m.company_id, tenantCompanyId)) : null;
     if (matches.length === 1) {
       employee = matches[0];
+    } else if (own) {
+      employee = own;
     } else if (matches.length > 1) {
       recordLoginFailure(email);
       throw new UnauthorizedError(
@@ -685,7 +710,7 @@ const refreshAccessToken = async (refreshToken, tenantCompanyId = null) => {
     if (employee) await revokeRefreshTokens(employee.id);
     throw new UnauthorizedError(SESSION_ENDED_MESSAGE);
   }
-  if (tenantCompanyId && !sameId(getCompanyId(employee), tenantCompanyId)) {
+  if (!(await inSignInGroup(getCompanyId(employee), tenantCompanyId))) {
     throw new UnauthorizedError('Invalid refresh token');
   }
 
@@ -778,7 +803,7 @@ const completeTwoFaLogin = async (employeeId) => {
  */
 const verifyTwoFaLogin = async (twoFaToken, code, tenantCompanyId = null) => {
   const claims = readTwoFaPendingToken(twoFaToken);
-  if (tenantCompanyId && !sameId(claims.company_id, tenantCompanyId)) throw restartTwoFa();
+  if (!(await inSignInGroup(claims.company_id, tenantCompanyId))) throw restartTwoFa();
 
   const { data: challenge, error } = await supabaseAdmin
     .from(TWO_FA_CHALLENGES)
@@ -1062,9 +1087,14 @@ const resetEmployeeTwoFactor = async (actor, targetId, { ipAddress = null } = {}
  */
 const findOneEmployeeByEmail = async (email, tenantCompanyId, selectCols = '*') => {
   let query = supabaseAdmin.from('employees').select(selectCols).eq('email', email);
-  if (tenantCompanyId) query = query.eq('company_id', tenantCompanyId);
+  const scope = await signInCompanyIds(tenantCompanyId);
+  if (scope) query = query.in('company_id', scope);
   const { data } = await query;
-  return (data && data.length === 1) ? data[0] : null;
+  const rows = data || [];
+  if (rows.length === 1) return rows[0];
+  // At the address's own company and a subsidiary: the address's own company's.
+  const own = tenantCompanyId ? rows.filter((r) => sameId(r.company_id, tenantCompanyId)) : [];
+  return own.length === 1 ? own[0] : null;
 };
 
 const forgotPassword = async (email, tenantCompanyId = null) => {
@@ -1163,7 +1193,8 @@ const resetPassword = async (email, otp, newPassword, tenantCompanyId = null) =>
   const guard = reserveOtpAttempt(email, tenantCompanyId);
 
   let candidateQuery = supabaseAdmin.from('employees').select('id, company_id, address').eq('email', email);
-  if (tenantCompanyId) candidateQuery = candidateQuery.eq('company_id', tenantCompanyId);
+  const scope = await signInCompanyIds(tenantCompanyId);
+  if (scope) candidateQuery = candidateQuery.in('company_id', scope);
   const { data: candidates } = await candidateQuery;
   const candidateIds = (candidates || []).map((e) => e.id);
 
