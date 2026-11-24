@@ -313,6 +313,46 @@ const recordEmail = (row) => {
  * skipped, not sent. Emails with no switch — credentials, security,
  * billing, platform — always go.
  */
+/**
+ * Who an email is from. One mailbox sends everything (SMTP_FROM), and its
+ * name was one company's — so a subsidiary's people, and every other
+ * company's, got mail signed with that company's name (owner's report, 24 Nov
+ * 2026). An email about a company now carries that company's own name in
+ * front of the same address: "TimesPrime 247 News Media via SpaxSync
+ * <no-reply@…>". Platform emails (billing, super admin) keep SMTP_FROM.
+ */
+const SENDER_NAME_CACHE_MS = 5 * 60 * 1000;
+const senderNames = new Map(); // companyId → { name, expiresAt }
+const platformFrom = () => process.env.SMTP_FROM || process.env.SMTP_USER;
+const addressOf = (from) => {
+  const match = String(from || '').match(/<([^>]+)>/);
+  return (match ? match[1] : String(from || '')).trim();
+};
+const companyNameForSender = async (companyId) => {
+  const key = String(companyId);
+  const hit = senderNames.get(key);
+  if (hit && hit.expiresAt > Date.now()) return hit.name;
+  let name = null;
+  try {
+    const { supabaseAdmin } = require('../config/supabase');
+    const { data } = await supabaseAdmin.from('companies').select('name').eq('id', key).maybeSingle();
+    name = String(data?.name || '').trim() || null;
+  } catch {
+    name = null;
+  }
+  senderNames.set(key, { name, expiresAt: Date.now() + SENDER_NAME_CACHE_MS });
+  return name;
+};
+const senderFor = async (companyId) => {
+  const from = platformFrom();
+  if (!companyId || !from) return from;
+  const address = addressOf(from);
+  const name = await companyNameForSender(companyId);
+  if (!address || !name) return from;
+  const safe = name.replace(/["\\<>\r\n]/g, '').slice(0, 60).trim();
+  return safe ? `"${safe} via SpaxSync" <${address}>` : from;
+};
+
 const sendEmail = async ({ to, subject, html, text, type }) => {
   const ctx = linkContext.getStore() || {};
   const emailType = type || ctx.emailType || 'untyped';
@@ -337,7 +377,7 @@ const sendEmail = async ({ to, subject, html, text, type }) => {
 
   try {
     const info = await sendWithFallback({
-      from: process.env.SMTP_FROM || process.env.SMTP_USER,
+      from: await senderFor(companyId),
       to,
       subject,
       html,
@@ -2021,7 +2061,7 @@ const sendEmailWithWhatsAppCopy = (options) => {
   return result;
 };
 
-module.exports = { sendEmail: sendEmailWithWhatsAppCopy };
+module.exports = { sendEmail: sendEmailWithWhatsAppCopy, senderFor };
 for (const [name, fn] of Object.entries(templates)) {
   const wrapped = PLATFORM_TEMPLATES.has(name) ? withEmailType(name, fn) : withRecipientLinks(name, fn);
   module.exports[name] = withWhatsAppCopy(name, wrapped);
