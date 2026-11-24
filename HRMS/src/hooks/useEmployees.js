@@ -7,6 +7,7 @@ import {
   uploadEmployeePhotoApi, resetSelfEditLockApi,
 } from '../api/employees.api';
 import { useEmployeeStore } from '../store/employeeStore';
+import { rememberEmployeeCodes } from '../lib/employeeRoutes';
 import { invalidateAndRefetch, patchQueriesData } from '../lib/queryCache';
 
 export function useEmployees() {
@@ -26,6 +27,8 @@ export function useEmployees() {
         ? await fetchAllEmployeesApi({ limit: 200 })
         : await fetchTeamEmployeesApi(userId);
       setEmployees(rows);
+      // Which codes are shared, so links never use one (employeeRoutes.js).
+      rememberEmployeeCodes(rows, { complete: isHrAdmin && rows.length < 200 });
       return rows;
     },
     enabled: isAuthenticated && canFetchRoster && Boolean(userId || isHrAdmin),

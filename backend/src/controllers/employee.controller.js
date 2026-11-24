@@ -330,9 +330,14 @@ async function findEmployeeByRef(ref, scopeCompanyIds, select = '*') {
   const rows = Array.isArray(data) ? data : (data ? [data] : []);
   if (!rows.length) return null;
 
-  // Prefer exact UUID match; for codes take first in-scope row
   if (refIsUuid) {
     return rows.find((r) => sameId(r.id, ref)) || rows[0];
+  }
+  // The same code at the primary company and a subsidiary (codes restart per
+  // company): never guess — taking the first opened, and then saved, the
+  // wrong person (owner's report, 24 Nov 2026).
+  if (rows.length > 1) {
+    throw new ConflictError(`More than one employee has the code ${ref} (one per company). Open them from the employee list.`);
   }
   return rows[0];
 }
