@@ -10,10 +10,11 @@ import {
   updateTicketStatusApi, addTicketCommentApi, fetchKbCategoriesApi, fetchKbArticlesApi,
 } from '../api/helpdesk.api';
 import {
-  fetchJobsApi, fetchCandidatesApi, moveCandidateApi, createJobApi, createCandidateApi,
+  fetchJobsApi, fetchCandidatesApi, moveCandidateApi, createJobApi, updateJobApi, createCandidateApi,
   fetchInterviewsApi, createInterviewApi, updateInterviewOutcomeApi,
   fetchOffersApi, createOfferApi, updateOfferStatusApi,
   fetchCandidateChecklistApi, toggleCandidateChecklistItemApi,
+  fetchCareersSiteApi, saveCareersSiteApi, rotateCareersKeyApi,
 } from '../api/recruitment.api';
 import {
   fetchChecklistTemplatesApi, createChecklistTemplateApi,
@@ -151,6 +152,7 @@ export function useRecruitmentMutations() {
   };
   return {
     createJob: useMutation({ mutationFn: createJobApi, onSuccess: invalidate }),
+    updateJob: useMutation({ mutationFn: ({ id, ...payload }) => updateJobApi(id, payload), onSuccess: invalidate }),
     createCandidate: useMutation({ mutationFn: createCandidateApi, onSuccess: invalidate }),
     moveCandidate: useMutation({ mutationFn: ({ id, stage }) => moveCandidateApi(id, stage), onSuccess: invalidate }),
     createInterview: useMutation({ mutationFn: createInterviewApi, onSuccess: invalidate }),
@@ -163,6 +165,21 @@ export function useRecruitmentMutations() {
       mutationFn: ({ id, status }) => updateOfferStatusApi(id, status),
       onSuccess: invalidate,
     }),
+  };
+}
+
+/** Settings → Recruitment → Careers website (Careers API): the key, allowed websites and form. */
+export function useCareersSite() {
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  return useQuery({ queryKey: ['recruitment', 'careers-site'], queryFn: fetchCareersSiteApi, enabled: isAuthenticated, retry: false });
+}
+
+export function useCareersSiteMutations() {
+  const qc = useQueryClient();
+  const store = (data) => qc.setQueryData(['recruitment', 'careers-site'], data);
+  return {
+    save: useMutation({ mutationFn: saveCareersSiteApi, onSuccess: store }),
+    rotateKey: useMutation({ mutationFn: rotateCareersKeyApi, onSuccess: store }),
   };
 }
 

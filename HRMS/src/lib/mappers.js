@@ -395,10 +395,25 @@ export function mapJobFromApi(row) {
     department: c.department,
     location: c.location,
     type: (c.type || c.employmentType || 'full_time').replace(/_/g, '-'),
+    employmentType: c.employmentType || 'full_time',
     status,
     openings: Number(c.openings || 1),
     description: c.description || '',
     createdAt: c.createdAt,
+    // Careers website (Careers API)
+    showOnWebsite: Boolean(c.showOnWebsite),
+    summary: c.summary || '',
+    workMode: c.workMode || '',
+    experienceMin: c.experienceMin ?? null,
+    experienceMax: c.experienceMax ?? null,
+    salaryMin: c.salaryMin ?? null,
+    salaryMax: c.salaryMax ?? null,
+    salaryCurrency: c.salaryCurrency || 'INR',
+    salaryPeriod: c.salaryPeriod || 'year',
+    showSalary: Boolean(c.showSalary),
+    skills: Array.isArray(c.skills) ? c.skills : [],
+    closesOn: c.closesOn || '',
+    questions: Array.isArray(c.questions) ? c.questions : [],
   };
 }
 
@@ -416,6 +431,20 @@ export function mapCandidateFromApi(row) {
     stage: c.stage,
     daysInStage: Number(c.daysInStage || 0),
     appliedOn: c.appliedOn,
+    // What the candidate filled in on the company website (Careers API)
+    sourceDetail: c.sourceDetail || '',
+    currentLocation: c.currentLocation || '',
+    experienceYears: c.experienceYears ?? null,
+    currentCompany: c.currentCompany || '',
+    currentCtc: c.currentCtc ?? null,
+    expectedCtc: c.expectedCtc ?? null,
+    ctcCurrency: c.ctcCurrency || 'INR',
+    noticePeriodDays: c.noticePeriodDays ?? null,
+    linkedinUrl: c.linkedinUrl || '',
+    portfolioUrl: c.portfolioUrl || '',
+    coverNote: c.coverNote || '',
+    answers: Array.isArray(c.answers) ? c.answers : [],
+    consentAt: c.consentAt || null,
   };
 }
 

@@ -67,7 +67,7 @@ const PREFERENCES = {
   birthday_wishes: { group: 'Celebrations', label: 'Birthday wishes', description: 'Birthday greeting to the employee.' },
   work_anniversary_wishes: { group: 'Celebrations', label: 'Work anniversary wishes', description: 'Work anniversary greeting to the employee.' },
   // Recruitment
-  recruitment: { group: 'Recruitment', label: 'Recruitment emails', description: 'Offer letters to candidates, and offer accepted / rejected notices to HR.' },
+  recruitment: { group: 'Recruitment', label: 'Recruitment emails', description: 'Offer letters and "application received" to candidates; new website applications and offer accepted / rejected notices to HR.' },
   // Engagement
   announcements: { group: 'Engagement', label: 'Announcements', description: 'Company announcements sent by email.' },
   training: { group: 'Engagement', label: 'Training assignment', description: 'When a course is assigned to an employee.' },
@@ -135,6 +135,8 @@ const EMAIL_TYPES = [
   { key: 'offer_letter', label: 'Offer letter', audience: 'candidate', trigger: 'HR sends an offer to a candidate.', preference: 'recruitment', companyScoped: true },
   { key: 'offer_accepted', label: 'Offer accepted', audience: 'hr', trigger: 'A candidate accepts an offer.', preference: 'recruitment', companyScoped: true },
   { key: 'offer_rejected', label: 'Offer rejected', audience: 'hr', trigger: 'A candidate rejects an offer.', preference: 'recruitment', companyScoped: true },
+  { key: 'new_application', label: 'New application (careers website)', audience: 'hr', trigger: "Someone applies for a job on the company's own website (Careers API).", preference: 'recruitment', companyScoped: true },
+  { key: 'application_received', label: 'Application received', audience: 'candidate', trigger: "A candidate applies on the company's own website (Careers API).", preference: 'recruitment', companyScoped: true },
 
   // ── Engagement ───────────────────────────────────────────────────────────
   { key: 'announcement', label: 'Announcement', audience: 'employee', trigger: 'HR publishes an announcement with email on.', preference: 'announcements', companyScoped: true },

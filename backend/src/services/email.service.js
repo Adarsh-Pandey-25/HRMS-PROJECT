@@ -1345,6 +1345,51 @@ const offerRejectedEmail = (recipient, candidate, { role, reason }) =>
     }),
   });
 
+/**
+ * Careers API (careers.service.js): someone applied on the company's own
+ * website. To HR (admins if the company has no HR). Also goes on WhatsApp
+ * (whatsappCatalog.js new_application).
+ */
+const newApplicationEmail = (recipient, candidate, { jobTitle, sourceDetail }) =>
+  sendEmail({
+    to: recipient.email,
+    subject: `New application: ${candidate.name} for ${jobTitle}`,
+    html: etDocument({
+      preheader: `${candidate.name} applied for ${jobTitle}.`,
+      gradient: GRADIENT.sky,
+      eyebrow: 'New application',
+      titleHtml: `${escapeHtml(candidate.name)}<br><em style="font-style:italic;">applied.</em>`,
+      icon: '📨',
+      bodyHtml: `
+        ${etP(`A new application came in${sourceDetail ? ` through ${escapeHtml(sourceDetail)}` : ''}. The details, answers and resume are in Recruitment → Candidates.`)}
+        ${etInfo([
+          { label: 'Candidate', value: candidate.name },
+          { label: 'Job', value: jobTitle },
+          ...(sourceDetail ? [{ label: 'Applied on', value: sourceDetail }] : []),
+        ])}
+        ${etCta(`${getAppUrl()}/recruitment/candidates`, 'Review the application', COLOR.navy)}
+      `,
+    }),
+  });
+
+/** Careers API: to the candidate, confirming the application arrived. Never on WhatsApp (not a user). */
+const applicationReceivedEmail = (candidate, { jobTitle, companyName }) =>
+  sendEmail({
+    to: candidate.email,
+    subject: `We received your application for ${jobTitle}`,
+    html: etDocument({
+      preheader: `Thank you for applying${companyName ? ` to ${companyName}` : ''}.`,
+      gradient: GRADIENT.sky,
+      eyebrow: companyName || 'Your application',
+      titleHtml: `Thank you,<br><em style="font-style:italic;">${escapeHtml(candidate.name)}.</em>`,
+      icon: '✅',
+      bodyHtml: `
+        ${etP(`We have received your application for <strong>${escapeHtml(jobTitle)}</strong>${companyName ? ` at ${escapeHtml(companyName)}` : ''}. Our team will review it and get in touch if your profile matches the role.`)}
+        ${etP('You don’t need to do anything else for now. Please don’t reply to this email.', { color: COLOR.slateSoft })}
+      `,
+    }),
+  });
+
 // ============================================================================
 // CELEBRATIONS — birthday & work anniversary wishes
 // ============================================================================
@@ -1936,6 +1981,8 @@ const templates = {
   offerLetterEmail,
   offerAcceptedEmail,
   offerRejectedEmail,
+  newApplicationEmail,
+  applicationReceivedEmail,
   // Celebrations
   birthdayWishEmail,
   workAnniversaryEmail,

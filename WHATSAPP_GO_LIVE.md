@@ -27,7 +27,7 @@ Only people whose **WhatsApp is connected** get anything. Employees HR adds from
 - Requests waiting for HR under the company's **Approval Flows** (leave, work from home, expenses), and every attendance correction. Requests from people without a manager always go to HR. The message has the reason and **Approve / Reject** buttons.
 - **New helpdesk tickets** and replies; **documents uploaded** for checking.
 - **Summaries:** daily attendance summary, daily pending-approvals count, weekly joiners & exits.
-- **Recruitment:** a candidate accepted or declined an offer.
+- **Recruitment:** a candidate accepted or declined an offer; **someone applied on the company's own website** (Careers API, template `new_application`, added 26 Nov 2026 — it waits until Meta approves it, and the live server submits it by itself).
 - **Security:** API key created or revoked, office beacon alerts, and a biometric machine's new internet address with **Approve** / **Reject** (see "Approving on WhatsApp" below).
 
 ### Company admins, in addition

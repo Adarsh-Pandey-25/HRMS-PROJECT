@@ -118,6 +118,7 @@ const EMAIL_RULES = {
   onboarding_otp: never('secret_code'),
   prejoining: never('not_connected_yet'),
   offer_letter: never('not_a_user'),
+  application_received: never('not_a_user'),
   company_invite: never('not_a_user'),
   lead_confirmation: never('not_a_user'),
   notification: never('covered_by_in_app'),
@@ -434,6 +435,20 @@ const EMAIL_RULES = {
   },
 
   // ── Recruitment (to HR; never the offer itself) ───────────────────────
+  // Careers API: someone applied on the company's own website.
+  new_application: {
+    template: 'new_application',
+    group: 'recruitment',
+    event: ([recipient, candidate, opts = {}]) => ({
+      key: 'new_application',
+      record: candidate?.id,
+      to: toEmployee(recipient),
+      values: async ({ person, company }) => [
+        F.firstName(person), F.clean(candidate?.name, { max: 50, fallback: 'A candidate' }),
+        F.clean(opts.jobTitle, { max: 60, fallback: 'a job' }), await L.companyName(company),
+      ],
+    }),
+  },
   offer_accepted: {
     template: 'offer_response',
     group: 'recruitment',
@@ -800,6 +815,20 @@ const notificationEvents = async (item) => {
       return [event({
         key: 'holiday_list', record: ids.length ? L.idsKey(ids) : rowRecord, template: 'holiday_list', group: 'company_news',
         values: async ({ person, company }) => [F.firstName(person), await L.companyName(company), await years()],
+      })];
+    }
+
+    case 'RECRUITMENT': {
+      // Careers API: a new application on the company's website. Same key
+      // and record as the email's copy (new_application), so HR gets one
+      // WhatsApp for it, not two.
+      if (!meta.candidate_id) return [];
+      return [event({
+        key: 'new_application', record: meta.candidate_id, template: 'new_application', group: 'recruitment',
+        values: async ({ person, company }) => [
+          F.firstName(person), F.clean(meta.candidate_name, { max: 50, fallback: 'A candidate' }),
+          F.clean(meta.job_title, { max: 60, fallback: 'a job' }), await L.companyName(company),
+        ],
       })];
     }
 

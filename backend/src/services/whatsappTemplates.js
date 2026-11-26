@@ -132,6 +132,14 @@ const TEMPLATES = [
   utility('people_summary',
     'Hi {{1}}, this week at {{2}}: {{3}} joined, {{4}} left, and the headcount is {{5}}. See the details in SpaxSync.',
     ['Neha', COMPANY, '2', '1', '48']),
+  // Careers API (26 Nov 2026): someone applied on the company's own website.
+  // Waits in the queue until Meta approves it instead of failing.
+  {
+    ...utility('new_application',
+      'Hi {{1}}, {{2}} applied for {{3}} at {{4}} on your careers website. Please review the application in SpaxSync.',
+      ['Neha', 'Amit Kumar', 'Ad Sales - CPI', COMPANY]),
+    holdUntilApproved: true,
+  },
   utility('offer_response',
     'Hi {{1}}, {{2}} has {{3}} the offer for {{4}} at {{5}}. Please open SpaxSync for the details.',
     ['Neha', 'Amit Kumar', 'accepted', 'Graphic Designer', COMPANY]),

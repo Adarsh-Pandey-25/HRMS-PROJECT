@@ -8,6 +8,7 @@ export const CANDIDATE_SOURCE_OPTIONS = [
   { value: 'job-board', label: 'Job Board' },
   { value: 'linkedin', label: 'LinkedIn' },
   { value: 'direct', label: 'Direct' },
+  { value: 'website', label: 'Company website' },
   { value: 'other', label: 'Other' },
 ];
 
@@ -33,6 +34,17 @@ export async function createJobApi(payload) {
   const data = await apiRequest({ method: 'POST', url: '/recruitment/jobs', data: toSnakeCase(payload) });
   return mapJobFromApi(data);
 }
+
+/** Edit a job: any of its fields, closing it, or putting it on / off the company website. */
+export async function updateJobApi(id, payload) {
+  const data = await apiRequest({ method: 'PUT', url: `/recruitment/jobs/${id}`, data: toSnakeCase(payload) });
+  return mapJobFromApi(data);
+}
+
+/** Settings → Recruitment → Careers website (Careers API): key, allowed websites, form fields. */
+export const fetchCareersSiteApi = () => apiRequest({ method: 'GET', url: '/recruitment/careers-site' });
+export const saveCareersSiteApi = (payload) => apiRequest({ method: 'PUT', url: '/recruitment/careers-site', data: payload });
+export const rotateCareersKeyApi = () => apiRequest({ method: 'POST', url: '/recruitment/careers-site/key' });
 
 export async function fetchCandidatesApi(params = {}) {
   const rows = await apiRequest({ method: 'GET', url: '/recruitment/candidates', params });

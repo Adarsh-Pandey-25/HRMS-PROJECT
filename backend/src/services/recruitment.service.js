@@ -14,8 +14,11 @@ const notifyHrAdmins = async (companyId, send) => {
   }
 };
 
-/** Fixed, reasonable source list for the Add Candidate dropdown. */
-const CANDIDATE_SOURCES = ['referral', 'job-board', 'linkedin', 'direct', 'other'];
+/**
+ * Fixed, reasonable source list for the Add Candidate dropdown. "website":
+ * applied on the company's own website (Careers API, careers.service.js).
+ */
+const CANDIDATE_SOURCES = ['referral', 'job-board', 'linkedin', 'direct', 'website', 'other'];
 
 const INTERVIEW_MODES = ['video', 'in-person', 'phone'];
 const INTERVIEW_STATUSES = ['scheduled', 'completed', 'cancelled', 'no-show'];
@@ -78,34 +81,214 @@ const listJobs = async (query = {}, companyId) => {
   return data || [];
 };
 
+const EMPLOYMENT_TYPES = ['full_time', 'part_time', 'contract', 'intern'];
+const WORK_MODES = ['on_site', 'remote', 'hybrid'];
+const JOB_TITLE_MAX = 200;
+
+/**
+ * The columns 20261126_careers_api.sql adds to job_openings. Before it has
+ * run, a job is still saved with the earlier columns (and these left out).
+ */
+const CAREERS_JOB_COLUMNS = [
+  'updated_at', 'show_on_website', 'summary', 'work_mode', 'experience_min', 'experience_max',
+  'salary_min', 'salary_max', 'salary_currency', 'salary_period', 'show_salary', 'skills', 'closes_on', 'questions',
+];
+const isCareersColumnMissing = (error) => {
+  const message = String(error?.message || '');
+  return /does not exist|schema cache/i.test(message) && CAREERS_JOB_COLUMNS.some((c) => message.includes(c));
+};
+const withoutCareersColumns = (payload) => Object.fromEntries(
+  Object.entries(payload).filter(([key]) => !CAREERS_JOB_COLUMNS.includes(key)),
+);
+
+const pick = (body, ...keys) => {
+  for (const key of keys) if (body[key] !== undefined) return body[key];
+  return undefined;
+};
+
+const jobStatusOf = (value) => {
+  const raw = String(value || 'open').toLowerCase();
+  if (['active', 'open'].includes(raw)) return 'open';
+  if (['closed', 'inactive', 'filled'].includes(raw)) return 'closed';
+  return 'open';
+};
+
+/**
+ * The job's other details, checked — only the ones present in `body`
+ * (snake_case or camelCase). Shown on the company's website when
+ * show_on_website is on (Careers API, careers.service.js).
+ */
+const jobDetailsFrom = (body = {}) => {
+  const out = {};
+  const blank = (v) => v === null || v === '';
+
+  const employmentType = pick(body, 'employment_type', 'employmentType');
+  if (employmentType !== undefined) {
+    const type = String(employmentType || 'full_time').toLowerCase().replace(/-/g, '_');
+    if (!EMPLOYMENT_TYPES.includes(type)) throw new BadRequestError('Type must be full-time, part-time, contract or intern');
+    out.employment_type = type;
+  }
+
+  const summary = pick(body, 'summary');
+  if (summary !== undefined) {
+    const text = blank(summary) ? '' : String(summary).trim();
+    if (text.length > 300) throw new BadRequestError('Keep the short summary under 300 characters');
+    out.summary = text || null;
+  }
+
+  const workMode = pick(body, 'work_mode', 'workMode');
+  if (workMode !== undefined) {
+    if (blank(workMode)) out.work_mode = null;
+    else if (!WORK_MODES.includes(workMode)) throw new BadRequestError('Work mode must be on site, remote or hybrid');
+    else out.work_mode = workMode;
+  }
+
+  const range = (minKeys, maxKeys, { label, min, max, integer, minColumn, maxColumn }) => {
+    const read = (value, which) => {
+      if (value === undefined) return undefined;
+      if (blank(value)) return null;
+      const n = Number(value);
+      if (!Number.isFinite(n) || n < min || n > max || (integer && !Number.isInteger(n))) {
+        throw new BadRequestError(`${label} (${which}) must be ${integer ? 'a whole number' : 'a number'} from ${min} to ${max}`);
+      }
+      return n;
+    };
+    const lo = read(pick(body, ...minKeys), 'from');
+    const hi = read(pick(body, ...maxKeys), 'to');
+    if (lo !== undefined) out[minColumn] = lo;
+    if (hi !== undefined) out[maxColumn] = hi;
+    if (lo != null && hi != null && lo > hi) throw new BadRequestError(`${label}: "from" can't be more than "to"`);
+  };
+  range(['experience_min', 'experienceMin'], ['experience_max', 'experienceMax'], {
+    label: 'Experience in years', min: 0, max: 60, integer: true, minColumn: 'experience_min', maxColumn: 'experience_max',
+  });
+  range(['salary_min', 'salaryMin'], ['salary_max', 'salaryMax'], {
+    label: 'Salary', min: 0, max: 1e11, integer: false, minColumn: 'salary_min', maxColumn: 'salary_max',
+  });
+
+  const currency = pick(body, 'salary_currency', 'salaryCurrency');
+  if (currency !== undefined) {
+    const code = String(currency || 'INR').trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(code)) throw new BadRequestError('Currency must be a 3-letter code such as INR');
+    out.salary_currency = code;
+  }
+  const period = pick(body, 'salary_period', 'salaryPeriod');
+  if (period !== undefined) {
+    if (!['year', 'month'].includes(period)) throw new BadRequestError('Salary is per year or per month');
+    out.salary_period = period;
+  }
+
+  for (const [column, keys] of [['show_salary', ['show_salary', 'showSalary']], ['show_on_website', ['show_on_website', 'showOnWebsite']]]) {
+    const value = pick(body, ...keys);
+    if (value === undefined) continue;
+    if (typeof value !== 'boolean') throw new BadRequestError(`${column} must be true or false`);
+    out[column] = value;
+  }
+
+  const skills = pick(body, 'skills');
+  if (skills !== undefined) {
+    const list = Array.isArray(skills) ? skills : String(skills || '').split(',');
+    const unique = [];
+    for (const raw of list) {
+      const skill = String(raw ?? '').trim();
+      if (!skill) continue;
+      if (skill.length > 40) throw new BadRequestError('Keep each skill under 40 characters');
+      if (!unique.some((s) => s.toLowerCase() === skill.toLowerCase())) unique.push(skill);
+    }
+    if (unique.length > 20) throw new BadRequestError('Add at most 20 skills');
+    out.skills = unique;
+  }
+
+  const closesOn = pick(body, 'closes_on', 'closesOn');
+  if (closesOn !== undefined) {
+    if (blank(closesOn)) out.closes_on = null;
+    else if (!/^\d{4}-\d{2}-\d{2}$/.test(String(closesOn)) || Number.isNaN(Date.parse(`${closesOn}T00:00:00Z`))) {
+      throw new BadRequestError('The closing date must be a date');
+    } else out.closes_on = String(closesOn);
+  }
+
+  const questions = pick(body, 'questions');
+  if (questions !== undefined) {
+    out.questions = require('./careers.service').normalizeQuestions(questions);
+  }
+  return out;
+};
+
+/** Saves a job; before 20261126_careers_api.sql has run, without the new details. */
+const writeJob = async (run, payload) => {
+  let { data, error } = await run(payload);
+  if (error && isCareersColumnMissing(error)) {
+    logger.warn('[Recruitment] job saved without its website details — run 20261126_careers_api.sql');
+    ({ data, error } = await run(withoutCareersColumns(payload)));
+  }
+  return { data, error };
+};
+
 const createJob = async (body, companyId) => {
   const cid = resolveCompanyId(companyId);
-  const statusRaw = String(body.status || 'open').toLowerCase();
-  const status = ['active', 'open'].includes(statusRaw) ? 'open'
-    : ['closed', 'inactive', 'filled'].includes(statusRaw) ? 'closed'
-    : 'open';
 
   const payload = {
     title: String(body.title || '').trim(),
     department: body.department || null,
     location: body.location || null,
-    employment_type: body.employment_type || body.employmentType || 'full_time',
-    status,
+    employment_type: 'full_time',
+    status: jobStatusOf(body.status),
     openings: Number(body.openings) > 0 ? Number(body.openings) : 1,
     company_id: cid,
+    ...jobDetailsFrom(body),
   };
 
   if (!payload.title) throw new BadRequestError('Job title is required');
+  if (payload.title.length > JOB_TITLE_MAX) throw new BadRequestError(`Keep the job title under ${JOB_TITLE_MAX} characters`);
 
   // Prefer storing description when the column exists (migration add_job_description.sql)
+  const insert = (row) => supabaseAdmin.from('job_openings').insert(row).select().single();
   const withDesc = { ...payload, description: body.description || null };
-  let { data, error } = await supabaseAdmin.from('job_openings').insert(withDesc).select().single();
+  let { data, error } = await writeJob(insert, withDesc);
 
   if (error && /description/i.test(error.message || '')) {
-    ({ data, error } = await supabaseAdmin.from('job_openings').insert(payload).select().single());
+    ({ data, error } = await writeJob(insert, payload));
   }
 
   if (error) throw new BadRequestError(error.message);
+  return data;
+};
+
+/**
+ * Edit a job of the requester's own company: any of its fields, including
+ * closing it (status "closed") or putting it on / off the website.
+ */
+const updateJob = async (id, body = {}, companyId) => {
+  const cid = resolveCompanyId(companyId);
+  await assertOwnsJob(id, cid);
+
+  const patch = { ...jobDetailsFrom(body), updated_at: new Date().toISOString() };
+  if (body.title !== undefined) {
+    const title = String(body.title || '').trim();
+    if (!title) throw new BadRequestError('Job title is required');
+    if (title.length > JOB_TITLE_MAX) throw new BadRequestError(`Keep the job title under ${JOB_TITLE_MAX} characters`);
+    patch.title = title;
+  }
+  if (body.department !== undefined) patch.department = body.department || null;
+  if (body.location !== undefined) patch.location = body.location ? String(body.location).trim().slice(0, 200) : null;
+  if (body.description !== undefined) patch.description = body.description || null;
+  if (body.status !== undefined) patch.status = jobStatusOf(body.status);
+  if (body.openings !== undefined) {
+    const openings = Number(body.openings);
+    if (!Number.isInteger(openings) || openings < 1) throw new BadRequestError('Openings must be at least 1');
+    patch.openings = openings;
+  }
+
+  const update = (row) => supabaseAdmin
+    .from('job_openings')
+    .update(row)
+    .eq('id', id)
+    .eq('company_id', cid)
+    .select()
+    .single();
+  const { data, error } = await writeJob(update, patch);
+  if (error) throw new BadRequestError(error.message);
+  if (!data) throw new NotFoundError('Job opening not found');
   return data;
 };
 
@@ -492,6 +675,7 @@ const setCandidateChecklistItem = async (candidateId, templateId, isChecked, com
 module.exports = {
   listJobs,
   createJob,
+  updateJob,
   listCandidates,
   createCandidate,
   getCandidateResumeUrl,
@@ -505,6 +689,8 @@ module.exports = {
   getCandidateChecklist,
   setCandidateChecklistItem,
   CANDIDATE_SOURCES,
+  EMPLOYMENT_TYPES,
+  WORK_MODES,
   INTERVIEW_MODES,
   INTERVIEW_STATUSES,
   OFFER_STATUSES,

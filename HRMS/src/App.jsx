@@ -265,6 +265,7 @@ export default function App() {
             <Route path="/recruitment" element={<Navigate to="/recruitment/jobs" replace />} />
             <Route path="/recruitment/jobs" element={page(JobOpenings, { module: 'recruitment', action: 'view' })} />
             <Route path="/recruitment/jobs/add" element={page(AddJob, { module: 'recruitment', action: 'create' })} />
+            <Route path="/recruitment/jobs/:id/edit" element={page(AddJob, { module: 'recruitment', action: 'create' })} />
             <Route path="/recruitment/candidates" element={page(Candidates, { module: 'recruitment', action: 'view' })} />
             <Route path="/recruitment/interviews" element={page(Interviews, { module: 'recruitment', action: 'manage' })} />
             <Route path="/recruitment/offers" element={page(Offers, { module: 'recruitment', action: 'manage' })} />

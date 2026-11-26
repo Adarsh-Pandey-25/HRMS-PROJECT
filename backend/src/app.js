@@ -48,6 +48,7 @@ const onboardingRoutes = require('./routes/onboarding.routes');
 const webhookRoutes = require('./routes/webhook.routes');
 const auditLogRoutes = require('./routes/auditLog.routes');
 const publicRoutes = require('./routes/public.routes');
+const careersPublicRoutes = require('./routes/careersPublic.routes');
 const whatsappWebhookRoutes = require('./routes/whatsappWebhook.routes');
 const whatsappRoutes = require('./routes/whatsapp.routes');
 const superAdminWhatsappRoutes = require('./routes/superAdminWhatsapp.routes');
@@ -95,7 +96,12 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 app.use(compression());
-app.use(cors(config.cors));
+// The Careers API answers companies' own websites (spaxads.com…) and sets its
+// own CORS per careers key (routes/careersPublic.routes.js); everything else
+// keeps the app-wide list.
+const appCors = cors(config.cors);
+const isCareersApi = (req) => req.path === '/api/public/careers' || req.path.startsWith('/api/public/careers/');
+app.use((req, res, next) => (isCareersApi(req) ? next() : appCors(req, res, next)));
 app.use(morgan(config.env === 'production' ? 'combined' : 'dev'));
 
 // eSSL ADMS device endpoints: no auth, raw text body — must sit before the
@@ -158,6 +164,12 @@ const healthHandler = async (req, res) => {
 
 app.get('/', healthHandler);
 app.get('/health', healthHandler);
+
+// Careers API: public, called from companies' own websites with their careers
+// key. It has its own CORS (each company's listed websites only), limits and
+// checks, and sits before the CSRF header check below: a website's form can't
+// send that header, and there is no session here to protect.
+app.use('/api/public/careers', careersPublicRoutes);
 
 // CSRF (H-08): mounted after CORS/body-parsers, before every /api/* route —
 // applies to all of them uniformly, including auth. /iclock/* device routes

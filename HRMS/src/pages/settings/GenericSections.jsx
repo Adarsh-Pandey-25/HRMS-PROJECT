@@ -18,6 +18,7 @@ import { useCompanyFeatures } from '../../hooks/useCompanyFeatures';
 import { useAutosave } from '../../hooks/useAutosave';
 import { WebhooksSection } from './WebhooksSection';
 import { WhatsAppIntegrationCard } from './WhatsAppIntegrationCard';
+import { CareersWebsiteCard } from './CareersWebsiteSection';
 import { APPROVAL_FLOW_OPTIONS, normalizeFlow } from '../../lib/approvalFlow';
 
 /**
@@ -61,7 +62,7 @@ function usePersistedSettingsForm(cfg, updateStore, settingsKey, shape = (f) => 
 export function RecruitmentSettingsSection() {
   const cfg = useSettingsStore((s) => s.recruitmentConfig);
   const update = useSettingsStore((s) => s.updateRecruitmentConfig);
-  const { form, patch, saveNow, status, retry } = usePersistedSettingsForm(cfg, update, 'recruitment_config');
+  const { form, setForm, patch, saveNow, status, retry } = usePersistedSettingsForm(cfg, update, 'recruitment_config');
   const [newStage, setNewStage] = useState('');
 
   const addStage = () => {
@@ -110,19 +111,7 @@ export function RecruitmentSettingsSection() {
           </div>
         </div>
       </Card>
-      <Card>
-        <CardHeader title="Careers Page" />
-        <div className="p-5 pt-3 space-y-4">
-          <Toggle label="Public careers page enabled" checked={form.careersPageEnabled} onChange={(v) => patch({ careersPageEnabled: v })} />
-          <Input
-            label="Careers page slug"
-            hint={`careers.acmetech.in/${form.careersPageSlug}`}
-            value={form.careersPageSlug}
-            onChange={(e) => setForm((f) => ({ ...f, careersPageSlug: e.target.value }))}
-            onBlur={saveNow}
-          />
-        </div>
-      </Card>
+      <CareersWebsiteCard />
       <Card>
         <CardHeader title="Offer Letter Template" />
         <div className="p-5 pt-3 space-y-4">

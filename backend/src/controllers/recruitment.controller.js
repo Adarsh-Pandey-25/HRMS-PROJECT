@@ -1,9 +1,27 @@
 const recruitmentService = require('../services/recruitment.service');
+const careersService = require('../services/careers.service');
 const { successResponse } = require('../utils/helpers');
 const { auditFromRequest } = require('../services/auditLog.service');
 const { getCompanyId } = require('../utils/tenant');
+const { getBaseDomain } = require('../utils/host');
 
 const companyIdOf = (req) => req.user.company_id || getCompanyId(req.user);
+
+/** The address websites call for the Careers API (CAREERS_API.md). */
+const careersApiBase = (req) => {
+  const base = getBaseDomain();
+  const origin = base ? `https://${base}` : `${req.protocol}://${req.get('host')}`;
+  return `${origin}/api/public/careers/v1`;
+};
+
+/** What the audit log keeps of a careers set-up — never the key itself. */
+const careersAuditState = (s) => (s ? {
+  enabled: Boolean(s.enabled),
+  allowedOrigins: s.allowedOrigins || s.allowed_origins || [],
+  formFields: s.formFields || s.form_fields || {},
+  dailyLimit: s.dailyLimit || s.daily_limit || null,
+  customConsentText: Boolean(s.consentText || s.consent_text),
+} : null);
 
 const jobs = async (req, res, next) => {
   try {
@@ -20,6 +38,48 @@ const createJob = async (req, res, next) => {
       afterState: { title: data?.title, department: data?.department, status: data?.status },
     });
     successResponse(res, 'Job created', data, null, 201);
+  } catch (err) { next(err); }
+};
+
+const updateJob = async (req, res, next) => {
+  try {
+    const data = await recruitmentService.updateJob(req.params.id, req.body || {}, companyIdOf(req));
+    auditFromRequest(req, {
+      actionType: 'recruitment.job.update', targetType: 'job', targetId: req.params.id,
+      afterState: { title: data?.title, status: data?.status, showOnWebsite: data?.show_on_website },
+    });
+    successResponse(res, 'Job updated', data);
+  } catch (err) { next(err); }
+};
+
+/** Settings → Recruitment → Careers website. */
+const careersSite = async (req, res, next) => {
+  try {
+    const data = await careersService.getSiteSettings(companyIdOf(req));
+    successResponse(res, 'Careers website', { ...data, apiBase: careersApiBase(req) });
+  } catch (err) { next(err); }
+};
+
+const saveCareersSite = async (req, res, next) => {
+  try {
+    const { before, settings } = await careersService.saveSiteSettings(companyIdOf(req), req.body || {}, req.user.id);
+    auditFromRequest(req, {
+      actionType: 'recruitment.careers_site.update', targetType: 'careers_site', targetId: companyIdOf(req),
+      beforeState: careersAuditState(before), afterState: careersAuditState(settings),
+    });
+    successResponse(res, 'Careers website saved', { ...settings, apiBase: careersApiBase(req) });
+  } catch (err) { next(err); }
+};
+
+/** A new careers key; the old one stops working at once. */
+const rotateCareersKey = async (req, res, next) => {
+  try {
+    const settings = await careersService.rotateSiteKey(companyIdOf(req), req.user.id);
+    auditFromRequest(req, {
+      actionType: 'recruitment.careers_site.new_key', targetType: 'careers_site', targetId: companyIdOf(req),
+      afterState: { newKey: true },
+    });
+    successResponse(res, 'New careers key created', { ...settings, apiBase: careersApiBase(req) });
   } catch (err) { next(err); }
 };
 
@@ -145,6 +205,10 @@ const updateChecklistItem = async (req, res, next) => {
 module.exports = {
   jobs,
   createJob,
+  updateJob,
+  careersSite,
+  saveCareersSite,
+  rotateCareersKey,
   candidates,
   createCandidate,
   candidateResume,

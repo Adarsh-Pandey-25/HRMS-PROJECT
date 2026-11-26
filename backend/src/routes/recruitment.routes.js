@@ -20,6 +20,12 @@ const can = (action) => requirePermission('recruitment', action);
 
 router.get('/jobs', isManagerOrAbove, can(['view', 'manage']), recruitmentController.jobs);
 router.post('/jobs', isHROrAdmin, can('create'), recruitmentController.createJob);
+router.put('/jobs/:id', isHROrAdmin, can(['create', 'manage']), uuidParam(), validate, recruitmentController.updateJob);
+// Settings → Recruitment → Careers website: the company's own website shows
+// its jobs and sends applications here (Careers API, careers.service.js).
+router.get('/careers-site', isHROrAdmin, can(['view', 'manage']), recruitmentController.careersSite);
+router.put('/careers-site', isHROrAdmin, can('manage'), recruitmentController.saveCareersSite);
+router.post('/careers-site/key', isHROrAdmin, can('manage'), recruitmentController.rotateCareersKey);
 router.get('/candidates', isManagerOrAbove, can(['view', 'manage']), recruitmentController.candidates);
 router.post('/candidates', isHROrAdmin, can('create'), upload.single('resume'), recruitmentController.createCandidate);
 router.get('/candidates/:id/resume', isHROrAdmin, can(['view', 'manage']), uuidParam(), validate, recruitmentController.candidateResume);

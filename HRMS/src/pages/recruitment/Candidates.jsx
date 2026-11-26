@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Star, Clock, Mail, Phone, Briefcase, CalendarClock, Send, X, UserPlus, FileText } from 'lucide-react';
+import { Star, Clock, Mail, Phone, Briefcase, CalendarClock, Send, X, UserPlus, FileText, Globe, Link2, ShieldCheck, AlertTriangle } from 'lucide-react';
 import { PageHeader, Card, Avatar, StatusBadge, Badge, Button, Drawer, Skeleton, Modal, Input, Select, Textarea, FileUpload } from '../../components/ui';
 import { KanbanBoard } from '../../components/shared/KanbanBoard';
 import { KANBAN_STAGES } from '../../data';
@@ -10,10 +10,27 @@ import { formatDate, humanize } from '../../lib/utils';
 import toast from 'react-hot-toast';
 
 const SOURCE_TONE = {
-  referral: 'success', 'job-board': 'primary', linkedin: 'info', direct: 'warning', other: 'neutral',
+  referral: 'success', 'job-board': 'primary', linkedin: 'info', direct: 'warning', website: 'primary', other: 'neutral',
 };
+const SOURCE_LABEL = { website: 'Company website' };
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** Only web addresses become links (the server stores http(s) only; this is belt and braces). */
+const isHttpUrl = (url) => /^https?:\/\//i.test(String(url || ''));
+const money = (amount, currency) => (amount === null || amount === undefined || amount === ''
+  ? null
+  : `${currency || 'INR'} ${Number(amount).toLocaleString('en-IN')}`);
+const digits = (phone) => String(phone || '').replace(/\D/g, '').slice(-10);
+
+/** The same person's other applications (same email or phone) in this company. */
+function earlierApplications(candidate, candidates) {
+  if (!candidate) return [];
+  const email = String(candidate.email || '').toLowerCase();
+  const phone = digits(candidate.phone);
+  return candidates.filter((c) => c.id !== candidate.id
+    && ((email && String(c.email || '').toLowerCase() === email) || (phone.length === 10 && digits(c.phone) === phone)));
+}
 
 const toStageId = (label) => String(label || '').trim().toLowerCase().replace(/\s+/g, '-');
 
@@ -32,12 +49,12 @@ function CandidateCard({ c }) {
         <Avatar name={c.name} size="sm" />
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium text-fg truncate">{c.name}</p>
-          <p className="text-xs text-fg-subtle">{c.experience ? `${c.experience}y exp` : c.email}</p>
+          <p className="text-xs text-fg-subtle">{c.experienceYears != null ? `${c.experienceYears}y exp` : c.email}</p>
         </div>
       </div>
       {c.source && (
         <div className="mt-2.5 flex items-center justify-between">
-          <Badge tone={SOURCE_TONE[c.source] || 'neutral'}>{humanize(c.source)}</Badge>
+          <Badge tone={SOURCE_TONE[c.source] || 'neutral'}>{SOURCE_LABEL[c.source] || humanize(c.source)}</Badge>
           {c.rating != null && (
             <div className="flex items-center gap-0.5 text-warning">
               <Star className="h-3.5 w-3.5 fill-current" />
@@ -216,6 +233,15 @@ export default function Candidates() {
   };
 
   const jobTitle = selected ? jobs.find((j) => j.id === selected.jobId)?.title : null;
+  const earlier = earlierApplications(selected, candidates);
+  const details = selected ? [
+    ['Current city', selected.currentLocation],
+    ['Experience', selected.experienceYears != null ? `${selected.experienceYears} years` : null],
+    ['Current company', selected.currentCompany],
+    ['Current salary', money(selected.currentCtc, selected.ctcCurrency)],
+    ['Expected salary', money(selected.expectedCtc, selected.ctcCurrency)],
+    ['Notice period', selected.noticePeriodDays != null ? `${selected.noticePeriodDays} days` : null],
+  ].filter(([, value]) => value) : [];
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -267,7 +293,22 @@ export default function Candidates() {
               {selected.email && <p className="flex items-center gap-2"><Mail className="h-4 w-4 text-fg-subtle" /> {selected.email}</p>}
               {selected.phone && <p className="flex items-center gap-2"><Phone className="h-4 w-4 text-fg-subtle" /> {selected.phone}</p>}
               {jobTitle && <p className="flex items-center gap-2"><Briefcase className="h-4 w-4 text-fg-subtle" /> {jobTitle}</p>}
-              {selected.source && <p className="flex items-center gap-2"><Badge tone={SOURCE_TONE[selected.source] || 'neutral'}>{humanize(selected.source)}</Badge></p>}
+              {selected.source && (
+                <p className="flex items-center gap-2">
+                  <Badge tone={SOURCE_TONE[selected.source] || 'neutral'}>{SOURCE_LABEL[selected.source] || humanize(selected.source)}</Badge>
+                  {selected.sourceDetail && <span className="inline-flex items-center gap-1 text-xs text-fg-subtle"><Globe className="h-3.5 w-3.5" /> {selected.sourceDetail}</span>}
+                </p>
+              )}
+              {isHttpUrl(selected.linkedinUrl) && (
+                <a href={selected.linkedinUrl} target="_blank" rel="noopener noreferrer nofollow" className="flex items-center gap-2 text-primary hover:underline break-all">
+                  <Link2 className="h-4 w-4" /> LinkedIn profile
+                </a>
+              )}
+              {isHttpUrl(selected.portfolioUrl) && (
+                <a href={selected.portfolioUrl} target="_blank" rel="noopener noreferrer nofollow" className="flex items-center gap-2 text-primary hover:underline break-all">
+                  <Link2 className="h-4 w-4" /> Portfolio / website
+                </a>
+              )}
               {selected.resumeUrl && (
                 <button
                   type="button"
@@ -279,6 +320,57 @@ export default function Candidates() {
               )}
               <p className="flex items-center gap-2"><CalendarClock className="h-4 w-4 text-fg-subtle" /> {selected.daysInStage} days in current stage</p>
             </div>
+
+            {earlier.length > 0 && (
+              <div className="flex gap-2 rounded-xl border border-warning/40 bg-warning/10 p-3 text-xs text-fg">
+                <AlertTriangle className="h-4 w-4 text-warning shrink-0" />
+                <p>
+                  Applied before:{' '}
+                  {earlier.map((o) => `${jobs.find((j) => j.id === o.jobId)?.title || 'another job'}${o.appliedOn ? ` (${formatDate(o.appliedOn)})` : ''}`).join(', ')}
+                </p>
+              </div>
+            )}
+
+            {details.length > 0 && (
+              <div>
+                <p className="text-xs font-semibold text-fg-subtle uppercase tracking-wide mb-2">Details</p>
+                <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+                  {details.map(([label, value]) => (
+                    <div key={label}>
+                      <dt className="text-xs text-fg-subtle">{label}</dt>
+                      <dd className="text-fg">{value}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </div>
+            )}
+
+            {selected.coverNote && (
+              <div>
+                <p className="text-xs font-semibold text-fg-subtle uppercase tracking-wide mb-2">Why they are a good fit</p>
+                <p className="text-sm text-fg whitespace-pre-wrap break-words">{selected.coverNote}</p>
+              </div>
+            )}
+
+            {selected.answers.length > 0 && (
+              <div>
+                <p className="text-xs font-semibold text-fg-subtle uppercase tracking-wide mb-2">Answers</p>
+                <div className="space-y-2">
+                  {selected.answers.map((a) => (
+                    <div key={a.questionId || a.question}>
+                      <p className="text-xs text-fg-subtle">{a.question}</p>
+                      <p className="text-sm text-fg whitespace-pre-wrap break-words">{a.answer}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {selected.consentAt && (
+              <p className="flex items-center gap-2 text-xs text-fg-subtle">
+                <ShieldCheck className="h-3.5 w-3.5" /> Agreed to the privacy notice on {formatDate(selected.consentAt)}
+              </p>
+            )}
           </div>
         )}
       </Drawer>
