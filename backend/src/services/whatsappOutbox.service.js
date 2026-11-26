@@ -7,6 +7,7 @@ const { isGroupOn } = require('./whatsappGroups');
 const { getTemplate, paramCount, isMarketing } = require('./whatsappTemplates');
 const { clean } = require('./whatsappFormat');
 const approvals = require('./whatsappApprovals.service');
+const templateSwitches = require('./whatsappTemplateSwitches.service');
 
 /**
  * Turns "this happened, for these people" into queued WhatsApp messages.
@@ -15,6 +16,7 @@ const approvals = require('./whatsappApprovals.service');
  *
  * A message is queued only when every gate is open:
  *   platform   WHATSAPP_ENABLED with a token, and not paused for this environment
+ *   template   not switched off in Super Admin → WhatsApp → Templates
  *   company    the paid add-on is on, the company's own switch is on, the group is on
  *   person     connected (active link), the group is on for them, still active
  *   approvals  a leave, WFH, expense or correction request: their role is ticked
@@ -109,6 +111,10 @@ const queueEvent = async (event) => {
     return 0;
   }
   if ((await settings.getPlatformState(cfg.environment)).paused) return 0;
+  // Switched off by a super admin (approval_request still goes as its plain
+  // fallback while that one is on).
+  const switches = await templateSwitches.getSwitches(cfg.environment);
+  if (!templateSwitches.mayGo(switches, template)) return 0;
 
   const links = await loadLinks(event.recipients);
   if (!links.length) return 0; // the usual case: nobody involved has connected WhatsApp
@@ -192,8 +198,12 @@ const queueEvent = async (event) => {
     return 0;
   }
   // Only the rows just queued come back (duplicates are ignored), so each
-  // approval message gets exactly one set of buttons.
-  if (template.buttons) await approvals.createActions(data || [], event.action);
+  // approval message gets exactly one set of buttons. With the buttons
+  // message switched off it goes plain, so no buttons (and no codes to
+  // confirm a number for them).
+  if (template.buttons && templateSwitches.isOn(switches, template.name)) {
+    await approvals.createActions(data || [], event.action);
+  }
   return (data || []).length;
 };
 

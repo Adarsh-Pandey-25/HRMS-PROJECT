@@ -4,6 +4,7 @@ const { BadRequestError } = require('../utils/errors');
 const admin = require('../services/whatsappAdmin.service');
 const settings = require('../services/whatsappSettings.service');
 const linkService = require('../services/whatsappLink.service');
+const templateSwitches = require('../services/whatsappTemplateSwitches.service');
 
 /** Super Admin → WhatsApp. Full admins only (see the routes file). */
 
@@ -49,6 +50,30 @@ const templates = async (req, res, next) => {
 const syncTemplates = async (req, res, next) => {
   try {
     successResponse(res, 'Templates submitted to Meta', await admin.syncTemplates());
+  } catch (err) { next(err); }
+};
+
+/**
+ * One template's On / Off switch: Off stops that WhatsApp message for every
+ * company (whatsappTemplateSwitches.service.js). Recorded in the audit log.
+ */
+const setTemplateSwitch = async (req, res, next) => {
+  try {
+    const { enabled } = req.body || {};
+    const result = await templateSwitches.setSwitch(getConfig().environment, req.params.name, enabled);
+    await require('../services/auditLog.service').logPlatformAudit({
+      superAdminId: req.superAdmin.id,
+      actionType: 'whatsapp_template_switched',
+      targetType: 'whatsapp_template',
+      beforeState: { template: result.name, enabled: result.before },
+      afterState: { template: result.name, enabled: result.enabled },
+      ipAddress: req.ip,
+    });
+    successResponse(
+      res,
+      result.enabled ? `${result.name} is on` : `${result.name} is off: it is no longer sent on WhatsApp`,
+      { name: result.name, enabled: result.enabled },
+    );
   } catch (err) { next(err); }
 };
 
@@ -119,6 +144,6 @@ const disconnect = async (req, res, next) => {
 };
 
 module.exports = {
-  overview, messages, setPaused, templates, syncTemplates, testMessage, connectOverview, connectEveryone,
+  overview, messages, setPaused, templates, syncTemplates, setTemplateSwitch, testMessage, connectOverview, connectEveryone,
   getMine, startLink, updateMyGroups, disconnect,
 };

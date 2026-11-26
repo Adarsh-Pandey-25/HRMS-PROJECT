@@ -186,12 +186,13 @@ const isApprovedAtMeta = async (name, { fresh = false } = {}) => {
  * with a fresh code in its buttons, or — until Meta approves it, or when the
  * row's buttons are missing, used or expired — the plain fallback template
  * with the first values. A resend gets a new code; the old one stops working.
+ * `plainOnly`: the buttons template is switched off in Super Admin → WhatsApp.
  */
-const prepareSend = async (row, template) => {
+const prepareSend = async (row, template, { plainOnly = false } = {}) => {
   const params = Array.isArray(row.params) ? row.params : [];
   const fallback = getTemplate(template.fallback);
   const plain = { template: fallback.name, params: params.slice(0, paramCount(fallback)), buttonPayloads: null };
-  if (!(await isApprovedAtMeta(template.name))) return plain;
+  if (plainOnly || !(await isApprovedAtMeta(template.name))) return plain;
 
   const { data: action, error } = await supabaseAdmin
     .from('whatsapp_actions')

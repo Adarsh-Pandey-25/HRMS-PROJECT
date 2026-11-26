@@ -2,13 +2,16 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
-import { Activity, FileText, MessageCircle, Send, BellRing, Users } from 'lucide-react';
+import {
+  Activity, FileText, MessageCircle, Send, BellRing, Users, Lock,
+} from 'lucide-react';
 import {
   Card, CardHeader, Button, Badge, Input, Select, Skeleton, Tabs, EmptyState, Toggle, ConfirmDialog, PageHeader,
 } from '../../components/ui';
 import {
   getWhatsAppOverviewApi, listWhatsAppMessagesApi, setWhatsAppPausedApi, getWhatsAppTemplatesApi,
-  syncWhatsAppTemplatesApi, sendWhatsAppTestApi, getWhatsAppConnectApi, connectEveryoneApi, SUPER_ADMIN_WHATSAPP_API,
+  syncWhatsAppTemplatesApi, setWhatsAppTemplateSwitchApi, sendWhatsAppTestApi, getWhatsAppConnectApi, connectEveryoneApi,
+  SUPER_ADMIN_WHATSAPP_API,
 } from '../../api/whatsapp.api';
 import { WhatsAppUpdatesCard } from '../../components/whatsapp/WhatsAppUpdatesCard';
 import { formatDateTime } from '../../lib/utils';
@@ -40,6 +43,7 @@ const SKIP_REASON = {
   not_on_test_allow_list: 'Not on the test number list (development)',
   unknown_template: 'Unknown template',
   duplicate: 'Already sent for this event',
+  template_off: 'This message is switched off in Templates',
 };
 
 const QUALITY_TONE = { GREEN: 'success', YELLOW: 'warning', RED: 'danger' };
@@ -339,12 +343,46 @@ function MessageLog() {
   );
 }
 
+/**
+ * What a switched-off template means, under its name. approval_request
+ * (Approve / Reject buttons) falls back to the plain approval_waiting.
+ */
+function switchNote(t, byName) {
+  if (t.enabled !== false) return null;
+  if (t.fallback) {
+    return byName.get(t.fallback)?.enabled !== false
+      ? `Off: approvers get ${t.fallback} instead, without buttons`
+      : `Off, and ${t.fallback} too: no approval request goes on WhatsApp`;
+  }
+  return 'Off: not sent on WhatsApp';
+}
+
 function Templates() {
   const qc = useQueryClient();
   const queryKey = ['super-admin', 'whatsapp', 'templates'];
   const { data, isLoading, error } = useQuery({ queryKey, queryFn: getWhatsAppTemplatesApi, staleTime: 30_000 });
   const [confirm, setConfirm] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  // The template waiting for "Switch off?" to be confirmed, and the one being saved.
+  const [turningOff, setTurningOff] = useState(null);
+  const [savingName, setSavingName] = useState(null);
+
+  const saveSwitch = async (template, enabled) => {
+    setSavingName(template.name);
+    try {
+      await setWhatsAppTemplateSwitchApi(template.name, enabled);
+      qc.setQueryData(queryKey, (old) => (old ? {
+        ...old,
+        templates: old.templates.map((t) => (t.name === template.name ? { ...t, enabled } : t)),
+      } : old));
+      toast.success(enabled ? `${template.name} is on again` : `${template.name} is off: it won’t be sent on WhatsApp`);
+      setTurningOff(null);
+    } catch (err) {
+      toast.error(err.message || 'Could not save the switch');
+    } finally {
+      setSavingName(null);
+    }
+  };
 
   const sync = async () => {
     setSyncing(true);
@@ -369,12 +407,22 @@ function Templates() {
   // Statuses come back only when this server can reach Meta (token + account id).
   const connectedToMeta = data.templates.some((t) => t.metaStatus !== null);
   const missing = data.templates.filter((t) => t.metaStatus === 'NOT_SUBMITTED').length;
+  // The On / Off switches work once their SQL file has run and they could be read.
+  const switches = data.switches || null;
+  const switchesReady = Boolean(switches?.available && !switches?.failed);
+  const byName = new Map(data.templates.map((t) => [t.name, t]));
+  const offFallback = turningOff?.fallback && byName.get(turningOff.fallback)?.enabled !== false;
+  // Switching off approval_waiting: the plain message approval_request falls back to.
+  const fallbackFor = turningOff && data.templates.find((t) => t.fallback === turningOff.name && t.enabled !== false);
+  const offMessage = fallbackFor
+    ? `This is the plain approval request. It goes instead of ${fallbackFor.name} when an approver’s WhatsApp number isn’t confirmed yet, so with it off those approvers get no approval request on WhatsApp. Emails and in-app notifications still go.`
+    : 'Nobody in any company will get this WhatsApp message until you switch it on again, including messages already waiting to go. Emails and in-app notifications still go.';
 
   return (
     <Card>
       <CardHeader
         title="Message templates"
-        subtitle="Meta must approve each template before it can be sent. Company news and celebrations are marketing; everything else is utility."
+        subtitle="Meta must approve each template before it can be sent. Switch a message off to stop it on WhatsApp for every company; emails and in-app notifications still go. Company news and celebrations are marketing; everything else is utility."
         action={(
           <Button size="sm" icon={Send} onClick={() => setConfirm(true)} disabled={!connectedToMeta || missing === 0}>
             {missing ? `Submit ${missing} to Meta` : 'All submitted'}
@@ -386,18 +434,43 @@ function Templates() {
         {!connectedToMeta && !data.remoteError && (
           <p className="text-sm text-fg-subtle pb-3">Switch WhatsApp on with a token and account ID to see each template’s status at Meta.</p>
         )}
+        {switches && !switches.available && (
+          <p className="text-sm text-fg-subtle pb-3">
+            To use the On / Off switches, run <span className="font-mono text-xs">{switches.sqlFile}</span> in Supabase. Until then every message stays on.
+          </p>
+        )}
+        {switches?.failed && (
+          <p className="text-sm text-danger pb-3">The On / Off switches could not be read. Every message stays on; reload the page to try again.</p>
+        )}
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border text-left">
-              {['Template', 'Category', 'At Meta', 'Text'].map((h) => (
+              {['Template', 'Send', 'Category', 'At Meta', 'Text'].map((h) => (
                 <th key={h} className="py-2.5 pr-3 font-semibold text-fg-subtle text-xs uppercase tracking-wide">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {data.templates.map((t) => (
-              <tr key={t.name} className="border-b border-border/50 align-top">
-                <td className="py-3 pr-3 font-mono text-xs text-fg">{t.name}</td>
+              <tr key={t.name} className={`border-b border-border/50 align-top${t.enabled === false ? ' bg-muted/40' : ''}`}>
+                <td className="py-3 pr-3">
+                  <p className="font-mono text-xs text-fg">{t.name}</p>
+                  {switchNote(t, byName) && <p className="text-xs text-danger mt-1">{switchNote(t, byName)}</p>}
+                </td>
+                <td className="py-3 pr-3">
+                  {t.alwaysOn ? (
+                    <span className="inline-flex items-center gap-1 text-xs text-fg-subtle whitespace-nowrap" title={t.alwaysOn}>
+                      <Lock className="w-3.5 h-3.5" aria-hidden="true" />
+                      Always on
+                    </span>
+                  ) : (
+                    <Toggle
+                      checked={t.enabled !== false}
+                      disabled={!switchesReady || savingName === t.name}
+                      onChange={(next) => (next ? saveSwitch(t, true) : setTurningOff(t))}
+                    />
+                  )}
+                </td>
                 <td className="py-3 pr-3">
                   <Badge tone={t.category === 'MARKETING' ? 'warning' : 'neutral'}>{t.category.toLowerCase()}</Badge>
                   {t.metaCategory && t.metaCategory !== t.category && (
@@ -425,6 +498,20 @@ function Templates() {
         confirmLabel="Submit"
         tone="default"
         loading={syncing}
+      />
+      <ConfirmDialog
+        open={Boolean(turningOff)}
+        onClose={() => setTurningOff(null)}
+        onConfirm={() => turningOff && saveSwitch(turningOff, false)}
+        title={turningOff ? `Stop sending ${turningOff.name} on WhatsApp?` : ''}
+        message={turningOff?.fallback
+          ? (offFallback
+            ? `Approvers will get the plain ${turningOff.fallback} message instead, without Approve / Reject buttons. Switch ${turningOff.fallback} off too to stop approval requests on WhatsApp. Emails and in-app notifications still go.`
+            : `${turningOff.fallback} is off too, so no approval request will go on WhatsApp. Emails and in-app notifications still go.`)
+          : offMessage}
+        confirmLabel="Switch off"
+        tone="danger"
+        loading={Boolean(turningOff) && savingName === turningOff.name}
       />
     </Card>
   );

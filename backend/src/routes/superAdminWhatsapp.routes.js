@@ -14,6 +14,8 @@ router.get('/messages', superAdminWhatsappController.messages);
 router.put('/pause', superAdminWhatsappController.setPaused);
 router.get('/templates', superAdminWhatsappController.templates);
 router.post('/templates/sync', superAdminWhatsappController.syncTemplates);
+// On / Off per template: Off stops that WhatsApp message for every company.
+router.put('/templates/:name/switch', superAdminWhatsappController.setTemplateSwitch);
 router.post('/test-message', superAdminWhatsappController.testMessage);
 // "Connect everyone": a company's existing employees, only when pressed.
 router.get('/connect', superAdminWhatsappController.connectOverview);

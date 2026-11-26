@@ -43,6 +43,10 @@ export const setWhatsAppPausedApi = (paused, reason) => apiRequest({
 });
 export const getWhatsAppTemplatesApi = () => apiRequest({ method: 'GET', url: '/super-admin/whatsapp/templates' });
 export const syncWhatsAppTemplatesApi = () => apiRequest({ method: 'POST', url: '/super-admin/whatsapp/templates/sync' });
+/** One template's On / Off switch: off stops that WhatsApp message for every company. */
+export const setWhatsAppTemplateSwitchApi = (name, enabled) => apiRequest({
+  method: 'PUT', url: `/super-admin/whatsapp/templates/${encodeURIComponent(name)}/switch`, data: { enabled },
+});
 export const sendWhatsAppTestApi = (to) => apiRequest({ method: 'POST', url: '/super-admin/whatsapp/test-message', data: { to } });
 
 /** "Connect everyone": a company's existing employees, only when pressed. */

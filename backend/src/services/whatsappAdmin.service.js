@@ -6,12 +6,13 @@ const settings = require('./whatsappSettings.service');
 const { TEMPLATES, LANGUAGE, toCreatePayload, templateProblems } = require('./whatsappTemplates');
 const { maskPhone } = require('./whatsappFormat');
 const linkService = require('./whatsappLink.service');
+const templateSwitches = require('./whatsappTemplateSwitches.service');
 
 /**
  * The super-admin WhatsApp console: setup status, account health, the
- * message log, an estimated bill, the pause switch, and template
- * submission. Numbers are always masked; message text is never stored, so
- * the log shows the template and its short values only.
+ * message log, an estimated bill, the pause switch, template submission and
+ * each template's On / Off switch. Numbers are always masked; message text
+ * is never stored, so the log shows the template and its short values only.
  */
 
 /**
@@ -155,7 +156,10 @@ const listMessages = async ({ page = 1, limit = 25, companyId, status, template,
   };
 };
 
-/** Our templates, each with its status at Meta (when WhatsApp is configured). */
+/**
+ * Our templates, each with its status at Meta (when WhatsApp is configured)
+ * and its On / Off switch here (whatsappTemplateSwitches.service.js).
+ */
 const templatesStatus = async () => {
   const cfg = getConfig();
   let remote = null;
@@ -168,9 +172,13 @@ const templatesStatus = async () => {
     }
   }
   const remoteByName = new Map((remote || []).filter((t) => t.language === LANGUAGE).map((t) => [t.name, t]));
+  const switches = await templateSwitches.getSwitches(cfg.environment, { fresh: true });
   return {
     language: LANGUAGE,
     remoteError,
+    // available: false until the SQL file has run (every template is on and
+    // can't be switched off yet); failed: the switches couldn't be read now.
+    switches: { available: switches.available, failed: switches.failed, sqlFile: templateSwitches.SQL_FILE },
     templates: TEMPLATES.map((t) => {
       const r = remoteByName.get(t.name);
       return {
@@ -180,6 +188,9 @@ const templatesStatus = async () => {
         problems: templateProblems(t),
         metaStatus: remote ? (r?.status || 'NOT_SUBMITTED') : null,
         metaCategory: r?.category || null,
+        enabled: templateSwitches.isOn(switches, t.name),
+        alwaysOn: templateSwitches.ALWAYS_ON[t.name] || null,
+        fallback: t.fallback || null,
       };
     }),
   };

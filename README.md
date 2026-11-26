@@ -123,6 +123,7 @@ function) and must go first on a fresh project; everything in
 40. `20261117_last_admin_guard.sql` — a database rule that a company always keeps one active Admin, so two Admins demoting each other at the same moment can't leave it with none. Deleting a whole company isn't blocked
 41. `20261117_two_step_login.sql` — **run before deploying the November security fixes.** Single-use two-step login challenges. Until it runs, people with two-step login on can't sign in; everyone else is unaffected
 42. `20261120_adms_kept_punches.sql` — a biometric machine on a new internet address: its punches are kept until someone approves (they count) or rejects (deleted) the new IP, by email, the website and WhatsApp. Until it runs, a push from a new IP is refused as before. Safe to run again after the first version of the file (20 Nov): it adds the `window_start` column then
+43. `20261126_whatsapp_template_switches.sql` — an On / Off switch for each WhatsApp message in Super Admin → WhatsApp → Templates. Until it runs, every message stays on and the switches can't be used
 
 Migrations are idempotent (`IF NOT EXISTS` / `CREATE OR REPLACE`), so
 re-running one is safe.

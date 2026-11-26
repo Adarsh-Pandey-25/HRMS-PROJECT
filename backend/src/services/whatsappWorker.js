@@ -6,6 +6,7 @@ const api = require('./whatsappApi');
 const settings = require('./whatsappSettings.service');
 const linkService = require('./whatsappLink.service');
 const approvals = require('./whatsappApprovals.service');
+const templateSwitches = require('./whatsappTemplateSwitches.service');
 const {
   getTemplate, isMarketing, isAuthentication, LANGUAGE, STOP_MARKETING_PAYLOAD,
 } = require('./whatsappTemplates');
@@ -21,7 +22,8 @@ const { isGroupOn } = require('./whatsappGroups');
  * database but never send each other's messages, and two workers never send
  * one row twice. Before sending, the person's link is checked again — a
  * STOP that arrived after queueing still wins — and so is the company's
- * own switch, so switching WhatsApp off stops what is already waiting.
+ * own switch, so switching WhatsApp off stops what is already waiting. So
+ * does a super admin's template switch (Super Admin → WhatsApp → Templates).
  */
 
 const POLL_MS = 3000;
@@ -56,6 +58,14 @@ const doneFields = (row) => {
 };
 
 const markSkipped = (row, reason) => update(row.id, { status: 'skipped', skip_reason: reason, ...doneFields(row) });
+
+// Its template was switched off in Super Admin → WhatsApp after it was
+// queued. A deactivated person's connection still closes, as it would have
+// once their notice went.
+const skipSwitchedOff = async (row) => {
+  await markSkipped(row, 'template_off');
+  if (row.event_key === 'account_deactivated') await linkService.closeLink(row.subject_type, row.subject_id);
+};
 
 const failStuckRows = async (environment) => {
   if (Date.now() - lastStuckSweep < 60 * 1000) return;
@@ -129,6 +139,8 @@ const handleSendError = async (row, err, environment) => {
 const sendRow = async (row, cfg) => {
   const template = getTemplate(row.template);
   if (!template) return markSkipped(row, 'unknown_template');
+  const switches = await templateSwitches.getSwitches(cfg.environment);
+  if (!templateSwitches.mayGo(switches, template)) return skipSwitchedOff(row);
   const wanted = await stillWanted(row);
   if (!wanted.ok) return markSkipped(row, wanted.reason);
   const phone = row.recipient_kind === 'phone' ? row.recipient : null;
@@ -144,10 +156,16 @@ const sendRow = async (row, cfg) => {
 
   try {
     // Approval requests go with fresh Approve / Reject codes, or as the plain
-    // fallback until Meta approves them (whatsappApprovals.service.js).
+    // fallback until Meta approves them (whatsappApprovals.service.js) or
+    // while their buttons message is switched off.
     const send = template.buttons
-      ? await approvals.prepareSend(row, template)
+      ? await approvals.prepareSend(row, template, { plainOnly: !templateSwitches.isOn(switches, template.name) })
       : { template: template.name, params: Array.isArray(row.params) ? row.params : [], buttonPayloads: null };
+    // The plain fallback has its own switch.
+    if (!templateSwitches.isOn(switches, send.template)) {
+      await skipSwitchedOff(row);
+      return null;
+    }
     const { waMessageId } = await api.sendTemplate({
       phone,
       bsuid: row.recipient_kind === 'bsuid' ? row.recipient : null,
